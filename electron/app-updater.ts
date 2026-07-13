@@ -1,11 +1,8 @@
 import { app, BrowserWindow, ipcMain, shell } from "electron";
-import {
-  autoUpdater,
-  type ProgressInfo,
-  type UpdateInfo,
-} from "electron-updater";
+import { autoUpdater, type ProgressInfo } from "electron-updater";
 import type { AppUpdateState } from "../src/types";
 import { writeLog } from "./logger";
+import { releaseNotesText } from "./release-notes";
 
 const RELEASES_URL = "https://github.com/kk1181958464/kcode/releases/latest";
 const STARTUP_DELAY_MS = 5_000;
@@ -22,17 +19,6 @@ function initialState(): AppUpdateState {
     currentVersion: app.getVersion(),
     portable,
   };
-}
-
-function notes(value: UpdateInfo["releaseNotes"]) {
-  if (typeof value === "string") return value.trim() || undefined;
-  if (!Array.isArray(value)) return undefined;
-  return (
-    value
-      .map((item) => item.note?.trim())
-      .filter(Boolean)
-      .join("\n\n") || undefined
-  );
 }
 
 function setState(next: Partial<AppUpdateState>) {
@@ -104,7 +90,7 @@ export function initializeAppUpdater(beforeInstall: () => void) {
       status: "available",
       version: info.version,
       releaseName: info.releaseName || undefined,
-      releaseNotes: notes(info.releaseNotes),
+      releaseNotes: releaseNotesText(info.releaseNotes),
       progress: undefined,
       error: undefined,
     }),
@@ -135,7 +121,7 @@ export function initializeAppUpdater(beforeInstall: () => void) {
       status: "downloaded",
       version: info.version,
       releaseName: info.releaseName || undefined,
-      releaseNotes: notes(info.releaseNotes),
+      releaseNotes: releaseNotesText(info.releaseNotes),
       progress: state.progress
         ? { ...state.progress, percent: 100 }
         : undefined,
