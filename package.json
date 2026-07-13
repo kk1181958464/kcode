@@ -1,6 +1,6 @@
 {
   "name": "kcode",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "author": "KCode",
   "description": "A multi-provider desktop coding agent",
@@ -29,8 +29,8 @@
     ],
     "extraResources": [
       {
-        "from": "168_0_7ae3015cbc40.png",
-        "to": "168_0_7ae3015cbc40.png"
+        "from": "80f2649b913c028210842f9ffd752179.png",
+        "to": "80f2649b913c028210842f9ffd752179.png"
       }
     ],
     "win": {

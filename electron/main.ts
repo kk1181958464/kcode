@@ -78,7 +78,7 @@ const svgImage = (svg: string) =>
   nativeImage.createFromDataURL(
     `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`,
   );
-const iconFileName = "168_0_7ae3015cbc40.png";
+const iconFileName = "80f2649b913c028210842f9ffd752179.png";
 const iconPath = () =>
   [
     path.join(process.resourcesPath, iconFileName),
@@ -236,6 +236,15 @@ function createWindow() {
   });
   win.webContents.on("render-process-gone", (_event, details) =>
     writeLog("error", "renderer.gone", details),
+  );
+  win.webContents.on(
+    "did-fail-load",
+    (_event, errorCode, errorDescription, validatedURL) =>
+      writeLog("error", "renderer.load.failed", {
+        errorCode,
+        errorDescription,
+        validatedURL,
+      }),
   );
   win.webContents.on("unresponsive", () =>
     writeLog("warn", "renderer.unresponsive", {

@@ -4,7 +4,7 @@ import sharp from "sharp";
 import pngToIco from "png-to-ico";
 
 const root = path.resolve(import.meta.dirname, "..");
-const source = path.join(root, "168_0_7ae3015cbc40.png");
+const source = path.join(root, "80f2649b913c028210842f9ffd752179.png");
 const build = path.join(root, "build");
 await mkdir(build, { recursive: true });
 
