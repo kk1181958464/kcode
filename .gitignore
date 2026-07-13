@@ -1,0 +1,12 @@
+node_modules/
+dist/
+dist-electron/
+*.log
+*.tsbuildinfo
+.env
+.env.*
+release/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+.DS_Store
