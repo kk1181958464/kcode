@@ -2,6 +2,7 @@
   "name": "kcode",
   "version": "0.1.0",
   "private": true,
+  "author": "KCode",
   "description": "A multi-provider desktop coding agent",
   "main": "dist-electron/electron/main.js",
   "scripts": {
@@ -9,12 +10,51 @@
     "build": "tsc -b && vite build && tsc -p electron/tsconfig.json",
     "start": "electron .",
     "typecheck": "tsc -b --pretty false && tsc -p electron/tsconfig.json --pretty false",
-    "test": "tsx --test electron/*.test.ts"
+    "test": "tsx --test electron/*.test.ts",
+    "icons": "node scripts/generate-icons.mjs",
+    "dist:win": "npm run icons && npm run build && electron-builder --win nsis",
+    "release:win": "npm run dist:win -- --publish always"
+  },
+  "build": {
+    "appId": "com.kcode.desktop",
+    "productName": "KCode",
+    "asar": true,
+    "electronDist": "node_modules/electron/dist",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "168_0_7ae3015cbc40.png",
+        "to": "168_0_7ae3015cbc40.png"
+      }
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "KCode"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "kk1181958464",
+      "repo": "kcode",
+      "releaseType": "release"
+    }
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",
     "diff": "^9.0.0",
-    "electron": "latest",
     "electron-updater": "^6.8.9",
     "lucide-react": "latest",
     "react": "latest",
@@ -29,6 +69,7 @@
     "@types/react": "latest",
     "@types/react-dom": "latest",
     "concurrently": "latest",
+    "electron": "latest",
     "electron-builder": "^26.15.3",
     "png-to-ico": "^3.0.2",
     "prettier": "^3.9.5",

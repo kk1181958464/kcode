@@ -1,5 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  Archive,
+  ArchiveRestore,
+  ArrowLeft,
+  ArrowRight,
   Bot,
   BrainCircuit,
   Check,
@@ -27,6 +31,7 @@ import {
   RefreshCw,
   RotateCcw,
   Send,
+  Search,
   Settings,
   ShieldCheck,
   SlidersHorizontal,
@@ -101,6 +106,7 @@ type TaskRecord = {
   };
   durationMs?: number;
   usedContextCount?: number;
+  archived?: boolean;
 };
 const initialTask = (): TaskRecord => ({
   id: uid(),
@@ -648,9 +654,18 @@ function SettingsPanel({
   );
   const [confirmingProvider, setConfirmingProvider] = useState<string>();
   const [recordings, setRecordings] = useState<BrowserRecordingFile[]>([]);
+  const [storage, setStorage] = useState<{
+    tasks: number;
+    bytes: number;
+    path: string;
+  }>();
   useEffect(() => {
     if (section === "recordings" && window.kcode?.browser)
       void window.kcode.browser.recordings().then(setRecordings);
+  }, [section]);
+  useEffect(() => {
+    if (section === "general")
+      void window.kcode?.state.stats().then(setStorage);
   }, [section]);
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) =>
@@ -902,6 +917,26 @@ function SettingsPanel({
                         </button>
                       ))}
                     </div>
+                  </div>
+                  <div className="settings-row">
+                    <span>
+                      <strong>本地任务数据</strong>
+                      <small title={storage?.path}>
+                        {storage
+                          ? `${storage.tasks} 个任务 · ${(storage.bytes / 1024 / 1024).toFixed(2)} MB`
+                          : "正在统计…"}
+                      </small>
+                    </span>
+                    <button
+                      className="secondary"
+                      disabled={!storage}
+                      onClick={() =>
+                        void window.kcode.state.compact().then(setStorage)
+                      }
+                    >
+                      <RefreshCw size={14} />
+                      压缩数据库
+                    </button>
                   </div>
                   <div className="settings-row">
                     <span>
@@ -1798,6 +1833,8 @@ export default function App() {
     | { kind: "task"; task: TaskRecord }
   >();
   const [newTaskName, setNewTaskName] = useState("");
+  const [taskQuery, setTaskQuery] = useState("");
+  const [showArchived, setShowArchived] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     const saved = Number(localStorage.getItem("kcode.sidebarWidth"));
     return Number.isFinite(saved) && saved >= 210 && saved <= 420 ? saved : 256;
@@ -1891,8 +1928,15 @@ export default function App() {
     url?: string;
     width?: number;
     recording?: boolean;
+    canGoBack?: boolean;
+    canGoForward?: boolean;
   }>({ open: false });
+  const [browserAddress, setBrowserAddress] = useState("");
   useEffect(() => window.kcode?.browser?.onState(setBrowserState), []);
+  useEffect(
+    () => setBrowserAddress(browserState.url || ""),
+    [browserState.url],
+  );
   const [usage, setUsage] = useState(
     () => storedActiveTask()?.usage ?? { input: 0, output: 0, cached: 0 },
   );
@@ -2017,17 +2061,27 @@ export default function App() {
   }
   const workspaceGroups = useMemo(() => {
     const groups = new Map<string, TaskRecord[]>();
-    for (const task of tasks)
+    const query = taskQuery.trim().toLocaleLowerCase();
+    for (const task of tasks) {
+      if (Boolean(task.archived) !== showArchived) continue;
+      if (
+        query &&
+        !`${task.name} ${task.workspacePath}`
+          .toLocaleLowerCase()
+          .includes(query)
+      )
+        continue;
       groups.set(task.workspacePath, [
         ...(groups.get(task.workspacePath) ?? []),
         task,
       ]);
+    }
     return [...groups.entries()].map(([workspacePath, conversations]) => ({
       workspacePath,
       name: workspacePath.split(/[\\/]/).filter(Boolean).at(-1) || "工作区",
       conversations,
     }));
-  }, [tasks]);
+  }, [tasks, taskQuery, showArchived]);
 
   async function refreshGitState() {
     if (!window.kcode?.workspace.gitState || !activeTask?.workspacePath) return;
@@ -2714,6 +2768,21 @@ export default function App() {
         setUsageResolved(false);
         setDurationMs(0);
       }
+    }
+  }
+
+  function toggleTaskArchived(task: TaskRecord) {
+    const archived = !task.archived;
+    setTasks((current) =>
+      current.map((item) =>
+        item.id === task.id
+          ? { ...item, archived, updatedAt: Date.now() }
+          : item,
+      ),
+    );
+    if (archived && task.id === activeTaskId) {
+      const next = tasks.find((item) => item.id !== task.id && !item.archived);
+      if (next) void switchTask(next);
     }
   }
 
@@ -3457,6 +3526,26 @@ export default function App() {
             <kbd>Ctrl N</kbd>
           </button>
           <div className="workspace-label">工作区与对话</div>
+          <div className="task-filter">
+            <Search size={13} />
+            <input
+              value={taskQuery}
+              onChange={(event) => setTaskQuery(event.target.value)}
+              placeholder="搜索任务"
+              aria-label="搜索任务"
+            />
+            <button
+              className={showArchived ? "active" : ""}
+              title={showArchived ? "显示当前任务" : "显示已归档任务"}
+              onClick={() => setShowArchived((value) => !value)}
+            >
+              {showArchived ? (
+                <ArchiveRestore size={13} />
+              ) : (
+                <Archive size={13} />
+              )}
+            </button>
+          </div>
           <div className="workspace-tree">
             {workspaceGroups.map((group) => (
               <section
@@ -3580,6 +3669,17 @@ export default function App() {
                         {task.runningId && (
                           <small className="task-running">运行中</small>
                         )}
+                        <button
+                          className="task-archive"
+                          title={task.archived ? "移出归档" : "归档对话"}
+                          onClick={() => toggleTaskArchived(task)}
+                        >
+                          {task.archived ? (
+                            <ArchiveRestore size={13} />
+                          ) : (
+                            <Archive size={13} />
+                          )}
+                        </button>
                         <button
                           className="task-delete"
                           title={`删除对话 ${task.name}`}
@@ -4477,10 +4577,57 @@ export default function App() {
         {browserState.open && (
           <aside className="browser-panel" aria-label="浏览器">
             <header>
-              <span>
-                <strong>{browserState.title || "浏览器"}</strong>
-                <small title={browserState.url}>{browserState.url}</small>
-              </span>
+              <div className="browser-navigation">
+                <button
+                  className="icon"
+                  disabled={!browserState.canGoBack}
+                  title="后退"
+                  onClick={() =>
+                    void window.kcode.browser.back(browserState.sessionId)
+                  }
+                >
+                  <ArrowLeft size={14} />
+                </button>
+                <button
+                  className="icon"
+                  disabled={!browserState.canGoForward}
+                  title="前进"
+                  onClick={() =>
+                    void window.kcode.browser.forward(browserState.sessionId)
+                  }
+                >
+                  <ArrowRight size={14} />
+                </button>
+                <button
+                  className="icon"
+                  title="刷新"
+                  onClick={() =>
+                    void window.kcode.browser.reload(browserState.sessionId)
+                  }
+                >
+                  <RefreshCw size={13} />
+                </button>
+              </div>
+              <form
+                className="browser-address"
+                title={browserState.title || "浏览器"}
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  const value = /^https?:\/\//i.test(browserAddress)
+                    ? browserAddress
+                    : `https://${browserAddress}`;
+                  void window.kcode.browser.navigate(
+                    browserState.sessionId,
+                    value,
+                  );
+                }}
+              >
+                <input
+                  value={browserAddress}
+                  onChange={(event) => setBrowserAddress(event.target.value)}
+                  aria-label="网页地址"
+                />
+              </form>
               {browserState.recording && (
                 <b className="browser-recording">
                   <i />

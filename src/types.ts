@@ -259,6 +259,8 @@ export type KCodeApi = {
   state: {
     load(key: string): Promise<unknown | null>;
     save(key: string, value: unknown): Promise<void>;
+    stats(): Promise<{ tasks: number; bytes: number; path: string }>;
+    compact(): Promise<{ tasks: number; bytes: number; path: string }>;
   };
   window: {
     minimize(): Promise<void>;
@@ -303,6 +305,10 @@ export type KCodeApi = {
   browser: {
     activate(sessionId?: string): Promise<void>;
     close(sessionId?: string): Promise<void>;
+    navigate(sessionId: string | undefined, url: string): Promise<void>;
+    back(sessionId?: string): Promise<void>;
+    forward(sessionId?: string): Promise<void>;
+    reload(sessionId?: string): Promise<void>;
     recordings(): Promise<BrowserRecordingFile[]>;
     removeRecording(id: string): Promise<BrowserRecordingFile[]>;
     revealRecording(id: string): Promise<void>;
@@ -315,6 +321,8 @@ export type KCodeApi = {
         url?: string;
         width?: number;
         recording?: boolean;
+        canGoBack?: boolean;
+        canGoForward?: boolean;
       }) => void,
     ): () => void;
   };

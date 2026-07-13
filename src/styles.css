@@ -343,6 +343,45 @@ select:focus-visible {
   overscroll-behavior: contain;
   padding-right: 2px;
 }
+.task-filter {
+  height: 30px;
+  margin: 0 3px 8px;
+  padding: 0 4px 0 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid #d9ddd7;
+  border-radius: 6px;
+  background: #fafbf9;
+  color: #788079;
+}
+.task-filter:focus-within {
+  border-color: #8ba896;
+  box-shadow: 0 0 0 2px #60846d18;
+}
+.task-filter input {
+  min-width: 0;
+  flex: 1;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  font-size: 10px;
+}
+.task-filter button {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #747c75;
+}
+.task-filter button:hover,
+.task-filter button.active {
+  background: #e4ebe6;
+  color: #3f6f55;
+}
 .workspace-group + .workspace-group {
   margin-top: 9px;
 }
@@ -484,7 +523,8 @@ select:focus-visible {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.tasks .task-delete {
+.tasks .task-delete,
+.tasks .task-archive {
   width: 25px;
   height: 25px;
   flex: 0 0 25px;
@@ -497,13 +537,19 @@ select:focus-visible {
   opacity: 0;
 }
 .task-row:hover .task-delete,
+.task-row:hover .task-archive,
 .task-delete:focus,
+.task-archive:focus,
 .task-delete.confirm {
   opacity: 1;
 }
 .task-delete:hover {
   background: #f2dfdc;
   color: #9c4038;
+}
+.task-archive:hover {
+  background: #e2e9e4;
+  color: #416b52;
 }
 .task-delete.confirm {
   background: #a7473f;
@@ -2217,30 +2263,41 @@ select:focus-visible {
 .browser-panel > header {
   height: 45px;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto 28px;
+  grid-template-columns: auto minmax(80px, 1fr) auto 28px;
   align-items: center;
   gap: 10px;
   padding: 0 10px 0 13px;
   border-bottom: 1px solid var(--line);
   background: linear-gradient(180deg, #fbfcfa, #f4f6f3);
 }
-.browser-panel > header > span {
+.browser-navigation {
+  display: flex;
+  gap: 1px;
+}
+.browser-navigation .icon {
+  width: 25px;
+  height: 25px;
+}
+.browser-navigation .icon:disabled {
+  opacity: 0.3;
+}
+.browser-address {
   min-width: 0;
-  display: grid;
-  gap: 2px;
 }
-.browser-panel > header strong,
-.browser-panel > header small {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.browser-panel > header strong {
-  font-size: 11px;
-}
-.browser-panel > header small {
-  color: var(--muted);
+.browser-address input {
+  width: 100%;
+  height: 27px;
+  padding: 0 9px;
+  border: 1px solid #d8ddd7;
+  border-radius: 5px;
+  outline: 0;
+  background: #fff;
+  color: #4d554f;
   font-size: 9px;
+}
+.browser-address input:focus {
+  border-color: #8aa693;
+  box-shadow: 0 0 0 2px #60846d16;
 }
 .browser-recording {
   display: flex;

@@ -1,5 +1,12 @@
 import { app, BrowserWindow, WebContentsView } from "electron";
-import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import path from "node:path";
 import type { BrowserRecordingFile } from "../src/types";
 
@@ -11,6 +18,8 @@ type BrowserState = {
   url?: string;
   width?: number;
   recording?: boolean;
+  canGoBack?: boolean;
+  canGoForward?: boolean;
 };
 type RecordedOperation = {
   at: number;
@@ -33,6 +42,7 @@ type RecordedRequest = {
   bodyBase64?: boolean;
 };
 type BrowserRecording = {
+  sessionId: string;
   name: string;
   startedAt: number;
   operations: RecordedOperation[];
@@ -40,6 +50,9 @@ type BrowserRecording = {
   listener?: (_event: Electron.Event, method: string, params: any) => void;
   attachedView?: WebContentsView;
   bodyBytes: number;
+  draftPath: string;
+  draftTimer?: ReturnType<typeof setTimeout>;
+  draftWrite?: Promise<void>;
 };
 let host: BrowserWindow | undefined;
 type BrowserSession = {
@@ -47,6 +60,7 @@ type BrowserSession = {
   requestId: string;
   view: WebContentsView;
   attached: boolean;
+  lastUsed: number;
 };
 const sessions = new Map<string, BrowserSession>();
 let activeSessionId: string | undefined;
@@ -107,6 +121,8 @@ function layoutBrowser() {
     url: active.view.webContents.getURL(),
     width,
     recording: recordings.has(active.sessionId),
+    canGoBack: active.view.webContents.navigationHistory.canGoBack(),
+    canGoForward: active.view.webContents.navigationHistory.canGoForward(),
   });
 }
 function page(sessionId: string) {
@@ -114,7 +130,20 @@ function page(sessionId: string) {
   if (!session || session.view.webContents.isDestroyed())
     throw new Error("浏览器页面已关闭");
   if (selectedSessionId === sessionId) layoutBrowser();
+  session.lastUsed = Date.now();
   return session.view;
+}
+function pruneBackgroundSessions() {
+  if (sessions.size <= 6) return;
+  const candidates = [...sessions.values()]
+    .filter(
+      (session) =>
+        session.sessionId !== activeSessionId &&
+        !recordings.has(session.sessionId),
+    )
+    .sort((a, b) => a.lastUsed - b.lastUsed);
+  while (sessions.size > 6 && candidates.length)
+    destroySession(candidates.shift()!.sessionId, false);
 }
 function validUrl(input: string) {
   const url = new URL(input);
@@ -142,6 +171,43 @@ const safeName = (value: string) =>
   (value.trim() || `browser-${new Date().toISOString().replace(/[:.]/g, "-")}`)
     .replace(/[^a-zA-Z0-9._-]+/g, "-")
     .slice(0, 80);
+const recordingsDir = () => path.join(app.getPath("userData"), "recordings");
+const recordingData = (
+  recording: BrowserRecording,
+  status: "recording" | "completed" | "interrupted",
+) => ({
+  name: recording.name,
+  startedAt: recording.startedAt,
+  completedAt: status === "recording" ? undefined : Date.now(),
+  status,
+  operations: recording.operations,
+  requests: [...recording.requests.values()],
+});
+async function flushRecordingDraft(recording: BrowserRecording) {
+  if (recording.draftTimer) clearTimeout(recording.draftTimer);
+  recording.draftTimer = undefined;
+  const write = async () => {
+    await mkdir(path.dirname(recording.draftPath), { recursive: true });
+    const temporary = `${recording.draftPath}.${process.pid}.tmp`;
+    await writeFile(
+      temporary,
+      JSON.stringify(recordingData(recording, "recording"), null, 2),
+      "utf8",
+    );
+    await rename(temporary, recording.draftPath);
+  };
+  recording.draftWrite = (recording.draftWrite ?? Promise.resolve())
+    .catch(() => undefined)
+    .then(write);
+  await recording.draftWrite;
+}
+function scheduleRecordingDraft(recording: BrowserRecording) {
+  if (recording.draftTimer) return;
+  recording.draftTimer = setTimeout(
+    () => void flushRecordingDraft(recording).catch(() => undefined),
+    750,
+  );
+}
 async function attachRecorder(sessionId: string, view: WebContentsView) {
   const recording = recordings.get(sessionId);
   if (!recording || recording.attachedView === view) return;
@@ -165,6 +231,7 @@ async function attachRecorder(sessionId: string, view: WebContentsView) {
         requestHeaders: p.request.headers,
         postData: p.request.postData?.slice(0, 1_000_000),
       });
+      scheduleRecordingDraft(recording);
     } else if (method === "Network.responseReceived") {
       const item = recording.requests.get(p.requestId);
       if (item)
@@ -173,6 +240,7 @@ async function attachRecorder(sessionId: string, view: WebContentsView) {
           responseHeaders: p.response.headers,
           mimeType: p.response.mimeType,
         });
+      scheduleRecordingDraft(recording);
     } else if (method === "Network.loadingFinished") {
       const item = recording.requests.get(p.requestId);
       if (
@@ -190,6 +258,7 @@ async function attachRecorder(sessionId: string, view: WebContentsView) {
             item.responseBody = value;
             item.bodyBase64 = Boolean(body.base64Encoded);
             recording.bodyBytes += bytes;
+            scheduleRecordingDraft(recording);
           }
         })
         .catch(() => undefined);
@@ -200,7 +269,10 @@ async function attachRecorder(sessionId: string, view: WebContentsView) {
   recording.attachedView = view;
 }
 function recordOperation(requestId: string, operation: RecordedOperation) {
-  recordings.get(requestId)?.operations.push(operation);
+  const recording = recordings.get(requestId);
+  if (!recording) return;
+  recording.operations.push(operation);
+  scheduleRecordingDraft(recording);
 }
 function destroySession(sessionId: string, notifyUser = false) {
   const session = sessions.get(sessionId);
@@ -253,7 +325,38 @@ export function activateBrowserSession(sessionId?: string) {
     host?.contentView.addChildView(next.view);
     next.attached = true;
   }
+  next.lastUsed = Date.now();
   layoutBrowser();
+}
+
+export async function navigateBrowser(
+  sessionId: string | undefined,
+  input: string,
+) {
+  const target = sessionId ?? activeSessionId;
+  if (!target) throw new Error("没有可导航的浏览器页面");
+  const session = sessions.get(target);
+  if (!session) throw new Error("浏览器页面已关闭");
+  const url = validUrl(input);
+  await session.view.webContents.loadURL(url);
+  recordOperation(target, { at: Date.now(), action: "goto", url });
+  layoutBrowser();
+}
+
+export function backBrowser(sessionId?: string) {
+  const view = page(sessionId ?? activeSessionId ?? "");
+  if (view.webContents.navigationHistory.canGoBack())
+    view.webContents.navigationHistory.goBack();
+}
+
+export function forwardBrowser(sessionId?: string) {
+  const view = page(sessionId ?? activeSessionId ?? "");
+  if (view.webContents.navigationHistory.canGoForward())
+    view.webContents.navigationHistory.goForward();
+}
+
+export function reloadBrowser(sessionId?: string) {
+  page(sessionId ?? activeSessionId ?? "").webContents.reload();
 }
 export async function openBrowser(
   sessionId: string,
@@ -272,8 +375,15 @@ export async function openBrowser(
         partition: `persist:kcode-browser-${sessionId.replace(/[^a-zA-Z0-9_-]/g, "_")}`,
       },
     });
-    session = { sessionId, requestId, view, attached: false };
+    session = {
+      sessionId,
+      requestId,
+      view,
+      attached: false,
+      lastUsed: Date.now(),
+    };
     sessions.set(sessionId, session);
+    pruneBackgroundSessions();
     if (selectedSessionId === sessionId) activateBrowserSession(sessionId);
     view.webContents.setWindowOpenHandler(({ url: next }) => {
       if (/^https?:\/\//i.test(next)) void view.webContents.loadURL(next);
@@ -289,6 +399,8 @@ export async function openBrowser(
         url: view.webContents.getURL(),
         width: browserWidth(),
         recording: recordings.has(sessionId),
+        canGoBack: view.webContents.navigationHistory.canGoBack(),
+        canGoForward: view.webContents.navigationHistory.canGoForward(),
       });
     };
     view.webContents.on("page-title-updated", update);
@@ -416,13 +528,19 @@ export async function typeBrowser(
 export async function startBrowserRecording(requestId: string, name = "") {
   if (recordings.has(requestId)) throw new Error("当前浏览器任务已经在录制");
   const recording: BrowserRecording = {
+    sessionId: requestId,
     name: safeName(name),
     startedAt: Date.now(),
     operations: [],
     requests: new Map(),
     bodyBytes: 0,
+    draftPath: path.join(
+      recordingsDir(),
+      `${safeName(name)}-${Date.now()}.draft.json`,
+    ),
   };
   recordings.set(requestId, recording);
+  await flushRecordingDraft(recording);
   const session = sessions.get(requestId);
   if (session && !session.view.webContents.isDestroyed())
     await attachRecorder(requestId, session.view);
@@ -448,21 +566,15 @@ export async function stopBrowserRecording(
     if (recording.attachedView.webContents.debugger.isAttached())
       recording.attachedView.webContents.debugger.detach();
   }
+  await flushRecordingDraft(recording);
   recordings.delete(requestId);
   layoutBrowser();
-  const dir = path.join(app.getPath("userData"), "recordings");
+  const dir = recordingsDir();
   await mkdir(dir, { recursive: true });
   const base = path.join(dir, `${recording.name}-${recording.startedAt}`),
     jsonPath = `${base}.json`,
     pythonPath = `${base}.py`;
-  const data = {
-    name: recording.name,
-    startedAt: recording.startedAt,
-    completedAt: Date.now(),
-    status,
-    operations: recording.operations,
-    requests: [...recording.requests.values()],
-  };
+  const data = recordingData(recording, status);
   await writeFile(jsonPath, JSON.stringify(data, null, 2), "utf8");
   const lines = [
     "from pathlib import Path",
@@ -527,6 +639,7 @@ export async function stopBrowserRecording(
     "",
   );
   await writeFile(pythonPath, lines.join("\n"), "utf8");
+  await rm(recording.draftPath, { force: true });
   return {
     recording: false,
     status,
@@ -537,11 +650,42 @@ export async function stopBrowserRecording(
     pythonPath,
   };
 }
-const recordingsDir = () => path.join(app.getPath("userData"), "recordings");
+export async function recoverBrowserRecordingDrafts() {
+  const dir = recordingsDir();
+  await mkdir(dir, { recursive: true });
+  const drafts = (await readdir(dir)).filter((name) =>
+    name.endsWith(".draft.json"),
+  );
+  for (const draft of drafts) {
+    try {
+      const source = path.join(dir, draft);
+      const data = JSON.parse(await readFile(source, "utf8"));
+      const target = path.join(dir, draft.replace(/\.draft\.json$/, ".json"));
+      await writeFile(
+        target,
+        JSON.stringify(
+          {
+            ...data,
+            status: "interrupted",
+            completedAt: Number(data.completedAt) || Date.now(),
+          },
+          null,
+          2,
+        ),
+        "utf8",
+      );
+      await rm(source, { force: true });
+    } catch {
+      // Keep an unreadable draft for manual recovery instead of deleting it.
+    }
+  }
+}
 export async function listBrowserRecordings(): Promise<BrowserRecordingFile[]> {
   try {
     const dir = recordingsDir(),
-      files = (await readdir(dir)).filter((name) => name.endsWith(".json"));
+      files = (await readdir(dir)).filter(
+        (name) => name.endsWith(".json") && !name.endsWith(".draft.json"),
+      );
     const items = await Promise.all(
       files.map(async (id) => {
         const file = path.join(dir, id),

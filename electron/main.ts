@@ -21,6 +21,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
+import { autoUpdater } from "electron-updater";
 import type {
   ContextFile,
   ContextSummaryRequest,
@@ -39,15 +40,34 @@ import {
   undoActivity,
 } from "./agent";
 import { listProviders, removeProvider, saveProvider } from "./store";
-import { closeStateDatabase, loadState, saveState } from "./state-db";
+import {
+  closeStateDatabase,
+  compactStateDatabase,
+  loadState,
+  saveState,
+  stateStorageStats,
+} from "./state-db";
 import { installProcessLogging, logsDirectory, writeLog } from "./logger";
 import {
   activateBrowserSession,
+  backBrowser,
   closeBrowserPanel,
+  forwardBrowser,
   listBrowserRecordings,
+  navigateBrowser,
+  recoverBrowserRecordingDrafts,
+  reloadBrowser,
   removeBrowserRecording,
   setBrowserHost,
 } from "./browser";
+import {
+  idSchema,
+  modelRequestSchema,
+  optionalIdSchema,
+  stateKeySchema,
+  urlSchema,
+  workspacePathSchema,
+} from "./ipc-validation";
 
 const controllers = new Map<string, AbortController>();
 installProcessLogging();
@@ -235,6 +255,9 @@ app.whenReady().then(() => {
   void rm(path.join(app.getPath("userData"), "credentials.json"), {
     force: true,
   });
+  void recoverBrowserRecordingDrafts().catch((error) =>
+    writeLog("error", "recording.recovery.failed", error),
+  );
   tray = new Tray(appIcon(32));
   tray.setToolTip("KCode");
   tray.setContextMenu(
@@ -246,10 +269,14 @@ app.whenReady().then(() => {
   );
   tray.on("click", showMainWindow);
   ipcMain.handle("providers:list", listProviders);
-  ipcMain.handle("state:load", (_e, key: string) => loadState(key));
-  ipcMain.handle("state:save", (_e, key: string, value: unknown) =>
-    saveState(key, value),
+  ipcMain.handle("state:load", (_e, key: string) =>
+    loadState(stateKeySchema.parse(key)),
   );
+  ipcMain.handle("state:save", (_e, key: string, value: unknown) =>
+    saveState(stateKeySchema.parse(key), value),
+  );
+  ipcMain.handle("state:stats", () => stateStorageStats());
+  ipcMain.handle("state:compact", () => compactStateDatabase());
   ipcMain.on("log:renderer-error", (_e, detail) =>
     writeLog("error", "renderer.error", detail),
   );
@@ -278,14 +305,28 @@ app.whenReady().then(() => {
   ipcMain.handle("providers:remove", (_e, id: string) => removeProvider(id));
   ipcMain.handle("providers:discover", (_e, id: string) => discoverModels(id));
   ipcMain.handle("browser:activate", (_e, sessionId?: string) =>
-    activateBrowserSession(sessionId),
+    activateBrowserSession(optionalIdSchema.parse(sessionId)),
   );
   ipcMain.handle("browser:close", (_e, sessionId?: string) =>
-    closeBrowserPanel(sessionId, true),
+    closeBrowserPanel(optionalIdSchema.parse(sessionId), true),
+  );
+  ipcMain.handle(
+    "browser:navigate",
+    (_e, sessionId: string | undefined, url: string) =>
+      navigateBrowser(optionalIdSchema.parse(sessionId), urlSchema.parse(url)),
+  );
+  ipcMain.handle("browser:back", (_e, sessionId?: string) =>
+    backBrowser(optionalIdSchema.parse(sessionId)),
+  );
+  ipcMain.handle("browser:forward", (_e, sessionId?: string) =>
+    forwardBrowser(optionalIdSchema.parse(sessionId)),
+  );
+  ipcMain.handle("browser:reload", (_e, sessionId?: string) =>
+    reloadBrowser(optionalIdSchema.parse(sessionId)),
   );
   ipcMain.handle("browser:recordings", () => listBrowserRecordings());
   ipcMain.handle("browser:remove-recording", (_e, id: string) =>
-    removeBrowserRecording(id),
+    removeBrowserRecording(idSchema.parse(id)),
   );
   ipcMain.handle("browser:reveal-recording", async (_e, id: string) => {
     const item = (await listBrowserRecordings()).find(
@@ -319,7 +360,7 @@ app.whenReady().then(() => {
   ipcMain.handle(
     "workspace:git-state",
     async (_event, workspacePath: string) => {
-      const root = path.resolve(workspacePath);
+      const root = path.resolve(workspacePathSchema.parse(workspacePath));
       const info = await stat(root);
       if (!info.isDirectory()) throw new Error("工作区不是有效目录");
       const git = (args: string[]) =>
@@ -463,7 +504,8 @@ app.whenReady().then(() => {
       return files;
     },
   );
-  ipcMain.handle("chat:start", (event, request: ModelRequest) => {
+  ipcMain.handle("chat:start", (event, rawRequest: ModelRequest) => {
+    const request = modelRequestSchema.parse(rawRequest) as ModelRequest;
     const id = randomUUID();
     const controller = new AbortController();
     controllers.set(id, controller);
@@ -543,6 +585,21 @@ app.whenReady().then(() => {
       resolveApproval(requestId, activityId, allowed),
   );
   createWindow();
+  if (app.isPackaged) {
+    autoUpdater.logger = {
+      info: (...args) => writeLog("info", "updater", args),
+      warn: (...args) => writeLog("warn", "updater", args),
+      error: (...args) => writeLog("error", "updater", args),
+      debug: (...args) => writeLog("info", "updater.debug", args),
+    };
+    setTimeout(
+      () =>
+        void autoUpdater
+          .checkForUpdatesAndNotify()
+          .catch((error) => writeLog("warn", "updater.check.failed", error)),
+      15_000,
+    );
+  }
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });

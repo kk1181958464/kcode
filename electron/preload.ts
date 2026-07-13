@@ -6,6 +6,8 @@ const api: KCodeApi = {
   state: {
     load: (key) => ipcRenderer.invoke("state:load", key),
     save: (key, value) => ipcRenderer.invoke("state:save", key, value),
+    stats: () => ipcRenderer.invoke("state:stats"),
+    compact: () => ipcRenderer.invoke("state:compact"),
   },
   window: {
     minimize: () => ipcRenderer.invoke("window:minimize"),
@@ -50,6 +52,11 @@ const api: KCodeApi = {
   browser: {
     activate: (sessionId) => ipcRenderer.invoke("browser:activate", sessionId),
     close: (sessionId) => ipcRenderer.invoke("browser:close", sessionId),
+    navigate: (sessionId, url) =>
+      ipcRenderer.invoke("browser:navigate", sessionId, url),
+    back: (sessionId) => ipcRenderer.invoke("browser:back", sessionId),
+    forward: (sessionId) => ipcRenderer.invoke("browser:forward", sessionId),
+    reload: (sessionId) => ipcRenderer.invoke("browser:reload", sessionId),
     recordings: () => ipcRenderer.invoke("browser:recordings"),
     removeRecording: (id) => ipcRenderer.invoke("browser:remove-recording", id),
     revealRecording: (id) => ipcRenderer.invoke("browser:reveal-recording", id),
