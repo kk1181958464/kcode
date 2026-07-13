@@ -12,14 +12,13 @@
     "typecheck": "tsc -b --pretty false && tsc -p electron/tsconfig.json --pretty false",
     "test": "tsx --test electron/*.test.ts",
     "icons": "node scripts/generate-icons.mjs",
-    "dist:win": "npm run icons && npm run build && electron-builder --win nsis",
+    "dist:win": "npm run icons && npm run build && electron-builder --win nsis --publish never",
     "release:win": "npm run dist:win -- --publish always"
   },
   "build": {
     "appId": "com.kcode.desktop",
     "productName": "KCode",
     "asar": true,
-    "electronDist": "node_modules/electron/dist",
     "directories": {
       "output": "release"
     },
