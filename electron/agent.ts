@@ -196,11 +196,15 @@ async function validatePublicUrl(input: string) {
 async function fetchPublic(
   input: string,
   signal: AbortSignal,
-  timeoutMs = 15_000,
+  timeoutMs = 30_000,
 ) {
   let url = await validatePublicUrl(input);
+  let timedOut = false;
   const controller = new AbortController(),
-    timer = setTimeout(() => controller.abort(), timeoutMs);
+    timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
   const abort = () => controller.abort();
   signal.addEventListener("abort", abort, { once: true });
   try {
@@ -237,6 +241,13 @@ async function fetchPublic(
       };
     }
     throw new Error("网页重定向次数过多");
+  } catch (error) {
+    if (controller.signal.aborted) {
+      if (signal.aborted) throw new Error("任务已取消");
+      if (timedOut)
+        throw new Error(`网页读取超时（${Math.round(timeoutMs / 1_000)} 秒）`);
+    }
+    throw error;
   } finally {
     clearTimeout(timer);
     signal.removeEventListener("abort", abort);
@@ -680,6 +691,11 @@ function command(
 }
 
 function failureSummary(call: ToolCall, output: string, exitCode?: number) {
+  if (
+    (call.name === "fetch_url" || call.name === "web_search") &&
+    /网页读取超时|任务已取消|网页请求失败/.test(output)
+  )
+    return output;
   if (call.name === "run_command") {
     const script = String(call.input.command || "");
     if (/\*\*\* Begin Patch|\bapply_patch\b/i.test(script))
@@ -1411,7 +1427,8 @@ async function parseStreamedTurn(
         event.delta?.type === "input_json_delta"
       ) {
         const current = calls.get(event.index);
-        if (current) current.args = current.args + (event.delta.partial_json || "");
+        if (current)
+          current.args = current.args + (event.delta.partial_json || "");
       }
       if (event.type === "message_delta")
         usage.output = event.usage?.output_tokens ?? usage.output;
