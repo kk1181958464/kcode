@@ -40,6 +40,7 @@ import {
 } from "./agent";
 import { listProviders, removeProvider, saveProvider } from "./store";
 import { closeStateDatabase, loadState, saveState } from "./state-db";
+import { installProcessLogging, logsDirectory, writeLog } from "./logger";
 import {
   activateBrowserSession,
   closeBrowserPanel,
@@ -49,6 +50,7 @@ import {
 } from "./browser";
 
 const controllers = new Map<string, AbortController>();
+installProcessLogging();
 let mainWindow: BrowserWindow | undefined;
 let tray: Tray | undefined;
 let unreadTasks = 0;
@@ -212,6 +214,14 @@ function createWindow() {
   win.webContents.on("will-navigate", (event, url) => {
     if (url !== win.webContents.getURL()) event.preventDefault();
   });
+  win.webContents.on("render-process-gone", (_event, details) =>
+    writeLog("error", "renderer.gone", details),
+  );
+  win.webContents.on("unresponsive", () =>
+    writeLog("warn", "renderer.unresponsive", {
+      url: win.webContents.getURL(),
+    }),
+  );
   if (process.env.VITE_DEV_SERVER_URL)
     win.loadURL(process.env.VITE_DEV_SERVER_URL);
   else if (!app.isPackaged) win.loadURL("http://127.0.0.1:5173");
@@ -240,6 +250,10 @@ app.whenReady().then(() => {
   ipcMain.handle("state:save", (_e, key: string, value: unknown) =>
     saveState(key, value),
   );
+  ipcMain.on("log:renderer-error", (_e, detail) =>
+    writeLog("error", "renderer.error", detail),
+  );
+  ipcMain.handle("log:reveal", () => shell.openPath(logsDirectory()));
   ipcMain.handle("window:minimize", (event) =>
     BrowserWindow.fromWebContents(event.sender)?.minimize(),
   );
@@ -486,6 +500,14 @@ app.whenReady().then(() => {
           if (item.type === "error") notifyTask("error", item.message);
         }
       } catch (error) {
+        writeLog("error", "agent.request", {
+          id,
+          taskId: request.taskId,
+          error:
+            error instanceof Error
+              ? { message: error.message, stack: error.stack }
+              : String(error),
+        });
         if (!controller.signal.aborted) {
           event.sender.send("chat:event", id, {
             type: "error",

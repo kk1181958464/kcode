@@ -24,6 +24,7 @@ import {
 } from "../src/types";
 import { isCasualGreeting } from "../src/intent";
 import { resolvePermissionDecision } from "../src/permissions";
+import { AgentStreamAssembler } from "./agent-stream";
 import { getProviderWithKey } from "./store";
 import {
   bindBrowserRequest,
@@ -1301,6 +1302,13 @@ async function parseStreamedTurn(
   response: Response,
   onText?: (delta: string) => void,
 ): Promise<Turn> {
+  if (response.body) {
+    const assembler = new AgentStreamAssembler(protocol as any, onText);
+    for await (const event of sseJson(response)) assembler.consume(event);
+    const assembled = assembler.finish();
+    return { ...assembled, calls: validCalls(assembled.calls) };
+  }
+  /* Legacy inline parser retained temporarily as a compatibility reference. */
   let text = "",
     usage = { input: 0, output: 0, cached: 0 };
   const calls = new Map<
@@ -1403,7 +1411,7 @@ async function parseStreamedTurn(
         event.delta?.type === "input_json_delta"
       ) {
         const current = calls.get(event.index);
-        if (current) current.args += event.delta.partial_json || "";
+        if (current) current.args = current.args + (event.delta.partial_json || "");
       }
       if (event.type === "message_delta")
         usage.output = event.usage?.output_tokens ?? usage.output;

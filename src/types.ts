@@ -255,6 +255,7 @@ export type AgentEvent =
   ModelEvent | { type: "activity"; activity: AgentActivity };
 
 export type KCodeApi = {
+  logs: { reveal(): Promise<void> };
   state: {
     load(key: string): Promise<unknown | null>;
     save(key: string, value: unknown): Promise<void>;

@@ -931,6 +931,19 @@ function SettingsPanel({
                       <span />
                     </button>
                   </div>
+                  <div className="settings-row">
+                    <span>
+                      <strong>诊断日志</strong>
+                      <small>查看主进程、模型请求和界面崩溃记录</small>
+                    </span>
+                    <button
+                      className="secondary"
+                      onClick={() => void window.kcode.logs.reveal()}
+                    >
+                      <FolderOpen size={14} />
+                      打开日志目录
+                    </button>
+                  </div>
                 </div>
                 <div className="permission-detail-list">
                   {(

@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from "electron";
 import type { AgentEvent, KCodeApi } from "../src/types";
 
 const api: KCodeApi = {
+  logs: { reveal: () => ipcRenderer.invoke("log:reveal") },
   state: {
     load: (key) => ipcRenderer.invoke("state:load", key),
     save: (key, value) => ipcRenderer.invoke("state:save", key, value),
@@ -61,3 +62,21 @@ const api: KCodeApi = {
   },
 };
 contextBridge.exposeInMainWorld("kcode", api);
+window.addEventListener("error", (event) =>
+  ipcRenderer.send("log:renderer-error", {
+    message: event.message,
+    filename: event.filename,
+    line: event.lineno,
+    column: event.colno,
+    stack: event.error?.stack,
+  }),
+);
+window.addEventListener("unhandledrejection", (event) =>
+  ipcRenderer.send("log:renderer-error", {
+    type: "unhandledrejection",
+    reason:
+      event.reason instanceof Error
+        ? { message: event.reason.message, stack: event.reason.stack }
+        : String(event.reason),
+  }),
+);
