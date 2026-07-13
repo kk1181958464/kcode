@@ -2,6 +2,19 @@ import { contextBridge, ipcRenderer } from "electron";
 import type { AgentEvent, KCodeApi } from "../src/types";
 
 const api: KCodeApi = {
+  updater: {
+    state: () => ipcRenderer.invoke("update:state"),
+    check: () => ipcRenderer.invoke("update:check"),
+    download: () => ipcRenderer.invoke("update:download"),
+    install: () => ipcRenderer.invoke("update:install"),
+    openRelease: () => ipcRenderer.invoke("update:open-release"),
+    onState: (callback) => {
+      const listener = (_e: unknown, state: Parameters<typeof callback>[0]) =>
+        callback(state);
+      ipcRenderer.on("update:state", listener);
+      return () => ipcRenderer.removeListener("update:state", listener);
+    },
+  },
   logs: { reveal: () => ipcRenderer.invoke("log:reveal") },
   state: {
     load: (key) => ipcRenderer.invoke("state:load", key),

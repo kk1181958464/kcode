@@ -7,9 +7,14 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   windows:
     runs-on: windows-latest
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v6
@@ -17,7 +22,40 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Set version from tag
+        run: npm version "${{ github.ref_name }}" --no-git-tag-version --allow-same-version
+      - run: npm run typecheck
       - run: npm test
-      - run: npm run dist:win -- --publish always
+      - run: npm run dist:win
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+      - name: Verify auto-update artifacts
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem release -Filter 'KCode-*-setup.exe' | Select-Object -First 1
+          $blockmap = Get-ChildItem release -Filter 'KCode-*-setup.exe.blockmap' | Select-Object -First 1
+          if (-not $setup -or -not $blockmap -or -not (Test-Path release/latest.yml)) {
+            throw 'Missing installer, blockmap, or latest.yml'
+          }
+          $metadata = Get-Content release/latest.yml -Raw
+          if ($metadata -notmatch [regex]::Escape($setup.Name) -or $metadata -notmatch 'sha512:') {
+            throw 'latest.yml does not reference the installer or hash'
+          }
+      - uses: actions/upload-artifact@v7
+        with:
+          name: KCode-${{ github.ref_name }}-windows
+          path: |
+            release/KCode-*-setup.exe
+            release/KCode-*-setup.exe.blockmap
+            release/latest.yml
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            release/KCode-*-setup.exe
+            release/KCode-*-setup.exe.blockmap
+            release/latest.yml
+          generate_release_notes: true
+          draft: false
+          prerelease: false

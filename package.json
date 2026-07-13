@@ -39,6 +39,7 @@
       "target": "nsis"
     },
     "nsis": {
+      "artifactName": "KCode-${version}-setup.${ext}",
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,

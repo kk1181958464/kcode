@@ -67,6 +67,23 @@ body {
   background: #c42b1c;
   color: #fff;
 }
+.window-controls .window-update {
+  position: relative;
+  width: 38px;
+}
+.window-controls .window-update.has-update {
+  color: #315f49;
+}
+.window-update i {
+  position: absolute;
+  top: 7px;
+  right: 8px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #cf493d;
+  box-shadow: 0 0 0 2px #f6f8f5;
+}
 button,
 input,
 textarea,
@@ -3296,6 +3313,132 @@ select:focus-visible {
   display: grid;
   place-items: center;
   z-index: 10;
+}
+.update-backdrop {
+  z-index: 50;
+}
+.update-dialog {
+  width: min(450px, calc(100vw - 40px));
+  overflow: hidden;
+  border: 1px solid #d7dbd5;
+  border-radius: 8px;
+  background: linear-gradient(180deg, #fff, #f7f9f6);
+  box-shadow: var(--shadow-float);
+  animation: modal-in 0.16s ease-out;
+}
+.update-dialog > header {
+  min-height: 68px;
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) 28px;
+  align-items: center;
+  gap: 10px;
+  padding: 13px 15px;
+  border-bottom: 1px solid #e1e4df;
+}
+.update-dialog > header h2 {
+  margin: 0 0 3px;
+  font-size: 14px;
+}
+.update-dialog > header small {
+  color: var(--muted);
+  font-size: 10px;
+}
+.update-dialog-icon {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 7px;
+  background: #e5eee8;
+  color: #38654d;
+}
+.update-dialog-body {
+  min-height: 150px;
+  display: grid;
+  align-items: center;
+  padding: 22px;
+}
+.update-message,
+.update-content {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  text-align: center;
+}
+.update-message strong,
+.update-content strong {
+  font-size: 13px;
+}
+.update-message span,
+.update-content span,
+.update-content small {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+.update-message.success > svg {
+  color: #3d7858;
+}
+.update-message.warning > svg {
+  color: #a34e43;
+}
+.update-message .spin {
+  color: #4b735d;
+  animation: spin 1s linear infinite;
+}
+.update-notes {
+  width: 100%;
+  max-height: 130px;
+  overflow: auto;
+  margin: 5px 0 0;
+  padding: 10px;
+  border: 1px solid #e0e3de;
+  border-radius: 6px;
+  background: #f4f6f3;
+  color: #515850;
+  text-align: left;
+  white-space: pre-wrap;
+  font:
+    10px/1.6 "Segoe UI",
+    sans-serif;
+}
+.update-progress {
+  width: 100%;
+  height: 5px;
+  overflow: hidden;
+  border-radius: 5px;
+  background: #e1e5e0;
+}
+.update-progress i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #47745b;
+  transition: width 0.2s ease;
+}
+.update-dialog > footer {
+  min-height: 57px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 11px 15px;
+  border-top: 1px solid #e1e4df;
+}
+.update-dialog > footer button {
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px;
+  border: 1px solid #d3d8d2;
+  border-radius: 5px;
+  background: #fff;
+  font-size: 10px;
+}
+.update-dialog > footer button.primary {
+  border-color: #2f3933;
+  background: #2f3933;
+  color: #fff;
 }
 .modal {
   width: min(620px, calc(100vw - 40px));

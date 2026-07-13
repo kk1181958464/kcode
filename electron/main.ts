@@ -21,7 +21,6 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { autoUpdater } from "electron-updater";
 import type {
   ContextFile,
   ContextSummaryRequest,
@@ -68,6 +67,7 @@ import {
   urlSchema,
   workspacePathSchema,
 } from "./ipc-validation";
+import { initializeAppUpdater, scheduleUpdateChecks } from "./app-updater";
 
 const controllers = new Map<string, AbortController>();
 installProcessLogging();
@@ -258,6 +258,10 @@ app.whenReady().then(() => {
   void recoverBrowserRecordingDrafts().catch((error) =>
     writeLog("error", "recording.recovery.failed", error),
   );
+  initializeAppUpdater(() => {
+    for (const controller of controllers.values()) controller.abort();
+    closeStateDatabase();
+  });
   tray = new Tray(appIcon(32));
   tray.setToolTip("KCode");
   tray.setContextMenu(
@@ -585,21 +589,7 @@ app.whenReady().then(() => {
       resolveApproval(requestId, activityId, allowed),
   );
   createWindow();
-  if (app.isPackaged) {
-    autoUpdater.logger = {
-      info: (...args) => writeLog("info", "updater", args),
-      warn: (...args) => writeLog("warn", "updater", args),
-      error: (...args) => writeLog("error", "updater", args),
-      debug: (...args) => writeLog("info", "updater.debug", args),
-    };
-    setTimeout(
-      () =>
-        void autoUpdater
-          .checkForUpdatesAndNotify()
-          .catch((error) => writeLog("warn", "updater.check.failed", error)),
-      15_000,
-    );
-  }
+  scheduleUpdateChecks();
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });

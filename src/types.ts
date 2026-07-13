@@ -254,7 +254,39 @@ export type ModelEvent =
 export type AgentEvent =
   ModelEvent | { type: "activity"; activity: AgentActivity };
 
+export type AppUpdateState = {
+  status:
+    | "idle"
+    | "checking"
+    | "available"
+    | "not-available"
+    | "downloading"
+    | "downloaded"
+    | "unsupported"
+    | "error";
+  currentVersion: string;
+  version?: string;
+  releaseName?: string;
+  releaseNotes?: string;
+  progress?: {
+    percent: number;
+    transferred: number;
+    total: number;
+    bytesPerSecond: number;
+  };
+  error?: string;
+  portable: boolean;
+};
+
 export type KCodeApi = {
+  updater: {
+    state(): Promise<AppUpdateState>;
+    check(): Promise<AppUpdateState>;
+    download(): Promise<AppUpdateState>;
+    install(): Promise<void>;
+    openRelease(): Promise<void>;
+    onState(callback: (state: AppUpdateState) => void): () => void;
+  };
   logs: { reveal(): Promise<void> };
   state: {
     load(key: string): Promise<unknown | null>;
