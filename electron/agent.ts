@@ -61,6 +61,15 @@ import {
 } from "./mysql";
 import { classifyMysqlSql, redactSqlForActivity } from "./sql-policy";
 import {
+  resolveProjectDiagnostic,
+  type DiagnosticKind,
+} from "./project-diagnostics";
+import {
+  bundledRipgrepPath,
+  nativeGlobFiles,
+  nativeSearchCode,
+} from "./workspace-search";
+import {
   beginSubagentCleanup,
   claimSubagentMutation,
   closeSubagentMessageQueue,
@@ -938,7 +947,11 @@ function command(
       const timer = setTimeout(() => child.kill(), timeout);
       const abort = () => child.kill();
       signal.addEventListener("abort", abort, { once: true });
-      child.on("error", reject);
+      child.on("error", (error) => {
+        clearTimeout(timer);
+        signal.removeEventListener("abort", abort);
+        reject(error);
+      });
       child.on("close", (code) => {
         clearTimeout(timer);
         signal.removeEventListener("abort", abort);
@@ -1183,27 +1196,34 @@ async function execute(
     );
     const pattern = String(call.input.pattern || "");
     if (!pattern) throw new Error("缺少 glob 模式");
-    const result = await command(
-      base,
-      "rg",
-      [
-        "--files",
-        "--hidden",
-        "--glob",
-        "!.git",
-        "--glob",
-        "!node_modules",
-        "--glob",
-        pattern,
-      ],
-      signal,
-      15_000,
-    );
-    if (result.exitCode > 1)
-      throw new Error(result.output || `文件查找失败 (${result.exitCode})`);
+    let output = "";
+    try {
+      const result = await command(
+        base,
+        bundledRipgrepPath(),
+        [
+          "--files",
+          "--hidden",
+          "--glob",
+          "!.git",
+          "--glob",
+          "!node_modules",
+          "--glob",
+          pattern,
+        ],
+        signal,
+        15_000,
+      );
+      if (result.exitCode > 1)
+        throw new Error(result.output || `文件查找失败 (${result.exitCode})`);
+      output = result.output;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      output = await nativeGlobFiles(base, pattern, signal);
+    }
     return {
       path: path.relative(root, base) || ".",
-      output: result.output || "未找到匹配文件",
+      output: output || "未找到匹配文件",
     };
   }
   if (call.name === "read_many_files") {
@@ -1274,10 +1294,28 @@ async function execute(
     ];
     if (call.input.glob) args.push("--glob", String(call.input.glob));
     args.push("--", query, ".");
-    const result = await command(root, "rg", args, signal, 15_000);
-    if (result.exitCode > 1)
-      throw new Error(result.output || `搜索失败 (${result.exitCode})`);
-    return { output: result.output || "未找到匹配项" };
+    let output = "";
+    try {
+      const result = await command(
+        root,
+        bundledRipgrepPath(),
+        args,
+        signal,
+        15_000,
+      );
+      if (result.exitCode > 1)
+        throw new Error(result.output || `搜索失败 (${result.exitCode})`);
+      output = result.output;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      output = await nativeSearchCode(
+        root,
+        query,
+        typeof call.input.glob === "string" ? call.input.glob : undefined,
+        signal,
+      );
+    }
+    return { output: output || "未找到匹配项" };
   }
   if (call.name === "write_file") {
     const file = workspacePath(root, call.input.path),
@@ -1840,27 +1878,26 @@ async function execute(
   }
   if (call.name === "diagnostics") {
     const kind = String(call.input.kind || "");
-    const scripts = {
-      typecheck: "npm run typecheck",
-      test: "npm test",
-      lint: "npm run lint",
-      build: "npm run build",
-    } as const;
-    if (!(kind in scripts)) throw new Error("不支持的诊断类型");
+    if (!new Set(["typecheck", "test", "lint", "build"]).has(kind))
+      throw new Error("不支持的诊断类型");
+    const diagnostic = await resolveProjectDiagnostic(
+      root,
+      kind as DiagnosticKind,
+    );
+    if (!diagnostic.script)
+      return {
+        command: "未执行",
+        output: diagnostic.message ?? "项目未配置对应诊断脚本，已跳过。",
+      };
     const result = await command(
       root,
       "powershell.exe",
-      [
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        scripts[kind as keyof typeof scripts],
-      ],
+      ["-NoProfile", "-NonInteractive", "-Command", diagnostic.command!],
       signal,
       120_000,
     );
     return {
-      command: scripts[kind as keyof typeof scripts],
+      command: diagnostic.command,
       output: result.output || "诊断未产生输出",
       exitCode: result.exitCode,
     };

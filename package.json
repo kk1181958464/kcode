@@ -1,6 +1,6 @@
 {
   "name": "kcode",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "private": true,
   "author": "KCode",
   "description": "A multi-provider desktop coding agent",
@@ -19,6 +19,9 @@
     "appId": "com.kcode.desktop",
     "productName": "KCode",
     "asar": true,
+    "asarUnpack": [
+      "node_modules/@vscode/ripgrep-*/bin/**"
+    ],
     "directories": {
       "output": "release"
     },
@@ -54,9 +57,11 @@
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",
+    "@vscode/ripgrep": "^1.18.0",
     "diff": "^9.0.0",
     "electron-updater": "^6.8.9",
     "lucide-react": "latest",
+    "minimatch": "^10.2.5",
     "mysql2": "^3.22.6",
     "node-sql-parser": "^5.4.0",
     "react": "latest",
