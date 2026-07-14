@@ -38,6 +38,15 @@ import {
   runAgent,
   undoActivity,
 } from "./agent";
+import { closeAllSshSessions, configureSshKnownHosts } from "./ssh";
+import { closeAllMysqlSessions } from "./mysql";
+import {
+  closeAllSubagents,
+  releaseSubagentRecords,
+  setSubagentEventSink,
+  stopSubagentsForParent,
+  subagentCheckpoints,
+} from "./subagents";
 import { listProviders, removeProvider, saveProvider } from "./store";
 import {
   closeStateDatabase,
@@ -259,6 +268,9 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  configureSshKnownHosts(
+    path.join(app.getPath("userData"), "ssh-known-hosts.json"),
+  );
   app.setAppUserModelId("KCode");
   if (process.platform === "darwin") app.dock?.setIcon(appIcon(256));
   void rm(path.join(app.getPath("userData"), "credentials.json"), {
@@ -521,35 +533,60 @@ app.whenReady().then(() => {
     const request = modelRequestSchema.parse(rawRequest) as ModelRequest;
     const id = randomUUID();
     const controller = new AbortController();
+    const startedAt = Date.now();
     controllers.set(id, controller);
-    void writeCheckpoint(id, {
+    const removeSubagentEventSink = setSubagentEventSink(id, (item) =>
+      event.sender.send("chat:event", id, item),
+    );
+    const checkpointReady = writeCheckpoint(id, {
       id,
       request,
-      startedAt: Date.now(),
+      startedAt,
       status: "running",
       events: [],
+      subagents: [],
     });
     void (async () => {
+      await checkpointReady;
       const events: unknown[] = [];
+      let checkpointStatus: "running" | "paused" | "done" = "running";
+      let checkpointWrite = Promise.resolve();
+      let lastCheckpointAt = 0;
+      const queueCheckpoint = (force = false) => {
+        const now = Date.now();
+        if (!force && now - lastCheckpointAt < 250) return;
+        lastCheckpointAt = now;
+        const snapshot = {
+          id,
+          request,
+          startedAt,
+          status: checkpointStatus,
+          events: [...events],
+          subagents: subagentCheckpoints(id),
+        };
+        checkpointWrite = checkpointWrite.then(() =>
+          writeCheckpoint(id, snapshot),
+        );
+      };
       try {
         for await (const item of runAgent(id, request, controller.signal)) {
           events.push(item);
           if (events.length > 100) events.shift();
-          void writeCheckpoint(id, {
-            id,
-            request,
-            startedAt: Date.now(),
-            status:
-              item.type === "done"
-                ? "done"
-                : item.type === "error"
-                  ? "paused"
-                  : "running",
-            events,
-          });
+          checkpointStatus =
+            item.type === "done"
+              ? "done"
+              : item.type === "error"
+                ? "paused"
+                : "running";
+          queueCheckpoint(
+            item.type === "done" ||
+              item.type === "error" ||
+              item.type === "activity",
+          );
           event.sender.send("chat:event", id, item);
           if (item.type === "done") {
-            void removeCheckpoint(id);
+            await checkpointWrite;
+            await removeCheckpoint(id);
             notifyTask("done");
           }
           if (item.type === "error") notifyTask("error", item.message);
@@ -574,6 +611,14 @@ app.whenReady().then(() => {
           );
         }
       } finally {
+        await stopSubagentsForParent(id, false);
+        if (checkpointStatus !== "done") {
+          checkpointStatus = "paused";
+          queueCheckpoint(true);
+          await checkpointWrite;
+        }
+        releaseSubagentRecords(id);
+        removeSubagentEventSink();
         controllers.delete(id);
       }
     })();
@@ -584,12 +629,13 @@ app.whenReady().then(() => {
   );
   ipcMain.handle(
     "chat:cleanup",
-    (_e, requestIds: string[], activityIds: string[]) => {
+    async (_e, requestIds: string[], activityIds: string[]) => {
       for (const requestId of requestIds) {
         controllers.get(requestId)?.abort();
-        controllers.delete(requestId);
       }
-      cleanupAgentRecords(requestIds, activityIds);
+      await cleanupAgentRecords(requestIds, activityIds);
+      await Promise.all(requestIds.map(removeCheckpoint));
+      for (const requestId of requestIds) controllers.delete(requestId);
     },
   );
   ipcMain.handle(
@@ -604,6 +650,9 @@ app.whenReady().then(() => {
   });
 });
 app.on("window-all-closed", () => {
+  void closeAllSubagents();
+  closeAllMysqlSessions();
+  closeAllSshSessions();
   closeStateDatabase();
   if (process.platform !== "darwin") app.quit();
 });

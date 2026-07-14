@@ -1,0 +1,728 @@
+import { randomUUID } from "node:crypto";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import path from "node:path";
+import { Client, type ClientChannel, type SFTPWrapper } from "ssh2";
+
+const MAX_OUTPUT_BYTES = 200_000;
+const MAX_REMOTE_FILE_BYTES = 2_000_000;
+
+type SshSession = {
+  client: Client;
+  requestId: string;
+  host: string;
+  port: number;
+  username: string;
+  fingerprint: string;
+};
+
+type RemoteUndoSnapshot = {
+  sessionId: string;
+  requestId: string;
+  remotePath: string;
+  before: string;
+  after: string;
+  existed: boolean;
+  mode?: number;
+  host: string;
+  port: number;
+  username: string;
+  fingerprint: string;
+};
+
+export type SshConnectInput = {
+  host: string;
+  port?: number;
+  username: string;
+  password?: string;
+  privateKey?: string;
+  passphrase?: string;
+  hostFingerprint?: string;
+};
+
+const sessions = new Map<string, SshSession>();
+const remoteUndoSnapshots = new Map<string, RemoteUndoSnapshot>();
+const knownHosts = new Map<string, string>();
+let knownHostsFile = "";
+
+function normalizeFingerprint(value: string) {
+  const normalized = value
+    .trim()
+    .replace(/^SHA256:/i, "")
+    .replace(/:/g, "");
+  if (/^[A-Za-z0-9+/]{40,}={0,2}$/.test(normalized))
+    return Buffer.from(normalized, "base64").toString("hex");
+  return normalized.toLowerCase();
+}
+
+function displayFingerprint(value: string) {
+  return `SHA256:${Buffer.from(value, "hex").toString("base64").replace(/=+$/, "")}`;
+}
+
+export function configureSshKnownHosts(file: string) {
+  knownHostsFile = file;
+  knownHosts.clear();
+  try {
+    const stored = JSON.parse(readFileSync(file, "utf8")) as Record<
+      string,
+      string
+    >;
+    for (const [host, fingerprint] of Object.entries(stored))
+      knownHosts.set(host, normalizeFingerprint(fingerprint));
+  } catch (error) {
+    const code =
+      typeof error === "object" && error && "code" in error
+        ? String(error.code)
+        : "";
+    if (code !== "ENOENT") throw error;
+  }
+}
+
+function persistKnownHosts() {
+  if (!knownHostsFile)
+    throw new Error("SSH 主机指纹存储尚未初始化，无法安全建立连接。");
+  mkdirSync(path.dirname(knownHostsFile), { recursive: true });
+  const temporary = `${knownHostsFile}.${process.pid}.tmp`;
+  writeFileSync(
+    temporary,
+    JSON.stringify(Object.fromEntries(knownHosts), null, 2),
+    "utf8",
+  );
+  renameSync(temporary, knownHostsFile);
+}
+
+function friendlySshError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  if (
+    /authentication|all configured authentication methods failed/i.test(message)
+  )
+    return "SSH 身份验证失败，请检查用户名、密码、私钥或私钥口令。";
+  if (/host fingerprint|host denied|verification failed/i.test(message))
+    return "SSH 主机指纹不匹配，连接已拒绝。";
+  if (/timed out|timeout/i.test(message))
+    return "SSH 连接超时，请检查服务器地址、端口和防火墙。";
+  if (/ECONNREFUSED/i.test(message))
+    return "SSH 连接被服务器拒绝，请检查端口和 SSH 服务状态。";
+  if (/ENOTFOUND|EAI_AGAIN/i.test(message)) return "SSH 服务器地址无法解析。";
+  if (/ECONNRESET|not connected|No response from server/i.test(message))
+    return "SSH 连接已断开。";
+  return `SSH 操作失败：${message}`;
+}
+
+function getSession(sessionId: string, requestId: string) {
+  const session = sessions.get(sessionId);
+  if (!session)
+    throw new Error("当前任务尚未连接 SSH 服务器，请先调用 SSH 连接工具。");
+  session.requestId = requestId;
+  return session;
+}
+
+export function redactSshInput(input: Record<string, unknown>) {
+  const redacted = { ...input };
+  for (const key of ["password", "privateKey", "passphrase", "stdin"])
+    if (key in redacted) redacted[key] = "[已隐藏]";
+  return redacted;
+}
+
+export async function connectSsh(
+  sessionId: string,
+  requestId: string,
+  input: SshConnectInput,
+  signal: AbortSignal,
+) {
+  const host = input.host.trim();
+  const username = input.username.trim();
+  const port = Number(input.port) || 22;
+  if (!host) throw new Error("缺少 SSH 服务器地址。");
+  if (!username) throw new Error("缺少 SSH 用户名。");
+  if (!input.password && !input.privateKey)
+    throw new Error("缺少 SSH 密码或私钥内容。");
+  if (!Number.isInteger(port) || port < 1 || port > 65535)
+    throw new Error("SSH 端口必须是 1 到 65535 之间的整数。");
+  if (!knownHostsFile && !input.hostFingerprint)
+    throw new Error("SSH 主机指纹存储尚未初始化，无法安全建立连接。");
+
+  const client = new Client();
+  const handleClientError = () => {
+    for (const [key, value] of sessions)
+      if (value.client === client) sessions.delete(key);
+  };
+  client.on("error", handleClientError);
+  const hostKey = `${host.toLowerCase()}:${port}`;
+  const suppliedFingerprint = input.hostFingerprint
+    ? normalizeFingerprint(input.hostFingerprint)
+    : "";
+  const trustedFingerprint =
+    suppliedFingerprint || knownHosts.get(hostKey) || "";
+  let actualFingerprint = "";
+  let fingerprintMismatch = false;
+
+  await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const finish = (error?: unknown) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener("abort", abort);
+      client.removeListener("ready", ready);
+      client.removeListener("error", failed);
+      if (error) {
+        client.destroy();
+        reject(error);
+      } else resolve();
+    };
+    const abort = () => finish(new Error("SSH 连接已取消。"));
+    const ready = () => finish();
+    const failed = (error: Error) =>
+      finish(
+        new Error(
+          fingerprintMismatch
+            ? `SSH 主机指纹不匹配，连接已拒绝。已保存 ${displayFingerprint(trustedFingerprint)}，服务器当前为 ${displayFingerprint(actualFingerprint)}。请核验后再明确提供新指纹。`
+            : friendlySshError(error),
+        ),
+      );
+    signal.addEventListener("abort", abort, { once: true });
+    client.once("ready", ready);
+    client.once("error", failed);
+    try {
+      client.connect({
+        host,
+        port,
+        username,
+        password: input.password,
+        privateKey: input.privateKey,
+        passphrase: input.passphrase,
+        readyTimeout: 30_000,
+        keepaliveInterval: 10_000,
+        keepaliveCountMax: 3,
+        hostHash: "sha256",
+        hostVerifier: (fingerprint: string) => {
+          actualFingerprint = normalizeFingerprint(fingerprint);
+          fingerprintMismatch = Boolean(
+            trustedFingerprint && actualFingerprint !== trustedFingerprint,
+          );
+          return !fingerprintMismatch;
+        },
+      });
+    } catch (error) {
+      finish(new Error(friendlySshError(error)));
+    }
+    if (signal.aborted) abort();
+  });
+  if (signal.aborted) {
+    client.destroy();
+    throw new Error("SSH 连接已取消。");
+  }
+  if (!actualFingerprint) {
+    client.destroy();
+    throw new Error("SSH 服务器未提供可验证的主机指纹。");
+  }
+
+  if (knownHosts.get(hostKey) !== actualFingerprint) {
+    const previous = knownHosts.get(hostKey);
+    knownHosts.set(hostKey, actualFingerprint);
+    try {
+      persistKnownHosts();
+    } catch (error) {
+      if (previous) knownHosts.set(hostKey, previous);
+      else knownHosts.delete(hostKey);
+      client.destroy();
+      throw new Error(
+        `SSH 主机指纹保存失败：${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  const previous = sessions.get(sessionId);
+  const session: SshSession = {
+    client,
+    requestId,
+    host,
+    port,
+    username,
+    fingerprint: actualFingerprint,
+  };
+  sessions.set(sessionId, session);
+  client.on("close", () => {
+    for (const [key, value] of sessions)
+      if (value.client === client) sessions.delete(key);
+  });
+  previous?.client.end();
+  return {
+    connected: true,
+    host,
+    port,
+    username,
+    hostFingerprint: displayFingerprint(actualFingerprint),
+    hostTrust: trustedFingerprint ? "verified" : "trusted-on-first-use",
+  };
+}
+
+export function disconnectSsh(sessionId: string) {
+  const session = sessions.get(sessionId);
+  if (!session) return false;
+  sessions.delete(sessionId);
+  session.client.end();
+  return true;
+}
+
+export function adoptSshSession(fromSessionId: string, toSessionId: string) {
+  const incoming = sessions.get(fromSessionId);
+  if (!incoming) throw new Error("待切换的 SSH 连接不存在。");
+  const previous = sessions.get(toSessionId);
+  sessions.delete(fromSessionId);
+  sessions.set(toSessionId, incoming);
+  previous?.client.end();
+}
+
+function appendLimited(
+  chunks: Buffer[],
+  chunk: Buffer,
+  state: { bytes: number },
+) {
+  const value =
+    chunk.length > MAX_OUTPUT_BYTES ? chunk.subarray(-MAX_OUTPUT_BYTES) : chunk;
+  chunks.push(value);
+  state.bytes += value.length;
+  while (state.bytes > MAX_OUTPUT_BYTES && chunks.length > 1)
+    state.bytes -= chunks.shift()!.length;
+}
+
+export async function runSshCommand(
+  sessionId: string,
+  requestId: string,
+  command: string,
+  signal: AbortSignal,
+  options: { stdin?: string; pty?: boolean } = {},
+) {
+  if (!command.trim()) throw new Error("缺少远程命令。");
+  const session = getSession(sessionId, requestId);
+  return new Promise<{ output: string; exitCode: number }>(
+    (resolve, reject) => {
+      let channel: ClientChannel | undefined;
+      let settled = false;
+      const stdout: Buffer[] = [];
+      const stderr: Buffer[] = [];
+      const stdoutState = { bytes: 0 };
+      const stderrState = { bytes: 0 };
+      const finish = (error?: unknown, code = -1, signalName?: string) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener("abort", abort);
+        if (error) return reject(new Error(friendlySshError(error)));
+        const out = Buffer.concat(stdout)
+          .toString("utf8")
+          .slice(-MAX_OUTPUT_BYTES);
+        const err = Buffer.concat(stderr)
+          .toString("utf8")
+          .slice(-MAX_OUTPUT_BYTES);
+        const parts = [
+          out.trimEnd(),
+          err ? `stderr:\n${err.trimEnd()}` : "",
+          signalName ? `signal: ${signalName}` : "",
+        ].filter(Boolean);
+        resolve({
+          output: parts.join("\n") || "远程命令未产生输出",
+          exitCode: code,
+        });
+      };
+      const abort = () => {
+        channel?.close();
+        finish(new Error("SSH 命令已取消。"));
+      };
+      signal.addEventListener("abort", abort, { once: true });
+      session.client.exec(
+        command,
+        { pty: Boolean(options.pty) },
+        (error, stream) => {
+          if (error) return finish(error);
+          channel = stream;
+          stream.on("data", (chunk: Buffer) =>
+            appendLimited(stdout, chunk, stdoutState),
+          );
+          stream.stderr.on("data", (chunk: Buffer) =>
+            appendLimited(stderr, chunk, stderrState),
+          );
+          stream.once("error", (streamError: Error) => finish(streamError));
+          stream.once("close", (code: number, signalName: string) =>
+            finish(undefined, code ?? -1, signalName),
+          );
+          if (options.stdin !== undefined) stream.end(options.stdin);
+          if (signal.aborted) abort();
+        },
+      );
+    },
+  );
+}
+
+export function openSshForward(
+  sessionId: string,
+  requestId: string,
+  destinationHost: string,
+  destinationPort: number,
+  signal: AbortSignal,
+) {
+  const session = getSession(sessionId, requestId);
+  return new Promise<ClientChannel>((resolve, reject) => {
+    let settled = false;
+    const finish = (error?: unknown, stream?: ClientChannel) => {
+      if (settled) {
+        stream?.destroy();
+        return;
+      }
+      settled = true;
+      signal.removeEventListener("abort", abort);
+      if (error) reject(new Error(friendlySshError(error)));
+      else if (stream) resolve(stream);
+    };
+    const abort = () => finish(new Error("SSH 通道连接已取消。"));
+    signal.addEventListener("abort", abort, { once: true });
+    session.client.forwardOut(
+      "127.0.0.1",
+      0,
+      destinationHost,
+      destinationPort,
+      (error, stream) => finish(error, stream),
+    );
+    if (signal.aborted) abort();
+  });
+}
+
+function getSftp(session: SshSession, signal: AbortSignal) {
+  return new Promise<SFTPWrapper>((resolve, reject) => {
+    let settled = false;
+    const finish = (error?: unknown, sftp?: SFTPWrapper) => {
+      if (settled) {
+        sftp?.end();
+        return;
+      }
+      settled = true;
+      signal.removeEventListener("abort", abort);
+      if (error) reject(new Error(friendlySshError(error)));
+      else if (sftp) {
+        sftp.on("error", () => undefined);
+        resolve(sftp);
+      }
+    };
+    const abort = () => finish(new Error("SFTP 操作已取消。"));
+    signal.addEventListener("abort", abort, { once: true });
+    session.client.sftp((error, sftp) => finish(error, sftp));
+    if (signal.aborted) abort();
+  });
+}
+
+function sftpOperation<T>(
+  sftp: SFTPWrapper,
+  signal: AbortSignal,
+  start: (complete: (error?: Error, value?: T) => void) => void,
+) {
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const finish = (error?: Error, value?: T) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener("abort", abort);
+      if (error) reject(error);
+      else resolve(value as T);
+    };
+    const abort = () => {
+      sftp.end();
+      finish(new Error("SFTP 操作已取消。"));
+    };
+    signal.addEventListener("abort", abort, { once: true });
+    start(finish);
+    if (signal.aborted) abort();
+  });
+}
+
+function statRemote(
+  sftp: SFTPWrapper,
+  remotePath: string,
+  signal: AbortSignal,
+) {
+  return sftpOperation<
+    Awaited<Parameters<Parameters<SFTPWrapper["stat"]>[1]>[1]>
+  >(sftp, signal, (complete) =>
+    sftp.stat(remotePath, (error, stats) => complete(error, stats)),
+  );
+}
+
+function lstatRemote(
+  sftp: SFTPWrapper,
+  remotePath: string,
+  signal: AbortSignal,
+) {
+  return sftpOperation<
+    Awaited<Parameters<Parameters<SFTPWrapper["lstat"]>[1]>[1]>
+  >(sftp, signal, (complete) =>
+    sftp.lstat(remotePath, (error, stats) => complete(error, stats)),
+  );
+}
+
+async function readRemoteText(
+  sftp: SFTPWrapper,
+  remotePath: string,
+  signal: AbortSignal,
+) {
+  const stats = await statRemote(sftp, remotePath, signal);
+  if (!stats.isFile()) throw new Error("远程路径不是普通文件。");
+  if (stats.size > MAX_REMOTE_FILE_BYTES)
+    throw new Error(
+      `远程文件超过 ${MAX_REMOTE_FILE_BYTES / 1_000_000} MB 读取上限。`,
+    );
+  return new Promise<string>((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let bytes = 0;
+    let settled = false;
+    const stream = sftp.createReadStream(remotePath, {
+      start: 0,
+      end: MAX_REMOTE_FILE_BYTES,
+    });
+    const finish = (error?: unknown) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener("abort", abort);
+      if (error) return reject(error);
+      const data = Buffer.concat(chunks);
+      if (data.includes(0))
+        return reject(new Error("远程文件是二进制文件，不能作为文本读取。"));
+      resolve(data.toString("utf8"));
+    };
+    const abort = () => {
+      stream.destroy();
+      finish(new Error("SFTP 读取已取消。"));
+    };
+    signal.addEventListener("abort", abort, { once: true });
+    stream.on("data", (chunk: Buffer) => {
+      bytes += chunk.length;
+      if (bytes > MAX_REMOTE_FILE_BYTES) {
+        stream.destroy();
+        finish(
+          new Error(
+            `远程文件超过 ${MAX_REMOTE_FILE_BYTES / 1_000_000} MB 读取上限。`,
+          ),
+        );
+      } else chunks.push(chunk);
+    });
+    stream.once("error", (error: Error) => finish(error));
+    stream.once("end", () => finish());
+    if (signal.aborted) abort();
+  });
+}
+
+function writeRemoteAtomic(
+  sftp: SFTPWrapper,
+  remotePath: string,
+  content: string,
+  signal: AbortSignal,
+  mode?: number,
+) {
+  const temporary = `${remotePath}.kcode-${randomUUID()}.tmp`;
+  return new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const finish = (error?: unknown) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener("abort", abort);
+      if (error) reject(error);
+      else resolve();
+    };
+    const cleanup = (error: unknown) =>
+      sftp.unlink(temporary, () => finish(error));
+    const abort = () => cleanup(new Error("SFTP 写入已取消。"));
+    signal.addEventListener("abort", abort, { once: true });
+    const commit = () => {
+      if (settled) return;
+      signal.removeEventListener("abort", abort);
+      sftp.ext_openssh_rename(temporary, remotePath, (posixError) => {
+        if (!posixError) return finish();
+        sftp.rename(temporary, remotePath, (renameError) =>
+          renameError ? cleanup(renameError) : finish(),
+        );
+      });
+    };
+    sftp.writeFile(temporary, content, "utf8", (writeError) => {
+      if (writeError) return cleanup(writeError);
+      if (signal.aborted) return abort();
+      if (mode !== undefined)
+        sftp.setstat(temporary, { mode }, (modeError) =>
+          modeError ? cleanup(modeError) : commit(),
+        );
+      else commit();
+    });
+    if (signal.aborted) abort();
+  });
+}
+
+export async function listSshDirectory(
+  sessionId: string,
+  requestId: string,
+  remotePath: string,
+  signal: AbortSignal,
+) {
+  const session = getSession(sessionId, requestId);
+  const sftp = await getSftp(session, signal);
+  try {
+    const entries = await sftpOperation<
+      Parameters<SFTPWrapper["readdir"]>[1] extends (
+        error: Error | undefined,
+        list: infer T,
+      ) => void
+        ? T
+        : never
+    >(sftp, signal, (complete) =>
+      sftp.readdir(remotePath || ".", (error, list) =>
+        complete(error ? new Error(friendlySshError(error)) : undefined, list),
+      ),
+    );
+    return entries.slice(0, 1000).map((entry) => ({
+      name: entry.filename,
+      type: entry.attrs.isDirectory() ? "directory" : "file",
+      size: entry.attrs.size,
+      modifiedAt: entry.attrs.mtime,
+      mode: entry.attrs.mode,
+    }));
+  } finally {
+    sftp.end();
+  }
+}
+
+export async function readSshFile(
+  sessionId: string,
+  requestId: string,
+  remotePath: string,
+  signal: AbortSignal,
+) {
+  if (!remotePath) throw new Error("缺少远程文件路径。");
+  const session = getSession(sessionId, requestId);
+  const sftp = await getSftp(session, signal);
+  try {
+    return await readRemoteText(sftp, remotePath, signal);
+  } finally {
+    sftp.end();
+  }
+}
+
+export async function writeSshFile(
+  sessionId: string,
+  requestId: string,
+  activityId: string,
+  remotePath: string,
+  content: string,
+  signal: AbortSignal,
+) {
+  if (!remotePath) throw new Error("缺少远程文件路径。");
+  if (Buffer.byteLength(content) > MAX_REMOTE_FILE_BYTES)
+    throw new Error(
+      `远程文件超过 ${MAX_REMOTE_FILE_BYTES / 1_000_000} MB 写入上限。`,
+    );
+  const session = getSession(sessionId, requestId);
+  const sftp = await getSftp(session, signal);
+  let before = "";
+  let existed = true;
+  let mode: number | undefined;
+  try {
+    try {
+      const linkStats = await lstatRemote(sftp, remotePath, signal);
+      if (linkStats.isSymbolicLink())
+        throw new Error("为避免替换符号链接本身，不支持直接覆盖远程符号链接。");
+      mode = linkStats.mode;
+      before = await readRemoteText(sftp, remotePath, signal);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/no such file|not found|不存在/i.test(message)) existed = false;
+      else throw error;
+    }
+    await writeRemoteAtomic(sftp, remotePath, content, signal, mode);
+    remoteUndoSnapshots.set(activityId, {
+      sessionId,
+      requestId,
+      remotePath,
+      before,
+      after: content,
+      existed,
+      mode,
+      host: session.host,
+      port: session.port,
+      username: session.username,
+      fingerprint: session.fingerprint,
+    });
+    return { bytes: Buffer.byteLength(content), before, after: content };
+  } finally {
+    sftp.end();
+  }
+}
+
+export async function undoSshActivity(activityId: string, force = false) {
+  const snapshot = remoteUndoSnapshots.get(activityId);
+  if (!snapshot) return undefined;
+  const session = getSession(snapshot.sessionId, snapshot.requestId);
+  if (
+    session.host !== snapshot.host ||
+    session.port !== snapshot.port ||
+    session.username !== snapshot.username ||
+    session.fingerprint !== snapshot.fingerprint
+  )
+    return {
+      success: false,
+      message: "当前 SSH 连接与生成此恢复记录的服务器不一致，已阻止恢复。",
+    };
+  const signal = new AbortController().signal;
+  const sftp = await getSftp(session, signal);
+  try {
+    let current = "";
+    try {
+      current = await readRemoteText(sftp, snapshot.remotePath, signal);
+    } catch {
+      if (!force)
+        return {
+          success: false,
+          conflict: true,
+          message: "远程文件在这个版本之后已被删除或无法读取",
+        };
+    }
+    if (current !== snapshot.after && !force)
+      return {
+        success: false,
+        conflict: true,
+        message: "远程文件在这个版本之后又被修改过",
+      };
+    if (snapshot.existed)
+      await writeRemoteAtomic(
+        sftp,
+        snapshot.remotePath,
+        snapshot.before,
+        signal,
+        snapshot.mode,
+      );
+    else
+      await new Promise<void>((resolve, reject) =>
+        sftp.unlink(snapshot.remotePath, (error) =>
+          error ? reject(error) : resolve(),
+        ),
+      );
+    remoteUndoSnapshots.delete(activityId);
+    return {
+      success: true,
+      message: snapshot.existed
+        ? "已恢复远程文件修改前内容"
+        : "已删除本次新建的远程文件",
+    };
+  } finally {
+    sftp.end();
+  }
+}
+
+export function cleanupSshSessions(ids: string[], activityIds: string[] = []) {
+  const targets = new Set(ids);
+  const activities = new Set(activityIds);
+  for (const [activityId, snapshot] of remoteUndoSnapshots)
+    if (activities.has(activityId) || targets.has(snapshot.requestId))
+      remoteUndoSnapshots.delete(activityId);
+  for (const [sessionId, session] of sessions)
+    if (targets.has(sessionId) || targets.has(session.requestId))
+      disconnectSsh(sessionId);
+}
+
+export function closeAllSshSessions() {
+  for (const sessionId of [...sessions.keys()]) disconnectSsh(sessionId);
+  remoteUndoSnapshots.clear();
+}

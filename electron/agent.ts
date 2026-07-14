@@ -38,6 +38,40 @@ import {
   stopBrowserRecording,
   typeBrowser,
 } from "./browser";
+import {
+  adoptSshSession,
+  cleanupSshSessions,
+  connectSsh,
+  disconnectSsh,
+  listSshDirectory,
+  readSshFile,
+  redactSshInput,
+  runSshCommand,
+  undoSshActivity,
+  writeSshFile,
+} from "./ssh";
+import {
+  adoptMysqlSession,
+  cleanupMysqlSessions,
+  connectMysql,
+  disconnectMysql,
+  queryMysql,
+  redactMysqlInput,
+  type MysqlConnectInput,
+} from "./mysql";
+import { classifyMysqlSql, redactSqlForActivity } from "./sql-policy";
+import {
+  beginSubagentCleanup,
+  claimSubagentMutation,
+  closeSubagentMessageQueue,
+  drainSubagentMessages,
+  listSubagents,
+  messageSubagent,
+  permissionPolicyForSubagent,
+  spawnSubagent,
+  stopSubagent,
+  waitForSubagents,
+} from "./subagents";
 
 type ToolCall = {
   id: string;
@@ -54,8 +88,12 @@ type ToolResult = Partial<
     | "deletions"
     | "exitCode"
     | "undoable"
+    | "childActivities"
   >
-> & { output: string };
+> & {
+  output: string;
+  subagentUsage?: { input: number; output: number; cached: number };
+};
 type StructuredToolResult = {
   success: boolean;
   summary: string;
@@ -538,6 +576,210 @@ const tools = [
     parameters: { type: "object", properties: {}, additionalProperties: false },
   },
   {
+    name: "ssh_connect",
+    description:
+      "Connect this task to an SSH server using credentials explicitly supplied by the user. The privateKey value must be the key content, not a local path. Host keys use persistent trust-on-first-use and changed keys are rejected; only pass hostFingerprint when the user explicitly confirms it. The connection remains available while switching tasks.",
+    parameters: {
+      type: "object",
+      properties: {
+        host: { type: "string" },
+        port: { type: "number", minimum: 1, maximum: 65535 },
+        username: { type: "string" },
+        password: { type: "string" },
+        privateKey: { type: "string" },
+        passphrase: { type: "string" },
+        hostFingerprint: { type: "string" },
+      },
+      required: ["host", "username"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "ssh_run",
+    description:
+      "Run a command on the SSH server connected to this task. Commands have no fixed total timeout and stop when the task is cancelled. Set pty and stdin only for commands that require controlled interactive input; stdin is hidden from activity records.",
+    parameters: {
+      type: "object",
+      properties: {
+        command: { type: "string" },
+        stdin: { type: "string" },
+        pty: { type: "boolean" },
+      },
+      required: ["command"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "ssh_list_directory",
+    description:
+      "List a directory on the SSH server connected to this task using SFTP.",
+    parameters: {
+      type: "object",
+      properties: { path: { type: "string" } },
+      required: ["path"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "ssh_read_file",
+    description:
+      "Read a UTF-8 text file from the SSH server connected to this task using SFTP.",
+    parameters: {
+      type: "object",
+      properties: { path: { type: "string" } },
+      required: ["path"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "ssh_write_file",
+    description:
+      "Create or replace a UTF-8 text file on the SSH server connected to this task using SFTP.",
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string" },
+        content: { type: "string" },
+      },
+      required: ["path", "content"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "ssh_disconnect",
+    description: "Disconnect the SSH session associated with this task.",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    name: "mysql_connect",
+    description:
+      "Connect this task directly to a MySQL server using credentials explicitly supplied by the user. Public direct hosts use verified TLS by default; private and localhost addresses do not. Never disable TLS after a failure unless the user explicitly approves the downgrade. The connection remains available while switching tasks.",
+    parameters: {
+      type: "object",
+      properties: {
+        host: { type: "string" },
+        port: { type: "number", minimum: 1, maximum: 65535 },
+        username: { type: "string" },
+        password: { type: "string" },
+        database: { type: "string" },
+        ssl: { type: "boolean" },
+        sslCa: { type: "string" },
+        sslCert: { type: "string" },
+        sslKey: { type: "string" },
+        sslPassphrase: { type: "string" },
+        sslRejectUnauthorized: { type: "boolean" },
+      },
+      required: ["host", "username", "password"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "mysql_connect_via_ssh",
+    description:
+      "Connect to MySQL through this task's SSH tunnel. If SSH credentials are supplied, establish SSH first; otherwise reuse the task's active SSH connection. The MySQL host is resolved from the SSH server and commonly defaults to 127.0.0.1.",
+    parameters: {
+      type: "object",
+      properties: {
+        sshHost: { type: "string" },
+        sshPort: { type: "number", minimum: 1, maximum: 65535 },
+        sshUsername: { type: "string" },
+        sshPassword: { type: "string" },
+        sshPrivateKey: { type: "string" },
+        sshPassphrase: { type: "string" },
+        sshHostFingerprint: { type: "string" },
+        host: { type: "string" },
+        port: { type: "number", minimum: 1, maximum: 65535 },
+        username: { type: "string" },
+        password: { type: "string" },
+        database: { type: "string" },
+        ssl: { type: "boolean" },
+        sslCa: { type: "string" },
+        sslCert: { type: "string" },
+        sslKey: { type: "string" },
+        sslPassphrase: { type: "string" },
+        sslRejectUnauthorized: { type: "boolean" },
+      },
+      required: ["host", "username", "password"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "mysql_query",
+    description:
+      "Execute one SQL statement on the MySQL connection for this task. Supports positional ? placeholders through the values array. Multiple statements are disabled.",
+    parameters: {
+      type: "object",
+      properties: {
+        sql: { type: "string" },
+        values: { type: "array" },
+      },
+      required: ["sql"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "mysql_disconnect",
+    description: "Close the MySQL connection associated with this task.",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    name: "spawn_agent",
+    description:
+      "Start a background subagent for a self-contained task that can run independently. Subagents inherit the current model, workspace, reasoning, and permissions. Prefer separate files or research areas to avoid edit conflicts. Returns an agent id immediately.",
+    parameters: {
+      type: "object",
+      properties: {
+        task: { type: "string" },
+        name: { type: "string" },
+      },
+      required: ["task"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "list_agents",
+    description:
+      "List direct subagents created by this agent and their current status.",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    name: "message_agent",
+    description:
+      "Send an additional instruction to a running direct subagent. It will be applied before that subagent's next model turn.",
+    parameters: {
+      type: "object",
+      properties: {
+        agentId: { type: "string" },
+        message: { type: "string" },
+      },
+      required: ["agentId", "message"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "wait_agent",
+    description:
+      "Wait for selected direct subagents, or all direct subagents when agentIds is omitted. Returns their final text, tool summaries, usage, and file changes.",
+    parameters: {
+      type: "object",
+      properties: {
+        agentIds: { type: "array", items: { type: "string" } },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "stop_agent",
+    description:
+      "Stop a running direct subagent and return its partial result.",
+    parameters: {
+      type: "object",
+      properties: { agentId: { type: "string" } },
+      required: ["agentId"],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "run_command",
     description: "Run a PowerShell command in the workspace.",
     parameters: {
@@ -561,6 +803,7 @@ const undoSnapshots = new Map<
   string,
   {
     root: string;
+    requestId: string;
     file: string;
     before: string;
     after: string;
@@ -577,15 +820,19 @@ const backgroundProcesses = new Map<
     exitCode?: number;
   }
 >();
-export function cleanupAgentRecords(
+export async function cleanupAgentRecords(
   requestIds: string[],
   activityIds: string[],
 ) {
-  const requests = new Set(requestIds),
+  const subagentCleanup = beginSubagentCleanup(requestIds);
+  const childRequestIds = subagentCleanup.requestIds;
+  const requests = new Set([...requestIds, ...childRequestIds]),
     activities = new Set(activityIds);
-  for (const activityId of activities) undoSnapshots.delete(activityId);
+  for (const [activityId, snapshot] of undoSnapshots)
+    if (activities.has(activityId) || requests.has(snapshot.requestId))
+      undoSnapshots.delete(activityId);
   for (const [key, resolve] of approvals) {
-    if (requests.has(key.split(":")[0])) {
+    if ([...requests].some((requestId) => key.startsWith(`${requestId}:`))) {
       resolve(false);
       approvals.delete(key);
     }
@@ -596,16 +843,30 @@ export function cleanupAgentRecords(
       backgroundProcesses.delete(id);
     }
   }
-  cleanupBrowsers(requestIds);
+  const allRequestIds = [...requests];
+  cleanupBrowsers(allRequestIds);
+  cleanupMysqlSessions(allRequestIds);
+  cleanupSshSessions(allRequestIds, activityIds);
+  await subagentCleanup.settle();
 }
 export function resolveApproval(
   requestId: string,
   activityId: string,
   allowed: boolean,
 ) {
-  const key = `${requestId}:${activityId}`;
-  approvals.get(key)?.(allowed);
-  approvals.delete(key);
+  const exactKey = `${requestId}:${activityId}`;
+  const exact = approvals.get(exactKey);
+  if (exact) {
+    exact(allowed);
+    approvals.delete(exactKey);
+    return;
+  }
+  for (const [key, resolve] of approvals)
+    if (key.endsWith(`:${activityId}`)) {
+      resolve(allowed);
+      approvals.delete(key);
+      return;
+    }
 }
 
 export async function undoActivity(
@@ -614,6 +875,10 @@ export async function undoActivity(
   force = false,
 ) {
   const snapshot = undoSnapshots.get(activityId);
+  if (!snapshot) {
+    const remoteResult = await undoSshActivity(activityId, force);
+    if (remoteResult) return remoteResult;
+  }
   if (!snapshot || path.resolve(workspaceRoot) !== snapshot.root)
     return { success: false, message: "撤销记录已失效或不属于当前工作区" };
   let current = "";
@@ -691,6 +956,12 @@ function command(
 }
 
 function failureSummary(call: ToolCall, output: string, exitCode?: number) {
+  if (call.name.startsWith("mysql_")) return output;
+  if (call.name.startsWith("ssh_")) {
+    if (call.name === "ssh_run" && exitCode !== undefined)
+      return `远程命令执行失败，退出码 ${exitCode}。`;
+    return output;
+  }
   if (
     (call.name === "fetch_url" || call.name === "web_search") &&
     /网页读取超时|任务已取消|网页请求失败/.test(output)
@@ -709,6 +980,29 @@ function failureSummary(call: ToolCall, output: string, exitCode?: number) {
     return `命令执行失败，退出码 ${exitCode ?? "未知"}。`;
   }
   return `${({ apply_patch: "补丁应用", write_file: "文件写入", delete_path: "路径删除", move_path: "路径移动", make_directory: "目录创建", read_file: "文件读取", search_code: "代码搜索", list_directory: "目录读取", path_info: "路径检查" } as Partial<Record<AgentToolName, string>>)[call.name] || "工具执行"}失败。`;
+}
+
+function mysqlConnectInput(
+  input: Record<string, unknown>,
+  defaultHost = "",
+): MysqlConnectInput {
+  return {
+    host: String(input.host || defaultHost),
+    port: Number(input.port) || 3306,
+    username: String(input.username || ""),
+    password: String(input.password || ""),
+    database: typeof input.database === "string" ? input.database : undefined,
+    ssl: typeof input.ssl === "boolean" ? input.ssl : undefined,
+    sslCa: typeof input.sslCa === "string" ? input.sslCa : undefined,
+    sslCert: typeof input.sslCert === "string" ? input.sslCert : undefined,
+    sslKey: typeof input.sslKey === "string" ? input.sslKey : undefined,
+    sslPassphrase:
+      typeof input.sslPassphrase === "string" ? input.sslPassphrase : undefined,
+    sslRejectUnauthorized:
+      typeof input.sslRejectUnauthorized === "boolean"
+        ? input.sslRejectUnauthorized
+        : undefined,
+  };
 }
 
 function diffFor(file: string, before: string, after: string) {
@@ -756,6 +1050,7 @@ function applyUpdatePatch(original: string, lines: string[]) {
 
 async function applyPatch(
   root: string,
+  requestId: string,
   activityId: string,
   patchText: string,
 ): Promise<ToolResult> {
@@ -811,7 +1106,7 @@ async function applyPatch(
   }
   if (changes.length === 1 && changes[0].after) {
     const change = changes[0];
-    undoSnapshots.set(activityId, { root, ...change });
+    undoSnapshots.set(activityId, { root, requestId, ...change });
   }
   const diffs = changes.map((change) =>
     diffFor(
@@ -833,12 +1128,33 @@ async function applyPatch(
   };
 }
 
+function mutationPaths(call: ToolCall) {
+  if (call.name === "apply_patch")
+    return [
+      ...String(call.input.patch || "").matchAll(
+        /^\*\*\* (?:Add|Update|Delete) File:\s*(.+?)\s*$/gm,
+      ),
+    ].map((match) => match[1]);
+  if (call.name === "move_path")
+    return [String(call.input.from || ""), String(call.input.to || "")].filter(
+      Boolean,
+    );
+  if (
+    call.name === "write_file" ||
+    call.name === "make_directory" ||
+    call.name === "delete_path"
+  )
+    return [String(call.input.path || "")].filter(Boolean);
+  return [];
+}
+
 async function execute(
   root: string,
   requestId: string,
   browserSessionId: string,
   activityId: string,
   call: ToolCall,
+  request: ModelRequest,
   signal: AbortSignal,
 ): Promise<ToolResult> {
   if (call.name === "list_directory") {
@@ -977,6 +1293,7 @@ async function execute(
     await writeFile(file, content, "utf8");
     undoSnapshots.set(activityId, {
       root,
+      requestId,
       file,
       before,
       after: content,
@@ -994,7 +1311,12 @@ async function execute(
     };
   }
   if (call.name === "apply_patch")
-    return applyPatch(root, activityId, String(call.input.patch || ""));
+    return applyPatch(
+      root,
+      requestId,
+      activityId,
+      String(call.input.patch || ""),
+    );
   if (call.name === "make_directory") {
     const directory = workspacePath(root, call.input.path);
     await mkdir(directory, { recursive: true });
@@ -1250,6 +1572,272 @@ async function execute(
         2,
       ),
     };
+  if (call.name === "ssh_connect") {
+    const result = await connectSsh(
+      browserSessionId,
+      requestId,
+      {
+        host: String(call.input.host || ""),
+        port: Number(call.input.port) || 22,
+        username: String(call.input.username || ""),
+        password:
+          typeof call.input.password === "string"
+            ? call.input.password
+            : undefined,
+        privateKey:
+          typeof call.input.privateKey === "string"
+            ? call.input.privateKey
+            : undefined,
+        passphrase:
+          typeof call.input.passphrase === "string"
+            ? call.input.passphrase
+            : undefined,
+        hostFingerprint:
+          typeof call.input.hostFingerprint === "string"
+            ? call.input.hostFingerprint
+            : undefined,
+      },
+      signal,
+    );
+    return { output: JSON.stringify(result, null, 2) };
+  }
+  if (call.name === "ssh_run") {
+    const remoteCommand = String(call.input.command || "");
+    const result = await runSshCommand(
+      browserSessionId,
+      requestId,
+      remoteCommand,
+      signal,
+      {
+        stdin:
+          typeof call.input.stdin === "string" ? call.input.stdin : undefined,
+        pty: Boolean(call.input.pty),
+      },
+    );
+    return { ...result, command: remoteCommand };
+  }
+  if (call.name === "ssh_list_directory") {
+    const remotePath = String(call.input.path || ".");
+    return {
+      path: remotePath,
+      output: JSON.stringify(
+        await listSshDirectory(browserSessionId, requestId, remotePath, signal),
+        null,
+        2,
+      ),
+    };
+  }
+  if (call.name === "ssh_read_file") {
+    const remotePath = String(call.input.path || "");
+    return {
+      path: remotePath,
+      output: await readSshFile(
+        browserSessionId,
+        requestId,
+        remotePath,
+        signal,
+      ),
+    };
+  }
+  if (call.name === "ssh_write_file") {
+    const remotePath = String(call.input.path || "");
+    const result = await writeSshFile(
+      browserSessionId,
+      requestId,
+      activityId,
+      remotePath,
+      String(call.input.content ?? ""),
+      signal,
+    );
+    return {
+      path: remotePath,
+      output: `已原子写入远程文件，共 ${result.bytes} 字节`,
+      undoable: true,
+      ...diffFor(remotePath, result.before, result.after),
+    };
+  }
+  if (call.name === "ssh_disconnect")
+    return {
+      output: disconnectSsh(browserSessionId)
+        ? "SSH 连接已断开"
+        : "当前任务没有活动的 SSH 连接",
+    };
+  if (call.name === "mysql_connect") {
+    const result = await connectMysql(
+      browserSessionId,
+      requestId,
+      mysqlConnectInput(call.input),
+      false,
+      signal,
+    );
+    return { output: JSON.stringify(result, null, 2) };
+  }
+  if (call.name === "mysql_connect_via_ssh") {
+    let mysqlSessionId = browserSessionId;
+    if (call.input.sshHost) {
+      mysqlSessionId = `${browserSessionId}:pending:${activityId}`;
+      await connectSsh(
+        mysqlSessionId,
+        requestId,
+        {
+          host: String(call.input.sshHost),
+          port: Number(call.input.sshPort) || 22,
+          username: String(call.input.sshUsername || ""),
+          password:
+            typeof call.input.sshPassword === "string"
+              ? call.input.sshPassword
+              : undefined,
+          privateKey:
+            typeof call.input.sshPrivateKey === "string"
+              ? call.input.sshPrivateKey
+              : undefined,
+          passphrase:
+            typeof call.input.sshPassphrase === "string"
+              ? call.input.sshPassphrase
+              : undefined,
+          hostFingerprint:
+            typeof call.input.sshHostFingerprint === "string"
+              ? call.input.sshHostFingerprint
+              : undefined,
+        },
+        signal,
+      );
+    }
+    let result;
+    try {
+      result = await connectMysql(
+        mysqlSessionId,
+        requestId,
+        mysqlConnectInput(call.input, "127.0.0.1"),
+        true,
+        signal,
+      );
+      if (mysqlSessionId !== browserSessionId) {
+        adoptMysqlSession(mysqlSessionId, browserSessionId);
+        adoptSshSession(mysqlSessionId, browserSessionId);
+      }
+    } catch (error) {
+      if (mysqlSessionId !== browserSessionId) {
+        await disconnectMysql(mysqlSessionId);
+        disconnectSsh(mysqlSessionId);
+      }
+      throw error;
+    }
+    return { output: JSON.stringify(result, null, 2) };
+  }
+  if (call.name === "mysql_query") {
+    const sql = String(call.input.sql || "");
+    const values = Array.isArray(call.input.values) ? call.input.values : [];
+    return {
+      command: redactSqlForActivity(sql),
+      output: await queryMysql(
+        browserSessionId,
+        requestId,
+        sql,
+        values,
+        signal,
+      ),
+    };
+  }
+  if (call.name === "mysql_disconnect")
+    return {
+      output: (await disconnectMysql(browserSessionId))
+        ? "MySQL 连接已关闭"
+        : "当前任务没有活动的 MySQL 连接",
+    };
+  if (call.name === "spawn_agent") {
+    if ((request.agentDepth ?? 0) >= 2)
+      throw new Error("当前子 Agent 已达到委派深度，不能继续创建下级 Agent。");
+    const task = String(call.input.task || "").trim();
+    if (!task) throw new Error("缺少子 Agent 任务目标。");
+    const name = String(call.input.name || "").trim();
+    const state = spawnSubagent(
+      requestId,
+      name,
+      task,
+      signal,
+      (childRequestId, agentId, childSignal) =>
+        runAgent(
+          childRequestId,
+          {
+            ...request,
+            taskId: `${request.taskId || requestId}:subagent:${agentId}`,
+            agentDepth: (request.agentDepth ?? 0) + 1,
+            permissionPolicy: permissionPolicyForSubagent(
+              request.permissionMode,
+              request.permissionPolicy,
+            ),
+            messages: [
+              {
+                role: "user",
+                content: `你是主 Agent 委派的子 Agent。请独立完成以下任务并向主 Agent 返回准确、简洁、可验证的结果。不要等待用户补充信息；遇到阻碍时说明已检查的内容和具体阻碍。避免修改其他子 Agent 可能负责的文件。\n\n任务：${task}`,
+              },
+            ],
+          },
+          childSignal,
+        ),
+    );
+    return { output: JSON.stringify(state, null, 2) };
+  }
+  if (call.name === "list_agents")
+    return {
+      output: JSON.stringify(listSubagents(requestId), null, 2),
+    };
+  if (call.name === "message_agent")
+    return {
+      output: JSON.stringify(
+        messageSubagent(
+          requestId,
+          String(call.input.agentId || ""),
+          String(call.input.message || ""),
+        ),
+        null,
+        2,
+      ),
+    };
+  if (call.name === "wait_agent") {
+    const agentIds = Array.isArray(call.input.agentIds)
+      ? call.input.agentIds.map(String)
+      : undefined;
+    const results = await waitForSubagents(requestId, agentIds);
+    const childActivities = results.flatMap((result) => result.activityRecords);
+    const visible = results.map(
+      ({ activityRecords: _records, usageDelta: _usageDelta, ...result }) =>
+        result,
+    );
+    return {
+      output: JSON.stringify(visible, null, 2),
+      childActivities,
+      subagentUsage: results.reduce(
+        (total, result) => ({
+          input: total.input + result.usageDelta.input,
+          output: total.output + result.usageDelta.output,
+          cached: total.cached + result.usageDelta.cached,
+        }),
+        { input: 0, output: 0, cached: 0 },
+      ),
+      additions: childActivities.reduce(
+        (sum, activity) => sum + (activity.additions ?? 0),
+        0,
+      ),
+      deletions: childActivities.reduce(
+        (sum, activity) => sum + (activity.deletions ?? 0),
+        0,
+      ),
+    };
+  }
+  if (call.name === "stop_agent") {
+    const result = await stopSubagent(
+      requestId,
+      String(call.input.agentId || ""),
+    );
+    const { activityRecords, usageDelta, ...visible } = result;
+    return {
+      output: JSON.stringify(visible, null, 2),
+      childActivities: activityRecords,
+      subagentUsage: usageDelta,
+    };
+  }
   if (call.name === "diagnostics") {
     const kind = String(call.input.kind || "");
     const scripts = {
@@ -1560,8 +2148,13 @@ async function modelTurn(
     xhigh: 32768,
     max: 65536,
   };
-  const runtimeTools = toolsEnabled ? tools : [];
-  const system = `You are a coding agent working in ${root}. Use the provided native tools to inspect and modify the project. Prefer apply_patch for precise edits and write_file for new or complete files. Never invoke apply_patch, file deletion, file moves, or directory operations through run_command when a native tool exists. Use web_search for current or externally verifiable information and fetch_url to inspect primary sources; preserve source URLs in the final answer. For interactive or authenticated sites use browser_open, browser_snapshot, browser_click, and browser_type. Credentials explicitly supplied by the user may be entered directly with browser_type. Browser recording is opt-in: call browser_record_start only after an explicit user request such as 开始录制, and call browser_record_stop when the user asks to stop or generate Python. Never record ordinary browsing by default. If CAPTCHA, SMS, passkey, or two-factor verification appears, pause and ask the user to complete it in the visible browser. Do not claim an action succeeded until its tool result confirms it.`;
+  const runtimeTools = toolsEnabled
+    ? tools.filter(
+        (tool) =>
+          !((request.agentDepth ?? 0) >= 2 && tool.name === "spawn_agent"),
+      )
+    : [];
+  const system = `You are a coding agent working in ${root}. Use the provided native tools to inspect and modify the project. Prefer apply_patch for precise edits and write_file for new or complete files. Never invoke apply_patch, file deletion, file moves, or directory operations through run_command when a native tool exists. Use web_search for current or externally verifiable information and fetch_url to inspect primary sources; preserve source URLs in the final answer. For interactive or authenticated sites use browser_open, browser_snapshot, browser_click, and browser_type. Credentials explicitly supplied by the user may be entered directly with browser_type. Browser recording is opt-in: call browser_record_start only after an explicit user request such as 开始录制, and call browser_record_stop when the user asks to stop or generate Python. Never record ordinary browsing by default. For independent work that can run concurrently, use spawn_agent with self-contained, non-overlapping tasks, then wait_agent before giving a final answer. Use list_agents, message_agent, and stop_agent to coordinate them. Subagents inherit this task's model, workspace, and permission policy; confirmation requests from background agents are forwarded to the main task UI. For remote servers, call ssh_connect with credentials explicitly supplied by the user, then use ssh_run and the SSH SFTP tools. Use pty/stdin only when a remote command requires controlled input; never place a password in the command string. SSH host keys are persisted on first use and changed keys must be confirmed by the user. For databases, use mysql_connect for direct MySQL access or mysql_connect_via_ssh for an SSH tunnel, then mysql_query; use ? placeholders and values for user-provided data when practical. Public direct MySQL connections use TLS by default and you must not retry with ssl=false unless the user explicitly approves. Never echo passwords, private keys, or passphrases in text, commands, or SQL. If CAPTCHA, SMS, passkey, or two-factor verification appears, pause and ask the user to complete it in the visible browser. Do not claim an action succeeded until its tool result confirms it.${request.recoveryContext ? `\n\n<recovery_context>${request.recoveryContext}</recovery_context>\nThis task resumed after an interruption. Verify prior side effects before repeating them, and recreate any interrupted subagent work that is still needed.` : ""}`;
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
   };
@@ -1993,9 +2586,17 @@ export async function* runAgent(
         lastPromptTokens = 0;
       }
     }
+    for (const message of drainSubagentMessages(requestId))
+      history.push({
+        kind: "message",
+        role: "user",
+        content: `<parent_instruction>${message}</parent_instruction>`,
+      });
     let turn: Turn | undefined,
       streamedText = "";
-    const bufferBrowserText = browserIsOpen(browserSessionId);
+    const bufferBrowserText =
+      browserIsOpen(browserSessionId) ||
+      listSubagents(requestId).some((agent) => !agent.collected);
     for await (const event of streamModelTurn(
       root,
       request,
@@ -2032,12 +2633,40 @@ export async function* runAgent(
       });
       continue;
     }
+    if (!turn.calls.length) {
+      const lateInstructions = drainSubagentMessages(requestId);
+      const uncollectedAgents = listSubagents(requestId).filter(
+        (agent) => !agent.collected,
+      );
+      if (lateInstructions.length || uncollectedAgents.length) {
+        if (turn.text)
+          history.push({
+            kind: "message",
+            role: "assistant",
+            content: turn.text,
+          });
+        for (const message of lateInstructions)
+          history.push({
+            kind: "message",
+            role: "user",
+            content: `<parent_instruction>${message}</parent_instruction>`,
+          });
+        if (uncollectedAgents.length)
+          history.push({
+            kind: "message",
+            role: "user",
+            content: `<runtime_verification>仍有 ${uncollectedAgents.length} 个子 Agent 尚未收集结果。请调用 wait_agent 等待并汇总，或调用 stop_agent 停止后收集；不要在此之前结束任务。</runtime_verification>`,
+          });
+        continue;
+      }
+    }
     if (turn.text && (bufferBrowserText || !streamedText)) {
       history.push({ kind: "message", role: "assistant", content: turn.text });
       yield { type: "text", delta: turn.text };
     } else if (turn.text)
       history.push({ kind: "message", role: "assistant", content: turn.text });
     if (!turn.calls.length) {
+      closeSubagentMessageQueue(requestId);
       yield { type: "done" };
       return;
     }
@@ -2074,6 +2703,21 @@ export async function* runAgent(
         browser_screenshot: "网页截图",
         browser_record_start: "开始网页录制",
         browser_record_stop: "停止网页录制",
+        ssh_connect: "连接 SSH",
+        ssh_run: "运行远程命令",
+        ssh_list_directory: "查看远程目录",
+        ssh_read_file: "读取远程文件",
+        ssh_write_file: "修改远程文件",
+        ssh_disconnect: "断开 SSH",
+        mysql_connect: "连接 MySQL",
+        mysql_connect_via_ssh: "通过 SSH 连接 MySQL",
+        mysql_query: "执行 SQL",
+        mysql_disconnect: "断开 MySQL",
+        spawn_agent: "创建子 Agent",
+        list_agents: "查看子 Agent",
+        message_agent: "追加子 Agent 指令",
+        wait_agent: "等待子 Agent",
+        stop_agent: "停止子 Agent",
         run_command: "运行命令",
       };
       const activity: AgentActivity = {
@@ -2083,7 +2727,22 @@ export async function* runAgent(
         status: "running",
         title: titles[call.name],
         startedAt: Date.now(),
-        input: call.input,
+        input:
+          call.name === "spawn_agent"
+            ? {
+                name: String(call.input.name || ""),
+                task: "任务详情已隐藏，仅发送给子 Agent",
+              }
+            : call.name === "message_agent"
+              ? {
+                  agentId: String(call.input.agentId || ""),
+                  message: "追加指令已隐藏，仅发送给子 Agent",
+                }
+              : call.name.startsWith("ssh_")
+                ? redactSshInput(call.input)
+                : call.name.startsWith("mysql_")
+                  ? redactMysqlInput(call.input)
+                  : call.input,
         path:
           typeof call.input.path === "string"
             ? call.input.path
@@ -2097,31 +2756,53 @@ export async function* runAgent(
         round,
       };
       const browserTool = call.name.startsWith("browser_");
+      const mysqlSql =
+        call.name === "mysql_query" ? String(call.input.sql || "").trim() : "";
+      const mysqlRisk = mysqlSql ? classifyMysqlSql(mysqlSql) : undefined;
       const category =
-        call.name === "web_search" || call.name === "fetch_url" || browserTool
+        call.name === "web_search" ||
+        call.name === "fetch_url" ||
+        browserTool ||
+        call.name === "ssh_connect" ||
+        call.name === "ssh_list_directory" ||
+        call.name === "ssh_read_file" ||
+        call.name === "ssh_disconnect" ||
+        call.name === "mysql_connect" ||
+        call.name === "mysql_connect_via_ssh" ||
+        call.name === "mysql_disconnect" ||
+        (call.name === "mysql_query" && mysqlRisk === "read")
           ? "network"
-          : call.name === "delete_path"
+          : call.name === "mysql_query" && mysqlRisk === "destructive"
             ? "deletePaths"
-            : call.name === "start_process" || call.name === "stop_process"
-              ? "longRunningProcesses"
-              : call.name === "run_command"
-                ? /\bgit\s+(push|commit)\b/i.test(
-                    String(call.input.command ?? ""),
-                  )
-                  ? "gitPublish"
-                  : /\b(curl|wget|invoke-webrequest|npm\s+(install|view)|git\s+(fetch|pull|clone))\b/i.test(
-                        String(call.input.command ?? ""),
-                      )
-                    ? "network"
-                    : "runCommands"
-                : new Set<AgentToolName>([
-                      "apply_patch",
-                      "write_file",
-                      "make_directory",
-                      "move_path",
-                    ]).has(call.name)
+            : call.name === "mysql_query"
+              ? "workspaceWrite"
+              : call.name === "ssh_run"
+                ? "runCommands"
+                : call.name === "ssh_write_file"
                   ? "workspaceWrite"
-                  : undefined;
+                  : call.name === "delete_path"
+                    ? "deletePaths"
+                    : call.name === "start_process" ||
+                        call.name === "stop_process"
+                      ? "longRunningProcesses"
+                      : call.name === "run_command"
+                        ? /\bgit\s+(push|commit)\b/i.test(
+                            String(call.input.command ?? ""),
+                          )
+                          ? "gitPublish"
+                          : /\b(curl|wget|invoke-webrequest|npm\s+(install|view)|git\s+(fetch|pull|clone))\b/i.test(
+                                String(call.input.command ?? ""),
+                              )
+                            ? "network"
+                            : "runCommands"
+                        : new Set<AgentToolName>([
+                              "apply_patch",
+                              "write_file",
+                              "make_directory",
+                              "move_path",
+                            ]).has(call.name)
+                          ? "workspaceWrite"
+                          : undefined;
       const decision = resolvePermissionDecision(
         request.permissionMode,
         request.permissionPolicy,
@@ -2130,7 +2811,10 @@ export async function* runAgent(
       if (decision === "deny") {
         activity.status = "denied";
         activity.completedAt = Date.now();
-        activity.output = "只读模式已阻止此操作";
+        activity.output =
+          request.permissionMode === "read-only"
+            ? "只读模式已阻止此操作"
+            : "当前权限策略已阻止此操作";
         yield { type: "activity", activity };
         history.push({
           kind: "result",
@@ -2142,12 +2826,14 @@ export async function* runAgent(
       if (decision === "confirm") {
         activity.status = "waiting";
         yield { type: "activity", activity };
+        const approvalKey = `${requestId}:${activity.id}`;
         const allowed = await new Promise<boolean>((resolve) => {
-          approvals.set(`${requestId}:${activity.id}`, resolve);
+          approvals.set(approvalKey, resolve);
           signal.addEventListener("abort", () => resolve(false), {
             once: true,
           });
         });
+        approvals.delete(approvalKey);
         if (!allowed) {
           activity.status = "denied";
           activity.completedAt = Date.now();
@@ -2163,24 +2849,55 @@ export async function* runAgent(
         activity.status = "running";
         yield { type: "activity", activity };
       } else yield { type: "activity", activity };
+      let finishMutationClaim: ((committed: boolean) => void) | undefined;
       try {
+        finishMutationClaim = claimSubagentMutation(
+          requestId,
+          root,
+          mutationPaths(call),
+        );
         const result = await execute(
           root,
           requestId,
           browserSessionId,
           activity.id,
           call,
+          request,
           signal,
         );
+        finishMutationClaim?.(true);
+        const childActivities = result.childActivities;
+        const subagentUsage = result.subagentUsage;
+        const {
+          childActivities: _children,
+          subagentUsage: _subagentUsage,
+          ...activityResult
+        } = result;
         const failed = result.exitCode !== undefined && result.exitCode !== 0;
-        Object.assign(activity, result, {
+        Object.assign(activity, activityResult, {
           status: failed ? "failed" : "success",
           completedAt: Date.now(),
           errorSummary: failed
             ? failureSummary(call, result.output, result.exitCode)
             : undefined,
         });
+        for (const childActivity of childActivities ?? [])
+          yield {
+            type: "activity",
+            activity: {
+              ...childActivity,
+              requestId,
+              round,
+            },
+          };
+        if (subagentUsage) {
+          usage.input += subagentUsage.input;
+          usage.output += subagentUsage.output;
+          usage.cached += subagentUsage.cached;
+          yield { type: "usage", ...usage };
+        }
       } catch (error) {
+        finishMutationClaim?.(false);
         activity.status = "failed";
         activity.completedAt = Date.now();
         activity.output =

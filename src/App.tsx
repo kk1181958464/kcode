@@ -46,6 +46,7 @@ import {
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import appLogo from "../build/icon.png";
 import { inferContextWindow, inferReasoningConfig } from "./types";
 import {
   AGENT_STATIC_TOKENS,
@@ -1376,11 +1377,13 @@ function MessageItem({
   running,
   onRetry,
   attachments = [],
+  assistantBody,
 }: {
   message: ChatMessage;
   running: boolean;
   onRetry(): void;
   attachments?: ContextFile[];
+  assistantBody?: React.ReactNode;
 }) {
   const [previewImage, setPreviewImage] = useState<ImageAttachment>();
   const isError =
@@ -1454,7 +1457,9 @@ function MessageItem({
               ))}
             </div>
           )}
-          {message.content ? (
+          {message.role === "assistant" && !isError && assistantBody ? (
+            assistantBody
+          ) : message.content ? (
             message.role === "assistant" && !isError ? (
               <MarkdownMessage content={message.content} />
             ) : (
@@ -1562,7 +1567,9 @@ function ActivityItem({
         aria-expanded={expanded}
       >
         <span className="activity-icon">
-          {activity.tool === "run_command" ? (
+          {subagentTools.includes(activity.tool) ? (
+            <Bot size={14} />
+          ) : commandTools.includes(activity.tool) ? (
             <Terminal size={14} />
           ) : (
             <FileCode2 size={14} />
@@ -1573,6 +1580,9 @@ function ActivityItem({
           <small>
             {activity.command ||
               activity.path ||
+              String(activity.input.name || "") ||
+              String(activity.input.task || "") ||
+              String(activity.input.agentId || "") ||
               String(activity.input.query || "")}
           </small>
         </span>
@@ -1682,14 +1692,24 @@ function ActivityItem({
   );
 }
 
+const subagentTools: AgentToolName[] = [
+  "spawn_agent",
+  "list_agents",
+  "message_agent",
+  "wait_agent",
+  "stop_agent",
+];
 const fileTools: AgentToolName[] = [
   "write_file",
   "apply_patch",
   "move_path",
   "delete_path",
+  "ssh_write_file",
 ];
 const commandTools: AgentToolName[] = [
   "run_command",
+  "ssh_run",
+  "mysql_query",
   "start_process",
   "stop_process",
   "diagnostics",
@@ -1712,6 +1732,9 @@ function ExecutionSummary({
   const commands = activities.filter((activity) =>
     commandTools.includes(activity.tool),
   ).length;
+  const agents = activities.filter(
+    (activity) => activity.tool === "spawn_agent",
+  ).length;
   const files = new Set(
     activities
       .filter((activity) => fileTools.includes(activity.tool))
@@ -1722,6 +1745,19 @@ function ExecutionSummary({
     (activity) => activity.status === "failed",
   ).length;
   const waiting = activities.some((activity) => activity.status === "waiting");
+  const inProgress = activities.some(
+    (activity) =>
+      activity.status === "running" || activity.status === "waiting",
+  );
+  const summary = [
+    commands ? `运行了 ${commands} 个命令` : "",
+    agents ? `启动了 ${agents} 个子 Agent` : "",
+    files ? `编辑了 ${files} 个文件` : "",
+    !commands && !agents && !files ? `执行了 ${activities.length} 个步骤` : "",
+    failures ? `${failures} 项失败` : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
   useEffect(() => {
     if (waiting) setExpanded(true);
   }, [waiting]);
@@ -1734,20 +1770,13 @@ function ExecutionSummary({
         aria-expanded={expanded}
       >
         <span className="execution-summary-icon">
-          {running ? (
+          {running && inProgress ? (
             <RefreshCw className="spinning" size={15} />
           ) : (
             <Terminal size={15} />
           )}
         </span>
-        <span>
-          <strong>{running ? "正在执行" : "执行记录"}</strong>
-          <small>
-            {commands ? `运行了 ${commands} 个命令` : "已检查工作区"}
-            {files ? ` · 修改了 ${files} 个文件` : ""}
-            {failures ? ` · ${failures} 项失败` : ""}
-          </small>
-        </span>
+        <strong>{summary}</strong>
         <ChevronDown size={14} />
       </button>
       {expanded && (
@@ -1764,6 +1793,70 @@ function ExecutionSummary({
         </div>
       )}
     </section>
+  );
+}
+
+function AssistantTimeline({
+  message,
+  activities,
+  running,
+  requestId,
+  workspacePath,
+  onActivityChange,
+}: {
+  message: ChatMessage;
+  activities: AgentActivity[];
+  running: boolean;
+  requestId?: string;
+  workspacePath: string;
+  onActivityChange(activity: AgentActivity): void;
+}) {
+  const grouped = new Map<number, AgentActivity[]>();
+  for (const activity of activities) {
+    const offset = Math.max(
+      0,
+      Math.min(
+        message.content.length,
+        activity.contentOffset ?? message.content.length,
+      ),
+    );
+    grouped.set(offset, [...(grouped.get(offset) ?? []), activity]);
+  }
+  const groups = [...grouped.entries()].sort(([a], [b]) => a - b);
+  if (!groups.length)
+    return message.content ? (
+      <MarkdownMessage content={message.content} />
+    ) : running ? (
+      <div className="thinking">
+        <span />
+        <span />
+        <span />
+        正在思考
+      </div>
+    ) : null;
+  let cursor = 0;
+  return (
+    <div className="assistant-timeline">
+      {groups.map(([offset, group], index) => {
+        const text = message.content.slice(cursor, offset);
+        cursor = offset;
+        return (
+          <div className="assistant-timeline-group" key={`${offset}:${index}`}>
+            {text && <MarkdownMessage content={text} />}
+            <ExecutionSummary
+              activities={group}
+              running={running}
+              requestId={requestId}
+              workspacePath={workspacePath}
+              onActivityChange={onActivityChange}
+            />
+          </div>
+        );
+      })}
+      {message.content.slice(cursor) && (
+        <MarkdownMessage content={message.content.slice(cursor)} />
+      )}
+    </div>
   );
 }
 
@@ -2136,6 +2229,7 @@ export default function App() {
   );
   const currentRequest = useRef<string | undefined>(undefined);
   const requestTasksRef = useRef(new Map<string, string>());
+  const assistantLengthsRef = useRef(new Map<string, number>());
   const activeTaskIdRef = useRef(activeTaskId);
   const tasksRef = useRef(tasks);
   const previewTimerRef = useRef<number | undefined>(undefined);
@@ -2590,13 +2684,29 @@ export default function App() {
         if (!taskId) return;
         const isActive = taskId === activeTaskIdRef.current;
         if (event.type === "activity") {
+          const task = tasksRef.current.find((item) => item.id === taskId);
+          const previous = task?.activities.find(
+            (item) => item.id === event.activity.id,
+          );
+          const fallbackLength =
+            task?.messages.find((message) => message.id === `assistant:${id}`)
+              ?.content.length ?? 0;
+          const positionedActivity: AgentActivity = {
+            ...event.activity,
+            contentOffset:
+              previous?.contentOffset ??
+              assistantLengthsRef.current.get(id) ??
+              fallbackLength,
+          };
           const updateActivities = (all: AgentActivity[]) => {
-            const exists = all.some((item) => item.id === event.activity.id);
+            const exists = all.some(
+              (item) => item.id === positionedActivity.id,
+            );
             return exists
               ? all.map((item) =>
-                  item.id === event.activity.id ? event.activity : item,
+                  item.id === positionedActivity.id ? positionedActivity : item,
                 )
-              : [...all, event.activity];
+              : [...all, positionedActivity];
           };
           setTasks((all) =>
             all.map((task) =>
@@ -2613,6 +2723,10 @@ export default function App() {
           return;
         }
         if (event.type === "text") {
+          assistantLengthsRef.current.set(
+            id,
+            (assistantLengthsRef.current.get(id) ?? 0) + event.delta.length,
+          );
           const updateMessages = (all: ChatMessage[]) =>
             all.map((m) =>
               m.id === `assistant:${id}`
@@ -2720,6 +2834,7 @@ export default function App() {
           );
           if (isActive) setUsageResolved(true);
           requestTasksRef.current.delete(id);
+          assistantLengthsRef.current.delete(id);
         }
         if (event.type === "done") {
           setTasks((all) =>
@@ -2763,6 +2878,7 @@ export default function App() {
             setUsageResolved(true);
           }
           requestTasksRef.current.delete(id);
+          assistantLengthsRef.current.delete(id);
         }
       }) ?? (() => undefined),
     [],
@@ -3451,6 +3567,7 @@ export default function App() {
     const taskId = activeTask?.id;
     if (!taskId) return;
     requestTasksRef.current.set(id, taskId);
+    assistantLengthsRef.current.set(id, 0);
     currentRequest.current = id;
     setRunningId(id);
     const assistantMessage: ChatMessage = {
@@ -3496,6 +3613,7 @@ export default function App() {
           ),
         );
       requestTasksRef.current.delete(runningId);
+      assistantLengthsRef.current.delete(runningId);
     }
   }
   async function resumeCheckpoint(checkpoint: AgentCheckpoint) {
@@ -3503,6 +3621,14 @@ export default function App() {
     await window.kcode.chat.removeCheckpoint(checkpoint.id);
     const id = await window.kcode.chat.start({
       ...checkpoint.request,
+      recoveryContext: checkpoint.subagents?.length
+        ? `上次运行在中断前创建了以下子 Agent：\n${checkpoint.subagents
+            .map(
+              (agent) =>
+                `- ${agent.name}：${agent.task}（中断前状态：${agent.status}${agent.error ? `，错误：${agent.error}` : ""}）`,
+            )
+            .join("\n")}`
+        : checkpoint.request.recoveryContext,
       taskId: activeTask.id,
       messages: messages.map(({ role, content, images }) => ({
         role,
@@ -3514,6 +3640,7 @@ export default function App() {
       contextWindow: selectedContextWindow,
     });
     requestTasksRef.current.set(id, activeTask.id);
+    assistantLengthsRef.current.set(id, 0);
     currentRequest.current = id;
     setRunningId(id);
     requestStartedRef.current = Date.now();
@@ -3700,7 +3827,7 @@ export default function App() {
       >
         <aside className="sidebar">
           <div className="brand">
-            <span>K</span>
+            <img src={appLogo} alt="" aria-hidden="true" />
             <div>
               <strong>KCode</strong>
               <small>Agent workspace</small>
@@ -4059,22 +4186,25 @@ export default function App() {
                         onRetry={() =>
                           lastUserMessage && void send(lastUserMessage.content)
                         }
+                        assistantBody={
+                          requestId ? (
+                            <AssistantTimeline
+                              message={message}
+                              activities={turnActivities}
+                              running={turnRunning}
+                              requestId={turnRunning ? requestId : undefined}
+                              workspacePath={activeTask?.workspacePath || ""}
+                              onActivityChange={(next) =>
+                                setActivities((all) =>
+                                  all.map((item) =>
+                                    item.id === next.id ? next : item,
+                                  ),
+                                )
+                              }
+                            />
+                          ) : undefined
+                        }
                       />
-                      {requestId && (
-                        <ExecutionSummary
-                          activities={turnActivities}
-                          running={turnRunning}
-                          requestId={turnRunning ? requestId : undefined}
-                          workspacePath={activeTask?.workspacePath || ""}
-                          onActivityChange={(next) =>
-                            setActivities((all) =>
-                              all.map((item) =>
-                                item.id === next.id ? next : item,
-                              ),
-                            )
-                          }
-                        />
-                      )}
                       {requestId && !turnRunning && (
                         <FileChangesSummary activities={turnActivities} />
                       )}

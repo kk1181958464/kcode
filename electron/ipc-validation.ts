@@ -41,4 +41,6 @@ export const modelRequestSchema = z.object({
     .optional(),
   workspacePath: workspacePathSchema,
   contextWindow: z.number().int().positive().optional(),
+  agentDepth: z.number().int().min(0).max(2).optional(),
+  recoveryContext: z.string().max(20_000).optional(),
 });

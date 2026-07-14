@@ -44,6 +44,21 @@ export type AgentToolName =
   | "browser_screenshot"
   | "browser_record_start"
   | "browser_record_stop"
+  | "ssh_connect"
+  | "ssh_run"
+  | "ssh_list_directory"
+  | "ssh_read_file"
+  | "ssh_write_file"
+  | "ssh_disconnect"
+  | "mysql_connect"
+  | "mysql_connect_via_ssh"
+  | "mysql_query"
+  | "mysql_disconnect"
+  | "spawn_agent"
+  | "list_agents"
+  | "message_agent"
+  | "wait_agent"
+  | "stop_agent"
   | "run_command";
 
 export type ContextFile = {
@@ -162,6 +177,8 @@ export type ModelRequest = {
   permissionPolicy?: PermissionPolicy;
   workspacePath: string;
   contextWindow?: number;
+  agentDepth?: number;
+  recoveryContext?: string;
 };
 
 export type WorkspaceFolder = { name: string; path: string };
@@ -196,6 +213,10 @@ export type AgentActivity = {
   undoable?: boolean;
   undone?: boolean;
   round?: number;
+  contentOffset?: number;
+  childActivities?: AgentActivity[];
+  subagentId?: string;
+  subagentName?: string;
   progress?: "advanced" | "unchanged" | "stalled";
 };
 
@@ -232,6 +253,16 @@ export type AgentCheckpoint = {
   startedAt: number;
   status: "running" | "paused" | "done";
   request: ModelRequest;
+  subagents?: SubagentCheckpoint[];
+};
+export type SubagentCheckpoint = {
+  id: string;
+  name: string;
+  task: string;
+  status: "running" | "stopping" | "completed" | "failed" | "stopped";
+  startedAt: number;
+  completedAt?: number;
+  error?: string;
 };
 export type BrowserRecordingFile = {
   id: string;
