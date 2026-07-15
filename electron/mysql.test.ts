@@ -165,3 +165,64 @@ test("streams and truncates a real MySQL protocol result set", async () => {
     console.error = originalError;
   }
 });
+
+test("times out a stalled MySQL query and closes the session", async () => {
+  const server = createMysqlServer();
+  const serverConnections = new Set<MysqlServerConnection>();
+  server.on("connection", (connection) => {
+    serverConnections.add(connection);
+    connection.on("error", () => undefined);
+    connection.on("end", () => serverConnections.delete(connection));
+    connection.on("query", () => {
+      // Intentionally leave the query unanswered.
+    });
+    connection.serverHandshake({
+      protocolVersion: 10,
+      serverVersion: "8.0.0-kcode-test",
+      connectionId: 2,
+      statusFlags: 2,
+      characterSet: 45,
+      capabilityFlags: 0x00ffffff,
+      authCallback: (_auth: unknown, complete: (error?: Error) => void) =>
+        complete(),
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = (server as any)._server.address();
+  const controller = new AbortController();
+  await connectMysql(
+    "timeout-task",
+    "timeout-request",
+    {
+      host: "127.0.0.1",
+      port: address.port,
+      username: "test",
+      password: "test",
+    },
+    false,
+    controller.signal,
+  );
+  const originalLog = console.log;
+  const originalError = console.error;
+  console.log = () => undefined;
+  console.error = () => undefined;
+  try {
+    await assert.rejects(
+      queryMysql(
+        "timeout-task",
+        "timeout-request",
+        "SELECT SLEEP(30)",
+        [],
+        controller.signal,
+        25,
+      ),
+      /查询超时/,
+    );
+    assert.equal(await disconnectMysql("timeout-task"), false);
+  } finally {
+    for (const connection of serverConnections) connection.destroy();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    console.log = originalLog;
+    console.error = originalError;
+  }
+});

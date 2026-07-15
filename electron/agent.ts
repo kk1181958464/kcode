@@ -25,6 +25,19 @@ import {
 import { isCasualGreeting } from "../src/intent";
 import { resolvePermissionDecision } from "../src/permissions";
 import { AgentStreamAssembler } from "./agent-stream";
+import {
+  createConversationIsolation,
+  historyFingerprint,
+} from "./conversation-isolation";
+import { writeLog } from "./logger";
+import { resolveGitExecutable } from "./executables";
+import { conciseFailureOutput } from "./activity-errors";
+import { powershellCommand } from "./powershell-command";
+import {
+  fetchWithRetry,
+  readResponseText,
+  readStreamChunk,
+} from "./request-guard";
 import { getProviderWithKey } from "./store";
 import {
   bindBrowserRequest,
@@ -103,6 +116,41 @@ type ToolResult = Partial<
   output: string;
   subagentUsage?: { input: number; output: number; cached: number };
 };
+
+async function* streamOperationProgress<T>(
+  operation: (report: (output: string) => void) => Promise<T>,
+): AsyncGenerator<string, T> {
+  const queue: string[] = [];
+  let wake: (() => void) | undefined;
+  let done = false;
+  let result: T | undefined;
+  let failure: unknown;
+  const report = (output: string) => {
+    queue.push(output);
+    wake?.();
+    wake = undefined;
+  };
+  void operation(report)
+    .then((value) => {
+      result = value;
+      done = true;
+      wake?.();
+    })
+    .catch((error) => {
+      failure = error;
+      done = true;
+      wake?.();
+    });
+  while (!done || queue.length) {
+    if (!queue.length)
+      await new Promise<void>((resolve) => {
+        wake = resolve;
+      });
+    while (queue.length) yield queue.shift()!;
+  }
+  if (failure) throw failure;
+  return result as T;
+}
 type StructuredToolResult = {
   success: boolean;
   summary: string;
@@ -606,13 +654,19 @@ const tools = [
   {
     name: "ssh_run",
     description:
-      "Run a command on the SSH server connected to this task. Commands have no fixed total timeout and stop when the task is cancelled. Set pty and stdin only for commands that require controlled interactive input; stdin is hidden from activity records.",
+      "Run a command on the SSH server connected to this task. Defaults to a 180 second timeout and stops when the task is cancelled. Set pty and stdin only for commands that require controlled interactive input; stdin is hidden from activity records.",
     parameters: {
       type: "object",
       properties: {
         command: { type: "string" },
         stdin: { type: "string" },
         pty: { type: "boolean" },
+        timeoutMs: {
+          type: "number",
+          minimum: 1_000,
+          maximum: 600_000,
+          description: "Optional timeout in milliseconds. Defaults to 180000.",
+        },
       },
       required: ["command"],
       additionalProperties: false,
@@ -793,7 +847,15 @@ const tools = [
     description: "Run a PowerShell command in the workspace.",
     parameters: {
       type: "object",
-      properties: { command: { type: "string" } },
+      properties: {
+        command: { type: "string" },
+        timeoutMs: {
+          type: "number",
+          minimum: 1_000,
+          maximum: 600_000,
+          description: "Optional timeout in milliseconds. Defaults to 120000.",
+        },
+      },
       required: ["command"],
       additionalProperties: false,
     },
@@ -936,6 +998,7 @@ function command(
       });
       const chunks: Buffer[] = [];
       let byteLength = 0;
+      let timedOut = false;
       const append = (chunk: Buffer) => {
         chunks.push(chunk);
         byteLength += chunk.length;
@@ -944,7 +1007,10 @@ function command(
       };
       child.stdout.on("data", append);
       child.stderr.on("data", append);
-      const timer = setTimeout(() => child.kill(), timeout);
+      const timer = setTimeout(() => {
+        timedOut = true;
+        child.kill();
+      }, timeout);
       const abort = () => child.kill();
       signal.addEventListener("abort", abort, { once: true });
       child.on("error", (error) => {
@@ -962,8 +1028,14 @@ function command(
         } catch {
           output = new TextDecoder("gb18030").decode(bytes);
         }
+        if (timedOut)
+          output =
+            `${output.trimEnd()}\n命令执行超时（${Math.round(timeout / 1_000)} 秒），已终止。`.trimStart();
+        else if (signal.aborted)
+          output = `${output.trimEnd()}\n命令已取消。`.trimStart();
         resolve({ output: output.slice(-100_000), exitCode: code ?? -1 });
       });
+      if (signal.aborted) abort();
     },
   );
 }
@@ -971,9 +1043,15 @@ function command(
 function failureSummary(call: ToolCall, output: string, exitCode?: number) {
   if (call.name.startsWith("mysql_")) return output;
   if (call.name.startsWith("ssh_")) {
-    if (call.name === "ssh_run" && exitCode !== undefined)
-      return `远程命令执行失败，退出码 ${exitCode}。`;
+    if (call.name === "ssh_run" && exitCode !== undefined) {
+      const detail = conciseFailureOutput(output);
+      return `远程命令执行失败，退出码 ${exitCode}${detail ? `：${detail}` : "。"}`;
+    }
     return output;
+  }
+  if (call.name.startsWith("git_")) {
+    const detail = conciseFailureOutput(output);
+    return detail ? `Git 操作失败：${detail}` : "Git 操作失败。";
   }
   if (
     (call.name === "fetch_url" || call.name === "web_search") &&
@@ -990,7 +1068,8 @@ function failureSummary(call: ToolCall, output: string, exitCode?: number) {
       )
     )
       return "命令或程序不存在，请检查名称以及是否已安装。";
-    return `命令执行失败，退出码 ${exitCode ?? "未知"}。`;
+    const detail = conciseFailureOutput(output);
+    return `命令执行失败，退出码 ${exitCode ?? "未知"}${detail ? `：${detail}` : "。"}`;
   }
   return `${({ apply_patch: "补丁应用", write_file: "文件写入", delete_path: "路径删除", move_path: "路径移动", make_directory: "目录创建", read_file: "文件读取", search_code: "代码搜索", list_directory: "目录读取", path_info: "路径检查" } as Partial<Record<AgentToolName, string>>)[call.name] || "工具执行"}失败。`;
 }
@@ -1169,6 +1248,7 @@ async function execute(
   call: ToolCall,
   request: ModelRequest,
   signal: AbortSignal,
+  onProgress: (output: string) => void = () => undefined,
 ): Promise<ToolResult> {
   if (call.name === "list_directory") {
     const directory = workspacePath(root, call.input.path);
@@ -1385,7 +1465,7 @@ async function execute(
   if (call.name === "git_status") {
     const result = await command(
       root,
-      "git",
+      resolveGitExecutable(),
       ["status", "--short", "--branch"],
       signal,
       15_000,
@@ -1397,7 +1477,13 @@ async function execute(
     const args = ["diff", "--no-ext-diff"];
     if (call.input.staged) args.push("--cached");
     if (call.input.path) args.push("--", String(call.input.path));
-    const result = await command(root, "git", args, signal, 20_000);
+    const result = await command(
+      root,
+      resolveGitExecutable(),
+      args,
+      signal,
+      20_000,
+    );
     if (result.exitCode) throw new Error(result.output || "Git diff 读取失败");
     return { output: result.output || "没有差异" };
   }
@@ -1405,7 +1491,7 @@ async function execute(
     const limit = Math.min(50, Math.max(1, Number(call.input.limit) || 10));
     const result = await command(
       root,
-      "git",
+      resolveGitExecutable(),
       ["log", `-${limit}`, "--date=short", "--pretty=format:%h %ad %s (%an)"],
       signal,
       15_000,
@@ -1422,7 +1508,7 @@ async function execute(
       : revision;
     const result = await command(
       root,
-      "git",
+      resolveGitExecutable(),
       ["show", "--no-ext-diff", "--format=fuller", spec],
       signal,
       20_000,
@@ -1436,7 +1522,7 @@ async function execute(
     const id = randomUUID();
     const child = spawn(
       "powershell.exe",
-      ["-NoProfile", "-NonInteractive", "-Command", script],
+      ["-NoProfile", "-NonInteractive", "-Command", powershellCommand(script)],
       { cwd: root, windowsHide: true, shell: false },
     );
     const process = { root, requestId, child, output: "" } as {
@@ -1650,6 +1736,11 @@ async function execute(
         stdin:
           typeof call.input.stdin === "string" ? call.input.stdin : undefined,
         pty: Boolean(call.input.pty),
+        timeoutMs: Math.min(
+          600_000,
+          Math.max(1_000, Number(call.input.timeoutMs) || 180_000),
+        ),
+        onOutput: onProgress,
       },
     );
     return { ...result, command: remoteCommand };
@@ -1892,7 +1983,12 @@ async function execute(
     const result = await command(
       root,
       "powershell.exe",
-      ["-NoProfile", "-NonInteractive", "-Command", diagnostic.command!],
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        powershellCommand(diagnostic.command!),
+      ],
       signal,
       120_000,
     );
@@ -1904,12 +2000,12 @@ async function execute(
   }
   const script = String(call.input.command || "");
   if (!script) throw new Error("缺少命令");
-  const utf8Script = `[Console]::InputEncoding=[System.Text.UTF8Encoding]::new(); [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new(); $OutputEncoding=[System.Text.UTF8Encoding]::new(); ${script}`;
   const result = await command(
     root,
     "powershell.exe",
-    ["-NoProfile", "-NonInteractive", "-Command", utf8Script],
+    ["-NoProfile", "-NonInteractive", "-Command", powershellCommand(script)],
     signal,
+    Math.min(600_000, Math.max(1_000, Number(call.input.timeoutMs) || 120_000)),
   );
   return {
     output: result.output || "命令未产生输出",
@@ -1918,13 +2014,16 @@ async function execute(
   };
 }
 
-async function* sseJson(response: Response): AsyncGenerator<any> {
+async function* sseJson(
+  response: Response,
+  signal: AbortSignal,
+): AsyncGenerator<any> {
   if (!response.body) throw new Error("模型没有返回响应流");
   const reader = response.body.getReader(),
     decoder = new TextDecoder();
   let buffer = "";
   while (true) {
-    const { done, value } = await reader.read();
+    const { done, value } = await readStreamChunk(reader, signal);
     buffer += decoder.decode(value, { stream: !done });
     const blocks = buffer.split(/\r?\n\r?\n/);
     buffer = blocks.pop() ?? "";
@@ -1941,11 +2040,13 @@ async function* sseJson(response: Response): AsyncGenerator<any> {
 async function parseStreamedTurn(
   protocol: string,
   response: Response,
+  signal: AbortSignal,
   onText?: (delta: string) => void,
 ): Promise<Turn> {
   if (response.body) {
     const assembler = new AgentStreamAssembler(protocol as any, onText);
-    for await (const event of sseJson(response)) assembler.consume(event);
+    for await (const event of sseJson(response, signal))
+      assembler.consume(event);
     const assembled = assembler.finish();
     return { ...assembled, calls: validCalls(assembled.calls) };
   }
@@ -1958,7 +2059,7 @@ async function parseStreamedTurn(
   >();
   const responseItems: any[] = [],
     anthropicBlocks: any[] = [];
-  for await (const event of sseJson(response)) {
+  for await (const event of sseJson(response, signal)) {
     if (event.error?.message || event.type === "error")
       throw new Error(
         event.error?.message || event.message || "模型流式请求失败",
@@ -2117,6 +2218,7 @@ type TurnStreamEvent =
   { type: "text"; delta: string } | { type: "complete"; turn: Turn };
 async function* streamModelTurn(
   root: string,
+  requestId: string,
   request: ModelRequest,
   history: HistoryItem[],
   signal: AbortSignal,
@@ -2133,7 +2235,7 @@ async function* streamModelTurn(
     wake?.();
     wake = undefined;
   };
-  void modelTurn(root, request, history, signal, toolsEnabled, push)
+  void modelTurn(root, requestId, request, history, signal, toolsEnabled, push)
     .then((value) => {
       turn = value;
       done = true;
@@ -2157,6 +2259,7 @@ async function* streamModelTurn(
 
 async function modelTurn(
   root: string,
+  requestId: string,
   request: ModelRequest,
   history: HistoryItem[],
   signal: AbortSignal,
@@ -2191,9 +2294,11 @@ async function modelTurn(
           !((request.agentDepth ?? 0) >= 2 && tool.name === "spawn_agent"),
       )
     : [];
-  const system = `You are a coding agent working in ${root}. Use the provided native tools to inspect and modify the project. Prefer apply_patch for precise edits and write_file for new or complete files. Never invoke apply_patch, file deletion, file moves, or directory operations through run_command when a native tool exists. Use web_search for current or externally verifiable information and fetch_url to inspect primary sources; preserve source URLs in the final answer. For interactive or authenticated sites use browser_open, browser_snapshot, browser_click, and browser_type. Credentials explicitly supplied by the user may be entered directly with browser_type. Browser recording is opt-in: call browser_record_start only after an explicit user request such as 开始录制, and call browser_record_stop when the user asks to stop or generate Python. Never record ordinary browsing by default. For independent work that can run concurrently, use spawn_agent with self-contained, non-overlapping tasks, then wait_agent before giving a final answer. Use list_agents, message_agent, and stop_agent to coordinate them. Subagents inherit this task's model, workspace, and permission policy; confirmation requests from background agents are forwarded to the main task UI. For remote servers, call ssh_connect with credentials explicitly supplied by the user, then use ssh_run and the SSH SFTP tools. Use pty/stdin only when a remote command requires controlled input; never place a password in the command string. SSH host keys are persisted on first use and changed keys must be confirmed by the user. For databases, use mysql_connect for direct MySQL access or mysql_connect_via_ssh for an SSH tunnel, then mysql_query; use ? placeholders and values for user-provided data when practical. Public direct MySQL connections use TLS by default and you must not retry with ssl=false unless the user explicitly approves. Never echo passwords, private keys, or passphrases in text, commands, or SQL. If CAPTCHA, SMS, passkey, or two-factor verification appears, pause and ask the user to complete it in the visible browser. Do not claim an action succeeded until its tool result confirms it.${request.recoveryContext ? `\n\n<recovery_context>${request.recoveryContext}</recovery_context>\nThis task resumed after an interruption. Verify prior side effects before repeating them, and recreate any interrupted subagent work that is still needed.` : ""}`;
+  const isolation = createConversationIsolation(request.taskId, requestId);
+  const system = `${isolation.boundary}\nYou are a coding agent working in ${root}. Use the provided native tools to inspect and modify the project. Each run_command invocation uses a fresh PowerShell process, so environment variable changes do not persist to later commands; combine dependent setup and execution in one command. Prefer apply_patch for precise edits and write_file for new or complete files. Never invoke apply_patch, file deletion, file moves, or directory operations through run_command when a native tool exists. Use web_search for current or externally verifiable information and fetch_url to inspect primary sources; preserve source URLs in the final answer. For interactive or authenticated sites use browser_open, browser_snapshot, browser_click, and browser_type. Credentials explicitly supplied by the user may be entered directly with browser_type. Browser recording is opt-in: call browser_record_start only after an explicit user request such as 开始录制, and call browser_record_stop when the user asks to stop or generate Python. Never record ordinary browsing by default. For independent work that can run concurrently, use spawn_agent with self-contained, non-overlapping tasks, then wait_agent before giving a final answer. Use list_agents, message_agent, and stop_agent to coordinate them. Subagents inherit this task's model, workspace, and permission policy; confirmation requests from background agents are forwarded to the main task UI. For remote servers, call ssh_connect with credentials explicitly supplied by the user, then use ssh_run and the SSH SFTP tools. Use pty/stdin only when a remote command requires controlled interactive input; never place a password in the command string. SSH exec sessions are non-interactive and may not load shell profiles; when a remote command depends on profile-defined PATH values, invoke the appropriate login shell explicitly. SSH host keys are persisted on first use and changed keys must be confirmed by the user. For databases, use mysql_connect for direct MySQL access or mysql_connect_via_ssh for an SSH tunnel, then mysql_query; use ? placeholders and values for user-provided data when practical. Public direct MySQL connections use TLS by default and you must not retry with ssl=false unless the user explicitly approves. Never echo passwords, private keys, or passphrases in text, commands, or SQL. If CAPTCHA, SMS, passkey, or two-factor verification appears, pause and ask the user to complete it in the visible browser. Do not claim an action succeeded until its tool result confirms it.${request.recoveryContext ? `\n\n<recovery_context>${request.recoveryContext}</recovery_context>\nThis task resumed after an interruption. Verify prior side effects before repeating them, and recreate any interrupted subagent work that is still needed.` : ""}`;
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
+    ...isolation.headers,
   };
   if (provider.protocol === "anthropic-messages") {
     headers["x-api-key"] = provider.apiKey;
@@ -2246,6 +2351,7 @@ async function modelTurn(
     }
     body = {
       model: request.modelId,
+      ...isolation.openAi,
       messages,
       stream: true,
       stream_options: { include_usage: true },
@@ -2455,19 +2561,36 @@ async function modelTurn(
         : {}),
     };
   }
-  const response = await fetch(url, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-    signal,
+  const response = await fetchWithRetry(
+    url,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    },
+    { signal },
+  );
+  writeLog("info", "model.response", {
+    requestId: isolation.traceId,
+    taskScopeId: isolation.taskScopeId,
+    conversationId: isolation.conversationId,
+    providerId: request.providerId,
+    modelId: request.modelId,
+    protocol: provider.protocol,
+    status: response.status,
+    historyHash: historyFingerprint(history),
+    upstreamRequestId:
+      response.headers.get("x-request-id") ??
+      response.headers.get("request-id") ??
+      undefined,
   });
   if (!response.ok)
     throw new Error(
-      `请求失败 (${response.status}): ${(await response.text()).slice(0, 500)}`,
+      `请求失败 (${response.status}): ${(await readResponseText(response, signal)).slice(0, 500)}`,
     );
   if (/text\/event-stream/i.test(response.headers.get("content-type") || ""))
-    return parseStreamedTurn(provider.protocol, response, onText);
-  const json = (await response.json()) as any;
+    return parseStreamedTurn(provider.protocol, response, signal, onText);
+  const json = JSON.parse(await readResponseText(response, signal)) as any;
   if (provider.protocol === "openai-chat") {
     const message = json.choices?.[0]?.message ?? {};
     const calls = (message.tool_calls ?? []).map((c: any) => ({
@@ -2636,6 +2759,7 @@ export async function* runAgent(
       listSubagents(requestId).some((agent) => !agent.collected);
     for await (const event of streamModelTurn(
       root,
+      requestId,
       request,
       history,
       signal,
@@ -2893,15 +3017,28 @@ export async function* runAgent(
           root,
           mutationPaths(call),
         );
-        const result = await execute(
-          root,
-          requestId,
-          browserSessionId,
-          activity.id,
-          call,
-          request,
-          signal,
+        const execution = streamOperationProgress((report) =>
+          execute(
+            root,
+            requestId,
+            browserSessionId,
+            activity.id,
+            call,
+            request,
+            signal,
+            report,
+          ),
         );
+        let result: ToolResult;
+        while (true) {
+          const step = await execution.next();
+          if (step.done) {
+            result = step.value;
+            break;
+          }
+          activity.output = step.value;
+          yield { type: "activity", activity: { ...activity } };
+        }
         finishMutationClaim?.(true);
         const childActivities = result.childActivities;
         const subagentUsage = result.subagentUsage;
@@ -2937,9 +3074,12 @@ export async function* runAgent(
         finishMutationClaim?.(false);
         activity.status = "failed";
         activity.completedAt = Date.now();
-        activity.output =
+        const failureOutput =
           error instanceof Error ? error.message : String(error);
-        activity.errorSummary = failureSummary(call, activity.output);
+        activity.output = activity.output
+          ? `${activity.output}\n\n${failureOutput}`
+          : failureOutput;
+        activity.errorSummary = failureSummary(call, failureOutput);
       }
       const fingerprint = JSON.stringify({
         tool: call.name,

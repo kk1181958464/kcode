@@ -10,8 +10,17 @@ import {
   configureSshKnownHosts,
   connectSsh,
   disconnectSsh,
+  normalizeSshPrivateKey,
   redactSshInput,
+  runSshCommand,
 } from "./ssh";
+
+test("normalizes escaped newlines in SSH private keys", () => {
+  assert.equal(
+    normalizeSshPrivateKey("-----BEGIN KEY-----\\nabc\\n-----END KEY-----"),
+    "-----BEGIN KEY-----\nabc\n-----END KEY-----",
+  );
+});
 
 test("redacts SSH credentials from persisted activity input", () => {
   assert.deepEqual(
@@ -134,5 +143,79 @@ test("cancels a pending SSH handshake without registering a session", async () =
   closeSocket?.();
   await new Promise<void>((resolve) => server.close(() => resolve()));
   assert.equal(closedQuickly, true);
+  rmSync(directory, { recursive: true, force: true });
+});
+
+test("supports keyboard-interactive auth and times out stalled commands", async () => {
+  const directory = mkdtempSync(
+    path.join(tmpdir(), "kcode-ssh-keyboard-test-"),
+  );
+  configureSshKnownHosts(path.join(directory, "known-hosts.json"));
+  const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const clients = new Set<Connection>();
+  const server = new Server(
+    {
+      hostKeys: [
+        privateKey.export({ type: "pkcs1", format: "pem" }).toString(),
+      ],
+    },
+    (client) => {
+      clients.add(client);
+      client.on("error", () => undefined);
+      client.on("close", () => clients.delete(client));
+      client.on("authentication", (context) => {
+        if (context.method !== "keyboard-interactive")
+          return context.reject(["keyboard-interactive"]);
+        context.prompt(
+          [{ prompt: "Password: ", echo: false }],
+          (answers: string[]) =>
+            answers[0] === "test-password"
+              ? context.accept()
+              : context.reject(),
+        );
+      });
+      client.on("ready", () =>
+        client.on("session", (accept) => {
+          const session = accept();
+          session.on("exec", (acceptCommand) => {
+            const stream = acceptCommand();
+            stream.write("remote command started\n");
+          });
+        }),
+      );
+    },
+  );
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const result = await connectSsh(
+    "keyboard-task",
+    "keyboard-request",
+    {
+      host: "127.0.0.1",
+      port: address.port,
+      username: "test",
+      password: "test-password",
+    },
+    new AbortController().signal,
+  );
+  assert.equal(result.connected, true);
+  const progress: string[] = [];
+  await assert.rejects(
+    runSshCommand(
+      "keyboard-task",
+      "keyboard-command",
+      "sleep forever",
+      new AbortController().signal,
+      { timeoutMs: 25, onOutput: (output) => progress.push(output) },
+    ),
+    /远程命令执行超时/,
+  );
+  assert.ok(
+    progress.some((output) => output.includes("remote command started")),
+  );
+  assert.equal(disconnectSsh("keyboard-task"), true);
+  for (const client of clients) client.end();
+  await new Promise<void>((resolve) => server.close(() => resolve()));
   rmSync(directory, { recursive: true, force: true });
 });

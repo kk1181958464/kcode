@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Archive,
   ArchiveRestore,
+  ArrowDown,
   ArrowLeft,
   ArrowRight,
   Bot,
@@ -54,6 +55,12 @@ import {
   estimateMessageTokens,
 } from "./context";
 import type { ContextLedger } from "./context";
+import {
+  isTaskViewCurrent,
+  recoverInterruptedActivities,
+  recoverTaskRunStatus,
+  type TaskRunStatus,
+} from "./task-status";
 import type {
   AgentActivity,
   AgentCheckpoint,
@@ -86,6 +93,7 @@ type TaskRecord = {
   modelSelection?: string;
   reasoningEffort?: ReasoningEffort;
   runningId?: string;
+  runStatus?: TaskRunStatus;
   startedAt?: number;
   usage?: { input: number; output: number; cached: number };
   usageResolved?: boolean;
@@ -122,12 +130,22 @@ const initialTask = (): TaskRecord => ({
   messages: [],
   activities: [],
   reasoningEffort: "auto",
+  runStatus: "idle",
 });
+function normalizeStoredTask(task: TaskRecord): TaskRecord {
+  return {
+    ...task,
+    runningId: undefined,
+    startedAt: undefined,
+    runStatus: recoverTaskRunStatus(task),
+    activities: recoverInterruptedActivities(task.activities, task.updatedAt),
+  };
+}
 function storedTasks(): TaskRecord[] {
   try {
     return (
       JSON.parse(localStorage.getItem("kcode.tasks") || "[]") as TaskRecord[]
-    ).map((task) => ({ ...task, runningId: undefined, startedAt: undefined }));
+    ).map(normalizeStoredTask);
   } catch {
     return [];
   }
@@ -1517,6 +1535,9 @@ function ActivityItem({
   const [expanded, setExpanded] = useState(activity.status === "waiting");
   const [undoing, setUndoing] = useState(false);
   const [restoreConflict, setRestoreConflict] = useState(false);
+  const [elapsedMs, setElapsedMs] = useState(() =>
+    Math.max(0, (activity.completedAt ?? Date.now()) - activity.startedAt),
+  );
   const pending = activity.status === "waiting";
   const detail = activity.diff || activity.output;
   const readableFailure =
@@ -1529,6 +1550,18 @@ function ActivityItem({
   useEffect(() => {
     if (activity.status === "failed") setExpanded(true);
   }, [activity.status]);
+  useEffect(() => {
+    if (activity.status !== "running") {
+      setElapsedMs(
+        Math.max(0, (activity.completedAt ?? Date.now()) - activity.startedAt),
+      );
+      return;
+    }
+    const update = () => setElapsedMs(Date.now() - activity.startedAt);
+    update();
+    const timer = window.setInterval(update, 500);
+    return () => window.clearInterval(timer);
+  }, [activity.status, activity.startedAt, activity.completedAt]);
   async function restore(event?: React.MouseEvent, force = false) {
     event?.stopPropagation();
     if (!window.kcode || undoing || activity.undone) return;
@@ -1647,9 +1680,25 @@ function ActivityItem({
               </span>
             </div>
           )}
-          {detail && activity.errorSummary && (
-            <div className="activity-output-label">详细输出</div>
+          {activity.status === "running" && (
+            <div className="activity-running-detail">
+              <RefreshCw className="spinning" size={14} />
+              <span>
+                <strong>
+                  {activity.tool === "ssh_run"
+                    ? "等待远程命令返回"
+                    : "操作正在执行"}
+                </strong>
+                <small>已运行 {formatDuration(elapsedMs)}</small>
+              </span>
+            </div>
           )}
+          {detail &&
+            (activity.errorSummary || activity.status === "running") && (
+              <div className="activity-output-label">
+                {activity.status === "running" ? "实时输出" : "详细输出"}
+              </div>
+            )}
           {detail && (
             <pre className={activity.diff ? "activity-diff" : ""}>{detail}</pre>
           )}
@@ -1755,6 +1804,7 @@ function ExecutionSummary({
     files ? `编辑了 ${files} 个文件` : "",
     !commands && !agents && !files ? `执行了 ${activities.length} 个步骤` : "",
     failures ? `${failures} 项失败` : "",
+    running ? (inProgress ? "正在执行" : "正在继续") : "",
   ]
     .filter(Boolean)
     .join(" · ");
@@ -1770,7 +1820,7 @@ function ExecutionSummary({
         aria-expanded={expanded}
       >
         <span className="execution-summary-icon">
-          {running && inProgress ? (
+          {running ? (
             <RefreshCw className="spinning" size={15} />
           ) : (
             <Terminal size={15} />
@@ -1793,6 +1843,90 @@ function ExecutionSummary({
         </div>
       )}
     </section>
+  );
+}
+
+function AgentWorkingState({
+  activities,
+  startedAt,
+  hasTrailingText,
+}: {
+  activities: AgentActivity[];
+  startedAt: number;
+  hasTrailingText: boolean;
+}) {
+  const [elapsedMs, setElapsedMs] = useState(() => Date.now() - startedAt);
+  useEffect(() => {
+    const update = () => setElapsedMs(Date.now() - startedAt);
+    update();
+    const timer = window.setInterval(update, 500);
+    return () => window.clearInterval(timer);
+  }, [startedAt]);
+  const active = [...activities]
+    .reverse()
+    .find(
+      (activity) =>
+        activity.status === "running" || activity.status === "waiting",
+    );
+  const last = activities.at(-1);
+  const completed = activities.filter(
+    (activity) => activity.status === "success",
+  ).length;
+  const failures = activities.filter(
+    (activity) => activity.status === "failed",
+  ).length;
+  const phase = active
+    ? active.status === "waiting"
+      ? "等待操作确认"
+      : active.tool === "ssh_run"
+        ? "正在执行远程命令"
+        : `正在${active.title}`
+    : hasTrailingText
+      ? "正在生成回复"
+      : last?.status === "failed"
+        ? "正在分析失败并调整方案"
+        : last
+          ? "正在分析执行结果"
+          : "正在思考并规划步骤";
+  const recent = activities.slice(-3);
+  return (
+    <div className="agent-working">
+      <div className="agent-working-head">
+        <span className="agent-working-mark">
+          <RefreshCw className="spinning" size={13} />
+        </span>
+        <span>
+          <strong aria-live="polite">{phase}</strong>
+          <small>
+            {completed ? `${completed} 步完成` : "准备执行"}
+            {failures ? ` · ${failures} 步失败` : ""}
+          </small>
+        </span>
+        <time>{formatDuration(elapsedMs)}</time>
+      </div>
+      <div className="agent-working-track">
+        <i />
+      </div>
+      {recent.length > 0 && (
+        <div className="agent-working-recent">
+          {recent.map((activity) => (
+            <span key={activity.id} className={activity.status}>
+              {activity.status === "running" ? (
+                <RefreshCw className="spinning" size={11} />
+              ) : activity.status === "failed" ||
+                activity.status === "denied" ? (
+                <CircleAlert size={11} />
+              ) : activity.status === "waiting" ? (
+                <Clock3 size={11} />
+              ) : (
+                <Check size={11} />
+              )}
+              {activity.title}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1823,17 +1957,21 @@ function AssistantTimeline({
     grouped.set(offset, [...(grouped.get(offset) ?? []), activity]);
   }
   const groups = [...grouped.entries()].sort(([a], [b]) => a - b);
+  const lastActivityOffset = groups.at(-1)?.[0] ?? 0;
+  const hasTrailingText = message.content.length > lastActivityOffset;
   if (!groups.length)
-    return message.content ? (
-      <MarkdownMessage content={message.content} />
-    ) : running ? (
-      <div className="thinking">
-        <span />
-        <span />
-        <span />
-        正在思考
-      </div>
-    ) : null;
+    return (
+      <>
+        {message.content && <MarkdownMessage content={message.content} />}
+        {running && (
+          <AgentWorkingState
+            activities={activities}
+            startedAt={message.createdAt}
+            hasTrailingText={Boolean(message.content)}
+          />
+        )}
+      </>
+    );
   let cursor = 0;
   return (
     <div className="assistant-timeline">
@@ -1845,7 +1983,7 @@ function AssistantTimeline({
             {text && <MarkdownMessage content={text} />}
             <ExecutionSummary
               activities={group}
-              running={running}
+              running={running && index === groups.length - 1}
               requestId={requestId}
               workspacePath={workspacePath}
               onActivityChange={onActivityChange}
@@ -1855,6 +1993,13 @@ function AssistantTimeline({
       })}
       {message.content.slice(cursor) && (
         <MarkdownMessage content={message.content.slice(cursor)} />
+      )}
+      {running && (
+        <AgentWorkingState
+          activities={activities}
+          startedAt={message.createdAt}
+          hasTrailingText={hasTrailingText}
+        />
       )}
     </div>
   );
@@ -2218,7 +2363,7 @@ export default function App() {
   });
   const [gitDiffOpen, setGitDiffOpen] = useState(false);
   const [gitRefreshing, setGitRefreshing] = useState(false);
-  const [activeTurnId, setActiveTurnId] = useState<string>();
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [summaryOpen, setSummaryOpen] = useState(false);
   const [checkpoints, setCheckpoints] = useState<AgentCheckpoint[]>([]);
   const [summarizingTasks, setSummarizingTasks] = useState<Set<string>>(
@@ -2231,9 +2376,13 @@ export default function App() {
   const requestTasksRef = useRef(new Map<string, string>());
   const assistantLengthsRef = useRef(new Map<string, number>());
   const activeTaskIdRef = useRef(activeTaskId);
+  const displayedTaskIdRef = useRef(activeTaskId);
   const tasksRef = useRef(tasks);
   const previewTimerRef = useRef<number | undefined>(undefined);
   const followFrameRef = useRef<number | undefined>(undefined);
+  const scrollFrameRef = useRef<number | undefined>(undefined);
+  const turnLayoutFrameRef = useRef<number | undefined>(undefined);
+  const scrollTargetRef = useRef<HTMLElement | null>(null);
   const requestStartedRef = useRef<number | undefined>(undefined);
   const contextByMessageRef = useRef(new Map<string, ContextFile[]>());
   const modelPickerRef = useRef<HTMLDivElement>(null);
@@ -2243,6 +2392,13 @@ export default function App() {
   const endRef = useRef<HTMLDivElement>(null);
   const autoFollowRef = useRef(true);
   const turnRefs = useRef(new Map<string, HTMLDivElement>());
+  const turnButtonRefs = useRef(new Map<string, HTMLButtonElement>());
+  const turnPositionsRef = useRef<{ id: string; top: number }[]>([]);
+  const activeConversationTurnRef = useRef<string | undefined>(undefined);
+  const claimTaskView = (taskId: string) => {
+    activeTaskIdRef.current = taskId;
+    displayedTaskIdRef.current = taskId;
+  };
   const activeTask = tasks.find((task) => task.id === activeTaskId) ?? tasks[0];
   useEffect(() => {
     if (!window.kcode?.state) {
@@ -2255,11 +2411,12 @@ export default function App() {
       .then(async (stored) => {
         if (cancelled) return;
         if (Array.isArray(stored)) {
-          const loaded = stored as TaskRecord[];
+          const loaded = (stored as TaskRecord[]).map(normalizeStoredTask);
           const selectedTask =
             loaded.find(
               (task) => task.id === localStorage.getItem("kcode.activeTaskId"),
             ) ?? loaded[0];
+          claimTaskView(selectedTask?.id ?? "");
           setTasks(loaded);
           setActiveTaskId(selectedTask?.id ?? "");
           setMessages(selectedTask?.messages ?? []);
@@ -2289,38 +2446,140 @@ export default function App() {
   const summaryBusy = Boolean(
     activeTask && summarizingTasks.has(activeTask.id),
   );
-  const conversationTurns = useMemo(
-    () =>
-      messages
-        .filter((message) => message.role === "user")
-        .map((user) => {
-          const index = messages.findIndex((message) => message.id === user.id);
-          const assistant = messages
-            .slice(index + 1)
-            .find((message) => message.role === "assistant");
-          return {
-            id: user.id,
-            question: user.content,
-            answer: assistant?.content || "正在生成…",
-          };
-        }),
-    [messages],
-  );
+  const conversationTurns = useMemo(() => {
+    const turns: Array<{ id: string; question: string; answer: string }> = [];
+    for (const message of messages) {
+      if (message.role === "user") {
+        turns.push({
+          id: message.id,
+          question: message.content,
+          answer: "正在生成…",
+        });
+        continue;
+      }
+      const currentTurn = turns.at(-1);
+      if (currentTurn && currentTurn.answer === "正在生成…")
+        currentTurn.answer = message.content || "正在生成…";
+    }
+    return turns;
+  }, [messages]);
+  const activitiesByRequest = useMemo(() => {
+    const grouped = new Map<string, AgentActivity[]>();
+    for (const activity of activities)
+      grouped.set(activity.requestId, [
+        ...(grouped.get(activity.requestId) ?? []),
+        activity,
+      ]);
+    return grouped;
+  }, [activities]);
   useEffect(() => {
-    setActiveTurnId(conversationTurns[0]?.id);
-  }, [activeTaskId]);
+    const ids = new Set(conversationTurns.map((turn) => turn.id));
+    if (
+      !activeConversationTurnRef.current ||
+      !ids.has(activeConversationTurnRef.current)
+    )
+      setActiveConversationTurn(conversationTurns[0]?.id);
+    refreshTurnPositions();
+  }, [conversationTurns]);
+  useEffect(() => {
+    const conversation = conversationRef.current;
+    const messageList = conversation?.querySelector(".message-list");
+    if (!messageList || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(refreshTurnPositions);
+    observer.observe(messageList);
+    return () => observer.disconnect();
+  }, [activeTaskId, messages.length]);
+  useEffect(
+    () => () => {
+      if (scrollFrameRef.current) cancelAnimationFrame(scrollFrameRef.current);
+      if (turnLayoutFrameRef.current)
+        cancelAnimationFrame(turnLayoutFrameRef.current);
+    },
+    [],
+  );
+
+  function setActiveConversationTurn(id?: string) {
+    if (activeConversationTurnRef.current === id) return;
+    if (activeConversationTurnRef.current)
+      turnButtonRefs.current
+        .get(activeConversationTurnRef.current)
+        ?.classList.remove("active");
+    activeConversationTurnRef.current = id;
+    if (id) turnButtonRefs.current.get(id)?.classList.add("active");
+  }
 
   function updateActiveTurn(container: HTMLElement) {
+    const positions = turnPositionsRef.current;
+    if (!positions.length) return setActiveConversationTurn(undefined);
     const threshold =
-      container.getBoundingClientRect().top +
-      Math.min(180, container.clientHeight * 0.3);
-    let current = conversationTurns[0]?.id;
-    for (const turn of conversationTurns) {
-      const element = turnRefs.current.get(turn.id);
-      if (element && element.getBoundingClientRect().top <= threshold)
-        current = turn.id;
+      container.scrollTop + Math.min(180, container.clientHeight * 0.3);
+    let low = 0;
+    let high = positions.length - 1;
+    let match = 0;
+    while (low <= high) {
+      const middle = (low + high) >> 1;
+      if (positions[middle].top <= threshold) {
+        match = middle;
+        low = middle + 1;
+      } else high = middle - 1;
     }
-    setActiveTurnId(current);
+    setActiveConversationTurn(positions[match].id);
+  }
+
+  function refreshTurnPositions() {
+    if (turnLayoutFrameRef.current)
+      cancelAnimationFrame(turnLayoutFrameRef.current);
+    turnLayoutFrameRef.current = requestAnimationFrame(() => {
+      turnLayoutFrameRef.current = undefined;
+      turnPositionsRef.current = conversationTurns
+        .map((turn) => {
+          const element = turnRefs.current.get(turn.id);
+          return element ? { id: turn.id, top: element.offsetTop } : undefined;
+        })
+        .filter((item): item is { id: string; top: number } => Boolean(item));
+      const conversation = conversationRef.current;
+      if (conversation) updateActiveTurn(conversation);
+    });
+  }
+
+  function handleConversationScroll(container: HTMLElement) {
+    scrollTargetRef.current = container;
+    if (scrollFrameRef.current) return;
+    scrollFrameRef.current = requestAnimationFrame(() => {
+      scrollFrameRef.current = undefined;
+      const target = scrollTargetRef.current;
+      if (!target) return;
+      const atBottom =
+        target.scrollHeight - target.scrollTop - target.clientHeight < 72;
+      if (autoFollowRef.current !== atBottom) {
+        autoFollowRef.current = atBottom;
+        setShowScrollToBottom(!atBottom);
+      }
+      updateActiveTurn(target);
+    });
+  }
+
+  function scrollToLatest(behavior: ScrollBehavior = "smooth") {
+    const conversation = conversationRef.current;
+    if (!conversation) return;
+    autoFollowRef.current = true;
+    setShowScrollToBottom(false);
+    conversation.scrollTo({ top: conversation.scrollHeight, behavior });
+    setActiveConversationTurn(conversationTurns.at(-1)?.id);
+  }
+
+  function scrollToTurn(turnId: string, index: number) {
+    if (index === conversationTurns.length - 1) return scrollToLatest("auto");
+    const conversation = conversationRef.current;
+    const element = turnRefs.current.get(turnId);
+    if (!conversation || !element) return;
+    autoFollowRef.current = false;
+    setShowScrollToBottom(true);
+    conversation.scrollTo({
+      top: Math.max(0, element.offsetTop - 20),
+      behavior: "auto",
+    });
+    setActiveConversationTurn(turnId);
   }
   const workspaceGroups = useMemo(() => {
     const groups = new Map<string, TaskRecord[]>();
@@ -2394,14 +2653,14 @@ export default function App() {
   }, [activities]);
 
   useEffect(() => {
-    activeTaskIdRef.current = activeTaskId;
-  }, [activeTaskId]);
-  useEffect(() => {
     tasksRef.current = tasks;
   }, [tasks]);
 
   useEffect(() => {
-    if (!activeTaskId && tasks[0]) setActiveTaskId(tasks[0].id);
+    if (!activeTaskId && tasks[0]) {
+      claimTaskView(tasks[0].id);
+      setActiveTaskId(tasks[0].id);
+    }
   }, [activeTaskId, tasks]);
   useEffect(() => {
     if (taskStorageReady && window.kcode?.state) {
@@ -2425,10 +2684,11 @@ export default function App() {
     if (activeTaskId) localStorage.setItem("kcode.activeTaskId", activeTaskId);
   }, [tasks, activeTaskId, taskStorageReady]);
   useEffect(() => {
-    if (!activeTaskId) return;
+    const ownerTaskId = displayedTaskIdRef.current;
+    if (!ownerTaskId || ownerTaskId !== activeTaskId) return;
     setTasks((all) =>
       all.map((task) =>
-        task.id === activeTaskId
+        task.id === ownerTaskId
           ? { ...task, messages, activities, updatedAt: Date.now() }
           : task,
       ),
@@ -2583,6 +2843,7 @@ export default function App() {
     if (activeTask?.workspacePath === workspacePath) {
       const next = nextTasks[0];
       if (next) {
+        claimTaskView(next.id);
         setActiveTaskId(next.id);
         setMessages(next.messages);
         setActivities(next.activities);
@@ -2592,6 +2853,7 @@ export default function App() {
         setSelected(next.modelSelection || selected);
         setReasoningEffort(next.reasoningEffort || defaultReasoningEffort);
       } else {
+        claimTaskView("");
         setActiveTaskId("");
         setMessages([]);
         setActivities([]);
@@ -2682,7 +2944,11 @@ export default function App() {
       window.kcode?.chat.onEvent((id, event) => {
         const taskId = requestTasksRef.current.get(id);
         if (!taskId) return;
-        const isActive = taskId === activeTaskIdRef.current;
+        const isActive = isTaskViewCurrent(
+          activeTaskIdRef.current,
+          displayedTaskIdRef.current,
+          taskId,
+        );
         if (event.type === "activity") {
           const task = tasksRef.current.find((item) => item.id === taskId);
           const previous = task?.activities.find(
@@ -2808,6 +3074,7 @@ export default function App() {
                     ...task,
                     messages: updateMessages(task.messages),
                     runningId: undefined,
+                    runStatus: "failed",
                     updatedAt: Date.now(),
                   }
                 : task,
@@ -2857,6 +3124,7 @@ export default function App() {
               return {
                 ...task,
                 runningId: undefined,
+                runStatus: "completed",
                 usageResolved: true,
                 imageSemantics,
                 updatedAt: Date.now(),
@@ -2888,12 +3156,16 @@ export default function App() {
     if (followFrameRef.current) cancelAnimationFrame(followFrameRef.current);
     followFrameRef.current = requestAnimationFrame(() => {
       const conversation = conversationRef.current;
-      if (conversation) conversation.scrollTop = conversation.scrollHeight;
+      if (conversation) {
+        conversation.scrollTop = conversation.scrollHeight;
+        setShowScrollToBottom(false);
+        setActiveConversationTurn(conversationTurns.at(-1)?.id);
+      }
     });
     return () => {
       if (followFrameRef.current) cancelAnimationFrame(followFrameRef.current);
     };
-  }, [autoFollowEnabled, messages, activities]);
+  }, [autoFollowEnabled, messages, activities, conversationTurns]);
 
   async function clearCurrentConversation() {
     const requestId = currentRequest.current;
@@ -2958,6 +3230,7 @@ export default function App() {
       reasoningEffort,
     };
     setTasks((all) => [task, ...all]);
+    claimTaskView(task.id);
     setActiveTaskId(task.id);
     setMessages([]);
     setActivities([]);
@@ -2967,6 +3240,7 @@ export default function App() {
 
   async function switchTask(task: TaskRecord) {
     if (task.id === activeTaskId) return;
+    claimTaskView(task.id);
     currentRequest.current = task.runningId;
     setRunningId(task.runningId);
     requestStartedRef.current = task.startedAt;
@@ -3000,6 +3274,7 @@ export default function App() {
       reasoningEffort,
     };
     setTasks((all) => [task, ...all]);
+    claimTaskView(task.id);
     setActiveTaskId(task.id);
     setMessages([]);
     setActivities([]);
@@ -3031,6 +3306,7 @@ export default function App() {
     if (task.id === activeTaskId) {
       const next = nextTasks[0];
       if (next) {
+        claimTaskView(next.id);
         setActiveTaskId(next.id);
         setMessages(next.messages);
         setActivities(next.activities);
@@ -3040,6 +3316,7 @@ export default function App() {
         setSelected(next.modelSelection || selected);
         setReasoningEffort(next.reasoningEffort || defaultReasoningEffort);
       } else {
+        claimTaskView("");
         setActiveTaskId("");
         setMessages([]);
         setActivities([]);
@@ -3340,6 +3617,17 @@ export default function App() {
       summaryBusy
     )
       return;
+    const taskId = activeTask.id;
+    if (
+      !isTaskViewCurrent(
+        activeTaskIdRef.current,
+        displayedTaskIdRef.current,
+        taskId,
+      )
+    ) {
+      setContextError("任务切换尚未完成，请重新发送");
+      return;
+    }
     if (activeTask?.name === "新对话") {
       const title = text.replace(/\s+/g, " ").slice(0, 28) || "新对话";
       setTasks((all) =>
@@ -3490,7 +3778,8 @@ export default function App() {
       return;
     }
     autoFollowRef.current = true;
-    requestStartedRef.current = Date.now();
+    const requestStartedAt = Date.now();
+    requestStartedRef.current = requestStartedAt;
     setUsedContextCount(contextByMessageRef.current.get(user.id)?.length ?? 0);
     if (activeTask?.id)
       setTasks((all) =>
@@ -3518,6 +3807,20 @@ export default function App() {
       const chunks = response.match(/[\s\S]{1,12}/g) ?? [response];
       currentRequest.current = id;
       setRunningId(id);
+      if (activeTask?.id)
+        setTasks((all) =>
+          all.map((task) =>
+            task.id === activeTask.id
+              ? {
+                  ...task,
+                  runningId: id,
+                  runStatus: "running",
+                  startedAt: requestStartedRef.current,
+                  updatedAt: Date.now(),
+                }
+              : task,
+          ),
+        );
       setMessages([
         ...nextMessages,
         {
@@ -3545,6 +3848,19 @@ export default function App() {
           previewTimerRef.current = undefined;
           currentRequest.current = undefined;
           setRunningId(undefined);
+          if (activeTask?.id)
+            setTasks((all) =>
+              all.map((task) =>
+                task.id === activeTask.id
+                  ? {
+                      ...task,
+                      runningId: undefined,
+                      runStatus: "completed",
+                      updatedAt: Date.now(),
+                    }
+                  : task,
+              ),
+            );
           setUsage({ input: 312, output: 168, cached: 0 });
           setUsageResolved(true);
           if (requestStartedRef.current)
@@ -3554,22 +3870,18 @@ export default function App() {
       return;
     }
     const id = await window.kcode.chat.start({
-      taskId: activeTask?.id,
+      taskId,
       providerId: target.provider.id,
       modelId: target.model.modelId,
       messages: history,
       reasoningEffort,
       permissionMode,
       permissionPolicy,
-      workspacePath: activeTask?.workspacePath || "D:\\project\\kcode",
+      workspacePath: activeTask.workspacePath,
       contextWindow: selectedContextWindow,
     });
-    const taskId = activeTask?.id;
-    if (!taskId) return;
     requestTasksRef.current.set(id, taskId);
     assistantLengthsRef.current.set(id, 0);
-    currentRequest.current = id;
-    setRunningId(id);
     const assistantMessage: ChatMessage = {
       id: `assistant:${id}`,
       role: "assistant",
@@ -3577,7 +3889,16 @@ export default function App() {
       createdAt: Date.now(),
       model: target.model.displayName,
     };
-    setMessages((all) => [...all, assistantMessage]);
+    const stillActive = isTaskViewCurrent(
+      activeTaskIdRef.current,
+      displayedTaskIdRef.current,
+      taskId,
+    );
+    if (stillActive) {
+      currentRequest.current = id;
+      setRunningId(id);
+      setMessages((all) => [...all, assistantMessage]);
+    }
     setTasks((all) =>
       all.map((task) =>
         task.id === taskId
@@ -3585,7 +3906,8 @@ export default function App() {
               ...task,
               messages: [...nextMessages, assistantMessage],
               runningId: id,
-              startedAt: requestStartedRef.current,
+              runStatus: "running",
+              startedAt: requestStartedAt,
               pendingTokenEstimate: rawEstimatedTokens,
               pendingCalibrationKey: requestCalibrationKey,
               updatedAt: Date.now(),
@@ -3608,7 +3930,12 @@ export default function App() {
         setTasks((all) =>
           all.map((task) =>
             task.id === activeTask.id
-              ? { ...task, runningId: undefined, updatedAt: Date.now() }
+              ? {
+                  ...task,
+                  runningId: undefined,
+                  runStatus: "cancelled",
+                  updatedAt: Date.now(),
+                }
               : task,
           ),
         );
@@ -3618,6 +3945,7 @@ export default function App() {
   }
   async function resumeCheckpoint(checkpoint: AgentCheckpoint) {
     if (!activeTask || runningId || summaryBusy) return;
+    const taskId = activeTask.id;
     await window.kcode.chat.removeCheckpoint(checkpoint.id);
     const id = await window.kcode.chat.start({
       ...checkpoint.request,
@@ -3629,8 +3957,8 @@ export default function App() {
             )
             .join("\n")}`
         : checkpoint.request.recoveryContext,
-      taskId: activeTask.id,
-      messages: messages.map(({ role, content, images }) => ({
+      taskId,
+      messages: activeTask.messages.map(({ role, content, images }) => ({
         role,
         content,
         images,
@@ -3639,11 +3967,9 @@ export default function App() {
       permissionPolicy,
       contextWindow: selectedContextWindow,
     });
-    requestTasksRef.current.set(id, activeTask.id);
+    requestTasksRef.current.set(id, taskId);
     assistantLengthsRef.current.set(id, 0);
-    currentRequest.current = id;
-    setRunningId(id);
-    requestStartedRef.current = Date.now();
+    const startedAt = Date.now();
     const assistant: ChatMessage = {
       id: `assistant:${id}`,
       role: "assistant",
@@ -3651,15 +3977,26 @@ export default function App() {
       createdAt: Date.now(),
       model: selectedTarget?.model.displayName,
     };
-    setMessages((all) => [...all, assistant]);
+    const stillActive = isTaskViewCurrent(
+      activeTaskIdRef.current,
+      displayedTaskIdRef.current,
+      taskId,
+    );
+    if (stillActive) {
+      currentRequest.current = id;
+      setRunningId(id);
+      requestStartedRef.current = startedAt;
+      setMessages((all) => [...all, assistant]);
+    }
     setTasks((all) =>
       all.map((task) =>
-        task.id === activeTask.id
+        task.id === taskId
           ? {
               ...task,
               messages: [...task.messages, assistant],
               runningId: id,
-              startedAt: Date.now(),
+              runStatus: "running",
+              startedAt,
             }
           : task,
       ),
@@ -3715,13 +4052,28 @@ export default function App() {
   const lastUserMessage = [...messages]
     .reverse()
     .find((message) => message.role === "user");
-  const taskComplete =
-    messages.some(
-      (message) =>
-        message.role === "assistant" &&
-        message.content &&
-        !message.content.startsWith("请求失败："),
-    ) && !runningId;
+  const runStatus: TaskRunStatus = runningId
+    ? "running"
+    : (activeTask?.runStatus ?? "idle");
+  const taskComplete = runStatus === "completed";
+  const runStatusTitle: Record<TaskRunStatus, string> = {
+    idle: "准备开发环境",
+    running: "Agent 正在执行",
+    completed: "本轮任务已完成",
+    failed: "本轮任务失败",
+    cancelled: "本轮任务已停止",
+    paused: "上次任务已中断",
+  };
+  const runStatusDescription: Record<TaskRunStatus, string> = {
+    idle: connected
+      ? "模型通道已连接，可以开始执行任务。"
+      : "应用骨架已就绪，下一步配置一个模型通道。",
+    running: "正在生成响应，请保持当前任务打开。",
+    completed: "模型已返回结果，可以继续追加修改要求。",
+    failed: "本轮执行遇到错误，请查看对话中的失败原因后重试。",
+    cancelled: "本轮执行已停止，可以调整要求后重新发送。",
+    paused: "应用上次退出时任务仍在运行，可以从检查点恢复。",
+  };
   function handleModelMenuKeyDown(event: React.KeyboardEvent) {
     if (!modelMenuOpen) {
       if (["ArrowDown", "ArrowUp", "Enter", " "].includes(event.key)) {
@@ -4069,13 +4421,7 @@ export default function App() {
           <section
             ref={conversationRef}
             className="conversation"
-            onScroll={(event) => {
-              const target = event.currentTarget;
-              autoFollowRef.current =
-                target.scrollHeight - target.scrollTop - target.clientHeight <
-                100;
-              updateActiveTurn(target);
-            }}
+            onScroll={(event) => handleConversationScroll(event.currentTarget)}
           >
             {conversationTurns.length > 1 && (
               <nav
@@ -4088,15 +4434,19 @@ export default function App() {
                 }
               >
                 <div className="turn-rail-line" />
-                {conversationTurns.map((turn) => (
+                {conversationTurns.map((turn, index) => (
                   <button
                     key={turn.id}
-                    className={activeTurnId === turn.id ? "active" : ""}
-                    onClick={() =>
-                      turnRefs.current
-                        .get(turn.id)
-                        ?.scrollIntoView({ behavior: "smooth", block: "start" })
-                    }
+                    ref={(element) => {
+                      if (element) {
+                        turnButtonRefs.current.set(turn.id, element);
+                        element.classList.toggle(
+                          "active",
+                          activeConversationTurnRef.current === turn.id,
+                        );
+                      } else turnButtonRefs.current.delete(turn.id);
+                    }}
+                    onClick={() => scrollToTurn(turn.id, index)}
                     aria-label={`跳转到：${turn.question.slice(0, 40)}`}
                   >
                     <span className="turn-tick" />
@@ -4157,9 +4507,7 @@ export default function App() {
                     ? message.id.slice("assistant:".length)
                     : undefined;
                   const turnActivities = requestId
-                    ? activities.filter(
-                        (activity) => activity.requestId === requestId,
-                      )
+                    ? (activitiesByRequest.get(requestId) ?? [])
                     : [];
                   const turnRunning =
                     Boolean(requestId) && requestId === runningId;
@@ -4216,6 +4564,17 @@ export default function App() {
             )}
           </section>
           <div className="composer-wrap">
+            {showScrollToBottom && (
+              <button
+                type="button"
+                className="scroll-to-bottom"
+                title="滚动到最新消息"
+                aria-label="滚动到最新消息"
+                onClick={() => scrollToLatest()}
+              >
+                <ArrowDown size={17} />
+              </button>
+            )}
             <div className="composer">
               {attachedImages.length > 0 && (
                 <div className="pasted-images">
@@ -4551,39 +4910,32 @@ export default function App() {
           <aside className="status-panel">
             <header>
               <span>任务状态</span>
-              {taskComplete ? <CheckCircle2 size={17} /> : <Check size={16} />}
+              {taskComplete ? (
+                <CheckCircle2 size={17} />
+              ) : runStatus === "failed" || runStatus === "paused" ? (
+                <CircleAlert size={17} />
+              ) : (
+                <Check size={16} />
+              )}
             </header>
             <section>
               <span className="eyebrow">当前目标</span>
-              <h3>
-                {runningId
-                  ? "Agent 正在执行"
-                  : taskComplete
-                    ? "本轮任务已完成"
-                    : "准备开发环境"}
-              </h3>
+              <h3>{runStatusTitle[runStatus]}</h3>
               <div className="progress">
                 <i
                   style={{
-                    width: runningId
-                      ? "78%"
-                      : taskComplete
-                        ? "100%"
-                        : connected
-                          ? "66%"
-                          : "33%",
+                    width:
+                      runStatus === "running"
+                        ? "78%"
+                        : runStatus !== "idle"
+                          ? "100%"
+                          : connected
+                            ? "66%"
+                            : "33%",
                   }}
                 />
               </div>
-              <p>
-                {runningId
-                  ? "正在生成响应，请保持当前任务打开。"
-                  : taskComplete
-                    ? "模型已返回结果，可以继续追加修改要求。"
-                    : connected
-                      ? "模型通道已连接，可以开始执行任务。"
-                      : "应用骨架已就绪，下一步配置一个模型通道。"}
-              </p>
+              <p>{runStatusDescription[runStatus]}</p>
             </section>
             <section>
               <span className="eyebrow">运行环境</span>
@@ -4675,8 +5027,7 @@ export default function App() {
                 <p>{gitState.error || "当前工作区未初始化 Git"}</p>
               )}
             </section>
-            {(runningId ||
-              taskComplete ||
+            {(runStatus !== "idle" ||
               durationMs > 0 ||
               messages.length > 0) && (
               <section>

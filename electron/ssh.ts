@@ -90,12 +90,27 @@ function persistKnownHosts() {
   renameSync(temporary, knownHostsFile);
 }
 
-function friendlySshError(error: unknown) {
+type SshCredentialKind = "password" | "private-key" | "password-and-key";
+
+function friendlySshError(error: unknown, credentialKind?: SshCredentialKind) {
   const message = error instanceof Error ? error.message : String(error);
+  if (/SSH .*已取消/.test(message)) return message;
+  if (/SSH 远程命令执行超时/.test(message)) return message;
+  if (
+    /Cannot parse privateKey|private key.*(?:parse|format)|unsupported key/i.test(
+      message,
+    )
+  )
+    return "SSH 私钥无法解析，请确认传入的是完整私钥内容，并检查私钥格式和口令。";
   if (
     /authentication|all configured authentication methods failed/i.test(message)
-  )
-    return "SSH 身份验证失败，请检查用户名、密码、私钥或私钥口令。";
+  ) {
+    if (credentialKind === "password")
+      return "SSH 密码认证失败，请检查用户名和密码，并确认服务器允许密码或键盘交互认证。";
+    if (credentialKind === "private-key")
+      return "SSH 私钥认证失败，请检查用户名、私钥内容、私钥口令及服务器 authorized_keys。";
+    return "SSH 身份验证失败，请检查用户名、密码、私钥、私钥口令及服务器允许的认证方式。";
+  }
   if (/host fingerprint|host denied|verification failed/i.test(message))
     return "SSH 主机指纹不匹配，连接已拒绝。";
   if (/timed out|timeout/i.test(message))
@@ -106,6 +121,14 @@ function friendlySshError(error: unknown) {
   if (/ECONNRESET|not connected|No response from server/i.test(message))
     return "SSH 连接已断开。";
   return `SSH 操作失败：${message}`;
+}
+
+export function normalizeSshPrivateKey(value?: string) {
+  if (!value) return undefined;
+  const trimmed = value.trim();
+  return trimmed.includes("\\n") && !trimmed.includes("\n")
+    ? trimmed.replace(/\\r\\n|\\n/g, "\n")
+    : trimmed;
 }
 
 function getSession(sessionId: string, requestId: string) {
@@ -131,10 +154,11 @@ export async function connectSsh(
 ) {
   const host = input.host.trim();
   const username = input.username.trim();
+  const privateKey = normalizeSshPrivateKey(input.privateKey);
   const port = Number(input.port) || 22;
   if (!host) throw new Error("缺少 SSH 服务器地址。");
   if (!username) throw new Error("缺少 SSH 用户名。");
-  if (!input.password && !input.privateKey)
+  if (!input.password && !privateKey)
     throw new Error("缺少 SSH 密码或私钥内容。");
   if (!Number.isInteger(port) || port < 1 || port > 65535)
     throw new Error("SSH 端口必须是 1 到 65535 之间的整数。");
@@ -142,6 +166,18 @@ export async function connectSsh(
     throw new Error("SSH 主机指纹存储尚未初始化，无法安全建立连接。");
 
   const client = new Client();
+  const credentialKind: SshCredentialKind =
+    input.password && privateKey
+      ? "password-and-key"
+      : privateKey
+        ? "private-key"
+        : "password";
+  if (input.password)
+    client.on(
+      "keyboard-interactive",
+      (_name, _instructions, _language, prompts, finish) =>
+        finish(prompts.map(() => input.password!)),
+    );
   const handleClientError = () => {
     for (const [key, value] of sessions)
       if (value.client === client) sessions.delete(key);
@@ -176,7 +212,7 @@ export async function connectSsh(
         new Error(
           fingerprintMismatch
             ? `SSH 主机指纹不匹配，连接已拒绝。已保存 ${displayFingerprint(trustedFingerprint)}，服务器当前为 ${displayFingerprint(actualFingerprint)}。请核验后再明确提供新指纹。`
-            : friendlySshError(error),
+            : friendlySshError(error, credentialKind),
         ),
       );
     signal.addEventListener("abort", abort, { once: true });
@@ -188,8 +224,9 @@ export async function connectSsh(
         port,
         username,
         password: input.password,
-        privateKey: input.privateKey,
+        privateKey,
         passphrase: input.passphrase,
+        tryKeyboard: Boolean(input.password),
         readyTimeout: 30_000,
         keepaliveInterval: 10_000,
         keepaliveCountMax: 3,
@@ -203,7 +240,7 @@ export async function connectSsh(
         },
       });
     } catch (error) {
-      finish(new Error(friendlySshError(error)));
+      finish(new Error(friendlySshError(error, credentialKind)));
     }
     if (signal.aborted) abort();
   });
@@ -291,7 +328,12 @@ export async function runSshCommand(
   requestId: string,
   command: string,
   signal: AbortSignal,
-  options: { stdin?: string; pty?: boolean } = {},
+  options: {
+    stdin?: string;
+    pty?: boolean;
+    timeoutMs?: number;
+    onOutput?: (output: string) => void;
+  } = {},
 ) {
   if (!command.trim()) throw new Error("缺少远程命令。");
   const session = getSession(sessionId, requestId);
@@ -299,28 +341,42 @@ export async function runSshCommand(
     (resolve, reject) => {
       let channel: ClientChannel | undefined;
       let settled = false;
+      let timer: NodeJS.Timeout | undefined;
       const stdout: Buffer[] = [];
       const stderr: Buffer[] = [];
       const stdoutState = { bytes: 0 };
       const stderrState = { bytes: 0 };
-      const finish = (error?: unknown, code = -1, signalName?: string) => {
-        if (settled) return;
-        settled = true;
-        signal.removeEventListener("abort", abort);
-        if (error) return reject(new Error(friendlySshError(error)));
+      let lastProgressAt = 0;
+      const currentOutput = (signalName?: string) => {
         const out = Buffer.concat(stdout)
           .toString("utf8")
           .slice(-MAX_OUTPUT_BYTES);
         const err = Buffer.concat(stderr)
           .toString("utf8")
           .slice(-MAX_OUTPUT_BYTES);
-        const parts = [
+        return [
           out.trimEnd(),
           err ? `stderr:\n${err.trimEnd()}` : "",
           signalName ? `signal: ${signalName}` : "",
-        ].filter(Boolean);
+        ]
+          .filter(Boolean)
+          .join("\n");
+      };
+      const publishProgress = () => {
+        const now = Date.now();
+        if (!options.onOutput || now - lastProgressAt < 250) return;
+        lastProgressAt = now;
+        const output = currentOutput();
+        if (output) options.onOutput(output);
+      };
+      const finish = (error?: unknown, code = -1, signalName?: string) => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        signal.removeEventListener("abort", abort);
+        if (error) return reject(new Error(friendlySshError(error)));
         resolve({
-          output: parts.join("\n") || "远程命令未产生输出",
+          output: currentOutput(signalName) || "远程命令未产生输出",
           exitCode: code,
         });
       };
@@ -329,18 +385,32 @@ export async function runSshCommand(
         finish(new Error("SSH 命令已取消。"));
       };
       signal.addEventListener("abort", abort, { once: true });
+      const timeoutMs = Math.min(
+        600_000,
+        Math.max(1_000, options.timeoutMs ?? 180_000),
+      );
+      timer = setTimeout(() => {
+        channel?.close();
+        finish(
+          new Error(
+            `SSH 远程命令执行超时（${Math.round(timeoutMs / 1_000)} 秒），命令通道已关闭。`,
+          ),
+        );
+      }, timeoutMs);
       session.client.exec(
         command,
         { pty: Boolean(options.pty) },
         (error, stream) => {
           if (error) return finish(error);
           channel = stream;
-          stream.on("data", (chunk: Buffer) =>
-            appendLimited(stdout, chunk, stdoutState),
-          );
-          stream.stderr.on("data", (chunk: Buffer) =>
-            appendLimited(stderr, chunk, stderrState),
-          );
+          stream.on("data", (chunk: Buffer) => {
+            appendLimited(stdout, chunk, stdoutState);
+            publishProgress();
+          });
+          stream.stderr.on("data", (chunk: Buffer) => {
+            appendLimited(stderr, chunk, stderrState);
+            publishProgress();
+          });
           stream.once("error", (streamError: Error) => finish(streamError));
           stream.once("close", (code: number, signalName: string) =>
             finish(undefined, code ?? -1, signalName),

@@ -40,6 +40,7 @@ import {
 } from "./agent";
 import { closeAllSshSessions, configureSshKnownHosts } from "./ssh";
 import { closeAllMysqlSessions } from "./mysql";
+import { resolveGitExecutable } from "./executables";
 import {
   closeAllSubagents,
   releaseSubagentRecords,
@@ -390,7 +391,7 @@ app.whenReady().then(() => {
       if (!info.isDirectory()) throw new Error("工作区不是有效目录");
       const git = (args: string[]) =>
         new Promise<{ code: number; output: string }>((resolve) => {
-          const child = spawn("git", args, {
+          const child = spawn(resolveGitExecutable(), args, {
             cwd: root,
             windowsHide: true,
             shell: false,

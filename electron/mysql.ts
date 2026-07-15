@@ -10,6 +10,7 @@ import { redactSqlForActivity } from "./sql-policy";
 
 const MAX_RESULT_ROWS = 1_000;
 const MAX_RESULT_CHARS = 200_000;
+export const DEFAULT_MYSQL_QUERY_TIMEOUT_MS = 60_000;
 
 type MysqlSession = {
   connection: Connection;
@@ -229,6 +230,7 @@ export async function queryMysql(
   sql: string,
   values: unknown[],
   signal: AbortSignal,
+  timeoutMs = DEFAULT_MYSQL_QUERY_TIMEOUT_MS,
 ) {
   if (!sql.trim()) throw new Error("缺少 SQL 语句。");
   const session = getSession(sessionId, requestId);
@@ -243,6 +245,7 @@ export async function queryMysql(
     const finish = (error?: unknown) => {
       if (settled) return;
       settled = true;
+      clearTimeout(timer);
       signal.removeEventListener("abort", abort);
       if (error) return reject(error);
       const key = hasFields ? "rows" : "results";
@@ -254,6 +257,15 @@ export async function queryMysql(
       session.connection.destroy();
       finish(new Error("MySQL 查询已取消，连接已关闭。"));
     };
+    const timer = setTimeout(() => {
+      sessions.delete(sessionId);
+      session.connection.destroy();
+      finish(
+        new Error(
+          `MySQL 查询超时（${Math.round(timeoutMs / 1_000)} 秒），连接已关闭。`,
+        ),
+      );
+    }, timeoutMs);
     signal.addEventListener("abort", abort, { once: true });
     let query;
     try {
