@@ -2132,13 +2132,18 @@ async function execute(
 async function* sseJson(
   response: Response,
   signal: AbortSignal,
+  idleTimeoutMs?: number,
 ): AsyncGenerator<any> {
   if (!response.body) throw new Error("模型没有返回响应流");
   const reader = response.body.getReader(),
     decoder = new TextDecoder();
   let buffer = "";
   while (true) {
-    const { done, value } = await readStreamChunk(reader, signal);
+    const { done, value } = await readStreamChunk(
+      reader,
+      signal,
+      idleTimeoutMs,
+    );
     buffer += decoder.decode(value, { stream: !done });
     const blocks = buffer.split(/\r?\n\r?\n/);
     buffer = blocks.pop() ?? "";
@@ -2157,10 +2162,16 @@ async function parseStreamedTurn(
   response: Response,
   signal: AbortSignal,
   onText?: (delta: string) => void,
+  onReasoning?: (delta: string) => void,
+  idleTimeoutMs?: number,
 ): Promise<Turn> {
   if (response.body) {
-    const assembler = new AgentStreamAssembler(protocol as any, onText);
-    for await (const event of sseJson(response, signal))
+    const assembler = new AgentStreamAssembler(
+      protocol as any,
+      onText,
+      onReasoning,
+    );
+    for await (const event of sseJson(response, signal, idleTimeoutMs))
       assembler.consume(event);
     const assembled = assembler.finish();
     return { ...assembled, calls: validCalls(assembled.calls) };
@@ -2330,7 +2341,18 @@ async function parseStreamedTurn(
 }
 
 type TurnStreamEvent =
-  { type: "text"; delta: string } | { type: "complete"; turn: Turn };
+  | { type: "text"; delta: string }
+  | { type: "reasoning"; delta: string }
+  | { type: "complete"; turn: Turn };
+// Mid-stream failures that are worth retrying when nothing visible has been
+// emitted yet: upstream overload, rate limiting, 5xx, stream idle timeouts, and
+// transient stream/connection read errors from the provider or proxy.
+function isRetryableStreamError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return /overload|rate.?limit|too many requests|429|50[0-9]|bad gateway|service unavailable|gateway time|temporarily|stream[_ ]?read[_ ]?error|stream error|connection (reset|closed|error)|ECONNRESET|ECONNREFUSED|ETIMEDOUT|socket hang up|network|fetch failed|长时间没有新数据|超时|连接/i.test(
+    message,
+  );
+}
 async function* streamModelTurn(
   root: string,
   requestId: string,
@@ -2339,20 +2361,67 @@ async function* streamModelTurn(
   signal: AbortSignal,
   toolsEnabled: boolean,
 ): AsyncGenerator<TurnStreamEvent> {
-  const queue: string[] = [];
+  const queue: TurnStreamEvent[] = [];
   let wake: (() => void) | undefined,
     done = false,
     turn: Turn | undefined,
-    failure: unknown;
-  const push = (delta: string) => {
-    if (!delta) return;
-    queue.push(delta);
+    failure: unknown,
+    emittedText = false;
+  const enqueue = (event: TurnStreamEvent) => {
+    queue.push(event);
     wake?.();
     wake = undefined;
   };
-  void modelTurn(root, requestId, request, history, signal, toolsEnabled, push)
-    .then((value) => {
-      turn = value;
+  const pushText = (delta: string) => {
+    if (!delta) return;
+    emittedText = true;
+    enqueue({ type: "text", delta });
+  };
+  const pushReasoning = (delta: string) => {
+    if (delta) enqueue({ type: "reasoning", delta });
+  };
+  const sleep = (ms: number) =>
+    new Promise<void>((resolve) => {
+      const timer = setTimeout(finish, ms);
+      function finish() {
+        signal.removeEventListener("abort", finish);
+        resolve();
+      }
+      signal.addEventListener("abort", finish, { once: true });
+    });
+  // Retry a mid-stream failure only while nothing visible has been emitted yet,
+  // so a retry can never duplicate answer text. Reasoning-only progress is safe
+  // to replay. Up to two backoff retries before giving up.
+  const run = async () => {
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        turn = await modelTurn(
+          root,
+          requestId,
+          request,
+          history,
+          signal,
+          toolsEnabled,
+          pushText,
+          pushReasoning,
+        );
+        return;
+      } catch (error) {
+        if (
+          signal.aborted ||
+          emittedText ||
+          attempt >= 3 ||
+          !isRetryableStreamError(error)
+        )
+          throw error;
+        pushReasoning(`上游暂时不可用，正在自动重试（第 ${attempt} 次）…`);
+        await sleep(800 * attempt);
+        if (signal.aborted) throw error;
+      }
+    }
+  };
+  void run()
+    .then(() => {
       done = true;
       wake?.();
     })
@@ -2366,7 +2435,7 @@ async function* streamModelTurn(
       await new Promise<void>((resolve) => {
         wake = resolve;
       });
-    while (queue.length) yield { type: "text", delta: queue.shift()! };
+    while (queue.length) yield queue.shift()!;
   }
   if (failure) throw failure;
   yield { type: "complete", turn: turn! };
@@ -2380,6 +2449,7 @@ async function modelTurn(
   signal: AbortSignal,
   toolsEnabled = true,
   onText?: (delta: string) => void,
+  onReasoning?: (delta: string) => void,
 ): Promise<Turn> {
   const provider = await getProviderWithKey(request.providerId);
   if (!provider.enabled) throw new Error("当前供应商已停用");
@@ -2676,6 +2746,11 @@ async function modelTurn(
         : {}),
     };
   }
+  // Reasoning models can spend minutes thinking before the first byte arrives,
+  // especially behind a third-party proxy with a large context. The 60s default
+  // is too aggressive for them; the idle timeout still guards a truly stuck
+  // stream once bytes start flowing.
+  const firstByteTimeoutMs = reasoning.reasoningMode !== "none" ? 300_000 : 90_000;
   const response = await fetchWithRetry(
     url,
     {
@@ -2683,7 +2758,7 @@ async function modelTurn(
       headers,
       body: JSON.stringify(body),
     },
-    { signal },
+    { signal, firstByteTimeoutMs },
   );
   writeLog("info", "model.response", {
     requestId: isolation.traceId,
@@ -2704,7 +2779,14 @@ async function modelTurn(
       `请求失败 (${response.status}): ${(await readResponseText(response, signal)).slice(0, 500)}`,
     );
   if (/text\/event-stream/i.test(response.headers.get("content-type") || ""))
-    return parseStreamedTurn(provider.protocol, response, signal, onText);
+    return parseStreamedTurn(
+      provider.protocol,
+      response,
+      signal,
+      onText,
+      onReasoning,
+      reasoning.reasoningMode !== "none" ? 180_000 : undefined,
+    );
   const json = JSON.parse(await readResponseText(response, signal)) as any;
   if (provider.protocol === "openai-chat") {
     const message = json.choices?.[0]?.message ?? {};
@@ -2881,6 +2963,8 @@ export async function* runAgent(
       toolsEnabled,
     )) {
       if (event.type === "complete") turn = event.turn;
+      else if (event.type === "reasoning")
+        yield { type: "reasoning", delta: event.delta };
       else {
         streamedText += event.delta;
         if (!bufferBrowserText) yield { type: "text", delta: event.delta };

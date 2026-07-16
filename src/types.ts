@@ -293,6 +293,7 @@ export type BrowserRecordingFile = {
 
 export type ModelEvent =
   | { type: "text"; delta: string }
+  | { type: "reasoning"; delta: string }
   | {
       type: "usage";
       input: number;

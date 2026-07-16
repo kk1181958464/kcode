@@ -83,6 +83,21 @@ import {
 import { initializeAppUpdater, scheduleUpdateChecks } from "./app-updater";
 
 const controllers = new Map<string, AbortController>();
+// Turn raw upstream/proxy error codes into a readable message for the user.
+// The original text still reaches the logs; only the surfaced message changes.
+function friendlyModelError(raw: string): string {
+  const text = raw.trim();
+  if (/stream[_ ]?read[_ ]?error|stream error/i.test(text))
+    return "与模型的连接中断（上游流读取失败），已自动重试仍未成功，请重试。";
+  if (/overload|too many requests|429|rate.?limit/i.test(text))
+    return "模型服务当前繁忙或达到频率限制，请稍后重试。";
+  if (/50[0-9]|bad gateway|service unavailable|gateway time/i.test(text))
+    return "模型服务暂时不可用（上游网关错误），请稍后重试。";
+  if (/ECONNRESET|ECONNREFUSED|ETIMEDOUT|socket hang up|fetch failed|network|连接/i.test(text))
+    return "网络连接异常，请检查网络后重试。";
+  if (/等待响应超时|长时间没有新数据|超时/i.test(text)) return text;
+  return text;
+}
 installProcessLogging();
 const appUserModelId = "com.kcode.desktop";
 app.setName("KCode");
@@ -625,14 +640,14 @@ app.whenReady().then(() => {
               : String(error),
         });
         if (!controller.signal.aborted) {
-          event.sender.send("chat:event", id, {
-            type: "error",
-            message: error instanceof Error ? error.message : String(error),
-          });
-          notifyTask(
-            "error",
+          const friendly = friendlyModelError(
             error instanceof Error ? error.message : String(error),
           );
+          event.sender.send("chat:event", id, {
+            type: "error",
+            message: friendly,
+          });
+          notifyTask("error", friendly);
         }
       } finally {
         await stopSubagentsForParent(id, false);

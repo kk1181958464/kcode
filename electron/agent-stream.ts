@@ -18,6 +18,7 @@ export class AgentStreamAssembler {
   constructor(
     private protocol: Protocol,
     private onText?: (delta: string) => void,
+    private onReasoning?: (delta: string) => void,
   ) {}
   consume(event: any) {
     if (event.error?.message || event.type === "error")
@@ -27,6 +28,7 @@ export class AgentStreamAssembler {
     if (this.protocol === "openai-chat") {
       const delta = event.choices?.[0]?.delta ?? {};
       this.addText(delta.content);
+      this.addReasoning(delta.reasoning_content ?? delta.reasoning);
       for (const part of delta.tool_calls ?? []) {
         const index = part.index ?? 0,
           current = this.calls.get(index) ?? {
@@ -51,6 +53,11 @@ export class AgentStreamAssembler {
     } else if (this.protocol === "openai-responses") {
       if (event.type === "response.output_text.delta")
         this.addText(event.delta);
+      if (
+        event.type === "response.reasoning_summary_text.delta" ||
+        event.type === "response.reasoning_text.delta"
+      )
+        this.addReasoning(event.delta);
       if (
         event.type === "response.output_item.added" &&
         event.item?.type === "function_call"
@@ -102,6 +109,11 @@ export class AgentStreamAssembler {
         event.delta?.type === "text_delta"
       )
         this.addText(event.delta.text);
+      if (
+        event.type === "content_block_delta" &&
+        event.delta?.type === "thinking_delta"
+      )
+        this.addReasoning(event.delta.thinking);
       if (
         event.type === "content_block_delta" &&
         event.delta?.type === "input_json_delta"
@@ -173,5 +185,11 @@ export class AgentStreamAssembler {
     if (!delta) return;
     this.text += delta;
     this.onText?.(delta);
+  }
+  // Reasoning/thinking deltas are surfaced live for the working indicator but
+  // never accumulated into the turn text — they are not part of the answer.
+  private addReasoning(delta?: string) {
+    if (!delta) return;
+    this.onReasoning?.(delta);
   }
 }

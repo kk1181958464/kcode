@@ -1964,10 +1964,12 @@ function AgentWorkingState({
   activities,
   startedAt,
   hasTrailingText,
+  reasoning,
 }: {
   activities: AgentActivity[];
   startedAt: number;
   hasTrailingText: boolean;
+  reasoning?: string;
 }) {
   const [elapsedMs, setElapsedMs] = useState(() => Date.now() - startedAt);
   useEffect(() => {
@@ -2024,6 +2026,11 @@ function AgentWorkingState({
       <div className="agent-working-track">
         <i />
       </div>
+      {reasoning && !active && (
+        <div className="agent-working-reasoning" aria-live="polite">
+          {reasoning}
+        </div>
+      )}
       {recent.length > 0 && (
         <div className="agent-working-recent">
           {recent.map((activity) => (
@@ -2054,6 +2061,7 @@ const AssistantTimeline = memo(function AssistantTimeline({
   requestId,
   workspacePath,
   onActivityChange,
+  reasoning,
 }: {
   message: ChatMessage;
   activities: AgentActivity[];
@@ -2061,6 +2069,7 @@ const AssistantTimeline = memo(function AssistantTimeline({
   requestId?: string;
   workspacePath: string;
   onActivityChange(activity: AgentActivity): void;
+  reasoning?: string;
 }) {
   const grouped = new Map<number, AgentActivity[]>();
   for (const activity of activities) {
@@ -2083,6 +2092,7 @@ const AssistantTimeline = memo(function AssistantTimeline({
             activities={activities}
             startedAt={message.createdAt}
             hasTrailingText={Boolean(message.content)}
+            reasoning={reasoning}
           />
         )}
       </>
@@ -2116,6 +2126,7 @@ const AssistantTimeline = memo(function AssistantTimeline({
           activities={activities}
           startedAt={message.createdAt}
           hasTrailingText={hasTrailingText}
+          reasoning={reasoning}
         />
       )}
     </div>
@@ -2220,6 +2231,7 @@ const ConversationMessage = memo(function ConversationMessage({
   onRetry,
   onActivityChange,
   registerTurn,
+  reasoning,
 }: {
   message: ChatMessage;
   activities: AgentActivity[];
@@ -2230,6 +2242,7 @@ const ConversationMessage = memo(function ConversationMessage({
   onRetry(content: string): void;
   onActivityChange(activity: AgentActivity): void;
   registerTurn(id: string, element: HTMLDivElement | null): void;
+  reasoning?: string;
 }) {
   const requestId = message.id.startsWith("assistant:")
     ? message.id.slice("assistant:".length)
@@ -2257,6 +2270,7 @@ const ConversationMessage = memo(function ConversationMessage({
               requestId={running ? requestId : undefined}
               workspacePath={workspacePath}
               onActivityChange={onActivityChange}
+              reasoning={reasoning}
             />
           ) : undefined
         }
@@ -2279,6 +2293,7 @@ const ConversationHistory = memo(function ConversationHistory({
   onActivityChange,
   registerTurn,
   endRef,
+  reasoning,
 }: {
   messages: ChatMessage[];
   activitiesByRequest: Map<string, AgentActivity[]>;
@@ -2290,6 +2305,7 @@ const ConversationHistory = memo(function ConversationHistory({
   onActivityChange(activity: AgentActivity): void;
   registerTurn(id: string, element: HTMLDivElement | null): void;
   endRef: React.RefObject<HTMLDivElement | null>;
+  reasoning?: string;
 }) {
   return (
     <div className="message-list" aria-live="polite">
@@ -2313,6 +2329,11 @@ const ConversationHistory = memo(function ConversationHistory({
             onRetry={onRetry}
             onActivityChange={onActivityChange}
             registerTurn={registerTurn}
+            reasoning={
+              Boolean(requestId) && requestId === runningId
+                ? reasoning
+                : undefined
+            }
           />
         );
       })}
@@ -2619,6 +2640,9 @@ export default function App() {
     canGoForward?: boolean;
   }>({ open: false });
   const [browserAddress, setBrowserAddress] = useState("");
+  // Latest reasoning/thinking snippet for the active turn, shown live under the
+  // working spinner. Cleared once visible text or a tool activity takes over.
+  const [agentReasoning, setAgentReasoning] = useState("");
   const [browserWidthDrag, setBrowserWidthDrag] = useState<number>();
   useEffect(() => window.kcode?.browser?.onState(setBrowserState), []);
   useEffect(
@@ -3275,6 +3299,7 @@ export default function App() {
           taskId,
         );
         if (event.type === "activity") {
+          if (isActive) setAgentReasoning("");
           const task = tasksRef.current.find((item) => item.id === taskId);
           const previous = task?.activities.find(
             (item) => item.id === event.activity.id,
@@ -3313,7 +3338,15 @@ export default function App() {
           if (isActive) setActivities(updateActivities);
           return;
         }
+        if (event.type === "reasoning") {
+          if (isActive)
+            setAgentReasoning((current) =>
+              (current + event.delta).replace(/\s+/g, " ").slice(-200),
+            );
+          return;
+        }
         if (event.type === "text") {
+          if (isActive) setAgentReasoning("");
           assistantLengthsRef.current.set(
             id,
             (assistantLengthsRef.current.get(id) ?? 0) + event.delta.length,
@@ -3473,6 +3506,7 @@ export default function App() {
             currentRequest.current = undefined;
             setRunningId(undefined);
             setUsageResolved(true);
+            setAgentReasoning("");
           }
           requestTasksRef.current.delete(id);
           assistantLengthsRef.current.delete(id);
@@ -4851,6 +4885,7 @@ export default function App() {
                 onActivityChange={handleActivityChange}
                 registerTurn={registerTurn}
                 endRef={endRef}
+                reasoning={agentReasoning}
               />
             )}
           </section>
