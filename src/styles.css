@@ -1853,10 +1853,13 @@ select:focus-visible {
 }
 .agent-working-head strong {
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  white-space: normal;
   font-size: 11px;
   font-weight: 600;
+  line-height: 1.35;
 }
 .agent-working-head small,
 .agent-working-head time {
@@ -1899,7 +1902,7 @@ select:focus-visible {
   padding-left: 32px;
 }
 .agent-working-recent span {
-  max-width: 180px;
+  max-width: 280px;
   display: inline-flex;
   align-items: center;
   gap: 4px;

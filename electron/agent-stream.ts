@@ -15,6 +15,7 @@ export class AgentStreamAssembler {
   private calls = new Map<number, PendingCall>();
   private responseItems: any[] = [];
   private anthropicBlocks: any[] = [];
+  private completed = false;
   constructor(
     private protocol: Protocol,
     private onText?: (delta: string) => void,
@@ -25,7 +26,11 @@ export class AgentStreamAssembler {
       throw new Error(
         event.error?.message || event.message || "模型流式请求失败",
       );
+    // Protocol-level completion markers. Without these, a quiet upstream
+    // disconnect looks identical to a finished answer.
+    if (event.type === "__sse_done") this.completed = true;
     if (this.protocol === "openai-chat") {
+      if (event.choices?.[0]?.finish_reason) this.completed = true;
       const delta = event.choices?.[0]?.delta ?? {};
       this.addText(delta.content);
       this.addReasoning(delta.reasoning_content ?? delta.reasoning);
@@ -51,6 +56,12 @@ export class AgentStreamAssembler {
             this.usage.cached,
         };
     } else if (this.protocol === "openai-responses") {
+      if (
+        event.type === "response.completed" ||
+        event.type === "response.incomplete" ||
+        event.type === "response.failed"
+      )
+        this.completed = true;
       if (event.type === "response.output_text.delta")
         this.addText(event.delta);
       if (
@@ -91,6 +102,9 @@ export class AgentStreamAssembler {
             this.usage.cached,
         };
     } else if (this.protocol === "anthropic-messages") {
+      if (event.type === "message_stop") this.completed = true;
+      if (event.type === "message_delta" && event.delta?.stop_reason)
+        this.completed = true;
       if (event.type === "message_start")
         this.usage.input =
           event.message?.usage?.input_tokens ?? this.usage.input;
@@ -124,6 +138,7 @@ export class AgentStreamAssembler {
       if (event.type === "message_delta")
         this.usage.output = event.usage?.output_tokens ?? this.usage.output;
     } else {
+      if (event.candidates?.[0]?.finishReason) this.completed = true;
       for (const part of event.candidates?.[0]?.content?.parts ?? []) {
         if (typeof part.text === "string") this.addText(part.text);
         if (part.functionCall)
@@ -143,12 +158,39 @@ export class AgentStreamAssembler {
         };
     }
   }
+  assertStreamComplete() {
+    // Empty args are valid for no-arg tools; only broken JSON means the
+    // stream was cut mid tool-call.
+    const pendingArgs = [...this.calls.values()].some((call) => {
+      if (!call.args) return false;
+      try {
+        JSON.parse(call.args);
+        return false;
+      } catch {
+        return true;
+      }
+    });
+    if (pendingArgs)
+      throw new Error("模型响应流意外中断（工具调用参数不完整）");
+    if (this.completed) return;
+    if (this.text || this.calls.size)
+      throw new Error("模型响应流意外中断（上游连接在完成前断开）");
+    throw new Error("模型响应流意外中断（未收到完整响应）");
+  }
   finish(): AssembledTurn {
-    const calls = [...this.calls.values()].map((call) => ({
-      id: call.id,
-      name: call.name as AgentToolName,
-      input: JSON.parse(call.args || "{}") as Record<string, unknown>,
-    }));
+    const calls = [...this.calls.values()].map((call) => {
+      let input: Record<string, unknown> = {};
+      try {
+        input = JSON.parse(call.args || "{}") as Record<string, unknown>;
+      } catch {
+        throw new Error("模型响应流意外中断（工具调用参数不完整）");
+      }
+      return {
+        id: call.id,
+        name: call.name as AgentToolName,
+        input,
+      };
+    });
     let rawCalls: unknown[] = [];
     if (this.protocol === "openai-chat")
       rawCalls = [

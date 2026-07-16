@@ -89,10 +89,16 @@ const controllers = new Map<string, AbortController>();
 // The original text still reaches the logs; only the surfaced message changes.
 function friendlyModelError(raw: string): string {
   const text = raw.trim();
+  if (/意外中断|未收到完整响应|工具调用参数不完整/i.test(text))
+    return "模型响应流意外中断（上游可能断流），请重试或点击继续。若频繁出现，可压缩上下文或换模型/供应商。";
   if (/stream[_ ]?read[_ ]?error|stream error/i.test(text))
     return "与模型的连接中断（上游流读取失败），已自动重试仍未成功，请重试。";
   if (/overload|too many requests|429|rate.?limit/i.test(text))
     return "模型服务当前繁忙或达到频率限制，请稍后重试。";
+  if (
+    /upstream( request)? (failed|error)|upstream failed|proxy error/i.test(text)
+  )
+    return "上游模型网关请求失败，已自动重试仍未成功。可压缩上下文后重试，或换模型/供应商。";
   if (/50[0-9]|bad gateway|service unavailable|gateway time/i.test(text))
     return "模型服务暂时不可用（上游网关错误），请稍后重试。";
   if (
@@ -428,6 +434,33 @@ app.whenReady().then(() => {
     const folderPath = path.resolve(result.filePaths[0]);
     return { name: path.basename(folderPath), path: folderPath };
   });
+  ipcMain.handle(
+    "workspace:show-folder-menu",
+    async (event, workspacePath: string) => {
+      const owner = BrowserWindow.fromWebContents(event.sender);
+      if (!owner || owner.isDestroyed())
+        throw new Error("无法确认工作区窗口");
+      const root = path.resolve(workspacePathSchema.parse(workspacePath));
+      const info = await stat(root);
+      if (!info.isDirectory()) throw new Error("工作区不是有效目录");
+      Menu.buildFromTemplate([
+        {
+          label: "在文件资源管理器中打开",
+          click: () => {
+            void shell.openPath(root).then((error) => {
+              if (error)
+                void dialog.showMessageBox(owner, {
+                  type: "error",
+                  title: "无法打开文件夹",
+                  message: "无法在文件资源管理器中打开工作区",
+                  detail: error,
+                });
+            });
+          },
+        },
+      ]).popup({ window: owner });
+    },
+  );
   ipcMain.handle(
     "workspace:git-state",
     async (_event, workspacePath: string) => {

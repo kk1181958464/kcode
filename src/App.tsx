@@ -224,6 +224,101 @@ const formatDuration = (milliseconds: number) =>
   milliseconds < 1000
     ? "<1 秒"
     : `${Math.floor(milliseconds / 60000) ? `${Math.floor(milliseconds / 60000)} 分 ` : ""}${Math.floor((milliseconds % 60000) / 1000)} 秒`;
+function clipWorkingText(text: string, max = 48) {
+  const value = text.replace(/\s+/g, " ").trim();
+  if (!value) return "";
+  if (value.length <= max) return value;
+  const normalized = value.replace(/\\/g, "/");
+  const parts = normalized.split("/").filter(Boolean);
+  if (parts.length > 1) {
+    const tail = parts.slice(-2).join("/");
+    if (tail.length <= max) return tail;
+    return `${tail.slice(0, Math.max(8, max - 1))}…`;
+  }
+  return `${value.slice(0, Math.max(8, max - 1))}…`;
+}
+function activityTarget(activity: AgentActivity) {
+  const raw =
+    activity.command ||
+    activity.path ||
+    String(activity.input.sql || "") ||
+    String(activity.input.query || "") ||
+    String(activity.input.operation || "") ||
+    String(activity.input.collection || "") ||
+    String(activity.input.host || "") ||
+    String(activity.input.name || "") ||
+    String(activity.input.task || "") ||
+    String(activity.input.agentId || "") ||
+    String(activity.input.url || "") ||
+    "";
+  return clipWorkingText(String(raw));
+}
+function activityFocus(activity: AgentActivity) {
+  const target = activityTarget(activity);
+  return target ? `${activity.title} · ${target}` : activity.title;
+}
+function workingPhase(activities: AgentActivity[], elapsedMs: number) {
+  const active = [...activities]
+    .reverse()
+    .find(
+      (activity) =>
+        activity.status === "running" || activity.status === "waiting",
+    );
+  const last = activities.at(-1);
+  if (active) {
+    const focus = activityFocus(active);
+    if (active.status === "waiting") {
+      return {
+        phase: `等待确认：${focus}`,
+        detail: "需要你允许后才会继续执行",
+      };
+    }
+    if (active.tool === "ssh_run") {
+      return {
+        phase: `正在执行远程命令：${activityTarget(active) || active.title}`,
+        detail: `已等待 ${formatDuration(elapsedMs)}`,
+      };
+    }
+    if (active.tool === "mysql_query" || active.tool === "sqlserver_query") {
+      return {
+        phase: `正在${focus}`,
+        detail: "查询返回前会持续等待，长 SQL 或锁等待可能较久",
+      };
+    }
+    if (active.tool === "run_command") {
+      return {
+        phase: `正在运行命令：${activityTarget(active) || active.title}`,
+        detail: "命令仍在执行中",
+      };
+    }
+    return {
+      phase: `正在${focus}`,
+      detail: "工具执行中",
+    };
+  }
+  if (last?.status === "failed") {
+    return {
+      phase: `刚失败：${activityFocus(last)}`,
+      detail: "正在分析失败原因并调整下一步",
+    };
+  }
+  if (last) {
+    return {
+      phase: `已完成：${activityFocus(last)}`,
+      detail: "正在根据结果规划下一步",
+    };
+  }
+  if (elapsedMs > 12_000) {
+    return {
+      phase: "模型仍在生成规划",
+      detail: "较久未返回时，可能是上游响应慢或上下文较大",
+    };
+  }
+  return {
+    phase: "正在思考并规划步骤",
+    detail: "准备选择下一步工具",
+  };
+}
 function storedTokenCalibration(): Record<string, number> {
   try {
     return JSON.parse(localStorage.getItem("kcode.tokenCalibration") || "{}");
@@ -1998,24 +2093,13 @@ function AgentWorkingState({
   // (activities present) keep spinning through the gaps between tools so it does
   // not flicker off every time the model emits interstitial text.
   if (!active && hasTrailingText && !activities.length) return null;
-  const last = activities.at(-1);
   const completed = activities.filter(
     (activity) => activity.status === "success",
   ).length;
   const failures = activities.filter(
     (activity) => activity.status === "failed",
   ).length;
-  const phase = active
-    ? active.status === "waiting"
-      ? "等待操作确认"
-      : active.tool === "ssh_run"
-        ? "正在执行远程命令"
-        : `正在${active.title}`
-    : last?.status === "failed"
-      ? "正在分析失败并调整方案"
-      : last
-        ? "正在分析执行结果"
-        : "正在思考并规划步骤";
+  const { phase, detail } = workingPhase(activities, elapsedMs);
   const recent = activities.slice(-3);
   return (
     <div className="agent-working">
@@ -2026,6 +2110,8 @@ function AgentWorkingState({
         <span>
           <strong aria-live="polite">{phase}</strong>
           <small>
+            {detail}
+            {" · "}
             {completed ? `${completed} 步完成` : "准备执行"}
             {failures ? ` · ${failures} 步失败` : ""}
           </small>
@@ -2043,7 +2129,11 @@ function AgentWorkingState({
       {recent.length > 0 && (
         <div className="agent-working-recent">
           {recent.map((activity) => (
-            <span key={activity.id} className={activity.status}>
+            <span
+              key={activity.id}
+              className={activity.status}
+              title={activityFocus(activity)}
+            >
               {activity.status === "running" ? (
                 <RefreshCw className="spinning" size={11} />
               ) : activity.status === "failed" ||
@@ -2054,7 +2144,7 @@ function AgentWorkingState({
               ) : (
                 <Check size={11} />
               )}
-              {activity.title}
+              {activityFocus(activity)}
             </span>
           ))}
         </div>
@@ -4518,11 +4608,29 @@ export default function App() {
     cancelled: "本轮任务已停止",
     paused: "上次任务已中断",
   };
+  const latestActivities = activeTask
+    ? activities.filter(
+        (activity) =>
+          !activeTask.runningId || activity.requestId === activeTask.runningId,
+      )
+    : [];
+  const livePhase =
+    runStatus === "running"
+      ? workingPhase(
+          latestActivities,
+          Date.now() -
+            (activeTask?.startedAt ??
+              requestStartedRef.current ??
+              Date.now()),
+        ).phase
+      : "";
   const runStatusDescription: Record<TaskRunStatus, string> = {
     idle: connected
       ? "模型通道已连接，可以开始执行任务。"
       : "应用骨架已就绪，下一步配置一个模型通道。",
-    running: "正在生成响应，请保持当前任务打开。",
+    running: livePhase
+      ? `${livePhase}。请保持当前任务打开。`
+      : "正在生成响应，请保持当前任务打开。",
     completed: "模型已返回结果，可以继续追加修改要求。",
     failed: "本轮执行遇到错误，请查看对话中的失败原因后重试。",
     cancelled: "本轮执行已停止，可以调整要求后重新发送。",
@@ -4697,7 +4805,20 @@ export default function App() {
                   setWorkspaceDropTarget(undefined);
                 }}
               >
-                <header title={group.workspacePath}>
+                <header
+                  title={group.workspacePath}
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    void window.kcode?.workspace
+                      .showFolderMenu(group.workspacePath)
+                      .catch((error) =>
+                        setContextError(
+                          `无法打开文件夹菜单：${error instanceof Error ? error.message : String(error)}`,
+                        ),
+                      );
+                  }}
+                >
                   <span className="workspace-grip" title="拖动工作区排序">
                     <GripVertical size={13} />
                   </span>

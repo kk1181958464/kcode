@@ -144,3 +144,12 @@ export async function readResponseText(
     if (done) return text;
   }
 }
+// Mid-stream / proxy failures that are worth retrying: upstream overload, rate
+// limiting, 5xx, stream idle timeouts, and generic proxy phrasing such as
+// "Upstream request failed" (often emitted on 200 SSE error events).
+export function isRetryableStreamError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return /overload|rate.?limit|too many requests|429|50[0-9]|bad gateway|service unavailable|gateway time|upstream( request)? (failed|error)|upstream failed|proxy error|temporarily|stream[_ ]?read[_ ]?error|stream error|connection (reset|closed|error)|ECONNRESET|ECONNREFUSED|ETIMEDOUT|socket hang up|network|fetch failed|长时间没有新数据|超时|连接|意外中断|未收到完整响应|工具调用参数不完整/i.test(
+    message,
+  );
+}

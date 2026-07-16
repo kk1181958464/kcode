@@ -64,6 +64,8 @@ const api: KCodeApi = {
   workspace: {
     pickFolder: () => ipcRenderer.invoke("workspace:pick-folder"),
     gitState: (path) => ipcRenderer.invoke("workspace:git-state", path),
+    showFolderMenu: (path) =>
+      ipcRenderer.invoke("workspace:show-folder-menu", path),
   },
   browser: {
     activate: (sessionId) => ipcRenderer.invoke("browser:activate", sessionId),

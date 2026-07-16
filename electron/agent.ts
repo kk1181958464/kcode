@@ -35,6 +35,7 @@ import { conciseFailureOutput } from "./activity-errors";
 import { powershellCommand } from "./powershell-command";
 import {
   fetchWithRetry,
+  isRetryableStreamError,
   readResponseText,
   readStreamChunk,
 } from "./request-guard";
@@ -2538,7 +2539,11 @@ async function* sseJson(
       for (const line of block.split(/\r?\n/)) {
         if (!line.startsWith("data:")) continue;
         const data = line.slice(5).trim();
-        if (data && data !== "[DONE]") yield JSON.parse(data);
+        if (data === "[DONE]") {
+          yield { type: "__sse_done" };
+          continue;
+        }
+        if (data) yield JSON.parse(data);
       }
     if (done) break;
   }
@@ -2560,6 +2565,7 @@ async function parseStreamedTurn(
     );
     for await (const event of sseJson(response, signal, idleTimeoutMs))
       assembler.consume(event);
+    assembler.assertStreamComplete();
     const assembled = assembler.finish();
     return { ...assembled, calls: validCalls(assembled.calls) };
   }
@@ -2731,15 +2737,6 @@ type TurnStreamEvent =
   | { type: "text"; delta: string }
   | { type: "reasoning"; delta: string }
   | { type: "complete"; turn: Turn };
-// Mid-stream failures that are worth retrying when nothing visible has been
-// emitted yet: upstream overload, rate limiting, 5xx, stream idle timeouts, and
-// transient stream/connection read errors from the provider or proxy.
-function isRetryableStreamError(error: unknown) {
-  const message = error instanceof Error ? error.message : String(error);
-  return /overload|rate.?limit|too many requests|429|50[0-9]|bad gateway|service unavailable|gateway time|temporarily|stream[_ ]?read[_ ]?error|stream error|connection (reset|closed|error)|ECONNRESET|ECONNREFUSED|ETIMEDOUT|socket hang up|network|fetch failed|长时间没有新数据|超时|连接/i.test(
-    message,
-  );
-}
 async function* streamModelTurn(
   root: string,
   requestId: string,

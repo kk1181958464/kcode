@@ -126,7 +126,11 @@ async function* sse(response: Response): AsyncGenerator<unknown> {
       for (const line of part.split(/\r?\n/)) {
         if (!line.startsWith("data:")) continue;
         const data = line.slice(5).trim();
-        if (data && data !== "[DONE]") yield JSON.parse(data);
+        if (data === "[DONE]") {
+          yield { type: "__sse_done" };
+          continue;
+        }
+        if (data) yield JSON.parse(data);
       }
     }
     if (done) break;

@@ -404,6 +404,7 @@ export type KCodeApi = {
   workspace: {
     pickFolder(): Promise<WorkspaceFolder | null>;
     gitState(path: string): Promise<GitWorkspaceState>;
+    showFolderMenu(path: string): Promise<void>;
   };
   browser: {
     activate(sessionId?: string): Promise<void>;

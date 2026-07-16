@@ -189,3 +189,57 @@ test("assembles Gemini function calls", () => {
   assert.equal(result.text, "Done");
   assert.equal(result.calls[0].name, "git_status");
 });
+
+test("detects silent stream interruption without completion marker", () => {
+  const a = new AgentStreamAssembler("openai-chat");
+  a.consume({
+    choices: [{ delta: { content: "half answer" } }],
+  });
+  assert.throws(
+    () => a.assertStreamComplete(),
+    /模型响应流意外中断/,
+  );
+});
+
+test("accepts finish_reason as stream completion", () => {
+  const a = new AgentStreamAssembler("openai-chat");
+  a.consume({
+    choices: [{ delta: { content: "done" }, finish_reason: "stop" }],
+  });
+  a.assertStreamComplete();
+  assert.equal(a.finish().text, "done");
+});
+
+test("accepts SSE [DONE] as stream completion", () => {
+  const a = new AgentStreamAssembler("openai-chat");
+  a.consume({
+    choices: [{ delta: { content: "ok" } }],
+  });
+  a.consume({ type: "__sse_done" });
+  a.assertStreamComplete();
+  assert.equal(a.finish().text, "ok");
+});
+
+test("detects incomplete tool call JSON as interruption", () => {
+  const a = new AgentStreamAssembler("openai-chat");
+  a.consume({
+    choices: [
+      {
+        delta: {
+          tool_calls: [
+            {
+              index: 0,
+              id: "c1",
+              function: { name: "read_file", arguments: '{"path":' },
+            },
+          ],
+        },
+      },
+    ],
+  });
+  assert.throws(
+    () => a.assertStreamComplete(),
+    /工具调用参数不完整/,
+  );
+});
+
