@@ -110,6 +110,7 @@ type ToolResult = Partial<
     | "diff"
     | "additions"
     | "deletions"
+    | "fileChanges"
     | "exitCode"
     | "undoable"
     | "childActivities"
@@ -1282,13 +1283,14 @@ async function applyPatch(
     const change = changes[0];
     undoSnapshots.set(activityId, { root, requestId, ...change });
   }
-  const diffs = changes.map((change) =>
-    diffFor(
+  const diffs = changes.map((change) => ({
+    path: path.relative(root, change.file).replaceAll("\\", "/"),
+    ...diffFor(
       path.relative(root, change.file).replaceAll("\\", "/"),
       change.before,
       change.after,
     ),
-  );
+  }));
   return {
     output: `已应用补丁，修改 ${changes.length} 个文件`,
     path:
@@ -1298,6 +1300,7 @@ async function applyPatch(
     diff: diffs.map((item) => item.diff).join("\n\n"),
     additions: diffs.reduce((sum, item) => sum + item.additions, 0),
     deletions: diffs.reduce((sum, item) => sum + item.deletions, 0),
+    fileChanges: diffs,
     undoable: changes.length === 1 && Boolean(changes[0].after),
   };
 }
@@ -2407,7 +2410,7 @@ async function modelTurn(
       )
     : [];
   const isolation = createConversationIsolation(request.taskId, requestId);
-  const system = `${isolation.boundary}\nYou are a coding agent working in ${root}. Use the provided native tools to inspect and modify the project. Each run_command invocation uses a fresh PowerShell process, so environment variable changes do not persist to later commands; combine dependent setup and execution in one command. Prefer apply_patch for precise edits and write_file for new or complete files. Never invoke apply_patch, file deletion, file moves, or directory operations through run_command when a native tool exists. File tool paths accept absolute paths, including other drives (for example D:\\B on Windows); use them to read or write files the user explicitly points to outside ${root}, and resolve relative paths against ${root}. Use web_search for current or externally verifiable information and fetch_url to inspect primary sources; preserve source URLs in the final answer. For interactive or authenticated sites use browser_open, browser_snapshot, browser_click, and browser_type. Credentials explicitly supplied by the user may be entered directly with browser_type. Browser recording is opt-in: call browser_record_start only after an explicit user request such as 开始录制, and call browser_record_stop when the user asks to stop or generate Python. Never record ordinary browsing by default. For independent work that can run concurrently, use spawn_agent with self-contained, non-overlapping tasks, then wait_agent before giving a final answer. Use list_agents, message_agent, and stop_agent to coordinate them. Subagents inherit this task's model, workspace, and permission policy; confirmation requests from background agents are forwarded to the main task UI. For remote servers, call ssh_connect with credentials explicitly supplied by the user, then use ssh_run and the SSH SFTP tools. Use ssh_upload_file to send a local file to the server and ssh_download_file to fetch a remote file to a local path; these transfer binary content directly, unlike ssh_write_file which only writes inline UTF-8 text. Use pty/stdin only when a remote command requires controlled interactive input; never place a password in the command string. SSH exec sessions are non-interactive and may not load shell profiles; when a remote command depends on profile-defined PATH values, invoke the appropriate login shell explicitly. SSH host keys are persisted on first use and changed keys must be confirmed by the user. For databases, use mysql_connect for direct MySQL access or mysql_connect_via_ssh for an SSH tunnel, then mysql_query; use ? placeholders and values for user-provided data when practical. Public direct MySQL connections use TLS by default and you must not retry with ssl=false unless the user explicitly approves. Never echo passwords, private keys, or passphrases in text, commands, or SQL. If CAPTCHA, SMS, passkey, or two-factor verification appears, pause and ask the user to complete it in the visible browser. Do not claim an action succeeded until its tool result confirms it.${request.recoveryContext ? `\n\n<recovery_context>${request.recoveryContext}</recovery_context>\nThis task resumed after an interruption. Verify prior side effects before repeating them, and recreate any interrupted subagent work that is still needed.` : ""}`;
+  const system = `${isolation.boundary}\nYou are a coding agent working in ${root}. Use the provided native tools to inspect and modify the project. Each run_command invocation uses a fresh PowerShell process, so environment variable changes do not persist to later commands; combine dependent setup and execution in one command. Prefer apply_patch for precise edits and write_file for new or complete files. Never invoke apply_patch, file deletion, file moves, or directory operations through run_command when a native tool exists. File tool paths accept absolute paths, including other drives (for example D:\\B on Windows); use them to read or write files the user explicitly points to outside ${root}, and resolve relative paths against ${root}. When you mention a file in your reply, always write its full workspace-relative path (for example src/views/Gooddetail.vue, not just Gooddetail.vue) so the user can tell exactly which file it is. Use web_search for current or externally verifiable information and fetch_url to inspect primary sources; preserve source URLs in the final answer. For interactive or authenticated sites use browser_open, browser_snapshot, browser_click, and browser_type. Credentials explicitly supplied by the user may be entered directly with browser_type. Browser recording is opt-in: call browser_record_start only after an explicit user request such as 开始录制, and call browser_record_stop when the user asks to stop or generate Python. Never record ordinary browsing by default. For independent work that can run concurrently, use spawn_agent with self-contained, non-overlapping tasks, then wait_agent before giving a final answer. Use list_agents, message_agent, and stop_agent to coordinate them. Subagents inherit this task's model, workspace, and permission policy; confirmation requests from background agents are forwarded to the main task UI. For remote servers, call ssh_connect with credentials explicitly supplied by the user, then use ssh_run and the SSH SFTP tools. Use ssh_upload_file to send a local file to the server and ssh_download_file to fetch a remote file to a local path; these transfer binary content directly, unlike ssh_write_file which only writes inline UTF-8 text. Use pty/stdin only when a remote command requires controlled interactive input; never place a password in the command string. SSH exec sessions are non-interactive and may not load shell profiles; when a remote command depends on profile-defined PATH values, invoke the appropriate login shell explicitly. SSH host keys are persisted on first use and changed keys must be confirmed by the user. For databases, use mysql_connect for direct MySQL access or mysql_connect_via_ssh for an SSH tunnel, then mysql_query; use ? placeholders and values for user-provided data when practical. Public direct MySQL connections use TLS by default and you must not retry with ssl=false unless the user explicitly approves. Never echo passwords, private keys, or passphrases in text, commands, or SQL. If CAPTCHA, SMS, passkey, or two-factor verification appears, pause and ask the user to complete it in the visible browser. Do not claim an action succeeded until its tool result confirms it.${request.recoveryContext ? `\n\n<recovery_context>${request.recoveryContext}</recovery_context>\nThis task resumed after an interruption. Verify prior side effects before repeating them, and recreate any interrupted subagent work that is still needed.` : ""}`;
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...isolation.headers,
@@ -3232,6 +3235,7 @@ export async function* runAgent(
           exitCode: activity.exitCode,
           additions: activity.additions,
           deletions: activity.deletions,
+          fileChanges: activity.fileChanges,
         },
         truncated: Boolean(
           activity.output && activity.output.length >= 100_000,

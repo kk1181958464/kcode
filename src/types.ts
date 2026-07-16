@@ -164,6 +164,7 @@ export type ChatMessage = {
   id: string;
   role: "user" | "assistant";
   content: string;
+  error?: string;
   createdAt: number;
   model?: string;
   images?: ImageAttachment[];
@@ -195,6 +196,13 @@ export type GitWorkspaceState = {
   error?: string;
 };
 
+export type AgentFileChange = {
+  path: string;
+  diff?: string;
+  additions: number;
+  deletions: number;
+};
+
 export type AgentActivity = {
   id: string;
   requestId: string;
@@ -211,6 +219,7 @@ export type AgentActivity = {
   diff?: string;
   additions?: number;
   deletions?: number;
+  fileChanges?: AgentFileChange[];
   exitCode?: number;
   undoable?: boolean;
   undone?: boolean;

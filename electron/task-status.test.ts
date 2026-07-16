@@ -40,6 +40,20 @@ test("does not infer completion from an earlier successful turn after failure", 
   );
 });
 
+test("recovers structured failures with partial or empty output", () => {
+  for (const failed of [
+    { ...message("partial output"), error: "upstream timeout" },
+    { ...message(""), error: "upstream 502" },
+  ]) {
+    assert.equal(
+      recoverTaskRunStatus({
+        messages: [message("earlier result"), failed],
+      }),
+      "failed",
+    );
+  }
+});
+
 test("marks interrupted tool activities as failed", () => {
   const activity: AgentActivity = {
     id: "activity-1",

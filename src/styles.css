@@ -873,6 +873,10 @@ select:focus-visible {
   margin: 0 auto;
   padding: 34px 34px 100px 58px;
 }
+.conversation-turn-item {
+  content-visibility: auto;
+  contain-intrinsic-block-size: auto 320px;
+}
 .agent-activity {
   margin: -14px 0 22px 41px;
   border: 1px solid #d9ddd7;
@@ -1044,9 +1048,9 @@ select:focus-visible {
 .changed-file-row > span {
   min-width: 0;
   flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+  line-height: 1.4;
   font:
     10px ui-monospace,
     SFMono-Regular,
@@ -1658,7 +1662,8 @@ select:focus-visible {
   color: #566159;
   font-size: 10px;
 }
-.message.failed .message-body {
+.message-error {
+  margin-top: 10px;
   color: #8e3832;
   background: #fbf1ef;
   border: 1px solid #efd8d5;

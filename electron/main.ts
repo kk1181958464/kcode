@@ -84,6 +84,9 @@ import { initializeAppUpdater, scheduleUpdateChecks } from "./app-updater";
 
 const controllers = new Map<string, AbortController>();
 installProcessLogging();
+const appUserModelId = "com.kcode.desktop";
+app.setName("KCode");
+if (process.platform === "win32") app.setAppUserModelId(appUserModelId);
 let mainWindow: BrowserWindow | undefined;
 let tray: Tray | undefined;
 let unreadTasks = 0;
@@ -103,13 +106,8 @@ const icoPath = () =>
     path.join(process.resourcesPath, "icon.ico"),
     path.resolve(__dirname, "../../build/icon.ico"),
   ].find(existsSync);
-const windowIcon = () => {
-  if (process.platform === "win32") {
-    const ico = icoPath();
-    if (ico) return nativeImage.createFromPath(ico);
-  }
-  return appIcon(256);
-};
+const windowIcon = () =>
+  process.platform === "win32" ? icoPath() || iconPath() : iconPath();
 const appIcon = (size = 32) => {
   const file = iconPath();
   const image = file
@@ -287,7 +285,6 @@ app.whenReady().then(() => {
   configureSshKnownHosts(
     path.join(app.getPath("userData"), "ssh-known-hosts.json"),
   );
-  app.setAppUserModelId("KCode");
   if (process.platform === "darwin") app.dock?.setIcon(appIcon(256));
   void rm(path.join(app.getPath("userData"), "credentials.json"), {
     force: true,

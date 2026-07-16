@@ -25,9 +25,15 @@ export function recoverTaskRunStatus(task: {
   const latestAssistant = [...task.messages]
     .reverse()
     .find(
-      (message) => message.role === "assistant" && Boolean(message.content),
+      (message) =>
+        message.role === "assistant" &&
+        Boolean(message.content || message.error),
     );
-  if (latestAssistant?.content.startsWith("请求失败：")) return "failed";
+  if (
+    latestAssistant?.error ||
+    latestAssistant?.content.startsWith("请求失败：")
+  )
+    return "failed";
   if (latestAssistant) return "completed";
   return "idle";
 }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Archive,
   ArchiveRestore,
@@ -81,6 +81,7 @@ import type {
 } from "./types";
 
 const uid = () => crypto.randomUUID();
+const EMPTY_ACTIVITIES: AgentActivity[] = [];
 type SettingsSection = "general" | "models" | "permissions" | "recordings";
 type TaskRecord = {
   id: string;
@@ -1413,7 +1414,11 @@ function DiffView({ text, className }: { text: string; className?: string }) {
   );
 }
 
-function MarkdownMessage({ content }: { content: string }) {
+const MarkdownMessage = memo(function MarkdownMessage({
+  content,
+}: {
+  content: string;
+}) {
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
@@ -1462,7 +1467,7 @@ function MarkdownMessage({ content }: { content: string }) {
       {content}
     </ReactMarkdown>
   );
-}
+});
 
 function MessageItem({
   message,
@@ -1478,8 +1483,12 @@ function MessageItem({
   assistantBody?: React.ReactNode;
 }) {
   const [previewImage, setPreviewImage] = useState<ImageAttachment>();
-  const isError =
-    message.role === "assistant" && message.content.startsWith("请求失败：");
+  const legacyError =
+    message.role === "assistant" && message.content.startsWith("请求失败：")
+      ? message.content.slice("请求失败：".length)
+      : undefined;
+  const error = message.error ?? legacyError;
+  const isError = Boolean(error);
   return (
     <article className={`message ${message.role} ${isError ? "failed" : ""}`}>
       <div className={`message-avatar ${message.role}`}>
@@ -1549,13 +1558,13 @@ function MessageItem({
               ))}
             </div>
           )}
-          {message.role === "assistant" && !isError && assistantBody ? (
+          {message.role === "assistant" && !legacyError && assistantBody ? (
             assistantBody
           ) : message.content ? (
-            message.role === "assistant" && !isError ? (
+            message.role === "assistant" && !legacyError ? (
               <MarkdownMessage content={message.content} />
             ) : (
-              message.content
+              !legacyError && message.content
             )
           ) : running ? (
             <div className="thinking">
@@ -1565,6 +1574,7 @@ function MessageItem({
               正在思考
             </div>
           ) : null}
+          {error && <div className="message-error">请求失败：{error}</div>}
         </div>
       </div>
       {previewImage && (
@@ -1859,6 +1869,19 @@ const commandTools: AgentToolName[] = [
   "diagnostics",
 ];
 
+function activityFileChanges(activity: AgentActivity) {
+  if (activity.fileChanges?.length) return activity.fileChanges;
+  if (!activity.path) return [];
+  return [
+    {
+      path: activity.path,
+      diff: activity.diff,
+      additions: activity.additions ?? 0,
+      deletions: activity.deletions ?? 0,
+    },
+  ];
+}
+
 function ExecutionSummary({
   activities,
   running,
@@ -1882,8 +1905,8 @@ function ExecutionSummary({
   const files = new Set(
     activities
       .filter((activity) => fileTools.includes(activity.tool))
-      .map((activity) => activity.path)
-      .filter(Boolean),
+      .flatMap(activityFileChanges)
+      .map((change) => change.path),
   ).size;
   const failures = activities.filter(
     (activity) => activity.status === "failed",
@@ -2024,7 +2047,7 @@ function AgentWorkingState({
   );
 }
 
-function AssistantTimeline({
+const AssistantTimeline = memo(function AssistantTimeline({
   message,
   activities,
   running,
@@ -2097,9 +2120,13 @@ function AssistantTimeline({
       )}
     </div>
   );
-}
+});
 
-function FileChangesSummary({ activities }: { activities: AgentActivity[] }) {
+const FileChangesSummary = memo(function FileChangesSummary({
+  activities,
+}: {
+  activities: AgentActivity[];
+}) {
   const [expandedFile, setExpandedFile] = useState<string>();
   const changed = activities.filter(
     (activity) =>
@@ -2112,18 +2139,18 @@ function FileChangesSummary({ activities }: { activities: AgentActivity[] }) {
     string,
     { additions: number; deletions: number; diffs: string[] }
   >();
-  for (const activity of changed) {
-    const key = activity.path!;
-    const current = grouped.get(key) ?? {
-      additions: 0,
-      deletions: 0,
-      diffs: [],
-    };
-    current.additions += activity.additions ?? 0;
-    current.deletions += activity.deletions ?? 0;
-    if (activity.diff) current.diffs.push(activity.diff);
-    grouped.set(key, current);
-  }
+  for (const activity of changed)
+    for (const change of activityFileChanges(activity)) {
+      const current = grouped.get(change.path) ?? {
+        additions: 0,
+        deletions: 0,
+        diffs: [],
+      };
+      current.additions += change.additions;
+      current.deletions += change.deletions;
+      if (change.diff) current.diffs.push(change.diff);
+      grouped.set(change.path, current);
+    }
   if (!grouped.size) return null;
   const additions = [...grouped.values()].reduce(
     (sum, item) => sum + item.additions,
@@ -2167,7 +2194,7 @@ function FileChangesSummary({ activities }: { activities: AgentActivity[] }) {
                     className={`changed-file-chevron ${open ? "open" : ""}`}
                   />
                 )}
-                <span>{file}</span>
+                <span title={file}>{file}</span>
                 <small>
                   <b>+{stats.additions}</b> <i>-{stats.deletions}</i>
                 </small>
@@ -2181,7 +2208,118 @@ function FileChangesSummary({ activities }: { activities: AgentActivity[] }) {
       </div>
     </section>
   );
-}
+});
+
+const ConversationMessage = memo(function ConversationMessage({
+  message,
+  activities,
+  running,
+  workspacePath,
+  attachments,
+  retryContent,
+  onRetry,
+  onActivityChange,
+  registerTurn,
+}: {
+  message: ChatMessage;
+  activities: AgentActivity[];
+  running: boolean;
+  workspacePath: string;
+  attachments?: ContextFile[];
+  retryContent?: string;
+  onRetry(content: string): void;
+  onActivityChange(activity: AgentActivity): void;
+  registerTurn(id: string, element: HTMLDivElement | null): void;
+}) {
+  const requestId = message.id.startsWith("assistant:")
+    ? message.id.slice("assistant:".length)
+    : undefined;
+  const turnRef = useCallback(
+    (element: HTMLDivElement | null) => registerTurn(message.id, element),
+    [message.id, registerTurn],
+  );
+  return (
+    <div
+      className="conversation-turn-item"
+      ref={message.role === "user" ? turnRef : undefined}
+    >
+      <MessageItem
+        message={message}
+        running={running}
+        attachments={attachments}
+        onRetry={() => retryContent && onRetry(retryContent)}
+        assistantBody={
+          requestId ? (
+            <AssistantTimeline
+              message={message}
+              activities={activities}
+              running={running}
+              requestId={running ? requestId : undefined}
+              workspacePath={workspacePath}
+              onActivityChange={onActivityChange}
+            />
+          ) : undefined
+        }
+      />
+      {requestId && !running && (
+        <FileChangesSummary activities={activities} />
+      )}
+    </div>
+  );
+});
+
+const ConversationHistory = memo(function ConversationHistory({
+  messages,
+  activitiesByRequest,
+  runningId,
+  workspacePath,
+  contextByMessage,
+  retryContent,
+  onRetry,
+  onActivityChange,
+  registerTurn,
+  endRef,
+}: {
+  messages: ChatMessage[];
+  activitiesByRequest: Map<string, AgentActivity[]>;
+  runningId?: string;
+  workspacePath: string;
+  contextByMessage: Map<string, ContextFile[]>;
+  retryContent?: string;
+  onRetry(content: string): void;
+  onActivityChange(activity: AgentActivity): void;
+  registerTurn(id: string, element: HTMLDivElement | null): void;
+  endRef: React.RefObject<HTMLDivElement | null>;
+}) {
+  return (
+    <div className="message-list" aria-live="polite">
+      {messages.map((message) => {
+        const requestId = message.id.startsWith("assistant:")
+          ? message.id.slice("assistant:".length)
+          : undefined;
+        return (
+          <ConversationMessage
+            key={message.id}
+            message={message}
+            activities={
+              requestId
+                ? (activitiesByRequest.get(requestId) ?? EMPTY_ACTIVITIES)
+                : EMPTY_ACTIVITIES
+            }
+            running={Boolean(requestId) && requestId === runningId}
+            workspacePath={workspacePath}
+            attachments={contextByMessage.get(message.id)}
+            retryContent={retryContent}
+            onRetry={onRetry}
+            onActivityChange={onActivityChange}
+            registerTurn={registerTurn}
+          />
+        );
+      })}
+      <div ref={endRef} />
+    </div>
+  );
+});
 
 const updateBytes = (value = 0) => {
   if (!Number.isFinite(value) || value <= 0) return "0 B";
@@ -2528,6 +2666,9 @@ export default function App() {
   const scrollTargetRef = useRef<HTMLElement | null>(null);
   const requestStartedRef = useRef<number | undefined>(undefined);
   const contextByMessageRef = useRef(new Map<string, ContextFile[]>());
+  const sendRef = useRef<((override?: string) => Promise<void>) | undefined>(
+    undefined,
+  );
   const modelPickerRef = useRef<HTMLDivElement>(null);
   const effortPickerRef = useRef<HTMLDivElement>(null);
   const modelTriggerRef = useRef<HTMLButtonElement>(null);
@@ -2538,6 +2679,16 @@ export default function App() {
   const turnButtonRefs = useRef(new Map<string, HTMLButtonElement>());
   const turnPositionsRef = useRef<{ id: string; top: number }[]>([]);
   const activeConversationTurnRef = useRef<string | undefined>(undefined);
+  const registerTurn = useCallback(
+    (id: string, element: HTMLDivElement | null) => {
+      if (element) turnRefs.current.set(id, element);
+      else turnRefs.current.delete(id);
+    },
+    [],
+  );
+  const retryMessage = useCallback((content: string) => {
+    void sendRef.current?.(content);
+  }, []);
   const claimTaskView = (taskId: string) => {
     activeTaskIdRef.current = taskId;
     displayedTaskIdRef.current = taskId;
@@ -2615,6 +2766,11 @@ export default function App() {
       ]);
     return grouped;
   }, [activities]);
+  const handleActivityChange = useCallback((next: AgentActivity) => {
+    setActivities((all) =>
+      all.map((item) => (item.id === next.id ? next : item)),
+    );
+  }, []);
   useEffect(() => {
     const ids = new Set(conversationTurns.map((turn) => turn.id));
     if (
@@ -3237,7 +3393,7 @@ export default function App() {
           const updateMessages = (all: ChatMessage[]) =>
             all.map((m) =>
               m.id === `assistant:${id}`
-                ? { ...m, content: `请求失败：${event.message}` }
+                ? { ...m, error: event.message }
                 : m,
             );
           setTasks((all) =>
@@ -3817,7 +3973,7 @@ export default function App() {
       (message) =>
         !(
           message.role === "assistant" &&
-          message.content.startsWith("请求失败：")
+          (message.error || message.content.startsWith("请求失败："))
         ),
     );
     const user: ChatMessage =
@@ -3834,6 +3990,7 @@ export default function App() {
       retrying && cleanMessages.at(-1)?.role === "user"
         ? cleanMessages
         : [...cleanMessages, user];
+    const visibleMessages = retrying ? messages : [...messages, user];
     if (!retrying) contextByMessageRef.current.set(user.id, attachedFiles);
     let requestSummary = activeTask?.contextSummary;
     let requestLedger = activeTask?.contextLedger;
@@ -3973,7 +4130,7 @@ export default function App() {
     setAttachedFiles([]);
     setAttachedImages([]);
     if (contextNotice) flashContextToast(contextNotice);
-    setMessages(nextMessages);
+    setMessages(visibleMessages);
     setInput("");
     setUsage({ input: 0, output: 0, cached: 0 });
     setUsageResolved(false);
@@ -3999,7 +4156,7 @@ export default function App() {
           ),
         );
       setMessages([
-        ...nextMessages,
+        ...visibleMessages,
         {
           id: `assistant:${id}`,
           role: "assistant",
@@ -4081,7 +4238,7 @@ export default function App() {
         task.id === taskId
           ? {
               ...task,
-              messages: [...nextMessages, assistantMessage],
+              messages: [...visibleMessages, assistantMessage],
               runningId: id,
               runStatus: "running",
               startedAt: requestStartedAt,
@@ -4093,6 +4250,8 @@ export default function App() {
       ),
     );
   }
+
+  sendRef.current = send;
   async function cancel() {
     if (runningId) {
       if (window.kcode) await window.kcode.chat.cancel(runningId);
@@ -4681,66 +4840,18 @@ export default function App() {
                 )}
               </div>
             ) : (
-              <div className="message-list" aria-live="polite">
-                {messages.map((message) => {
-                  const requestId = message.id.startsWith("assistant:")
-                    ? message.id.slice("assistant:".length)
-                    : undefined;
-                  const turnActivities = requestId
-                    ? (activitiesByRequest.get(requestId) ?? [])
-                    : [];
-                  const turnRunning =
-                    Boolean(requestId) && requestId === runningId;
-                  return (
-                    <div
-                      className="conversation-turn-item"
-                      key={message.id}
-                      ref={
-                        message.role === "user"
-                          ? (element) => {
-                              if (element)
-                                turnRefs.current.set(message.id, element);
-                              else turnRefs.current.delete(message.id);
-                            }
-                          : undefined
-                      }
-                    >
-                      <MessageItem
-                        message={message}
-                        running={turnRunning}
-                        attachments={contextByMessageRef.current.get(
-                          message.id,
-                        )}
-                        onRetry={() =>
-                          lastUserMessage && void send(lastUserMessage.content)
-                        }
-                        assistantBody={
-                          requestId ? (
-                            <AssistantTimeline
-                              message={message}
-                              activities={turnActivities}
-                              running={turnRunning}
-                              requestId={turnRunning ? requestId : undefined}
-                              workspacePath={activeTask?.workspacePath || ""}
-                              onActivityChange={(next) =>
-                                setActivities((all) =>
-                                  all.map((item) =>
-                                    item.id === next.id ? next : item,
-                                  ),
-                                )
-                              }
-                            />
-                          ) : undefined
-                        }
-                      />
-                      {requestId && !turnRunning && (
-                        <FileChangesSummary activities={turnActivities} />
-                      )}
-                    </div>
-                  );
-                })}
-                <div ref={endRef} />
-              </div>
+              <ConversationHistory
+                messages={messages}
+                activitiesByRequest={activitiesByRequest}
+                runningId={runningId}
+                workspacePath={activeTask?.workspacePath || ""}
+                contextByMessage={contextByMessageRef.current}
+                retryContent={lastUserMessage?.content}
+                onRetry={retryMessage}
+                onActivityChange={handleActivityChange}
+                registerTurn={registerTurn}
+                endRef={endRef}
+              />
             )}
           </section>
           <div className="composer-wrap">
