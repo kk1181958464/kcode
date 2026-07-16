@@ -74,7 +74,29 @@ import {
   redactMysqlInput,
   type MysqlConnectInput,
 } from "./mysql";
-import { classifyMysqlSql, redactSqlForActivity } from "./sql-policy";
+import {
+  adoptSqlServerSession,
+  cleanupSqlServerSessions,
+  connectSqlServer,
+  disconnectSqlServer,
+  querySqlServer,
+  redactSqlServerInput,
+  type SqlServerConnectInput,
+} from "./sqlserver";
+import {
+  adoptMongoSession,
+  cleanupMongoSessions,
+  connectMongo,
+  disconnectMongo,
+  executeMongo,
+  redactMongoInput,
+  type MongoConnectInput,
+} from "./mongodb";
+import {
+  classifyMysqlSql,
+  classifySqlServerSql,
+  redactSqlForActivity,
+} from "./sql-policy";
 import {
   resolveProjectDiagnostic,
   type DiagnosticKind,
@@ -219,9 +241,15 @@ function compactRuntimeHistory(history: HistoryItem[], force = false) {
     if (item.kind === "calls")
       for (const call of item.calls)
         if (
-          ["ssh_connect", "mysql_connect", "mysql_connect_via_ssh"].includes(
-            call.name,
-          )
+          [
+            "ssh_connect",
+            "mysql_connect",
+            "mysql_connect_via_ssh",
+            "sqlserver_connect",
+            "sqlserver_connect_via_ssh",
+            "mongodb_connect",
+            "mongodb_connect_via_ssh",
+          ].includes(call.name)
         )
           connections.push(`${call.name} ${JSON.stringify(call.input)}`);
     if (item.kind === "message" && item !== firstMessage)
@@ -836,6 +864,155 @@ const tools = [
     parameters: { type: "object", properties: {}, additionalProperties: false },
   },
   {
+    name: "sqlserver_connect",
+    description:
+      "Connect this task directly to Microsoft SQL Server. Public hosts use encryption with certificate verification by default; only trust a self-signed certificate when the user explicitly approves it.",
+    parameters: {
+      type: "object",
+      properties: {
+        host: { type: "string" },
+        port: { type: "number", minimum: 1, maximum: 65535 },
+        username: { type: "string" },
+        password: { type: "string" },
+        database: { type: "string" },
+        encrypt: { type: "boolean" },
+        trustServerCertificate: { type: "boolean" },
+      },
+      required: ["host", "username", "password"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "sqlserver_connect_via_ssh",
+    description:
+      "Connect to Microsoft SQL Server through this task's SSH tunnel, establishing SSH from supplied credentials or reusing the active SSH connection.",
+    parameters: {
+      type: "object",
+      properties: {
+        sshHost: { type: "string" },
+        sshPort: { type: "number" },
+        sshUsername: { type: "string" },
+        sshPassword: { type: "string" },
+        sshPrivateKey: { type: "string" },
+        sshPassphrase: { type: "string" },
+        sshHostFingerprint: { type: "string" },
+        host: { type: "string" },
+        port: { type: "number", minimum: 1, maximum: 65535 },
+        username: { type: "string" },
+        password: { type: "string" },
+        database: { type: "string" },
+        encrypt: { type: "boolean" },
+        trustServerCertificate: { type: "boolean" },
+      },
+      required: ["host", "username", "password"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "sqlserver_query",
+    description:
+      "Execute one parameterized T-SQL statement. Use @p1, @p2, etc. placeholders corresponding to the values array. Multiple statements are not permitted.",
+    parameters: {
+      type: "object",
+      properties: { sql: { type: "string" }, values: { type: "array" } },
+      required: ["sql"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "sqlserver_disconnect",
+    description: "Close the SQL Server connection associated with this task.",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    name: "mongodb_connect",
+    description:
+      "Connect this task directly to MongoDB using a URI or host credentials. Public direct hosts use TLS by default. Credentials supplied in a URI are never shown in activity logs.",
+    parameters: {
+      type: "object",
+      properties: {
+        uri: { type: "string" },
+        host: { type: "string" },
+        port: { type: "number", minimum: 1, maximum: 65535 },
+        username: { type: "string" },
+        password: { type: "string" },
+        database: { type: "string" },
+        authSource: { type: "string" },
+        tls: { type: "boolean" },
+        tlsCA: { type: "string" },
+        tlsCertificateKeyFile: { type: "string" },
+      },
+      required: ["database"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "mongodb_connect_via_ssh",
+    description:
+      "Connect to MongoDB through this task's SSH tunnel, establishing SSH from supplied credentials or reusing the active SSH connection.",
+    parameters: {
+      type: "object",
+      properties: {
+        sshHost: { type: "string" },
+        sshPort: { type: "number" },
+        sshUsername: { type: "string" },
+        sshPassword: { type: "string" },
+        sshPrivateKey: { type: "string" },
+        sshPassphrase: { type: "string" },
+        sshHostFingerprint: { type: "string" },
+        host: { type: "string" },
+        port: { type: "number", minimum: 1, maximum: 65535 },
+        username: { type: "string" },
+        password: { type: "string" },
+        database: { type: "string" },
+        authSource: { type: "string" },
+        tls: { type: "boolean" },
+      },
+      required: ["host", "database"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "mongodb_execute",
+    description:
+      "Execute a structured MongoDB operation: find, aggregate, insertOne, insertMany, updateOne, updateMany, deleteOne, deleteMany, countDocuments, or distinct. Arbitrary JavaScript is not supported.",
+    parameters: {
+      type: "object",
+      properties: {
+        operation: {
+          type: "string",
+          enum: [
+            "find",
+            "aggregate",
+            "insertOne",
+            "insertMany",
+            "updateOne",
+            "updateMany",
+            "deleteOne",
+            "deleteMany",
+            "countDocuments",
+            "distinct",
+          ],
+        },
+        collection: { type: "string" },
+        filter: { type: "object" },
+        document: { type: "object" },
+        documents: { type: "array" },
+        update: { type: "object" },
+        pipeline: { type: "array" },
+        field: { type: "string" },
+        options: { type: "object" },
+      },
+      required: ["operation", "collection"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "mongodb_disconnect",
+    description: "Close the MongoDB connection associated with this task.",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
     name: "spawn_agent",
     description:
       "Start a background subagent for a self-contained task that can run independently. Subagents inherit the current model, workspace, reasoning, and permissions. Prefer separate files or research areas to avoid edit conflicts. Returns an agent id immediately.",
@@ -967,6 +1144,8 @@ export async function cleanupAgentRecords(
   const allRequestIds = [...requests];
   cleanupBrowsers(allRequestIds);
   cleanupMysqlSessions(allRequestIds);
+  cleanupSqlServerSessions(allRequestIds);
+  cleanupMongoSessions(allRequestIds);
   cleanupSshSessions(allRequestIds, activityIds);
   await subagentCleanup.settle();
 }
@@ -1109,7 +1288,12 @@ function command(
 }
 
 function failureSummary(call: ToolCall, output: string, exitCode?: number) {
-  if (call.name.startsWith("mysql_")) return output;
+  if (
+    call.name.startsWith("mysql_") ||
+    call.name.startsWith("sqlserver_") ||
+    call.name.startsWith("mongodb_")
+  )
+    return output;
   if (call.name.startsWith("ssh_")) {
     if (call.name === "ssh_run" && exitCode !== undefined) {
       const detail = conciseFailureOutput(output);
@@ -1152,7 +1336,11 @@ function isHardFailure(call: ToolCall, output: string) {
   const script = String(call.input.command || "");
   if (/\*\*\* Begin Patch|\bapply_patch\b/i.test(script)) return true;
   if (/命令执行超时|命令已取消/.test(output)) return true;
-  if (/not recognized|CommandNotFoundException|找不到|无法将.*识别为/i.test(output))
+  if (
+    /not recognized|CommandNotFoundException|找不到|无法将.*识别为/i.test(
+      output,
+    )
+  )
     return true;
   return false;
 }
@@ -1176,6 +1364,46 @@ function mysqlConnectInput(
     sslRejectUnauthorized:
       typeof input.sslRejectUnauthorized === "boolean"
         ? input.sslRejectUnauthorized
+        : undefined,
+  };
+}
+
+function sqlServerConnectInput(
+  input: Record<string, unknown>,
+  defaultHost = "",
+): SqlServerConnectInput {
+  return {
+    host: String(input.host || defaultHost),
+    port: Number(input.port) || 1433,
+    username: String(input.username || ""),
+    password: String(input.password || ""),
+    database: typeof input.database === "string" ? input.database : undefined,
+    encrypt: typeof input.encrypt === "boolean" ? input.encrypt : undefined,
+    trustServerCertificate:
+      typeof input.trustServerCertificate === "boolean"
+        ? input.trustServerCertificate
+        : undefined,
+  };
+}
+
+function mongoConnectInput(
+  input: Record<string, unknown>,
+  defaultHost = "",
+): MongoConnectInput {
+  return {
+    uri: typeof input.uri === "string" ? input.uri : undefined,
+    host: String(input.host || defaultHost),
+    port: Number(input.port) || 27017,
+    username: typeof input.username === "string" ? input.username : undefined,
+    password: typeof input.password === "string" ? input.password : undefined,
+    database: String(input.database || ""),
+    authSource:
+      typeof input.authSource === "string" ? input.authSource : undefined,
+    tls: typeof input.tls === "boolean" ? input.tls : undefined,
+    tlsCA: typeof input.tlsCA === "string" ? input.tlsCA : undefined,
+    tlsCertificateKeyFile:
+      typeof input.tlsCertificateKeyFile === "string"
+        ? input.tlsCertificateKeyFile
         : undefined,
   };
 }
@@ -1989,6 +2217,165 @@ async function execute(
         ? "MySQL 连接已关闭"
         : "当前任务没有活动的 MySQL 连接",
     };
+  if (call.name === "sqlserver_connect") {
+    const result = await connectSqlServer(
+      browserSessionId,
+      requestId,
+      sqlServerConnectInput(call.input),
+      false,
+      signal,
+    );
+    return { output: JSON.stringify(result, null, 2) };
+  }
+  if (call.name === "sqlserver_connect_via_ssh") {
+    let sessionId = browserSessionId;
+    if (call.input.sshHost) {
+      sessionId = `${browserSessionId}:pending:${activityId}`;
+      await connectSsh(
+        sessionId,
+        requestId,
+        {
+          host: String(call.input.sshHost),
+          port: Number(call.input.sshPort) || 22,
+          username: String(call.input.sshUsername || ""),
+          password:
+            typeof call.input.sshPassword === "string"
+              ? call.input.sshPassword
+              : undefined,
+          privateKey:
+            typeof call.input.sshPrivateKey === "string"
+              ? call.input.sshPrivateKey
+              : undefined,
+          passphrase:
+            typeof call.input.sshPassphrase === "string"
+              ? call.input.sshPassphrase
+              : undefined,
+          hostFingerprint:
+            typeof call.input.sshHostFingerprint === "string"
+              ? call.input.sshHostFingerprint
+              : undefined,
+        },
+        signal,
+      );
+    }
+    try {
+      const result = await connectSqlServer(
+        sessionId,
+        requestId,
+        sqlServerConnectInput(call.input, "127.0.0.1"),
+        true,
+        signal,
+      );
+      if (sessionId !== browserSessionId) {
+        adoptSqlServerSession(sessionId, browserSessionId);
+        adoptSshSession(sessionId, browserSessionId);
+      }
+      return { output: JSON.stringify(result, null, 2) };
+    } catch (error) {
+      if (sessionId !== browserSessionId) {
+        await disconnectSqlServer(sessionId);
+        disconnectSsh(sessionId);
+      }
+      throw error;
+    }
+  }
+  if (call.name === "sqlserver_query") {
+    const sql = String(call.input.sql || "");
+    const values = Array.isArray(call.input.values) ? call.input.values : [];
+    return {
+      command: redactSqlForActivity(sql),
+      output: await querySqlServer(
+        browserSessionId,
+        requestId,
+        sql,
+        values,
+        signal,
+      ),
+    };
+  }
+  if (call.name === "sqlserver_disconnect")
+    return {
+      output: (await disconnectSqlServer(browserSessionId))
+        ? "SQL Server 连接已关闭"
+        : "当前任务没有活动的 SQL Server 连接",
+    };
+  if (call.name === "mongodb_connect") {
+    const result = await connectMongo(
+      browserSessionId,
+      requestId,
+      mongoConnectInput(call.input),
+      false,
+      signal,
+    );
+    return { output: JSON.stringify(result, null, 2) };
+  }
+  if (call.name === "mongodb_connect_via_ssh") {
+    let sessionId = browserSessionId;
+    if (call.input.sshHost) {
+      sessionId = `${browserSessionId}:pending:${activityId}`;
+      await connectSsh(
+        sessionId,
+        requestId,
+        {
+          host: String(call.input.sshHost),
+          port: Number(call.input.sshPort) || 22,
+          username: String(call.input.sshUsername || ""),
+          password:
+            typeof call.input.sshPassword === "string"
+              ? call.input.sshPassword
+              : undefined,
+          privateKey:
+            typeof call.input.sshPrivateKey === "string"
+              ? call.input.sshPrivateKey
+              : undefined,
+          passphrase:
+            typeof call.input.sshPassphrase === "string"
+              ? call.input.sshPassphrase
+              : undefined,
+          hostFingerprint:
+            typeof call.input.sshHostFingerprint === "string"
+              ? call.input.sshHostFingerprint
+              : undefined,
+        },
+        signal,
+      );
+    }
+    try {
+      const result = await connectMongo(
+        sessionId,
+        requestId,
+        mongoConnectInput(call.input, "127.0.0.1"),
+        true,
+        signal,
+      );
+      if (sessionId !== browserSessionId) {
+        adoptMongoSession(sessionId, browserSessionId);
+        adoptSshSession(sessionId, browserSessionId);
+      }
+      return { output: JSON.stringify(result, null, 2) };
+    } catch (error) {
+      if (sessionId !== browserSessionId) {
+        await disconnectMongo(sessionId);
+        disconnectSsh(sessionId);
+      }
+      throw error;
+    }
+  }
+  if (call.name === "mongodb_execute")
+    return {
+      output: await executeMongo(
+        browserSessionId,
+        requestId,
+        call.input as any,
+        signal,
+      ),
+    };
+  if (call.name === "mongodb_disconnect")
+    return {
+      output: (await disconnectMongo(browserSessionId))
+        ? "MongoDB 连接已关闭"
+        : "当前任务没有活动的 MongoDB 连接",
+    };
   if (call.name === "spawn_agent") {
     if ((request.agentDepth ?? 0) >= 2)
       throw new Error("当前子 Agent 已达到委派深度，不能继续创建下级 Agent。");
@@ -2750,7 +3137,8 @@ async function modelTurn(
   // especially behind a third-party proxy with a large context. The 60s default
   // is too aggressive for them; the idle timeout still guards a truly stuck
   // stream once bytes start flowing.
-  const firstByteTimeoutMs = reasoning.reasoningMode !== "none" ? 300_000 : 90_000;
+  const firstByteTimeoutMs =
+    reasoning.reasoningMode !== "none" ? 300_000 : 90_000;
   const response = await fetchWithRetry(
     url,
     {
@@ -3077,6 +3465,14 @@ export async function* runAgent(
         mysql_connect_via_ssh: "通过 SSH 连接 MySQL",
         mysql_query: "执行 SQL",
         mysql_disconnect: "断开 MySQL",
+        sqlserver_connect: "连接 SQL Server",
+        sqlserver_connect_via_ssh: "通过 SSH 连接 SQL Server",
+        sqlserver_query: "执行 T-SQL",
+        sqlserver_disconnect: "断开 SQL Server",
+        mongodb_connect: "连接 MongoDB",
+        mongodb_connect_via_ssh: "通过 SSH 连接 MongoDB",
+        mongodb_execute: "执行 MongoDB 操作",
+        mongodb_disconnect: "断开 MongoDB",
         spawn_agent: "创建子 Agent",
         list_agents: "查看子 Agent",
         message_agent: "追加子 Agent 指令",
@@ -3106,7 +3502,11 @@ export async function* runAgent(
                 ? redactSshInput(call.input)
                 : call.name.startsWith("mysql_")
                   ? redactMysqlInput(call.input)
-                  : call.input,
+                  : call.name.startsWith("sqlserver_")
+                    ? redactSqlServerInput(call.input)
+                    : call.name.startsWith("mongodb_")
+                      ? redactMongoInput(call.input)
+                      : call.input,
         path:
           typeof call.input.path === "string"
             ? call.input.path
@@ -3123,6 +3523,35 @@ export async function* runAgent(
       const mysqlSql =
         call.name === "mysql_query" ? String(call.input.sql || "").trim() : "";
       const mysqlRisk = mysqlSql ? classifyMysqlSql(mysqlSql) : undefined;
+      const sqlServerSql =
+        call.name === "sqlserver_query"
+          ? String(call.input.sql || "").trim()
+          : "";
+      const sqlServerRisk = sqlServerSql
+        ? classifySqlServerSql(sqlServerSql)
+        : undefined;
+      const mongoOperation =
+        call.name === "mongodb_execute"
+          ? String(call.input.operation || "")
+          : "";
+      const databaseRead =
+        (call.name === "mysql_query" && mysqlRisk === "read") ||
+        (call.name === "sqlserver_query" && sqlServerRisk === "read") ||
+        (call.name === "mongodb_execute" &&
+          ["find", "aggregate", "countDocuments", "distinct"].includes(
+            mongoOperation,
+          ));
+      const databaseDelete =
+        (call.name === "mysql_query" && mysqlRisk === "destructive") ||
+        (call.name === "sqlserver_query" && sqlServerRisk === "destructive") ||
+        (call.name === "mongodb_execute" &&
+          mongoOperation.startsWith("delete"));
+      const databaseTool = /^(mysql|sqlserver|mongodb)_/.test(call.name);
+      const databaseConnectionTool =
+        databaseTool &&
+        (call.name.endsWith("connect") ||
+          call.name.includes("connect_via_ssh") ||
+          call.name.endsWith("disconnect"));
       const category =
         call.name === "web_search" ||
         call.name === "fetch_url" ||
@@ -3131,14 +3560,12 @@ export async function* runAgent(
         call.name === "ssh_list_directory" ||
         call.name === "ssh_read_file" ||
         call.name === "ssh_disconnect" ||
-        call.name === "mysql_connect" ||
-        call.name === "mysql_connect_via_ssh" ||
-        call.name === "mysql_disconnect" ||
-        (call.name === "mysql_query" && mysqlRisk === "read")
+        databaseConnectionTool ||
+        databaseRead
           ? "network"
-          : call.name === "mysql_query" && mysqlRisk === "destructive"
+          : databaseDelete
             ? "deletePaths"
-            : call.name === "mysql_query"
+            : databaseTool
               ? "workspaceWrite"
               : call.name === "ssh_run"
                 ? "runCommands"

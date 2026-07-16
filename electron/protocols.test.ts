@@ -42,6 +42,15 @@ test("parses Chat Completions delta and usage", () => {
   );
 });
 
+test("parses Grok reasoning deltas from Chat Completions", () => {
+  assert.deepEqual(
+    parseChatCompletionsEvent({
+      choices: [{ delta: { reasoning_content: "checking the code" } }],
+    }),
+    { events: [{ type: "reasoning", delta: "checking the code" }] },
+  );
+});
+
 test("parses Anthropic Messages text and token events", () => {
   assert.deepEqual(
     parseAnthropicMessagesEvent({

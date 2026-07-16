@@ -37,6 +37,36 @@ test("assembles fragmented OpenAI Chat tool calls", () => {
   ]);
   assert.deepEqual(result.usage, { input: 10, output: 4, cached: 0 });
 });
+test("assembles Grok-compatible tool calls and reasoning", () => {
+  let reasoning = "";
+  const a = new AgentStreamAssembler(
+    "openai-chat",
+    undefined,
+    (delta) => (reasoning += delta),
+  );
+  a.consume({
+    choices: [
+      {
+        delta: {
+          reasoning_content: "inspect first",
+          tool_calls: [
+            {
+              index: 0,
+              id: "grok-call",
+              function: { name: "read_file", arguments: '{"path":"README.md"}' },
+            },
+          ],
+        },
+      },
+    ],
+  });
+  assert.equal(reasoning, "inspect first");
+  assert.deepEqual(a.finish().calls[0], {
+    id: "grok-call",
+    name: "read_file",
+    input: { path: "README.md" },
+  });
+});
 test("assembles Responses argument deltas", () => {
   const a = new AgentStreamAssembler("openai-responses");
   a.consume({
@@ -64,6 +94,46 @@ test("assembles Responses argument deltas", () => {
     name: "read_file",
     input: { path: "README.md" },
   });
+});
+test("surfaces reasoning deltas without adding them to answer text", () => {
+  const protocols = [
+    {
+      protocol: "openai-chat" as const,
+      event: {
+        choices: [{ delta: { reasoning_content: "chat thought" } }],
+      },
+      expected: "chat thought",
+    },
+    {
+      protocol: "openai-responses" as const,
+      event: {
+        type: "response.reasoning_summary_text.delta",
+        delta: "responses thought",
+      },
+      expected: "responses thought",
+    },
+    {
+      protocol: "anthropic-messages" as const,
+      event: {
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "thinking_delta", thinking: "anthropic thought" },
+      },
+      expected: "anthropic thought",
+    },
+  ];
+
+  for (const { protocol, event, expected } of protocols) {
+    let reasoning = "";
+    const assembler = new AgentStreamAssembler(
+      protocol,
+      undefined,
+      (delta) => (reasoning += delta),
+    );
+    assembler.consume(event);
+    assert.equal(reasoning, expected);
+    assert.equal(assembler.finish().text, "");
+  }
 });
 test("assembles Anthropic partial JSON and text", () => {
   let streamed = "";

@@ -148,7 +148,9 @@ export async function* streamChat(
     throw new Error("对话与上下文总大小超过 3 MB");
   const base = trim(provider.baseUrl);
   if (provider.protocol === "openai-responses") {
-    const supportsReasoning = /^(o[134]|gpt-5)/i.test(request.modelId);
+    const supportsReasoning =
+      inferReasoningConfig(request.modelId, provider.protocol).reasoningMode ===
+      "effort";
     const response = await checkedFetch(apiEndpoint(base, "responses"), {
       method: "POST",
       signal,
@@ -172,7 +174,9 @@ export async function* streamChat(
       for (const event of parsed.events) yield event;
     }
   } else if (provider.protocol === "openai-chat") {
-    const supportsReasoning = /^(o[134]|gpt-5)/i.test(request.modelId);
+    const supportsReasoning =
+      inferReasoningConfig(request.modelId, provider.protocol).reasoningMode ===
+      "effort";
     const response = await checkedFetch(apiEndpoint(base, "chat/completions"), {
       method: "POST",
       signal,

@@ -96,7 +96,12 @@ type TaskRecord = {
   runningId?: string;
   runStatus?: TaskRunStatus;
   startedAt?: number;
-  usage?: { input: number; output: number; cached: number; promptTokens?: number };
+  usage?: {
+    input: number;
+    output: number;
+    cached: number;
+    promptTokens?: number;
+  };
   usageResolved?: boolean;
   contextSummary?: string;
   compactedMessageCount?: number;
@@ -122,6 +127,7 @@ type TaskRecord = {
   usedContextCount?: number;
   archived?: boolean;
 };
+type ConversationScrollState = { top: number; atBottom: boolean };
 const initialTask = (): TaskRecord => ({
   id: uid(),
   name: "kcode",
@@ -1392,17 +1398,18 @@ function DiffView({ text, className }: { text: string; className?: string }) {
   return (
     <pre className={`diff-view${className ? ` ${className}` : ""}`}>
       {lines.map((line, index) => {
-        const kind = line.startsWith("+++") || line.startsWith("---")
-          ? "meta"
-          : line.startsWith("@@")
-            ? "hunk"
-            : line.startsWith("+")
-              ? "add"
-              : line.startsWith("-")
-                ? "del"
-                : line.startsWith("diff ") || line.startsWith("index ")
-                  ? "meta"
-                  : "context";
+        const kind =
+          line.startsWith("+++") || line.startsWith("---")
+            ? "meta"
+            : line.startsWith("@@")
+              ? "hunk"
+              : line.startsWith("+")
+                ? "add"
+                : line.startsWith("-")
+                  ? "del"
+                  : line.startsWith("diff ") || line.startsWith("index ")
+                    ? "meta"
+                    : "context";
         return (
           <span key={index} className={`diff-line diff-${kind}`}>
             {line || " "}
@@ -1864,6 +1871,8 @@ const commandTools: AgentToolName[] = [
   "run_command",
   "ssh_run",
   "mysql_query",
+  "sqlserver_query",
+  "mongodb_execute",
   "start_process",
   "stop_process",
   "diagnostics",
@@ -2210,9 +2219,7 @@ const FileChangesSummary = memo(function FileChangesSummary({
                   <b>+{stats.additions}</b> <i>-{stats.deletions}</i>
                 </small>
               </button>
-              {open && hasDiff && (
-                <DiffView text={stats.diffs.join("\n\n")} />
-              )}
+              {open && hasDiff && <DiffView text={stats.diffs.join("\n\n")} />}
             </div>
           );
         })}
@@ -2275,9 +2282,7 @@ const ConversationMessage = memo(function ConversationMessage({
           ) : undefined
         }
       />
-      {requestId && !running && (
-        <FileChangesSummary activities={activities} />
-      )}
+      {requestId && !running && <FileChangesSummary activities={activities} />}
     </div>
   );
 });
@@ -2686,6 +2691,13 @@ export default function App() {
   const previewTimerRef = useRef<number | undefined>(undefined);
   const followFrameRef = useRef<number | undefined>(undefined);
   const scrollFrameRef = useRef<number | undefined>(undefined);
+  const scrollStateByTaskRef = useRef(
+    new Map<string, ConversationScrollState>(),
+  );
+  const pendingScrollRestoreRef = useRef<
+    { taskId: string; state: ConversationScrollState } | undefined
+  >(undefined);
+  const scrollAfterSendRef = useRef(false);
   const turnLayoutFrameRef = useRef<number | undefined>(undefined);
   const scrollTargetRef = useRef<HTMLElement | null>(null);
   const requestStartedRef = useRef<number | undefined>(undefined);
@@ -2874,6 +2886,12 @@ export default function App() {
       if (!target) return;
       const atBottom =
         target.scrollHeight - target.scrollTop - target.clientHeight < 72;
+      const taskId = displayedTaskIdRef.current;
+      if (taskId)
+        scrollStateByTaskRef.current.set(taskId, {
+          top: target.scrollTop,
+          atBottom,
+        });
       if (autoFollowRef.current !== atBottom) {
         autoFollowRef.current = atBottom;
         setShowScrollToBottom(!atBottom);
@@ -2888,6 +2906,12 @@ export default function App() {
     autoFollowRef.current = true;
     setShowScrollToBottom(false);
     conversation.scrollTo({ top: conversation.scrollHeight, behavior });
+    const taskId = displayedTaskIdRef.current;
+    if (taskId)
+      scrollStateByTaskRef.current.set(taskId, {
+        top: conversation.scrollHeight,
+        atBottom: true,
+      });
     setActiveConversationTurn(conversationTurns.at(-1)?.id);
   }
 
@@ -3425,9 +3449,7 @@ export default function App() {
         if (event.type === "error") {
           const updateMessages = (all: ChatMessage[]) =>
             all.map((m) =>
-              m.id === `assistant:${id}`
-                ? { ...m, error: event.message }
-                : m,
+              m.id === `assistant:${id}` ? { ...m, error: event.message } : m,
             );
           setTasks((all) =>
             all.map((task) =>
@@ -3515,9 +3537,32 @@ export default function App() {
     [],
   );
   useEffect(() => {
-    if (!autoFollowEnabled || !autoFollowRef.current) return;
+    const pending = pendingScrollRestoreRef.current;
+    if (!pending || pending.taskId !== activeTaskId) return;
+    const frame = requestAnimationFrame(() => {
+      const conversation = conversationRef.current;
+      if (!conversation || displayedTaskIdRef.current !== pending.taskId) return;
+      const top = pending.state.atBottom
+        ? conversation.scrollHeight
+        : Math.min(
+            pending.state.top,
+            Math.max(0, conversation.scrollHeight - conversation.clientHeight),
+          );
+      conversation.scrollTop = top;
+      autoFollowRef.current = pending.state.atBottom;
+      setShowScrollToBottom(!pending.state.atBottom);
+      pendingScrollRestoreRef.current = undefined;
+      updateActiveTurn(conversation);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [activeTaskId, messages.length, activities.length]);
+  useEffect(() => {
+    const forceAfterSend = scrollAfterSendRef.current;
+    if (pendingScrollRestoreRef.current) return;
+    if ((!autoFollowEnabled || !autoFollowRef.current) && !forceAfterSend) return;
     if (followFrameRef.current) cancelAnimationFrame(followFrameRef.current);
     followFrameRef.current = requestAnimationFrame(() => {
+      scrollAfterSendRef.current = false;
       const conversation = conversationRef.current;
       if (conversation) {
         conversation.scrollTop = conversation.scrollHeight;
@@ -3597,12 +3642,42 @@ export default function App() {
     setActiveTaskId(task.id);
     setMessages([]);
     setActivities([]);
+    setInput("");
+    setAttachedFiles([]);
+    setAttachedImages([]);
+    setUsage({ input: 0, output: 0, cached: 0 });
+    setUsageResolved(false);
+    setDurationMs(0);
+    setUsedContextCount(0);
+    currentRequest.current = undefined;
+    setRunningId(undefined);
+    setAgentReasoning("");
+    requestStartedRef.current = undefined;
+    contextByMessageRef.current.clear();
+    autoFollowRef.current = true;
     setPendingFolder(null);
     setNewTaskName("");
   }
 
   async function switchTask(task: TaskRecord) {
     if (task.id === activeTaskId) return;
+    const conversation = conversationRef.current;
+    if (conversation && displayedTaskIdRef.current) {
+      const atBottom =
+        conversation.scrollHeight -
+          conversation.scrollTop -
+          conversation.clientHeight <
+        72;
+      scrollStateByTaskRef.current.set(displayedTaskIdRef.current, {
+        top: conversation.scrollTop,
+        atBottom,
+      });
+    }
+    const targetScroll = scrollStateByTaskRef.current.get(task.id) ?? {
+      top: 0,
+      atBottom: true,
+    };
+    pendingScrollRestoreRef.current = { taskId: task.id, state: targetScroll };
     claimTaskView(task.id);
     currentRequest.current = task.runningId;
     setRunningId(task.runningId);
@@ -3620,7 +3695,8 @@ export default function App() {
     setUsedContextCount(task.usedContextCount ?? 0);
     setAttachedImages([]);
     contextByMessageRef.current.clear();
-    autoFollowRef.current = true;
+    autoFollowRef.current = targetScroll.atBottom;
+    setShowScrollToBottom(!targetScroll.atBottom);
   }
 
   async function createConversation(workspacePath: string) {
@@ -3650,6 +3726,9 @@ export default function App() {
     currentRequest.current = undefined;
     setRunningId(undefined);
     contextByMessageRef.current.clear();
+    pendingScrollRestoreRef.current = undefined;
+    autoFollowRef.current = true;
+    setShowScrollToBottom(false);
   }
 
   async function removeTask(task: TaskRecord) {
@@ -4146,6 +4225,8 @@ export default function App() {
       return;
     }
     autoFollowRef.current = true;
+    scrollAfterSendRef.current = true;
+    setShowScrollToBottom(false);
     const requestStartedAt = Date.now();
     requestStartedRef.current = requestStartedAt;
     setUsedContextCount(contextByMessageRef.current.get(user.id)?.length ?? 0);
@@ -5351,7 +5432,10 @@ export default function App() {
                   )}
                   {gitDiffOpen &&
                     (gitState.diff ? (
-                      <DiffView text={gitState.diff} className="git-diff-view" />
+                      <DiffView
+                        text={gitState.diff}
+                        className="git-diff-view"
+                      />
                     ) : (
                       <pre className="git-diff-view">{gitState.summary}</pre>
                     ))}
@@ -5664,18 +5748,20 @@ export default function App() {
             </header>
           </aside>
         )}
-        {!browserState.open && browserState.hidden && browserState.sessionId && (
-          <button
-            className="browser-show-tab"
-            title="重新显示后台运行的浏览器"
-            onClick={() =>
-              void window.kcode.browser.activate(browserState.sessionId)
-            }
-          >
-            <PanelRightOpen size={15} />
-            <span>显示浏览器</span>
-          </button>
-        )}
+        {!browserState.open &&
+          browserState.hidden &&
+          browserState.sessionId && (
+            <button
+              className="browser-show-tab"
+              title="重新显示后台运行的浏览器"
+              onClick={() =>
+                void window.kcode.browser.activate(browserState.sessionId)
+              }
+            >
+              <PanelRightOpen size={15} />
+              <span>显示浏览器</span>
+            </button>
+          )}
         {updateOpen && (
           <AppUpdateDialog
             state={appUpdate}

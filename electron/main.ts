@@ -40,6 +40,8 @@ import {
 } from "./agent";
 import { closeAllSshSessions, configureSshKnownHosts } from "./ssh";
 import { closeAllMysqlSessions } from "./mysql";
+import { closeAllSqlServerSessions } from "./sqlserver";
+import { closeAllMongoSessions } from "./mongodb";
 import { resolveGitExecutable } from "./executables";
 import {
   closeAllSubagents,
@@ -93,7 +95,11 @@ function friendlyModelError(raw: string): string {
     return "模型服务当前繁忙或达到频率限制，请稍后重试。";
   if (/50[0-9]|bad gateway|service unavailable|gateway time/i.test(text))
     return "模型服务暂时不可用（上游网关错误），请稍后重试。";
-  if (/ECONNRESET|ECONNREFUSED|ETIMEDOUT|socket hang up|fetch failed|network|连接/i.test(text))
+  if (
+    /ECONNRESET|ECONNREFUSED|ETIMEDOUT|socket hang up|fetch failed|network|连接/i.test(
+      text,
+    )
+  )
     return "网络连接异常，请检查网络后重试。";
   if (/等待响应超时|长时间没有新数据|超时/i.test(text)) return text;
   return text;
@@ -336,7 +342,8 @@ app.whenReady().then(() => {
   ipcMain.handle("log:reveal", () => shell.openPath(logsDirectory()));
   ipcMain.handle("shell:open-external", (_e, url: string) => {
     const target = urlSchema.parse(url);
-    if (!/^https?:\/\//i.test(target)) throw new Error("只能打开 http/https 链接");
+    if (!/^https?:\/\//i.test(target))
+      throw new Error("只能打开 http/https 链接");
     return shell.openExternal(target);
   });
   ipcMain.handle("window:minimize", (event) =>
@@ -691,6 +698,8 @@ app.whenReady().then(() => {
 app.on("window-all-closed", () => {
   void closeAllSubagents();
   closeAllMysqlSessions();
+  closeAllSqlServerSessions();
+  closeAllMongoSessions();
   closeAllSshSessions();
   closeStateDatabase();
   if (process.platform !== "darwin") app.quit();

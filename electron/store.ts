@@ -7,6 +7,8 @@ type StoredProvider = Omit<ProviderConfig, "hasApiKey"> & {
   encryptedApiKey?: string;
 };
 type LegacyProtocol = ProviderConfig["protocol"] | "openai" | "anthropic";
+const XAI_PROVIDER_ID = "xai";
+const XAI_MIGRATION_PROVIDER_ID = "__kcode_xai_preset_v1";
 
 const defaults: StoredProvider[] = [
   {
@@ -30,6 +32,14 @@ const defaults: StoredProvider[] = [
     name: "DeepSeek",
     protocol: "openai-chat",
     baseUrl: "https://api.deepseek.com",
+    enabled: false,
+    models: [],
+  },
+  {
+    id: XAI_PROVIDER_ID,
+    name: "xAI",
+    protocol: "openai-chat",
+    baseUrl: "https://api.x.ai",
     enabled: false,
     models: [],
   },
@@ -62,6 +72,28 @@ async function readStored(): Promise<StoredProvider[]> {
   }
 }
 
+function addXaiPreset(stored: StoredProvider[]) {
+  if (stored.some((provider) => provider.id === XAI_MIGRATION_PROVIDER_ID))
+    return stored;
+  const migrated = stored.some((provider) => provider.id === XAI_PROVIDER_ID)
+    ? stored
+    : [
+        ...stored,
+        defaults.find((provider) => provider.id === XAI_PROVIDER_ID)!,
+      ];
+  return [
+    ...migrated,
+    {
+      id: XAI_MIGRATION_PROVIDER_ID,
+      name: "xAI preset migration",
+      protocol: "openai-chat" as const,
+      baseUrl: "https://api.x.ai",
+      enabled: false,
+      models: [],
+    },
+  ];
+}
+
 async function writeStored(data: StoredProvider[]) {
   await mkdir(path.dirname(filePath()), { recursive: true });
   await writeFile(filePath(), JSON.stringify(data, null, 2), "utf8");
@@ -72,9 +104,15 @@ function publicProvider(provider: StoredProvider): ProviderConfig {
   return { ...rest, hasApiKey: Boolean(encryptedApiKey) };
 }
 
+function publicProviders(providers: StoredProvider[]) {
+  return providers
+    .filter((provider) => provider.id !== XAI_MIGRATION_PROVIDER_ID)
+    .map(publicProvider);
+}
+
 export async function listProviders() {
   const stored = await readStored();
-  const migrated = stored.map((provider) => ({
+  const migrated = addXaiPreset(stored).map((provider) => ({
     ...provider,
     models: provider.models.map((model) => {
       const inferred = inferContextWindow(model.modelId);
@@ -84,7 +122,7 @@ export async function listProviders() {
     }),
   }));
   if (JSON.stringify(migrated) !== JSON.stringify(stored)) await writeStored(migrated);
-  return migrated.map(publicProvider);
+  return publicProviders(migrated);
 }
 
 export async function saveProvider(provider: ProviderConfig, apiKey?: string) {
@@ -124,13 +162,13 @@ export async function saveProvider(provider: ProviderConfig, apiKey?: string) {
   if (previousIndex >= 0) next[previousIndex] = stored;
   else next.push(stored);
   await writeStored(next);
-  return next.map(publicProvider);
+  return publicProviders(next);
 }
 
 export async function removeProvider(id: string) {
   const next = (await readStored()).filter((item) => item.id !== id);
   await writeStored(next);
-  return next.map(publicProvider);
+  return publicProviders(next);
 }
 
 export async function getProviderWithKey(id: string) {

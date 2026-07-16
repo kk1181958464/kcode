@@ -48,7 +48,13 @@ export function parseResponsesEvent(raw: unknown): ParsedProtocolEvent {
 
 export function parseChatCompletionsEvent(raw: unknown): ParsedProtocolEvent {
   const event = raw as {
-    choices?: { delta?: { content?: string } }[];
+    choices?: {
+      delta?: {
+        content?: string;
+        reasoning_content?: string;
+        reasoning?: string;
+      };
+    }[];
     usage?: { prompt_tokens?: number; completion_tokens?: number };
     error?: { message?: string };
   };
@@ -56,6 +62,10 @@ export function parseChatCompletionsEvent(raw: unknown): ParsedProtocolEvent {
   const events: ModelEvent[] = [];
   const delta = event.choices?.[0]?.delta?.content;
   if (delta) events.push({ type: "text", delta });
+  const reasoning =
+    event.choices?.[0]?.delta?.reasoning_content ??
+    event.choices?.[0]?.delta?.reasoning;
+  if (reasoning) events.push({ type: "reasoning", delta: reasoning });
   if (event.usage)
     events.push({
       type: "usage",

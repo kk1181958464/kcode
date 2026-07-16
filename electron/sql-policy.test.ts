@@ -1,6 +1,30 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { classifyMysqlSql, redactSqlForActivity } from "./sql-policy";
+import {
+  assertSingleSqlServerStatement,
+  classifyMysqlSql,
+  classifySqlServerSql,
+  redactSqlForActivity,
+} from "./sql-policy";
+
+test("classifies SQL Server statements with the T-SQL dialect", () => {
+  assert.equal(classifySqlServerSql("SELECT TOP 10 * FROM users"), "read");
+  assert.equal(classifySqlServerSql("UPDATE users SET active = 1"), "write");
+  assert.equal(
+    classifySqlServerSql("DELETE FROM users WHERE id = @p1"),
+    "destructive",
+  );
+});
+
+test("rejects SQL Server batches with multiple statements", () => {
+  assert.doesNotThrow(() =>
+    assertSingleSqlServerStatement("SELECT ';' AS value;"),
+  );
+  assert.throws(
+    () => assertSingleSqlServerStatement("SELECT 1; DELETE FROM users;"),
+    /只允许执行一条/,
+  );
+});
 
 test("classifies MySQL statements by parsed effect", () => {
   assert.equal(classifyMysqlSql("SELECT * FROM users"), "read");

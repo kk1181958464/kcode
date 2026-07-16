@@ -56,6 +56,14 @@ export type AgentToolName =
   | "mysql_connect_via_ssh"
   | "mysql_query"
   | "mysql_disconnect"
+  | "sqlserver_connect"
+  | "sqlserver_connect_via_ssh"
+  | "sqlserver_query"
+  | "sqlserver_disconnect"
+  | "mongodb_connect"
+  | "mongodb_connect_via_ssh"
+  | "mongodb_execute"
+  | "mongodb_disconnect"
   | "spawn_agent"
   | "list_agents"
   | "message_agent"
@@ -113,6 +121,11 @@ export function inferReasoningConfig(
         ? ["low", "medium", "high", "xhigh", "max"]
         : ["low", "medium", "high", "xhigh"],
     };
+  if (/^grok-(?:3-mini|4(?:[.-]|$))/.test(id) || id === "grok-build-latest")
+    return {
+      reasoningMode: "effort",
+      reasoningEfforts: ["low", "medium", "high"],
+    };
   if (
     /deepseek-reasoner|kimi-k2|kimi-for-coding|minimax-m2|glm-.*thinking/.test(
       id,
@@ -133,6 +146,10 @@ export function inferContextWindow(modelId: string): number | undefined {
   if (/^gpt-5\.4(?:-mini)?$/.test(id)) return 258_400;
   if (/^deepseek-(chat|reasoner)$/.test(id)) return 1_000_000;
   if (/^deepseek-v4-(?:pro|flash)$/.test(id)) return 1_000_000;
+  if (/^grok-4\.5(?:-|$)/.test(id) || id === "grok-build-latest")
+    return 500_000;
+  if (/^grok-4(?:-|$)/.test(id)) return 256_000;
+  if (/^grok-3(?:-mini)?(?:-|$)/.test(id)) return 131_072;
   if (id === "glm-5.1") return 200_000;
   if (id === "glm-5.2") return 1_000_000;
   if (/^claude-(fable-5|opus-4-(?:6|7|8)|sonnet-(?:4-6|5))(?:-|$)/.test(id))
@@ -243,7 +260,7 @@ export type ContextLedger = {
   validations: string[];
   failures: string[];
   pending: string[];
-  // Established connections (SSH / MySQL) described without secrets. These are
+  // Established connections described without secrets. These are
   // persistent facts the model must keep across compaction so it can keep
   // operating on a session instead of forgetting it was ever connected.
   connections: string[];

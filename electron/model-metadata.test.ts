@@ -28,3 +28,31 @@ test("offers max reasoning for the GPT-5.6 family", () => {
     ["low", "medium", "high", "xhigh", "max"],
   );
 });
+
+test("recognizes Grok reasoning models and context windows", () => {
+  assert.deepEqual(
+    inferReasoningConfig("grok-4.5", "openai-chat"),
+    {
+      reasoningMode: "effort",
+      reasoningEfforts: ["low", "medium", "high"],
+    },
+  );
+  assert.deepEqual(
+    inferReasoningConfig("grok-3-mini", "openai-chat"),
+    {
+      reasoningMode: "effort",
+      reasoningEfforts: ["low", "medium", "high"],
+    },
+  );
+  assert.equal(inferReasoningConfig("grok-3", "openai-chat").reasoningMode, "none");
+  assert.equal(inferContextWindow("grok-4.5"), 500_000);
+  assert.equal(inferContextWindow("grok-4.5-latest"), 500_000);
+  assert.equal(inferContextWindow("grok-build-latest"), 500_000);
+  assert.equal(
+    inferReasoningConfig("grok-build-latest", "openai-chat").reasoningMode,
+    "effort",
+  );
+  assert.equal(inferContextWindow("grok-4"), 256_000);
+  assert.equal(inferContextWindow("grok-3-mini"), 131_072);
+  assert.equal(inferContextWindow("grok-3"), 131_072);
+});
