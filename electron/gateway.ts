@@ -31,7 +31,9 @@ const parseSummary = (text: string, fallback: ContextLedger, durationMs: number,
   const value = JSON.parse(match[0]) as { summary?: unknown; ledger?: Partial<Record<keyof ContextLedger, unknown>> };
   if (typeof value.summary !== "string" || !value.summary.trim()) throw new Error("模型摘要为空");
   const list = (key: keyof ContextLedger) => Array.isArray(value.ledger?.[key]) ? (value.ledger![key] as unknown[]).filter((item): item is string => typeof item === "string").slice(-64) : fallback[key];
-  return { summary: value.summary.slice(0, 40_000), ledger: { goals: list("goals"), decisions: list("decisions"), changedFiles: list("changedFiles"), validations: list("validations"), failures: list("failures"), pending: list("pending") }, modelGenerated: true, durationMs, usage };
+  // connections are exact local facts, not something the model should rewrite:
+  // always carry the fallback (locally derived) list through verbatim.
+  return { summary: value.summary.slice(0, 40_000), ledger: { goals: list("goals"), decisions: list("decisions"), changedFiles: list("changedFiles"), validations: list("validations"), failures: list("failures"), pending: list("pending"), connections: fallback.connections ?? [] }, modelGenerated: true, durationMs, usage };
 };
 
 export async function summarizeContext(request: ContextSummaryRequest): Promise<ContextSummaryResult> {
@@ -41,7 +43,7 @@ export async function summarizeContext(request: ContextSummaryRequest): Promise<
   summaryControllers.set(request.taskId, controller);
   const startedAt = Date.now();
   const timer = setTimeout(() => controller.abort(), 120_000);
-  const prompt = `Compress this coding-agent history. Return JSON only with shape {"summary":"markdown","ledger":{"goals":[],"decisions":[],"changedFiles":[],"validations":[],"failures":[],"pending":[]}}. Preserve explicit constraints, current goal, file paths, commands that matter, validation results, failures, and unfinished work. Remove repetition.\n\nExisting ledger:\n${JSON.stringify(request.ledger)}\n\nHistory:\n${request.source.slice(-120_000)}`;
+  const prompt = `Compress this coding-agent history. Return JSON only with shape {"summary":"markdown","ledger":{"goals":[],"decisions":[],"changedFiles":[],"validations":[],"failures":[],"pending":[],"connections":[]}}. Preserve explicit constraints, current goal, file paths, commands that matter, validation results, failures, and unfinished work. Always keep every established connection (SSH/MySQL host, port, user) verbatim in both the summary text and ledger.connections so the session can be reused without re-asking the user. Remove repetition.\n\nExisting ledger:\n${JSON.stringify(request.ledger)}\n\nHistory:\n${request.source.slice(-120_000)}`;
   try {
     let url = "", headers: Record<string, string> = { "Content-Type": "application/json" }, body: Record<string, unknown>;
     if (provider.protocol === "openai-chat") {

@@ -34,6 +34,10 @@
       {
         "from": "80f2649b913c028210842f9ffd752179.png",
         "to": "80f2649b913c028210842f9ffd752179.png"
+      },
+      {
+        "from": "build/icon.ico",
+        "to": "icon.ico"
       }
     ],
     "win": {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Archive,
   ArchiveRestore,
@@ -95,7 +95,7 @@ type TaskRecord = {
   runningId?: string;
   runStatus?: TaskRunStatus;
   startedAt?: number;
-  usage?: { input: number; output: number; cached: number };
+  usage?: { input: number; output: number; cached: number; promptTokens?: number };
   usageResolved?: boolean;
   contextSummary?: string;
   compactedMessageCount?: number;
@@ -1349,13 +1349,87 @@ function SettingsPanel({
   );
 }
 
+function openExternalUrl(url: string) {
+  if (!/^https?:\/\//i.test(url)) return;
+  void window.kcode?.shell?.openExternal(url);
+}
+
+// Renders plain text with bare URLs turned into clickable links that open in the
+// system browser. Used for tool output where the text is not markdown.
+function LinkifiedText({ text }: { text: string }) {
+  const parts = text.split(/(https?:\/\/[^\s<>"'）)\]】]+)/g);
+  return (
+    <>
+      {parts.map((part, index) =>
+        /^https?:\/\//i.test(part) ? (
+          <a
+            key={index}
+            href={part}
+            target="_blank"
+            rel="noreferrer"
+            title="用系统浏览器打开"
+            onClick={(event) => {
+              event.preventDefault();
+              openExternalUrl(part);
+            }}
+          >
+            {part}
+          </a>
+        ) : (
+          part
+        ),
+      )}
+    </>
+  );
+}
+
+// Renders a unified diff with per-line coloring: additions green, deletions
+// red, hunk headers blue-grey, everything else neutral. Makes it obvious at a
+// glance which lines changed instead of showing a flat single-color block.
+function DiffView({ text, className }: { text: string; className?: string }) {
+  const lines = text.split("\n");
+  return (
+    <pre className={`diff-view${className ? ` ${className}` : ""}`}>
+      {lines.map((line, index) => {
+        const kind = line.startsWith("+++") || line.startsWith("---")
+          ? "meta"
+          : line.startsWith("@@")
+            ? "hunk"
+            : line.startsWith("+")
+              ? "add"
+              : line.startsWith("-")
+                ? "del"
+                : line.startsWith("diff ") || line.startsWith("index ")
+                  ? "meta"
+                  : "context";
+        return (
+          <span key={index} className={`diff-line diff-${kind}`}>
+            {line || " "}
+            {"\n"}
+          </span>
+        );
+      })}
+    </pre>
+  );
+}
+
 function MarkdownMessage({ content }: { content: string }) {
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
       components={{
-        a: ({ children, ...props }) => (
-          <a {...props} target="_blank" rel="noreferrer">
+        a: ({ children, href, ...props }) => (
+          <a
+            {...props}
+            href={href}
+            target="_blank"
+            rel="noreferrer"
+            onClick={(event) => {
+              if (!href || !/^https?:\/\//i.test(href)) return;
+              event.preventDefault();
+              openExternalUrl(href);
+            }}
+          >
             {children}
           </a>
         ),
@@ -1643,9 +1717,11 @@ function ActivityItem({
               ? "执行中"
               : activity.status === "success"
                 ? "完成"
-                : activity.status === "denied"
-                  ? "已阻止"
-                  : "失败"}
+                : activity.status === "completed"
+                  ? `退出码 ${activity.exitCode ?? "非0"}`
+                  : activity.status === "denied"
+                    ? "已阻止"
+                    : "失败"}
         </span>
         <ChevronDown size={14} />
       </div>
@@ -1680,9 +1756,21 @@ function ActivityItem({
               </span>
             </div>
           )}
+          {activity.status === "completed" && (
+            <div className="activity-exit-note">
+              <CircleAlert size={14} />
+              <span>
+                <strong>命令已执行完毕</strong>
+                <small>
+                  退出码 {activity.exitCode ?? "未知"}
+                  （非零，通常表示无匹配或有待处理项，并非执行错误）
+                </small>
+              </span>
+            </div>
+          )}
           {activity.status === "running" && (
             <div className="activity-running-detail">
-              <RefreshCw className="spinning" size={14} />
+              <i className="live-dot" />
               <span>
                 <strong>
                   {activity.tool === "ssh_run"
@@ -1694,14 +1782,21 @@ function ActivityItem({
             </div>
           )}
           {detail &&
-            (activity.errorSummary || activity.status === "running") && (
+            (activity.errorSummary ||
+              activity.status === "running" ||
+              activity.status === "completed") && (
               <div className="activity-output-label">
                 {activity.status === "running" ? "实时输出" : "详细输出"}
               </div>
             )}
-          {detail && (
-            <pre className={activity.diff ? "activity-diff" : ""}>{detail}</pre>
-          )}
+          {detail &&
+            (activity.diff ? (
+              <DiffView text={detail} />
+            ) : (
+              <pre>
+                <LinkifiedText text={detail} />
+              </pre>
+            ))}
         </div>
       )}
       {restoreConflict && (
@@ -1820,11 +1915,7 @@ function ExecutionSummary({
         aria-expanded={expanded}
       >
         <span className="execution-summary-icon">
-          {running ? (
-            <RefreshCw className="spinning" size={15} />
-          ) : (
-            <Terminal size={15} />
-          )}
+          {running ? <i className="live-dot" /> : <Terminal size={15} />}
         </span>
         <strong>{summary}</strong>
         <ChevronDown size={14} />
@@ -1868,6 +1959,11 @@ function AgentWorkingState({
       (activity) =>
         activity.status === "running" || activity.status === "waiting",
     );
+  // Pure Q&A (no tools at all): once the answer text starts streaming, drop the
+  // "planning" spinner — there is no next step coming. During a multi-step run
+  // (activities present) keep spinning through the gaps between tools so it does
+  // not flicker off every time the model emits interstitial text.
+  if (!active && hasTrailingText && !activities.length) return null;
   const last = activities.at(-1);
   const completed = activities.filter(
     (activity) => activity.status === "success",
@@ -1881,13 +1977,11 @@ function AgentWorkingState({
       : active.tool === "ssh_run"
         ? "正在执行远程命令"
         : `正在${active.title}`
-    : hasTrailingText
-      ? "正在生成回复"
-      : last?.status === "failed"
-        ? "正在分析失败并调整方案"
-        : last
-          ? "正在分析执行结果"
-          : "正在思考并规划步骤";
+    : last?.status === "failed"
+      ? "正在分析失败并调整方案"
+      : last
+        ? "正在分析执行结果"
+        : "正在思考并规划步骤";
   const recent = activities.slice(-3);
   return (
     <div className="agent-working">
@@ -1957,8 +2051,6 @@ function AssistantTimeline({
     grouped.set(offset, [...(grouped.get(offset) ?? []), activity]);
   }
   const groups = [...grouped.entries()].sort(([a], [b]) => a - b);
-  const lastActivityOffset = groups.at(-1)?.[0] ?? 0;
-  const hasTrailingText = message.content.length > lastActivityOffset;
   if (!groups.length)
     return (
       <>
@@ -1973,6 +2065,8 @@ function AssistantTimeline({
       </>
     );
   let cursor = 0;
+  const lastActivityOffset = groups.at(-1)?.[0] ?? 0;
+  const hasTrailingText = message.content.length > lastActivityOffset;
   return (
     <div className="assistant-timeline">
       {groups.map(([offset, group], index) => {
@@ -2006,6 +2100,7 @@ function AssistantTimeline({
 }
 
 function FileChangesSummary({ activities }: { activities: AgentActivity[] }) {
+  const [expandedFile, setExpandedFile] = useState<string>();
   const changed = activities.filter(
     (activity) =>
       fileTools.includes(activity.tool) &&
@@ -2013,12 +2108,20 @@ function FileChangesSummary({ activities }: { activities: AgentActivity[] }) {
       activity.path &&
       !activity.undone,
   );
-  const grouped = new Map<string, { additions: number; deletions: number }>();
+  const grouped = new Map<
+    string,
+    { additions: number; deletions: number; diffs: string[] }
+  >();
   for (const activity of changed) {
     const key = activity.path!;
-    const current = grouped.get(key) ?? { additions: 0, deletions: 0 };
+    const current = grouped.get(key) ?? {
+      additions: 0,
+      deletions: 0,
+      diffs: [],
+    };
     current.additions += activity.additions ?? 0;
     current.deletions += activity.deletions ?? 0;
+    if (activity.diff) current.diffs.push(activity.diff);
     grouped.set(key, current);
   }
   if (!grouped.size) return null;
@@ -2044,14 +2147,37 @@ function FileChangesSummary({ activities }: { activities: AgentActivity[] }) {
         </span>
       </header>
       <div>
-        {[...grouped.entries()].map(([file, stats]) => (
-          <div className="changed-file-row" key={file}>
-            <span>{file}</span>
-            <small>
-              <b>+{stats.additions}</b> <i>-{stats.deletions}</i>
-            </small>
-          </div>
-        ))}
+        {[...grouped.entries()].map(([file, stats]) => {
+          const open = expandedFile === file;
+          const hasDiff = stats.diffs.length > 0;
+          return (
+            <div className="changed-file-block" key={file}>
+              <button
+                type="button"
+                className={`changed-file-row ${hasDiff ? "" : "no-diff"}`}
+                aria-expanded={open}
+                title={hasDiff ? "点击查看改动" : "此改动没有可显示的差异"}
+                onClick={() =>
+                  hasDiff && setExpandedFile(open ? undefined : file)
+                }
+              >
+                {hasDiff && (
+                  <ChevronDown
+                    size={13}
+                    className={`changed-file-chevron ${open ? "open" : ""}`}
+                  />
+                )}
+                <span>{file}</span>
+                <small>
+                  <b>+{stats.additions}</b> <i>-{stats.deletions}</i>
+                </small>
+              </button>
+              {open && hasDiff && (
+                <DiffView text={stats.diffs.join("\n\n")} />
+              )}
+            </div>
+          );
+        })}
       </div>
     </section>
   );
@@ -2323,12 +2449,28 @@ export default function App() {
   const [attachedFiles, setAttachedFiles] = useState<ContextFile[]>([]);
   const [attachedImages, setAttachedImages] = useState<ImageAttachment[]>([]);
   const [contextError, setContextError] = useState("");
+  // A transient notice (compaction done, summary restored) that flashes above the
+  // composer and auto-dismisses, unlike contextError which stays until closed.
+  const [contextToast, setContextToast] = useState("");
+  const contextToastTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const flashContextToast = useCallback((message: string) => {
+    setContextToast(message);
+    if (contextToastTimer.current) clearTimeout(contextToastTimer.current);
+    contextToastTimer.current = setTimeout(() => setContextToast(""), 5_000);
+  }, []);
+  useEffect(
+    () => () => {
+      if (contextToastTimer.current) clearTimeout(contextToastTimer.current);
+    },
+    [],
+  );
   const [usedContextCount, setUsedContextCount] = useState(
     () => storedActiveTask()?.usedContextCount ?? 0,
   );
   const [runningId, setRunningId] = useState<string>();
   const [browserState, setBrowserState] = useState<{
     open: boolean;
+    hidden?: boolean;
     sessionId?: string;
     requestId?: string;
     title?: string;
@@ -2339,6 +2481,7 @@ export default function App() {
     canGoForward?: boolean;
   }>({ open: false });
   const [browserAddress, setBrowserAddress] = useState("");
+  const [browserWidthDrag, setBrowserWidthDrag] = useState<number>();
   useEffect(() => window.kcode?.browser?.onState(setBrowserState), []);
   useEffect(
     () => setBrowserAddress(browserState.url || ""),
@@ -2776,6 +2919,32 @@ export default function App() {
     window.addEventListener("pointerup", stop);
   }
 
+  function startBrowserResize(event: React.PointerEvent) {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = browserState.width ?? 520;
+    // The panel sits on the right, so dragging its left edge leftward widens it.
+    const widthAt = (clientX: number) =>
+      Math.min(900, Math.max(360, startWidth + startX - clientX));
+    document.body.classList.add("resizing-browser");
+    const move = (moveEvent: PointerEvent) => {
+      const width = widthAt(moveEvent.clientX);
+      setBrowserWidthDrag(width);
+      // Push to the native view too so the web content tracks the drag live.
+      void window.kcode?.browser?.setWidth(width);
+    };
+    const stop = (upEvent: PointerEvent) => {
+      const width = widthAt(upEvent.clientX);
+      setBrowserWidthDrag(undefined);
+      void window.kcode?.browser?.setWidth(width);
+      document.body.classList.remove("resizing-browser");
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", stop);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", stop);
+  }
+
   function reorderTask(targetId: string) {
     if (!draggedTaskId || draggedTaskId === targetId) return;
     setTasks((current) => {
@@ -3017,16 +3186,20 @@ export default function App() {
             input: event.input,
             output: event.output,
             cached: event.cached ?? 0,
+            promptTokens: event.promptTokens ?? event.input,
           };
           const task = tasksRef.current.find((item) => item.id === taskId);
+          // Calibrate against the last round's prompt tokens (the real context
+          // occupancy), not the accumulated billing total which grows every round.
+          const observedInput = event.promptTokens ?? event.input;
           if (
-            event.input > 0 &&
+            observedInput > 0 &&
             task?.pendingTokenEstimate &&
             task.pendingCalibrationKey
           ) {
             const observed = Math.min(
               2.5,
-              Math.max(0.5, event.input / task.pendingTokenEstimate),
+              Math.max(0.5, observedInput / task.pendingTokenEstimate),
             );
             setTokenCalibration((current) => {
               const previous = current[task.pendingCalibrationKey!] ?? 1;
@@ -3453,7 +3626,7 @@ export default function App() {
           : task,
       ),
     );
-    setContextError(
+    flashContextToast(
       `已按 Token 预算压缩 ${compacted.compactedMessageCount} 条较早消息，最近对话和关键状态继续保留`,
     );
   }
@@ -3504,6 +3677,7 @@ export default function App() {
           validations: [],
           failures: [],
           pending: [],
+          connections: [],
         },
         modelGenerated: task.summaryMeta?.modelGenerated ?? false,
         durationMs: task.summaryMeta?.durationMs,
@@ -3577,7 +3751,7 @@ export default function App() {
       ),
     );
     setSummaryOpen(false);
-    setContextError("已恢复完整上下文；聊天记录没有被删除");
+    flashContextToast("已恢复完整上下文；聊天记录没有被删除");
   }
 
   function restoreSummarySnapshot(
@@ -3601,7 +3775,7 @@ export default function App() {
           : task,
       ),
     );
-    setContextError("已恢复所选摘要版本");
+    flashContextToast("已恢复所选摘要版本");
   }
 
   async function send(override?: string) {
@@ -3682,8 +3856,11 @@ export default function App() {
       estimateMessageTokens(nextMessages.slice(compactedCount)) +
       Math.ceil((requestSummary?.length ?? 0) / 3);
     const requestCalibrationKey = `${target.provider.id}|${target.model.modelId}`;
+    // Use the last round's prompt tokens as the observed floor, not the
+    // accumulated billing total (usage.input) which grows every round and would
+    // otherwise inflate the estimate and trigger premature compaction.
     const estimatedTokens = Math.max(
-      usage.input,
+      usage.promptTokens ?? 0,
       Math.ceil(
         rawEstimatedTokens * (tokenCalibration[requestCalibrationKey] ?? 1),
       ),
@@ -3795,7 +3972,7 @@ export default function App() {
       );
     setAttachedFiles([]);
     setAttachedImages([]);
-    setContextError(contextNotice);
+    if (contextNotice) flashContextToast(contextNotice);
     setMessages(nextMessages);
     setInput("");
     setUsage({ input: 0, output: 0, cached: 0 });
@@ -4025,7 +4202,10 @@ export default function App() {
       )) *
       calibrationFactor,
   );
-  const contextTokens = Math.max(usage.input, localContextTokens);
+  // The context gauge must reflect what the model actually reads each turn (the
+  // last prompt token count), not usage.input, which accumulates every turn's
+  // prompt and balloons far past the window in a multi-round agentic run.
+  const contextTokens = Math.max(usage.promptTokens ?? 0, localContextTokens);
   const selectedConnected = Boolean(selectedTarget?.provider.hasApiKey);
   const efforts = reasoningEffortsForModel(selectedTarget?.model);
   const supportsReasoning = efforts.some((effort) => effort !== "auto");
@@ -4173,7 +4353,7 @@ export default function App() {
         style={
           {
             "--sidebar-width": `${sidebarWidth}px`,
-            "--browser-width": `${browserState.width ?? 520}px`,
+            "--browser-width": `${browserWidthDrag ?? browserState.width ?? 520}px`,
           } as React.CSSProperties
         }
       >
@@ -4637,6 +4817,12 @@ export default function App() {
                   </button>
                 </div>
               )}
+              {contextToast && (
+                <div className="context-toast" role="status">
+                  <CircleAlert size={13} />
+                  {contextToast}
+                </div>
+              )}
               <textarea
                 aria-label="任务输入"
                 disabled={summaryBusy}
@@ -5017,11 +5203,12 @@ export default function App() {
                       <ChevronDown size={13} />
                     </button>
                   )}
-                  {gitDiffOpen && (
-                    <pre className="git-diff-view">
-                      {gitState.diff || gitState.summary}
-                    </pre>
-                  )}
+                  {gitDiffOpen &&
+                    (gitState.diff ? (
+                      <DiffView text={gitState.diff} className="git-diff-view" />
+                    ) : (
+                      <pre className="git-diff-view">{gitState.summary}</pre>
+                    ))}
                 </>
               ) : (
                 <p>{gitState.error || "当前工作区未初始化 Git"}</p>
@@ -5245,6 +5432,13 @@ export default function App() {
         )}
         {browserState.open && (
           <aside className="browser-panel" aria-label="浏览器">
+            <div
+              className="browser-resizer"
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="调整浏览器宽度"
+              onPointerDown={startBrowserResize}
+            />
             <header>
               <div className="browser-navigation">
                 <button
@@ -5305,7 +5499,16 @@ export default function App() {
               )}
               <button
                 className="icon"
-                title="关闭网页并停止当前浏览器任务"
+                title="隐藏网页（浏览器继续在后台运行，可随时重新显示）"
+                onClick={() =>
+                  void window.kcode.browser.hide(browserState.sessionId)
+                }
+              >
+                <PanelRightClose size={15} />
+              </button>
+              <button
+                className="icon"
+                title="关闭网页并结束浏览器进程"
                 onClick={() =>
                   void window.kcode.browser.close(browserState.sessionId)
                 }
@@ -5314,6 +5517,18 @@ export default function App() {
               </button>
             </header>
           </aside>
+        )}
+        {!browserState.open && browserState.hidden && browserState.sessionId && (
+          <button
+            className="browser-show-tab"
+            title="重新显示后台运行的浏览器"
+            onClick={() =>
+              void window.kcode.browser.activate(browserState.sessionId)
+            }
+          >
+            <PanelRightOpen size={15} />
+            <span>显示浏览器</span>
+          </button>
         )}
         {updateOpen && (
           <AppUpdateDialog

@@ -49,6 +49,8 @@ export type AgentToolName =
   | "ssh_list_directory"
   | "ssh_read_file"
   | "ssh_write_file"
+  | "ssh_upload_file"
+  | "ssh_download_file"
   | "ssh_disconnect"
   | "mysql_connect"
   | "mysql_connect_via_ssh"
@@ -197,7 +199,7 @@ export type AgentActivity = {
   id: string;
   requestId: string;
   tool: AgentToolName;
-  status: "running" | "waiting" | "success" | "failed" | "denied";
+  status: "running" | "waiting" | "success" | "completed" | "failed" | "denied";
   title: string;
   startedAt: number;
   completedAt?: number;
@@ -232,6 +234,10 @@ export type ContextLedger = {
   validations: string[];
   failures: string[];
   pending: string[];
+  // Established connections (SSH / MySQL) described without secrets. These are
+  // persistent facts the model must keep across compaction so it can keep
+  // operating on a session instead of forgetting it was ever connected.
+  connections: string[];
 };
 export type ContextSummaryRequest = {
   taskId: string;
@@ -278,7 +284,13 @@ export type BrowserRecordingFile = {
 
 export type ModelEvent =
   | { type: "text"; delta: string }
-  | { type: "usage"; input: number; output: number; cached?: number }
+  | {
+      type: "usage";
+      input: number;
+      output: number;
+      cached?: number;
+      promptTokens?: number;
+    }
   | { type: "error"; message: string }
   | { type: "done" };
 
@@ -319,6 +331,7 @@ export type KCodeApi = {
     onState(callback: (state: AppUpdateState) => void): () => void;
   };
   logs: { reveal(): Promise<void> };
+  shell: { openExternal(url: string): Promise<void> };
   state: {
     load(key: string): Promise<unknown | null>;
     save(key: string, value: unknown): Promise<void>;
@@ -368,16 +381,19 @@ export type KCodeApi = {
   browser: {
     activate(sessionId?: string): Promise<void>;
     close(sessionId?: string): Promise<void>;
+    hide(sessionId?: string): Promise<void>;
     navigate(sessionId: string | undefined, url: string): Promise<void>;
     back(sessionId?: string): Promise<void>;
     forward(sessionId?: string): Promise<void>;
     reload(sessionId?: string): Promise<void>;
+    setWidth(width: number): Promise<void>;
     recordings(): Promise<BrowserRecordingFile[]>;
     removeRecording(id: string): Promise<BrowserRecordingFile[]>;
     revealRecording(id: string): Promise<void>;
     onState(
       callback: (state: {
         open: boolean;
+        hidden?: boolean;
         sessionId?: string;
         requestId?: string;
         title?: string;

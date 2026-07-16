@@ -11,7 +11,7 @@ export type CompactableContext = {
 };
 
 export const AGENT_STATIC_TOKENS = 5_000;
-export const emptyLedger = (): ContextLedger => ({ goals: [], decisions: [], changedFiles: [], validations: [], failures: [], pending: [] });
+export const emptyLedger = (): ContextLedger => ({ goals: [], decisions: [], changedFiles: [], validations: [], failures: [], pending: [], connections: [] });
 const uniqueRecent = (items: string[], limit = 32) => [...new Set(items.filter(Boolean))].slice(-limit);
 
 export const estimateMessageTokens = (items: ChatMessage[]) => Math.ceil(items.reduce((total, item) =>
@@ -56,17 +56,32 @@ export function compactConversation(task: CompactableContext, contextWindow: num
   const ledger = task.contextLedger ?? emptyLedger();
   const changedFiles = dedupedActivities.filter((activity) => activity.status === "success" && activity.path && ["apply_patch", "write_file", "move_path", "delete_path"].includes(activity.tool)).map((activity) => activity.path!);
   const validations = dedupedActivities.filter((activity) => activity.tool === "diagnostics" || /测试|构建|检查/.test(activity.title)).map((activity) => `${activity.title}: ${activity.status}`);
+  // Connections are durable facts: a session opened earlier stays usable across
+  // rounds, so their coordinates must survive compaction verbatim (never lumped
+  // into the truncated summary text). Activity inputs are already redacted, so
+  // host/port/username are safe to keep while passwords never appear here.
+  const connections = task.activities
+    .filter((activity) => activity.status === "success" && ["ssh_connect", "mysql_connect", "mysql_connect_via_ssh"].includes(activity.tool))
+    .map((activity) => {
+      const input = (activity.input ?? {}) as Record<string, unknown>;
+      const value = (key: string) => (typeof input[key] === "string" || typeof input[key] === "number" ? String(input[key]) : "");
+      if (activity.tool === "ssh_connect") return `SSH ${value("username")}@${value("host")}:${value("port") || "22"}`;
+      const via = value("sshHost") ? `（经 SSH ${value("sshUsername")}@${value("sshHost")}）` : "";
+      return `MySQL ${value("username")}@${value("host")}:${value("port") || "3306"}/${value("database")}${via}`;
+    });
   const nextLedger: ContextLedger = {
     goals: uniqueRecent([...ledger.goals, ...goals]), decisions: uniqueRecent([...ledger.decisions, ...decisions]),
     changedFiles: uniqueRecent([...ledger.changedFiles, ...changedFiles], 64), validations: uniqueRecent([...ledger.validations, ...validations]),
     failures: uniqueRecent([...ledger.failures, ...errors]), pending: uniqueRecent([...ledger.pending, ...pending]),
+    connections: uniqueRecent([...(ledger.connections ?? []), ...connections], 16),
   };
   const sections = [
+    nextLedger.connections.length ? `## 已建立的连接（会话仍可用，无需重新询问凭据）\n${nextLedger.connections.map((item) => `- ${item}`).join("\n")}` : "",
     goals.length ? `## 目标与需求\n${goals.join("\n")}` : "", decisions.length ? `## 关键决定\n${decisions.join("\n")}` : "",
     [...results, ...activityLines].length ? `## 文件、工具与验证\n${[...results, ...activityLines].join("\n")}` : "",
     errors.length ? `## 错误与限制\n${errors.join("\n")}` : "", pending.length ? `## 其他上下文与待办\n${pending.join("\n")}` : "",
   ].filter(Boolean).join("\n\n");
   const contextSummary = `${previous}${sections}`.slice(-40_000);
-  if (!contextSummary.trim() || (!nextLedger.goals.length && !nextLedger.changedFiles.length && !nextLedger.pending.length)) return undefined;
+  if (!contextSummary.trim() || (!nextLedger.goals.length && !nextLedger.changedFiles.length && !nextLedger.pending.length && !nextLedger.connections.length)) return undefined;
   return { contextSummary, compactedMessageCount: compactUntil, contextLedger: nextLedger };
 }

@@ -62,14 +62,17 @@ import {
   backBrowser,
   closeBrowserPanel,
   forwardBrowser,
+  hideBrowserPanel,
   listBrowserRecordings,
   navigateBrowser,
   recoverBrowserRecordingDrafts,
   reloadBrowser,
   removeBrowserRecording,
   setBrowserHost,
+  setBrowserWidth,
 } from "./browser";
 import {
+  browserWidthSchema,
   idSchema,
   modelRequestSchema,
   optionalIdSchema,
@@ -95,6 +98,18 @@ const iconPath = () =>
     path.join(app.getAppPath(), iconFileName),
     path.resolve(__dirname, "../../", iconFileName),
   ].find(existsSync);
+const icoPath = () =>
+  [
+    path.join(process.resourcesPath, "icon.ico"),
+    path.resolve(__dirname, "../../build/icon.ico"),
+  ].find(existsSync);
+const windowIcon = () => {
+  if (process.platform === "win32") {
+    const ico = icoPath();
+    if (ico) return nativeImage.createFromPath(ico);
+  }
+  return appIcon(256);
+};
 const appIcon = (size = 32) => {
   const file = iconPath();
   const image = file
@@ -212,7 +227,7 @@ function createWindow() {
     frame: false,
     autoHideMenuBar: true,
     backgroundColor: "#f5f5f3",
-    icon: appIcon(256),
+    icon: windowIcon(),
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -307,6 +322,11 @@ app.whenReady().then(() => {
     writeLog("error", "renderer.error", detail),
   );
   ipcMain.handle("log:reveal", () => shell.openPath(logsDirectory()));
+  ipcMain.handle("shell:open-external", (_e, url: string) => {
+    const target = urlSchema.parse(url);
+    if (!/^https?:\/\//i.test(target)) throw new Error("只能打开 http/https 链接");
+    return shell.openExternal(target);
+  });
   ipcMain.handle("window:minimize", (event) =>
     BrowserWindow.fromWebContents(event.sender)?.minimize(),
   );
@@ -336,6 +356,9 @@ app.whenReady().then(() => {
   ipcMain.handle("browser:close", (_e, sessionId?: string) =>
     closeBrowserPanel(optionalIdSchema.parse(sessionId), true),
   );
+  ipcMain.handle("browser:hide", (_e, sessionId?: string) =>
+    hideBrowserPanel(optionalIdSchema.parse(sessionId)),
+  );
   ipcMain.handle(
     "browser:navigate",
     (_e, sessionId: string | undefined, url: string) =>
@@ -349,6 +372,9 @@ app.whenReady().then(() => {
   );
   ipcMain.handle("browser:reload", (_e, sessionId?: string) =>
     reloadBrowser(optionalIdSchema.parse(sessionId)),
+  );
+  ipcMain.handle("browser:set-width", (_e, width: number) =>
+    setBrowserWidth(browserWidthSchema.parse(width)),
   );
   ipcMain.handle("browser:recordings", () => listBrowserRecordings());
   ipcMain.handle("browser:remove-recording", (_e, id: string) =>

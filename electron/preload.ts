@@ -16,6 +16,9 @@ const api: KCodeApi = {
     },
   },
   logs: { reveal: () => ipcRenderer.invoke("log:reveal") },
+  shell: {
+    openExternal: (url) => ipcRenderer.invoke("shell:open-external", url),
+  },
   state: {
     load: (key) => ipcRenderer.invoke("state:load", key),
     save: (key, value) => ipcRenderer.invoke("state:save", key, value),
@@ -65,11 +68,13 @@ const api: KCodeApi = {
   browser: {
     activate: (sessionId) => ipcRenderer.invoke("browser:activate", sessionId),
     close: (sessionId) => ipcRenderer.invoke("browser:close", sessionId),
+    hide: (sessionId) => ipcRenderer.invoke("browser:hide", sessionId),
     navigate: (sessionId, url) =>
       ipcRenderer.invoke("browser:navigate", sessionId, url),
     back: (sessionId) => ipcRenderer.invoke("browser:back", sessionId),
     forward: (sessionId) => ipcRenderer.invoke("browser:forward", sessionId),
     reload: (sessionId) => ipcRenderer.invoke("browser:reload", sessionId),
+    setWidth: (width) => ipcRenderer.invoke("browser:set-width", width),
     recordings: () => ipcRenderer.invoke("browser:recordings"),
     removeRecording: (id) => ipcRenderer.invoke("browser:remove-recording", id),
     revealRecording: (id) => ipcRenderer.invoke("browser:reveal-recording", id),

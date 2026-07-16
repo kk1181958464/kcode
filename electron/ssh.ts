@@ -1,5 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import { Client, type ClientChannel, type SFTPWrapper } from "ssh2";
 
@@ -716,6 +722,64 @@ export async function writeSshFile(
       fingerprint: session.fingerprint,
     });
     return { bytes: Buffer.byteLength(content), before, after: content };
+  } finally {
+    sftp.end();
+  }
+}
+
+export async function uploadSshFile(
+  sessionId: string,
+  requestId: string,
+  localPath: string,
+  remotePath: string,
+  signal: AbortSignal,
+) {
+  if (!localPath) throw new Error("缺少本地文件路径。");
+  if (!remotePath) throw new Error("缺少远程文件路径。");
+  let localSize: number;
+  try {
+    const stats = statSync(localPath);
+    if (!stats.isFile()) throw new Error("本地路径不是普通文件。");
+    localSize = stats.size;
+  } catch (error) {
+    if (error instanceof Error && /不是普通文件/.test(error.message)) throw error;
+    throw new Error(`无法读取本地文件：${localPath}`);
+  }
+  const session = getSession(sessionId, requestId);
+  const sftp = await getSftp(session, signal);
+  try {
+    await sftpOperation<void>(sftp, signal, (complete) =>
+      sftp.fastPut(localPath, remotePath, (error) =>
+        complete(error ? new Error(friendlySshError(error)) : undefined),
+      ),
+    );
+    return { bytes: localSize };
+  } finally {
+    sftp.end();
+  }
+}
+
+export async function downloadSshFile(
+  sessionId: string,
+  requestId: string,
+  remotePath: string,
+  localPath: string,
+  signal: AbortSignal,
+) {
+  if (!remotePath) throw new Error("缺少远程文件路径。");
+  if (!localPath) throw new Error("缺少本地保存路径。");
+  const session = getSession(sessionId, requestId);
+  const sftp = await getSftp(session, signal);
+  try {
+    const stats = await statRemote(sftp, remotePath, signal);
+    if (!stats.isFile()) throw new Error("远程路径不是普通文件。");
+    mkdirSync(path.dirname(localPath), { recursive: true });
+    await sftpOperation<void>(sftp, signal, (complete) =>
+      sftp.fastGet(remotePath, localPath, (error) =>
+        complete(error ? new Error(friendlySshError(error)) : undefined),
+      ),
+    );
+    return { bytes: stats.size };
   } finally {
     sftp.end();
   }

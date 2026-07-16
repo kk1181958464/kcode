@@ -5,6 +5,7 @@ export const idSchema = z.string().trim().min(1).max(256);
 export const optionalIdSchema = idSchema.optional();
 export const urlSchema = z.string().trim().min(1).max(8192);
 export const workspacePathSchema = z.string().trim().min(1).max(32767);
+export const browserWidthSchema = z.number().finite().min(200).max(4096);
 
 const imageSchema = z.object({
   id: z.string(),

@@ -12,6 +12,9 @@ import type { BrowserRecordingFile } from "../src/types";
 
 type BrowserState = {
   open: boolean;
+  // A session exists but its view is detached (hidden). The front-end uses this
+  // to offer a "show" affordance instead of forcing a fresh browser_open.
+  hidden?: boolean;
   sessionId?: string;
   requestId?: string;
   title?: string;
@@ -94,23 +97,36 @@ export function setBrowserHost(
 }
 const activeSession = () =>
   activeSessionId ? sessions.get(activeSessionId) : undefined;
+const MIN_BROWSER_WIDTH = 360;
+let userBrowserWidth: number | undefined;
 function browserWidth() {
-  return host
-    ? Math.min(
-        620,
-        Math.max(420, Math.round(host.getContentBounds().width * 0.42)),
-      )
-    : 520;
+  if (!host) return userBrowserWidth ?? 520;
+  // Leave the main column at least 360px so the panel can never swallow the app.
+  const max = Math.max(
+    MIN_BROWSER_WIDTH,
+    host.getContentBounds().width - MIN_BROWSER_WIDTH,
+  );
+  const preferred =
+    userBrowserWidth ?? Math.round(host.getContentBounds().width * 0.42);
+  return Math.min(max, Math.max(MIN_BROWSER_WIDTH, preferred));
 }
+export function setBrowserWidth(width: number) {
+  if (!Number.isFinite(width)) return;
+  userBrowserWidth = Math.max(MIN_BROWSER_WIDTH, Math.round(width));
+  layoutBrowser();
+}
+// The native view is inset from the panel's left edge so the DOM resize handle
+// that sits there keeps receiving pointer events instead of being covered.
+const RESIZE_HANDLE_WIDTH = 6;
 function layoutBrowser() {
   const active = activeSession();
   if (!host || !active) return;
   const bounds = host.getContentBounds(),
     width = browserWidth();
   active.view.setBounds({
-    x: bounds.width - width,
+    x: bounds.width - width + RESIZE_HANDLE_WIDTH,
     y: 77,
-    width,
+    width: Math.max(100, width - RESIZE_HANDLE_WIDTH),
     height: Math.max(100, bounds.height - 77),
   });
   stateChanged?.({
@@ -282,6 +298,9 @@ function destroySession(sessionId: string, notifyUser = false) {
   if (recordings.has(sessionId))
     void stopBrowserRecording(sessionId, "interrupted").catch(() => undefined);
   if (activeSessionId === sessionId) activeSessionId = undefined;
+  // Clear the selected pointer too, otherwise a later browser_open for the same
+  // session id sees a stale selection and fails to attach, leaving it unopenable.
+  if (selectedSessionId === sessionId) selectedSessionId = undefined;
   try {
     host?.contentView.removeChildView(view);
   } catch {
@@ -294,6 +313,32 @@ function destroySession(sessionId: string, notifyUser = false) {
 export function closeBrowserPanel(sessionId?: string, userInitiated = true) {
   const target = sessionId ?? activeSessionId;
   if (target) destroySession(target, userInitiated);
+}
+// Detach the native view from the window but keep the session (and its process)
+// alive so it can be shown again later. Unlike closeBrowserPanel this does not
+// destroy the page or stop the underlying browser task.
+export function hideBrowserPanel(sessionId?: string) {
+  const target = sessionId ?? activeSessionId ?? selectedSessionId;
+  const session = target ? sessions.get(target) : undefined;
+  if (!session) return;
+  if (session.attached) {
+    try {
+      host?.contentView.removeChildView(session.view);
+    } catch {
+      /* Already detached. */
+    }
+    session.attached = false;
+  }
+  if (activeSessionId === target) activeSessionId = undefined;
+  // Keep selectedSessionId so activate() can re-show this exact session later.
+  selectedSessionId = target;
+  stateChanged?.({
+    open: false,
+    hidden: true,
+    sessionId: target,
+    title: session.view.webContents.getTitle(),
+    url: session.view.webContents.getURL(),
+  });
 }
 export function browserIsOpen(sessionId: string) {
   const session = sessions.get(sessionId);
@@ -356,7 +401,22 @@ export function forwardBrowser(sessionId?: string) {
 }
 
 export function reloadBrowser(sessionId?: string) {
-  page(sessionId ?? activeSessionId ?? "").webContents.reload();
+  const view = page(sessionId ?? activeSessionId ?? "");
+  view.webContents.reload();
+  // On Windows a WebContentsView often keeps a stale compositor surface after a
+  // reload and paints white until its bounds change. Nudge the bounds once the
+  // new document starts painting to force a repaint.
+  view.webContents.once("did-stop-loading", () => forceBrowserRepaint(sessionId));
+}
+// Toggle the active view's width by a pixel and back to force the compositor to
+// re-attach its surface. Used after operations that can leave a blank view.
+function forceBrowserRepaint(sessionId?: string) {
+  const session = sessions.get(sessionId ?? activeSessionId ?? "");
+  if (!host || !session || session.view.webContents.isDestroyed()) return;
+  if (selectedSessionId && session.sessionId !== selectedSessionId) return;
+  const bounds = session.view.getBounds();
+  session.view.setBounds({ ...bounds, width: bounds.width + 1 });
+  session.view.setBounds(bounds);
 }
 export async function openBrowser(
   sessionId: string,

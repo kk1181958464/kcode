@@ -56,11 +56,13 @@ import {
   cleanupSshSessions,
   connectSsh,
   disconnectSsh,
+  downloadSshFile,
   listSshDirectory,
   readSshFile,
   redactSshInput,
   runSshCommand,
   undoSshActivity,
+  uploadSshFile,
   writeSshFile,
 } from "./ssh";
 import {
@@ -205,7 +207,22 @@ function compactRuntimeHistory(history: HistoryItem[], force = false) {
   });
   const older = history.slice(0, -8);
   const facts: string[] = [];
+  // Connections opened earlier stay usable for the whole task, so their
+  // coordinates are durable facts that must survive compaction verbatim instead
+  // of being dropped with the rest of the call history. Keep the full input
+  // (host/port/user and, unlike the UI summary, the credentials the model may
+  // need to reconnect within this run) — runtime history is never shown to the
+  // user or persisted, so it is the safe place to retain them.
+  const connections: string[] = [];
   for (const item of older) {
+    if (item.kind === "calls")
+      for (const call of item.calls)
+        if (
+          ["ssh_connect", "mysql_connect", "mysql_connect_via_ssh"].includes(
+            call.name,
+          )
+        )
+          connections.push(`${call.name} ${JSON.stringify(call.input)}`);
     if (item.kind === "message" && item !== firstMessage)
       facts.push(
         `${item.role}: ${item.content.replace(/\s+/g, " ").slice(0, 500)}`,
@@ -227,10 +244,14 @@ function compactRuntimeHistory(history: HistoryItem[], force = false) {
       }
     }
   }
+  const uniqueConnections = [...new Set(connections)];
+  const connectionBlock = uniqueConnections.length
+    ? `已建立的连接（会话在本次运行内仍然可用，如需重连可复用以下凭据，不要向用户重复索取）：\n${uniqueConnections.join("\n")}\n\n`
+    : "";
   const summary: HistoryItem = {
     kind: "message",
     role: "user",
-    content: `<runtime_compaction>较早的 Agent 工具循环已压缩。关键状态：\n${facts.slice(-80).join("\n")}</runtime_compaction>`,
+    content: `<runtime_compaction>较早的 Agent 工具循环已压缩。${connectionBlock}关键状态：\n${facts.slice(-80).join("\n")}</runtime_compaction>`,
   };
   history.splice(
     0,
@@ -709,6 +730,34 @@ const tools = [
     },
   },
   {
+    name: "ssh_upload_file",
+    description:
+      "Upload a local file to the SSH server connected to this task using SFTP. localPath is an absolute path on this machine; remotePath is the destination on the server. Handles binary files.",
+    parameters: {
+      type: "object",
+      properties: {
+        localPath: { type: "string" },
+        remotePath: { type: "string" },
+      },
+      required: ["localPath", "remotePath"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "ssh_download_file",
+    description:
+      "Download a file from the SSH server connected to this task to this machine using SFTP. remotePath is the source on the server; localPath is an absolute destination path on this machine. Handles binary files.",
+    parameters: {
+      type: "object",
+      properties: {
+        remotePath: { type: "string" },
+        localPath: { type: "string" },
+      },
+      required: ["remotePath", "localPath"],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "ssh_disconnect",
     description: "Disconnect the SSH session associated with this task.",
     parameters: { type: "object", properties: {}, additionalProperties: false },
@@ -976,10 +1025,27 @@ export async function undoActivity(
 function workspacePath(root: string, relative: unknown) {
   if (typeof relative !== "string" || !relative.trim())
     throw new Error("缺少文件路径");
-  const resolved = path.resolve(root, relative);
-  if (resolved !== root && !resolved.startsWith(`${root}${path.sep}`))
-    throw new Error("路径超出当前工作区");
-  return resolved;
+  // Relative paths resolve against the workspace root; absolute paths (including
+  // other drives) are honored as-is so the agent can reach files outside the
+  // current workspace when the user asks for them.
+  return path.resolve(root, relative);
+}
+
+let ripgrepDir: string | undefined;
+function commandEnv(): NodeJS.ProcessEnv {
+  if (ripgrepDir === undefined) {
+    const rg = bundledRipgrepPath();
+    ripgrepDir = rg === "rg" ? "" : path.dirname(rg);
+  }
+  if (!ripgrepDir) return process.env;
+  const key =
+    Object.keys(process.env).find((name) => name.toUpperCase() === "PATH") ??
+    "PATH";
+  const current = process.env[key] ?? "";
+  return {
+    ...process.env,
+    [key]: current ? `${ripgrepDir}${path.delimiter}${current}` : ripgrepDir,
+  };
 }
 
 function command(
@@ -995,6 +1061,7 @@ function command(
         cwd: root,
         windowsHide: true,
         shell: false,
+        env: commandEnv(),
       });
       const chunks: Buffer[] = [];
       let byteLength = 0;
@@ -1072,6 +1139,21 @@ function failureSummary(call: ToolCall, output: string, exitCode?: number) {
     return `命令执行失败，退出码 ${exitCode ?? "未知"}${detail ? `：${detail}` : "。"}`;
   }
   return `${({ apply_patch: "补丁应用", write_file: "文件写入", delete_path: "路径删除", move_path: "路径移动", make_directory: "目录创建", read_file: "文件读取", search_code: "代码搜索", list_directory: "目录读取", path_info: "路径检查" } as Partial<Record<AgentToolName, string>>)[call.name] || "工具执行"}失败。`;
+}
+
+// A non-zero exit code is not always an error. Many CLI tools return non-zero to
+// report an ordinary outcome: ripgrep exits 1 when a search has no matches, git
+// exits 128 outside a repository, linters exit 1 when they find problems. These
+// commands ran to completion; only genuine failures (missing program, timeout,
+// cancellation, misused patch) should surface as errors.
+function isHardFailure(call: ToolCall, output: string) {
+  if (call.name !== "run_command") return true;
+  const script = String(call.input.command || "");
+  if (/\*\*\* Begin Patch|\bapply_patch\b/i.test(script)) return true;
+  if (/命令执行超时|命令已取消/.test(output)) return true;
+  if (/not recognized|CommandNotFoundException|找不到|无法将.*识别为/i.test(output))
+    return true;
+  return false;
 }
 
 function mysqlConnectInput(
@@ -1785,6 +1867,36 @@ async function execute(
       ...diffFor(remotePath, result.before, result.after),
     };
   }
+  if (call.name === "ssh_upload_file") {
+    const localPath = path.resolve(String(call.input.localPath || ""));
+    const remotePath = String(call.input.remotePath || "");
+    const result = await uploadSshFile(
+      browserSessionId,
+      requestId,
+      localPath,
+      remotePath,
+      signal,
+    );
+    return {
+      path: remotePath,
+      output: `已上传本地文件到远程 ${remotePath}，共 ${result.bytes} 字节`,
+    };
+  }
+  if (call.name === "ssh_download_file") {
+    const remotePath = String(call.input.remotePath || "");
+    const localPath = path.resolve(String(call.input.localPath || ""));
+    const result = await downloadSshFile(
+      browserSessionId,
+      requestId,
+      remotePath,
+      localPath,
+      signal,
+    );
+    return {
+      path: localPath,
+      output: `已下载远程文件到本地 ${localPath}，共 ${result.bytes} 字节`,
+    };
+  }
   if (call.name === "ssh_disconnect")
     return {
       output: disconnectSsh(browserSessionId)
@@ -2295,7 +2407,7 @@ async function modelTurn(
       )
     : [];
   const isolation = createConversationIsolation(request.taskId, requestId);
-  const system = `${isolation.boundary}\nYou are a coding agent working in ${root}. Use the provided native tools to inspect and modify the project. Each run_command invocation uses a fresh PowerShell process, so environment variable changes do not persist to later commands; combine dependent setup and execution in one command. Prefer apply_patch for precise edits and write_file for new or complete files. Never invoke apply_patch, file deletion, file moves, or directory operations through run_command when a native tool exists. Use web_search for current or externally verifiable information and fetch_url to inspect primary sources; preserve source URLs in the final answer. For interactive or authenticated sites use browser_open, browser_snapshot, browser_click, and browser_type. Credentials explicitly supplied by the user may be entered directly with browser_type. Browser recording is opt-in: call browser_record_start only after an explicit user request such as 开始录制, and call browser_record_stop when the user asks to stop or generate Python. Never record ordinary browsing by default. For independent work that can run concurrently, use spawn_agent with self-contained, non-overlapping tasks, then wait_agent before giving a final answer. Use list_agents, message_agent, and stop_agent to coordinate them. Subagents inherit this task's model, workspace, and permission policy; confirmation requests from background agents are forwarded to the main task UI. For remote servers, call ssh_connect with credentials explicitly supplied by the user, then use ssh_run and the SSH SFTP tools. Use pty/stdin only when a remote command requires controlled interactive input; never place a password in the command string. SSH exec sessions are non-interactive and may not load shell profiles; when a remote command depends on profile-defined PATH values, invoke the appropriate login shell explicitly. SSH host keys are persisted on first use and changed keys must be confirmed by the user. For databases, use mysql_connect for direct MySQL access or mysql_connect_via_ssh for an SSH tunnel, then mysql_query; use ? placeholders and values for user-provided data when practical. Public direct MySQL connections use TLS by default and you must not retry with ssl=false unless the user explicitly approves. Never echo passwords, private keys, or passphrases in text, commands, or SQL. If CAPTCHA, SMS, passkey, or two-factor verification appears, pause and ask the user to complete it in the visible browser. Do not claim an action succeeded until its tool result confirms it.${request.recoveryContext ? `\n\n<recovery_context>${request.recoveryContext}</recovery_context>\nThis task resumed after an interruption. Verify prior side effects before repeating them, and recreate any interrupted subagent work that is still needed.` : ""}`;
+  const system = `${isolation.boundary}\nYou are a coding agent working in ${root}. Use the provided native tools to inspect and modify the project. Each run_command invocation uses a fresh PowerShell process, so environment variable changes do not persist to later commands; combine dependent setup and execution in one command. Prefer apply_patch for precise edits and write_file for new or complete files. Never invoke apply_patch, file deletion, file moves, or directory operations through run_command when a native tool exists. File tool paths accept absolute paths, including other drives (for example D:\\B on Windows); use them to read or write files the user explicitly points to outside ${root}, and resolve relative paths against ${root}. Use web_search for current or externally verifiable information and fetch_url to inspect primary sources; preserve source URLs in the final answer. For interactive or authenticated sites use browser_open, browser_snapshot, browser_click, and browser_type. Credentials explicitly supplied by the user may be entered directly with browser_type. Browser recording is opt-in: call browser_record_start only after an explicit user request such as 开始录制, and call browser_record_stop when the user asks to stop or generate Python. Never record ordinary browsing by default. For independent work that can run concurrently, use spawn_agent with self-contained, non-overlapping tasks, then wait_agent before giving a final answer. Use list_agents, message_agent, and stop_agent to coordinate them. Subagents inherit this task's model, workspace, and permission policy; confirmation requests from background agents are forwarded to the main task UI. For remote servers, call ssh_connect with credentials explicitly supplied by the user, then use ssh_run and the SSH SFTP tools. Use ssh_upload_file to send a local file to the server and ssh_download_file to fetch a remote file to a local path; these transfer binary content directly, unlike ssh_write_file which only writes inline UTF-8 text. Use pty/stdin only when a remote command requires controlled interactive input; never place a password in the command string. SSH exec sessions are non-interactive and may not load shell profiles; when a remote command depends on profile-defined PATH values, invoke the appropriate login shell explicitly. SSH host keys are persisted on first use and changed keys must be confirmed by the user. For databases, use mysql_connect for direct MySQL access or mysql_connect_via_ssh for an SSH tunnel, then mysql_query; use ? placeholders and values for user-provided data when practical. Public direct MySQL connections use TLS by default and you must not retry with ssl=false unless the user explicitly approves. Never echo passwords, private keys, or passphrases in text, commands, or SQL. If CAPTCHA, SMS, passkey, or two-factor verification appears, pause and ask the user to complete it in the visible browser. Do not claim an action succeeded until its tool result confirms it.${request.recoveryContext ? `\n\n<recovery_context>${request.recoveryContext}</recovery_context>\nThis task resumed after an interruption. Verify prior side effects before repeating them, and recreate any interrupted subagent work that is still needed.` : ""}`;
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...isolation.headers,
@@ -2776,7 +2888,9 @@ export async function* runAgent(
     usage.input += turn.usage.input;
     usage.output += turn.usage.output;
     usage.cached += turn.usage.cached;
-    yield { type: "usage", ...usage };
+    // input/output/cached accumulate across rounds for billing; promptTokens is
+    // the latest round's prompt size, i.e. the real current context occupancy.
+    yield { type: "usage", ...usage, promptTokens: lastPromptTokens };
     const claimsBrowserAction =
       browserIsOpen(browserSessionId) &&
       !turn.calls.length &&
@@ -2869,6 +2983,8 @@ export async function* runAgent(
         ssh_list_directory: "查看远程目录",
         ssh_read_file: "读取远程文件",
         ssh_write_file: "修改远程文件",
+        ssh_upload_file: "上传文件到远程",
+        ssh_download_file: "从远程下载文件",
         ssh_disconnect: "断开 SSH",
         mysql_connect: "连接 MySQL",
         mysql_connect_via_ssh: "通过 SSH 连接 MySQL",
@@ -2939,7 +3055,9 @@ export async function* runAgent(
               ? "workspaceWrite"
               : call.name === "ssh_run"
                 ? "runCommands"
-                : call.name === "ssh_write_file"
+                : call.name === "ssh_write_file" ||
+                    call.name === "ssh_upload_file" ||
+                    call.name === "ssh_download_file"
                   ? "workspaceWrite"
                   : call.name === "delete_path"
                     ? "deletePaths"
@@ -3047,11 +3165,12 @@ export async function* runAgent(
           subagentUsage: _subagentUsage,
           ...activityResult
         } = result;
-        const failed = result.exitCode !== undefined && result.exitCode !== 0;
+        const nonZero = result.exitCode !== undefined && result.exitCode !== 0;
+        const hardFailure = nonZero && isHardFailure(call, result.output);
         Object.assign(activity, activityResult, {
-          status: failed ? "failed" : "success",
+          status: hardFailure ? "failed" : nonZero ? "completed" : "success",
           completedAt: Date.now(),
-          errorSummary: failed
+          errorSummary: hardFailure
             ? failureSummary(call, result.output, result.exitCode)
             : undefined,
         });
@@ -3068,7 +3187,9 @@ export async function* runAgent(
           usage.input += subagentUsage.input;
           usage.output += subagentUsage.output;
           usage.cached += subagentUsage.cached;
-          yield { type: "usage", ...usage };
+          // Subagent tokens count toward billing only; they do not sit in the
+          // parent's context, so promptTokens stays at the parent's last round.
+          yield { type: "usage", ...usage, promptTokens: lastPromptTokens };
         }
       } catch (error) {
         finishMutationClaim?.(false);
@@ -3100,12 +3221,15 @@ export async function* runAgent(
         success: activity.status === "success",
         summary:
           activity.errorSummary ??
-          `${activity.title}${activity.status === "success" ? "完成" : "未完成"}`,
+          (activity.status === "completed"
+            ? `${activity.title}已执行完成，退出码 ${activity.exitCode ?? "未知"}`
+            : `${activity.title}${activity.status === "success" ? "完成" : "未完成"}`),
         data: {
           output: activity.output,
           diff: activity.diff,
           path: activity.path,
           command: activity.command,
+          exitCode: activity.exitCode,
           additions: activity.additions,
           deletions: activity.deletions,
         },
