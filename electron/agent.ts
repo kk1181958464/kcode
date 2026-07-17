@@ -26,6 +26,7 @@ import {
   type AgentEvent,
   type AgentToolName,
   type ModelRequest,
+  type Protocol,
   type ReasoningEffort,
 } from "../src/types";
 import { isCasualGreeting } from "../src/intent";
@@ -45,6 +46,11 @@ import {
   readResponseText,
   readStreamChunk,
 } from "./request-guard";
+import {
+  effectiveOpenAiProtocol,
+  rememberChatFallback,
+  shouldFallbackResponses,
+} from "./protocol-fallback";
 import { getProviderWithKey } from "./store";
 import {
   bindBrowserRequest,
@@ -2817,6 +2823,7 @@ async function modelTurn(
   toolsEnabled = true,
   onText?: (delta: string) => void,
   onReasoning?: (delta: string) => void,
+  protocolOverride?: Protocol,
 ): Promise<Turn> {
   const provider = await getProviderWithKey(request.providerId);
   if (!provider.enabled) throw new Error("当前供应商已停用");
@@ -2825,12 +2832,14 @@ async function modelTurn(
   const selectedModel = provider.models.find(
     (model) => model.modelId === request.modelId,
   )!;
+  const protocol =
+    protocolOverride ??
+    effectiveOpenAiProtocol(provider.id, provider.protocol);
   const reasoning = {
-    ...inferReasoningConfig(selectedModel.modelId, selectedModel.protocol),
+    ...inferReasoningConfig(selectedModel.modelId, protocol),
     reasoningMode:
       selectedModel.reasoningMode ??
-      inferReasoningConfig(selectedModel.modelId, selectedModel.protocol)
-        .reasoningMode,
+      inferReasoningConfig(selectedModel.modelId, protocol).reasoningMode,
   };
   const effort = request.reasoningEffort ?? "auto";
   const budgets: Partial<Record<ReasoningEffort, number>> = {
@@ -2852,15 +2861,15 @@ async function modelTurn(
     "Content-Type": "application/json",
     ...isolation.headers,
   };
-  if (provider.protocol === "anthropic-messages") {
+  if (protocol === "anthropic-messages") {
     headers["x-api-key"] = provider.apiKey;
     headers["anthropic-version"] = "2023-06-01";
-  } else if (provider.protocol === "gemini-generate-content") {
+  } else if (protocol === "gemini-generate-content") {
     /* Gemini uses a query-string key. */
   } else headers.Authorization = `Bearer ${provider.apiKey}`;
   let url = "",
     body: Record<string, unknown> = {};
-  if (provider.protocol === "openai-chat") {
+  if (protocol === "openai-chat") {
     url = apiEndpoint(provider.baseUrl, "chat/completions");
     const messages: unknown[] = [{ role: "system", content: system }];
     for (const item of history) {
@@ -2927,7 +2936,7 @@ async function modelTurn(
         ? true
         : undefined,
     };
-  } else if (provider.protocol === "openai-responses") {
+  } else if (protocol === "openai-responses") {
     url = apiEndpoint(provider.baseUrl, "responses");
     const input: unknown[] = [{ role: "developer", content: system }];
     for (const item of history) {
@@ -2975,7 +2984,7 @@ async function modelTurn(
           ? { effort }
           : undefined,
     };
-  } else if (provider.protocol === "anthropic-messages") {
+  } else if (protocol === "anthropic-messages") {
     url = apiEndpoint(provider.baseUrl, "messages");
     const messages: { role: string; content: unknown }[] = [];
     for (const item of history) {
@@ -3139,7 +3148,7 @@ async function modelTurn(
     conversationId: isolation.conversationId,
     providerId: request.providerId,
     modelId: request.modelId,
-    protocol: provider.protocol,
+    protocol,
     status: response.status,
     historyHash: historyFingerprint(history),
     upstreamRequestId:
@@ -3147,13 +3156,42 @@ async function modelTurn(
       response.headers.get("request-id") ??
       undefined,
   });
+  if (
+    protocol === "openai-responses" &&
+    shouldFallbackResponses(provider.baseUrl, response.status)
+  ) {
+    await response.body?.cancel().catch(() => undefined);
+    rememberChatFallback(provider.id);
+    onReasoning?.(
+      `Responses API 返回 ${response.status}，已自动切换到 Chat Completions 兼容接口…`,
+    );
+    writeLog("warn", "model.protocolFallback", {
+      requestId: isolation.traceId,
+      providerId: provider.id,
+      modelId: request.modelId,
+      from: "openai-responses",
+      to: "openai-chat",
+      status: response.status,
+    });
+    return modelTurn(
+      root,
+      requestId,
+      request,
+      history,
+      signal,
+      toolsEnabled,
+      onText,
+      onReasoning,
+      "openai-chat",
+    );
+  }
   if (!response.ok)
     throw new Error(
       `请求失败 (${response.status}): ${(await readResponseText(response, signal)).slice(0, 500)}`,
     );
   if (/text\/event-stream/i.test(response.headers.get("content-type") || ""))
     return parseStreamedTurn(
-      provider.protocol,
+      protocol,
       response,
       signal,
       onText,
@@ -3161,7 +3199,7 @@ async function modelTurn(
       reasoning.reasoningMode !== "none" ? 180_000 : undefined,
     );
   const json = JSON.parse(await readResponseText(response, signal)) as any;
-  if (provider.protocol === "openai-chat") {
+  if (protocol === "openai-chat") {
     const message = json.choices?.[0]?.message ?? {};
     const calls = (message.tool_calls ?? []).map((c: any) => ({
       id: c.id,
@@ -3190,7 +3228,7 @@ async function modelTurn(
       },
     };
   }
-  if (provider.protocol === "openai-responses") {
+  if (protocol === "openai-responses") {
     const output = json.output ?? [];
     const calls = output
       .filter((x: any) => x.type === "function_call")
@@ -3215,7 +3253,7 @@ async function modelTurn(
       },
     };
   }
-  if (provider.protocol === "anthropic-messages") {
+  if (protocol === "anthropic-messages") {
     const content = json.content ?? [];
     return {
       text: content
