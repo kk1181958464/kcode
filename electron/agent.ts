@@ -2777,8 +2777,12 @@ async function* streamModelTurn(
           !isRetryableStreamError(error)
         )
           throw error;
-        pushReasoning(`上游暂时不可用，正在自动重试（第 ${attempt} 次）…`);
-        await sleep(800 * attempt);
+        const delay =
+          2_000 * 2 ** (attempt - 1) + Math.floor(Math.random() * 750);
+        pushReasoning(
+          `上游暂时不可用，${Math.ceil(delay / 1_000)} 秒后自动重试（第 ${attempt} 次）…`,
+        );
+        await sleep(delay);
         if (signal.aborted) throw error;
       }
     }
@@ -3110,9 +3114,8 @@ async function modelTurn(
     };
   }
   // Reasoning models can spend minutes thinking before the first byte arrives,
-  // especially behind a third-party proxy with a large context. The 60s default
-  // is too aggressive for them; the idle timeout still guards a truly stuck
-  // stream once bytes start flowing.
+  // especially behind a third-party proxy with a large context. Keep a shorter
+  // bound for regular models while progress events make either wait observable.
   const firstByteTimeoutMs =
     reasoning.reasoningMode !== "none" ? 300_000 : 90_000;
   const response = await fetchWithRetry(
@@ -3122,7 +3125,13 @@ async function modelTurn(
       headers,
       body: JSON.stringify(body),
     },
-    { signal, firstByteTimeoutMs },
+    {
+      signal,
+      firstByteTimeoutMs,
+      retries: 1,
+      retryDelayMs: 2_000,
+      onProgress: onReasoning,
+    },
   );
   writeLog("info", "model.response", {
     requestId: isolation.traceId,

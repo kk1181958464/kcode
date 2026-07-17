@@ -1,6 +1,6 @@
-const DEFAULT_FIRST_BYTE_TIMEOUT_MS = 60_000;
-const DEFAULT_IDLE_TIMEOUT_MS = 60_000;
-const RETRYABLE_STATUSES = new Set([502, 503, 504]);
+const DEFAULT_FIRST_BYTE_TIMEOUT_MS = 120_000;
+const DEFAULT_IDLE_TIMEOUT_MS = 120_000;
+const WAIT_PROGRESS_INTERVAL_MS = 10_000;
 
 type FetchWithRetryOptions = {
   signal: AbortSignal;
@@ -8,7 +8,24 @@ type FetchWithRetryOptions = {
   retries?: number;
   retryDelayMs?: number;
   fetchImpl?: typeof fetch;
+  onProgress?: (message: string) => void;
 };
+
+function isRetryableStatus(status: number) {
+  return status === 408 || status === 425 || status === 429 || status >= 500;
+}
+
+function retryDelay(response: Response, fallbackMs: number) {
+  const value = response.headers.get("retry-after")?.trim();
+  if (!value) return fallbackMs;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds))
+    return Math.min(30_000, Math.max(0, seconds * 1_000));
+  const at = Date.parse(value);
+  return Number.isFinite(at)
+    ? Math.min(30_000, Math.max(0, at - Date.now()))
+    : fallbackMs;
+}
 
 function abortReason(signal: AbortSignal) {
   return signal.reason instanceof Error
@@ -44,6 +61,7 @@ export async function fetchWithRetry(
     retries = 1,
     retryDelayMs = 500,
     fetchImpl = fetch,
+    onProgress,
   } = options;
   let lastError: unknown;
   for (let attempt = 0; attempt <= retries; attempt += 1) {
@@ -56,28 +74,48 @@ export async function fetchWithRetry(
       timedOut = true;
       controller.abort();
     }, firstByteTimeoutMs);
+    const startedAt = Date.now();
+    const progress = setInterval(() => {
+      const seconds = Math.round((Date.now() - startedAt) / 1_000);
+      onProgress?.(
+        `正在等待上游模型响应（${seconds} 秒）${attempt ? `，当前为第 ${attempt + 1} 次尝试` : ""}…`,
+      );
+    }, WAIT_PROGRESS_INTERVAL_MS);
     try {
       const response = await fetchImpl(input, {
         ...init,
         signal: controller.signal,
       });
-      if (RETRYABLE_STATUSES.has(response.status) && attempt < retries) {
+      if (isRetryableStatus(response.status) && attempt < retries) {
+        const delay = retryDelay(response, retryDelayMs * (attempt + 1));
+        onProgress?.(
+          `上游返回 ${response.status}，将在 ${Math.max(1, Math.ceil(delay / 1_000))} 秒后重试…`,
+        );
         await response.body?.cancel().catch(() => undefined);
-        await wait(retryDelayMs * (attempt + 1), signal);
+        await wait(delay, signal);
         continue;
       }
       return response;
     } catch (error) {
       if (signal.aborted) throw abortReason(signal);
-      if (timedOut)
-        throw new Error(
+      if (timedOut) {
+        lastError = new Error(
           `模型请求等待响应超时（${Math.round(firstByteTimeoutMs / 1_000)} 秒）`,
         );
+        if (attempt >= retries) throw lastError;
+        const delay = retryDelayMs * (attempt + 1);
+        onProgress?.(
+          `上游长时间无响应，将在 ${Math.max(1, Math.ceil(delay / 1_000))} 秒后重试…`,
+        );
+        await wait(delay, signal);
+        continue;
+      }
       lastError = error;
       if (attempt >= retries) throw error;
       await wait(retryDelayMs * (attempt + 1), signal);
     } finally {
       clearTimeout(timer);
+      clearInterval(progress);
       signal.removeEventListener("abort", abort);
     }
   }

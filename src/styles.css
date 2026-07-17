@@ -492,7 +492,7 @@ select:focus-visible {
   color: #fff;
 }
 .workspace-group .tasks {
-  padding-left: 12px;
+  padding-left: 24px;
 }
 .task-row {
   min-height: 34px;
