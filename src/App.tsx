@@ -3930,7 +3930,15 @@ export default function App() {
       modelSelection: selected,
       reasoningEffort,
     };
-    setTasks((all) => [task, ...all]);
+    setTasks((all) => {
+      const workspaceIndex = all.findIndex(
+        (item) => item.workspacePath === workspacePath,
+      );
+      if (workspaceIndex < 0) return [task, ...all];
+      const next = [...all];
+      next.splice(workspaceIndex, 0, task);
+      return next;
+    });
     claimTaskView(task.id);
     setActiveTaskId(task.id);
     setMessages([]);
