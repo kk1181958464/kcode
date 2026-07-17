@@ -80,6 +80,48 @@ import type {
   ReasoningMode,
 } from "./types";
 
+async function copyTextToClipboard(text: string): Promise<boolean> {
+  const value = text ?? "";
+  if (!value) return false;
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value);
+      return true;
+    }
+  } catch {
+    // fall through to legacy path
+  }
+  try {
+    const area = document.createElement("textarea");
+    area.value = value;
+    area.setAttribute("readonly", "");
+    area.style.position = "fixed";
+    area.style.left = "-9999px";
+    document.body.appendChild(area);
+    area.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(area);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
+type AppToast = { id: number; message: string; tone?: "success" | "error" };
+let appToastHandler:
+  | ((message: string, tone?: "success" | "error") => void)
+  | undefined;
+
+function showAppToast(message: string, tone: "success" | "error" = "success") {
+  appToastHandler?.(message, tone);
+}
+
+async function copyWithToast(text: string, successMessage = "复制成功") {
+  const ok = await copyTextToClipboard(text);
+  showAppToast(ok ? successMessage : "复制失败", ok ? "success" : "error");
+  return ok;
+}
+
 const uid = () => crypto.randomUUID();
 const EMPTY_ACTIVITIES: AgentActivity[] = [];
 type SettingsSection = "general" | "models" | "permissions" | "recordings";
@@ -286,9 +328,22 @@ function workingPhase(activities: AgentActivity[], elapsedMs: number) {
       };
     }
     if (active.tool === "run_command") {
+      const silent =
+        typeof active.output === "string" &&
+        active.output.includes("[进度]") &&
+        !active.output.replace(/\[进度\][\s\S]*$/, "").trim();
+      const network = /\b(ssh|scp|sftp|plink|pscp|putty|ssh-keyscan|curl|wget)\b/i.test(
+        active.command || "",
+      );
       return {
         phase: `正在运行命令：${activityTarget(active) || active.title}`,
-        detail: "命令仍在执行中",
+        detail: silent
+          ? network
+            ? "进程仍在运行，但暂无输出；网络命令卡住时可点停止"
+            : "进程仍在运行，但暂无输出"
+          : active.output
+            ? "命令仍在执行，输出会实时更新"
+            : "命令已启动，等待输出…",
       };
     }
     return {
@@ -1554,7 +1609,7 @@ const MarkdownMessage = memo(function MarkdownMessage({
                 </span>
                 <button
                   title="复制代码"
-                  onClick={() => void navigator.clipboard.writeText(code)}
+                  onClick={() => void copyWithToast(code)}
                 >
                   <Copy size={13} />
                   复制
@@ -1622,9 +1677,7 @@ function MessageItem({
           <div className="message-actions">
             <button
               title="复制消息"
-              onClick={() =>
-                void navigator.clipboard.writeText(message.content)
-              }
+              onClick={() => void copyWithToast(message.content)}
             >
               <Copy size={13} />
             </button>
@@ -1735,7 +1788,9 @@ function ActivityItem({
         : "工具执行失败，请查看详细输出。");
   useEffect(() => {
     if (activity.status === "failed") setExpanded(true);
-  }, [activity.status]);
+    // Keep long-running commands expanded so heartbeats/live output stay visible.
+    if (activity.status === "running" && activity.output) setExpanded(true);
+  }, [activity.status, activity.output]);
   useEffect(() => {
     if (activity.status !== "running") {
       setElapsedMs(
@@ -1887,20 +1942,42 @@ function ActivityItem({
                 <strong>
                   {activity.tool === "ssh_run"
                     ? "等待远程命令返回"
-                    : "操作正在执行"}
+                    : activity.tool === "run_command" &&
+                        /\b(ssh|scp|sftp|plink|pscp|putty|ssh-keyscan)\b/i.test(
+                          activity.command || "",
+                        )
+                      ? "网络命令执行中（可能长时间无输出），可点停止强制终止"
+                      : activity.tool === "run_command"
+                        ? "命令执行中，无输出时也会显示进度心跳"
+                        : "操作正在执行"}
                 </strong>
                 <small>已运行 {formatDuration(elapsedMs)}</small>
               </span>
             </div>
           )}
-          {detail &&
-            (activity.errorSummary ||
-              activity.status === "running" ||
-              activity.status === "completed") && (
-              <div className="activity-output-label">
-                {activity.status === "running" ? "实时输出" : "详细输出"}
-              </div>
-            )}
+          {detail && (
+            <div className="activity-output-toolbar">
+              {(activity.errorSummary ||
+                activity.status === "running" ||
+                activity.status === "completed") && (
+                <div className="activity-output-label">
+                  {activity.status === "running" ? "实时输出" : "详细输出"}
+                </div>
+              )}
+              <button
+                type="button"
+                className="activity-copy-button"
+                title="复制输出"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  void copyWithToast(detail);
+                }}
+              >
+                <Copy size={12} />
+                复制
+              </button>
+            </div>
+          )}
           {detail &&
             (activity.diff ? (
               <DiffView text={detail} />
@@ -2035,7 +2112,7 @@ function ExecutionSummary({
   }, [waiting]);
   if (!activities.length) return null;
   return (
-    <section className={`execution-summary ${failures ? "has-failures" : ""}`}>
+    <section className="execution-summary">
       <button
         className="execution-summary-head"
         onClick={() => setExpanded((value) => !value)}
@@ -2707,6 +2784,23 @@ export default function App() {
   // composer and auto-dismisses, unlike contextError which stays until closed.
   const [contextToast, setContextToast] = useState("");
   const contextToastTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const [appToast, setAppToast] = useState<AppToast>();
+  const appToastTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const flashAppToast = useCallback(
+    (message: string, tone: "success" | "error" = "success") => {
+      setAppToast({ id: Date.now(), message, tone });
+      if (appToastTimer.current) clearTimeout(appToastTimer.current);
+      appToastTimer.current = setTimeout(() => setAppToast(undefined), 1_800);
+    },
+    [],
+  );
+  useEffect(() => {
+    appToastHandler = flashAppToast;
+    return () => {
+      if (appToastHandler === flashAppToast) appToastHandler = undefined;
+      if (appToastTimer.current) clearTimeout(appToastTimer.current);
+    };
+  }, [flashAppToast]);
   const flashContextToast = useCallback((message: string) => {
     setContextToast(message);
     if (contextToastTimer.current) clearTimeout(contextToastTimer.current);
@@ -2780,6 +2874,7 @@ export default function App() {
   const tasksRef = useRef(tasks);
   const previewTimerRef = useRef<number | undefined>(undefined);
   const followFrameRef = useRef<number | undefined>(undefined);
+  const bottomLayoutFrameRef = useRef<number | undefined>(undefined);
   const scrollFrameRef = useRef<number | undefined>(undefined);
   const scrollStateByTaskRef = useRef(
     new Map<string, ConversationScrollState>(),
@@ -2910,13 +3005,45 @@ export default function App() {
     const conversation = conversationRef.current;
     const messageList = conversation?.querySelector(".message-list");
     if (!messageList || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(refreshTurnPositions);
+    const observer = new ResizeObserver(() => {
+      refreshTurnPositions();
+      const pending = pendingScrollRestoreRef.current;
+      if (!autoFollowRef.current && !pending?.state.atBottom) return;
+      if (bottomLayoutFrameRef.current)
+        cancelAnimationFrame(bottomLayoutFrameRef.current);
+      bottomLayoutFrameRef.current = requestAnimationFrame(() => {
+        bottomLayoutFrameRef.current = undefined;
+        const current = conversationRef.current;
+        if (
+          !current ||
+          current !== conversation ||
+          (!autoFollowRef.current &&
+            !pendingScrollRestoreRef.current?.state.atBottom)
+        )
+          return;
+        current.scrollTop = current.scrollHeight;
+        const taskId = displayedTaskIdRef.current;
+        if (taskId)
+          scrollStateByTaskRef.current.set(taskId, {
+            top: current.scrollHeight,
+            atBottom: true,
+          });
+      });
+    });
     observer.observe(messageList);
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      if (bottomLayoutFrameRef.current) {
+        cancelAnimationFrame(bottomLayoutFrameRef.current);
+        bottomLayoutFrameRef.current = undefined;
+      }
+    };
   }, [activeTaskId, messages.length]);
   useEffect(
     () => () => {
       if (scrollFrameRef.current) cancelAnimationFrame(scrollFrameRef.current);
+      if (bottomLayoutFrameRef.current)
+        cancelAnimationFrame(bottomLayoutFrameRef.current);
       if (turnLayoutFrameRef.current)
         cancelAnimationFrame(turnLayoutFrameRef.current);
     },
@@ -3548,7 +3675,8 @@ export default function App() {
                     ...task,
                     messages: updateMessages(task.messages),
                     runningId: undefined,
-                    runStatus: "failed",
+                    runStatus:
+                      task.runStatus === "cancelled" ? "cancelled" : "failed",
                     updatedAt: Date.now(),
                   }
                 : task,
@@ -4459,7 +4587,8 @@ export default function App() {
   sendRef.current = send;
   async function cancel() {
     if (runningId) {
-      if (window.kcode) await window.kcode.chat.cancel(runningId);
+      const requestId = runningId;
+      if (window.kcode) await window.kcode.chat.cancel(requestId);
       if (previewTimerRef.current)
         window.clearInterval(previewTimerRef.current);
       previewTimerRef.current = undefined;
@@ -4467,12 +4596,30 @@ export default function App() {
         setDurationMs(Date.now() - requestStartedRef.current);
       currentRequest.current = undefined;
       setRunningId(undefined);
+      setAgentReasoning("");
+      const stopActivities = (all: AgentActivity[]) =>
+        all.map((activity) =>
+          activity.requestId === requestId &&
+          (activity.status === "running" || activity.status === "waiting")
+            ? {
+                ...activity,
+                status: "failed" as const,
+                completedAt: Date.now(),
+                errorSummary: "操作已停止",
+                output: activity.output
+                  ? `${activity.output}\n\n操作已停止`
+                  : "操作已停止",
+              }
+            : activity,
+        );
+      setActivities(stopActivities);
       if (activeTask?.id)
         setTasks((all) =>
           all.map((task) =>
             task.id === activeTask.id
               ? {
                   ...task,
+                  activities: stopActivities(task.activities),
                   runningId: undefined,
                   runStatus: "cancelled",
                   updatedAt: Date.now(),
@@ -4480,8 +4627,8 @@ export default function App() {
               : task,
           ),
         );
-      requestTasksRef.current.delete(runningId);
-      assistantLengthsRef.current.delete(runningId);
+      requestTasksRef.current.delete(requestId);
+      assistantLengthsRef.current.delete(requestId);
     }
   }
   async function resumeCheckpoint(checkpoint: AgentCheckpoint) {
@@ -4684,6 +4831,21 @@ export default function App() {
 
   return (
     <div className="window-root">
+      {appToast && (
+        <div
+          key={appToast.id}
+          className={`app-toast ${appToast.tone || "success"}`}
+          role="status"
+          aria-live="polite"
+        >
+          {appToast.tone === "error" ? (
+            <CircleAlert size={14} />
+          ) : (
+            <CheckCircle2 size={14} />
+          )}
+          <span>{appToast.message}</span>
+        </div>
+      )}
       <header className="window-titlebar" aria-label="窗口标题栏">
         <span>KCode</span>
         <div className="window-controls">

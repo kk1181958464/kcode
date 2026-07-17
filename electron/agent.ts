@@ -1,5 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
+import {
+  isLikelyNetworkCommand,
+  redactCommandForDisplay,
+  runSpawnedCommand,
+  terminateChildProcess,
+} from "./process-command";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import {
@@ -1138,7 +1144,7 @@ export async function cleanupAgentRecords(
   }
   for (const [id, process] of backgroundProcesses) {
     if (requests.has(process.requestId)) {
-      process.child.kill();
+      terminateChildProcess(process.child);
       backgroundProcesses.delete(id);
     }
   }
@@ -1235,57 +1241,19 @@ function command(
   args: string[],
   signal: AbortSignal,
   timeout = 30_000,
+  onOutput?: (output: string) => void,
+  idleTimeoutMs?: number,
 ) {
-  return new Promise<{ output: string; exitCode: number }>(
-    (resolve, reject) => {
-      const child = spawn(executable, args, {
-        cwd: root,
-        windowsHide: true,
-        shell: false,
-        env: commandEnv(),
-      });
-      const chunks: Buffer[] = [];
-      let byteLength = 0;
-      let timedOut = false;
-      const append = (chunk: Buffer) => {
-        chunks.push(chunk);
-        byteLength += chunk.length;
-        while (byteLength > 100_000 && chunks.length > 1)
-          byteLength -= chunks.shift()!.length;
-      };
-      child.stdout.on("data", append);
-      child.stderr.on("data", append);
-      const timer = setTimeout(() => {
-        timedOut = true;
-        child.kill();
-      }, timeout);
-      const abort = () => child.kill();
-      signal.addEventListener("abort", abort, { once: true });
-      child.on("error", (error) => {
-        clearTimeout(timer);
-        signal.removeEventListener("abort", abort);
-        reject(error);
-      });
-      child.on("close", (code) => {
-        clearTimeout(timer);
-        signal.removeEventListener("abort", abort);
-        const bytes = Buffer.concat(chunks);
-        let output = "";
-        try {
-          output = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-        } catch {
-          output = new TextDecoder("gb18030").decode(bytes);
-        }
-        if (timedOut)
-          output =
-            `${output.trimEnd()}\n命令执行超时（${Math.round(timeout / 1_000)} 秒），已终止。`.trimStart();
-        else if (signal.aborted)
-          output = `${output.trimEnd()}\n命令已取消。`.trimStart();
-        resolve({ output: output.slice(-100_000), exitCode: code ?? -1 });
-      });
-      if (signal.aborted) abort();
-    },
-  );
+  return runSpawnedCommand({
+    executable,
+    args,
+    cwd: root,
+    env: commandEnv(),
+    signal,
+    timeoutMs: timeout,
+    idleTimeoutMs,
+    onOutput,
+  }).then(({ output, exitCode }) => ({ output, exitCode }));
 }
 
 function failureSummary(call: ToolCall, output: string, exitCode?: number) {
@@ -1336,7 +1304,7 @@ function isHardFailure(call: ToolCall, output: string) {
   if (call.name !== "run_command") return true;
   const script = String(call.input.command || "");
   if (/\*\*\* Begin Patch|\bapply_patch\b/i.test(script)) return true;
-  if (/命令执行超时|命令已取消/.test(output)) return true;
+  if (/命令执行超时|命令已取消|没有新输出，已判定卡住/.test(output)) return true;
   if (
     /not recognized|CommandNotFoundException|找不到|无法将.*识别为/i.test(
       output,
@@ -1874,7 +1842,7 @@ async function execute(
       process = backgroundProcesses.get(id);
     if (!process || process.root !== root)
       throw new Error("后台进程不存在或不属于当前工作区");
-    process.child.kill();
+    terminateChildProcess(process.child);
     backgroundProcesses.delete(id);
     return { output: `后台进程 ${id} 已停止` };
   }
@@ -2503,12 +2471,23 @@ async function execute(
   }
   const script = String(call.input.command || "");
   if (!script) throw new Error("缺少命令");
+  const timeoutMs = Math.min(
+    600_000,
+    Math.max(1_000, Number(call.input.timeoutMs) || 120_000),
+  );
+  // Network CLIs like plink/ssh-keyscan often print nothing until they finish
+  // or hang. Cap silence so the UI is not stuck for the full timeout.
+  const idleTimeoutMs = isLikelyNetworkCommand(script)
+    ? Math.min(90_000, timeoutMs)
+    : undefined;
   const result = await command(
     root,
     "powershell.exe",
     ["-NoProfile", "-NonInteractive", "-Command", powershellCommand(script)],
     signal,
-    Math.min(600_000, Math.max(1_000, Number(call.input.timeoutMs) || 120_000)),
+    timeoutMs,
+    onProgress,
+    idleTimeoutMs,
   );
   return {
     output: result.output || "命令未产生输出",
@@ -3512,7 +3491,7 @@ export async function* runAgent(
               : undefined,
         command:
           typeof call.input.command === "string"
-            ? call.input.command
+            ? redactCommandForDisplay(call.input.command)
             : undefined,
         round,
       };
@@ -3676,14 +3655,20 @@ export async function* runAgent(
           subagentUsage: _subagentUsage,
           ...activityResult
         } = result;
+        const cancelled =
+          signal.aborted ||
+          /命令已取消|操作已取消|任务已取消/i.test(result.output || "");
         const nonZero = result.exitCode !== undefined && result.exitCode !== 0;
-        const hardFailure = nonZero && isHardFailure(call, result.output);
+        const hardFailure =
+          cancelled || (nonZero && isHardFailure(call, result.output));
         Object.assign(activity, activityResult, {
           status: hardFailure ? "failed" : nonZero ? "completed" : "success",
           completedAt: Date.now(),
-          errorSummary: hardFailure
-            ? failureSummary(call, result.output, result.exitCode)
-            : undefined,
+          errorSummary: cancelled
+            ? "操作已停止"
+            : hardFailure
+              ? failureSummary(call, result.output, result.exitCode)
+              : undefined,
         });
         for (const childActivity of childActivities ?? [])
           yield {
@@ -3704,14 +3689,21 @@ export async function* runAgent(
         }
       } catch (error) {
         finishMutationClaim?.(false);
-        activity.status = "failed";
-        activity.completedAt = Date.now();
         const failureOutput =
           error instanceof Error ? error.message : String(error);
+        const cancelled =
+          signal.aborted ||
+          /任务已取消|命令已取消|已取消|aborted|AbortError/i.test(
+            failureOutput,
+          );
+        activity.status = "failed";
+        activity.completedAt = Date.now();
         activity.output = activity.output
           ? `${activity.output}\n\n${failureOutput}`
-          : failureOutput;
-        activity.errorSummary = failureSummary(call, failureOutput);
+          : failureOutput || (cancelled ? "操作已停止" : "工具执行失败");
+        activity.errorSummary = cancelled
+          ? "操作已停止"
+          : failureSummary(call, failureOutput);
       }
       const fingerprint = JSON.stringify({
         tool: call.name,
@@ -3767,6 +3759,13 @@ export async function* runAgent(
     const madeProgress = roundAdvanced || roundFingerprint !== lastFingerprint;
     stalledRounds = madeProgress ? 0 : stalledRounds + 1;
     lastFingerprint = roundFingerprint;
+    if (signal.aborted) {
+      yield {
+        type: "error",
+        message: "任务已停止",
+      };
+      return;
+    }
     if (stalledRounds >= 3) {
       yield {
         type: "error",

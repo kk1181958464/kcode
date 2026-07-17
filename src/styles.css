@@ -4430,3 +4430,70 @@ select:focus {
     transition-duration: 0.01ms !important;
   }
 }
+
+.app-toast {
+  position: fixed;
+  top: 46px;
+  left: 50%;
+  z-index: 10050;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 140px;
+  max-width: min(420px, calc(100vw - 32px));
+  padding: 10px 14px;
+  border: 1px solid #c7dfd0;
+  border-radius: 8px;
+  background: #f4fbf6;
+  color: #24573a;
+  box-shadow: 0 10px 28px rgb(24 40 30 / 14%);
+  font-size: 12px;
+  font-weight: 550;
+  transform: translateX(-50%);
+  animation: app-toast-in 0.18s ease-out;
+  pointer-events: none;
+}
+.app-toast.error {
+  border-color: #efc5c0;
+  background: #fff5f4;
+  color: #8d3c35;
+}
+.app-toast > svg {
+  flex: 0 0 auto;
+}
+@keyframes app-toast-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -6px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+.activity-output-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px 0;
+}
+.activity-output-toolbar .activity-output-label {
+  padding: 0;
+}
+.activity-copy-button {
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+  border: 1px solid #d7dbd5;
+  border-radius: 4px;
+  background: #fff;
+  color: #5d655e;
+  font-size: 10px;
+}
+.activity-copy-button:hover {
+  background: #f3f5f2;
+  color: #2f3731;
+}
