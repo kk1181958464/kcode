@@ -2126,6 +2126,7 @@ async function execute(
       localPath,
       remotePath,
       signal,
+      onProgress,
     );
     return {
       path: remotePath,

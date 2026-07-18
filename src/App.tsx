@@ -3980,11 +3980,15 @@ export default function App() {
     if (task.id === activeTaskId) return;
     const conversation = conversationRef.current;
     if (conversation && displayedTaskIdRef.current) {
+      // When follow mode is active, the container may be between layout
+      // passes while switching tasks. Treat it as bottom even if the
+      // instantaneous geometry has not caught up yet.
       const atBottom =
+        autoFollowRef.current ||
         conversation.scrollHeight -
           conversation.scrollTop -
           conversation.clientHeight <
-        72;
+          72;
       scrollStateByTaskRef.current.set(displayedTaskIdRef.current, {
         top: conversation.scrollTop,
         atBottom,

@@ -13,6 +13,8 @@
     "test": "tsx --test electron/*.test.ts",
     "icons": "node scripts/generate-icons.mjs",
     "dist:win": "npm run icons && npm run build && electron-builder --win nsis --publish never",
+    "dist:mac": "npm run icons && npm run build && electron-builder --mac dmg zip --publish never",
+    "dist:linux": "npm run icons && npm run build && electron-builder --linux AppImage deb --publish never",
     "release:win": "npm run dist:win -- --publish always"
   },
   "build": {
@@ -43,6 +45,22 @@
     "win": {
       "icon": "build/icon.ico",
       "target": "nsis"
+    },
+    "mac": {
+      "icon": "build/icon.png",
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.developer-tools"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Development",
+      "executableName": "kcode"
     },
     "nsis": {
       "artifactName": "KCode-${version}-setup.${ext}",

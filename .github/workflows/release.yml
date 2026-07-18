@@ -50,12 +50,61 @@ jobs:
             release/KCode-*-setup.exe
             release/KCode-*-setup.exe.blockmap
             release/latest.yml
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Set version from tag
+        run: npm version "${{ github.ref_name }}" --no-git-tag-version --allow-same-version
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run dist:mac
+      - uses: actions/upload-artifact@v7
+        with:
+          name: KCode-${{ github.ref_name }}-macos
+          path: |
+            release/*.dmg
+            release/*.zip
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Set version from tag
+        run: npm version "${{ github.ref_name }}" --no-git-tag-version --allow-same-version
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run dist:linux
+      - uses: actions/upload-artifact@v7
+        with:
+          name: KCode-${{ github.ref_name }}-linux
+          path: |
+            release/*.AppImage
+            release/*.deb
+
+  publish:
+    needs: [windows, macos, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: KCode-${{ github.ref_name }}-*
+          merge-multiple: true
+          path: release
       - uses: softprops/action-gh-release@v3
         with:
-          files: |
-            release/KCode-*-setup.exe
-            release/KCode-*-setup.exe.blockmap
-            release/latest.yml
+          files: release/*
           generate_release_notes: true
           draft: false
           prerelease: false

@@ -11,6 +11,14 @@ import { Client, type ClientChannel, type SFTPWrapper } from "ssh2";
 
 const MAX_OUTPUT_BYTES = 200_000;
 const MAX_REMOTE_FILE_BYTES = 2_000_000;
+const SFTP_UPLOAD_IDLE_TIMEOUT_MS = 90_000;
+const SFTP_UPLOAD_TIMEOUT_MS = 15 * 60_000;
+
+function formatBytes(value: number) {
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 type SshSession = {
   client: Client;
@@ -761,6 +769,7 @@ export async function uploadSshFile(
   localPath: string,
   remotePath: string,
   signal: AbortSignal,
+  onProgress: (output: string) => void = () => undefined,
 ) {
   if (!localPath) throw new Error("缺少本地文件路径。");
   if (!remotePath) throw new Error("缺少远程文件路径。");
@@ -776,11 +785,56 @@ export async function uploadSshFile(
   const session = getSession(sessionId, requestId);
   const sftp = await getSftp(session, signal);
   try {
-    await sftpOperation<void>(sftp, signal, (complete) =>
-      sftp.fastPut(localPath, remotePath, (error) =>
-        complete(error ? new Error(friendlySshError(error)) : undefined),
-      ),
-    );
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      let lastUploaded = 0;
+      let idleTimer: NodeJS.Timeout | undefined;
+      const totalTimer = setTimeout(() => {
+        finish(new Error("SFTP 上传总超时（15 分钟），请检查远程磁盘和网络连接。"));
+      }, SFTP_UPLOAD_TIMEOUT_MS);
+      const finish = (error?: Error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(totalTimer);
+        if (idleTimer) clearTimeout(idleTimer);
+        signal.removeEventListener("abort", abort);
+        if (error) {
+          sftp.end();
+          reject(error);
+        } else resolve();
+      };
+      const armIdleTimer = () => {
+        if (idleTimer) clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => {
+          finish(new Error("SFTP 上传超过 90 秒没有进度，请检查远程磁盘和网络连接。"));
+        }, SFTP_UPLOAD_IDLE_TIMEOUT_MS);
+      };
+      const abort = () => finish(new Error("SFTP 上传已取消。"));
+      signal.addEventListener("abort", abort, { once: true });
+      armIdleTimer();
+      try {
+        sftp.fastPut(
+          localPath,
+          remotePath,
+          {
+            step: (transferred, _chunk, total) => {
+              if (settled || transferred <= lastUploaded) return;
+              lastUploaded = transferred;
+              armIdleTimer();
+              const percent = total > 0 ? Math.floor((transferred / total) * 100) : 0;
+              onProgress(
+                `已上传 ${formatBytes(transferred)} / ${formatBytes(total)}（${percent}%）`,
+              );
+            },
+          },
+          (error) =>
+            finish(error ? new Error(friendlySshError(error)) : undefined),
+        );
+      } catch (error) {
+        finish(new Error(friendlySshError(error)));
+      }
+      if (signal.aborted) abort();
+    });
     return { bytes: localSize };
   } finally {
     sftp.end();
