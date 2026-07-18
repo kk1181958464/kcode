@@ -2918,36 +2918,41 @@ async function modelTurn(
     url = apiEndpoint(provider.baseUrl, "chat/completions");
     const messages: unknown[] = [{ role: "system", content: system }];
     for (const item of history) {
-      if (item.kind === "message")
-        messages.push({
-          role: item.role,
-          content: item.images?.length
-            ? [
-                { type: "text", text: item.content },
-                ...item.images.map((image) => ({
-                  type: "image_url",
-                  image_url: { url: image.dataUrl },
-                })),
-              ]
-            : item.content,
-        });
+      if (item.kind === "message") {
+        const content = item.images?.length
+          ? [
+              { type: "text", text: item.content },
+              ...item.images.map((image) => ({
+                type: "image_url",
+                image_url: { url: image.dataUrl },
+              })),
+            ]
+          : item.content;
+        // Some OpenAI-compatible gateways reject empty assistant messages.
+        if (item.role === "assistant" && !content) continue;
+        messages.push({ role: item.role, content });
+      }
       else if (item.kind === "calls") {
         const raw = item.rawCalls[0] as Record<string, unknown> | undefined;
-        messages.push(
-          raw?.message ?? {
+        const message: Record<string, unknown> = {
+          ...((raw?.message as Record<string, unknown> | undefined) ?? {
             role: "assistant",
-            content: raw?.content ?? null,
+            content: raw?.content,
             reasoning_content: raw?.reasoning_content,
             reasoning_details: raw?.reasoning_details,
-            tool_calls:
-              raw?.tool_calls ??
-              item.calls.map((c) => ({
-                id: c.id,
-                type: "function",
-                function: { name: c.name, arguments: JSON.stringify(c.input) },
-              })),
-          },
-        );
+            tool_calls: raw?.tool_calls,
+          }),
+          tool_calls:
+            (raw?.message as Record<string, unknown> | undefined)?.tool_calls ??
+            raw?.tool_calls ??
+            item.calls.map((c) => ({
+              id: c.id,
+              type: "function",
+              function: { name: c.name, arguments: JSON.stringify(c.input) },
+            })),
+        };
+        if (!message.content) delete message.content;
+        messages.push(message);
       } else
         messages.push({
           role: "tool",
