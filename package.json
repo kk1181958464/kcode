@@ -2,7 +2,10 @@
   "name": "kcode",
   "version": "0.1.5",
   "private": true,
-  "author": "KCode",
+  "author": {
+    "name": "KCode",
+    "email": "1181958464@qq.com"
+  },
   "description": "A multi-provider desktop coding agent",
   "main": "dist-electron/electron/main.js",
   "scripts": {
@@ -60,7 +63,8 @@
         "deb"
       ],
       "category": "Development",
-      "executableName": "kcode"
+      "executableName": "kcode",
+      "maintainer": "KCode <1181958464@qq.com>"
     },
     "nsis": {
       "artifactName": "KCode-${version}-setup.${ext}",
