@@ -7,18 +7,23 @@ import {
   terminateChildProcess,
 } from "./process-command";
 
-test("cancels a long-running PowerShell command without hanging", async () => {
+const nodeSleepArgs = (seconds: number) => [
+  "-e",
+  `setTimeout(() => {}, ${seconds * 1000});`,
+];
+
+const nodeOutputArgs = [
+  "-e",
+  "process.stdout.write('hello-progress'); setTimeout(() => process.stdout.write('done-progress'), 400);",
+];
+
+test("cancels a long-running command without hanging", async () => {
   const controller = new AbortController();
   const started = Date.now();
   setTimeout(() => controller.abort(), 250);
   const result = await runSpawnedCommand({
-    executable: "powershell.exe",
-    args: [
-      "-NoProfile",
-      "-NonInteractive",
-      "-Command",
-      "Start-Sleep -Seconds 60",
-    ],
+    executable: process.execPath,
+    args: nodeSleepArgs(60),
     cwd: process.cwd(),
     signal: controller.signal,
     timeoutMs: 120_000,
@@ -32,13 +37,8 @@ test("streams command output while the process is still running", async () => {
   const controller = new AbortController();
   const updates: string[] = [];
   const resultPromise = runSpawnedCommand({
-    executable: "powershell.exe",
-    args: [
-      "-NoProfile",
-      "-NonInteractive",
-      "-Command",
-      "Write-Output 'hello-progress'; Start-Sleep -Milliseconds 400; Write-Output 'done-progress'",
-    ],
+    executable: process.execPath,
+    args: nodeOutputArgs,
     cwd: process.cwd(),
     signal: controller.signal,
     timeoutMs: 20_000,
@@ -54,13 +54,8 @@ test("emits progress heartbeats while a command is silent", async () => {
   const controller = new AbortController();
   const updates: string[] = [];
   const resultPromise = runSpawnedCommand({
-    executable: "powershell.exe",
-    args: [
-      "-NoProfile",
-      "-NonInteractive",
-      "-Command",
-      "Start-Sleep -Seconds 6",
-    ],
+    executable: process.execPath,
+    args: nodeSleepArgs(6),
     cwd: process.cwd(),
     signal: controller.signal,
     timeoutMs: 20_000,
@@ -80,13 +75,8 @@ test("kills silent commands after idle timeout", async () => {
   const controller = new AbortController();
   const started = Date.now();
   const result = await runSpawnedCommand({
-    executable: "powershell.exe",
-    args: [
-      "-NoProfile",
-      "-NonInteractive",
-      "-Command",
-      "Start-Sleep -Seconds 60",
-    ],
+    executable: process.execPath,
+    args: nodeSleepArgs(60),
     cwd: process.cwd(),
     signal: controller.signal,
     timeoutMs: 120_000,

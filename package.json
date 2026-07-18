@@ -10,7 +10,7 @@
     "build": "tsc -b && vite build && tsc -p electron/tsconfig.json",
     "start": "electron .",
     "typecheck": "tsc -b --pretty false && tsc -p electron/tsconfig.json --pretty false",
-    "test": "tsx --test electron/*.test.ts",
+    "test": "node scripts/run-tests.mjs",
     "icons": "node scripts/generate-icons.mjs",
     "dist:win": "npm run icons && npm run build && electron-builder --win nsis --publish never",
     "dist:mac": "npm run icons && npm run build && electron-builder --mac dmg zip --publish never",
