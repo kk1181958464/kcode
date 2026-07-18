@@ -127,6 +127,8 @@ export function inferReasoningConfig(
       reasoningMode: "effort",
       reasoningEfforts: ["low", "medium", "high"],
     };
+  if (/kimi-k3/.test(id))
+    return { reasoningMode: "effort", reasoningEfforts: ["max"] };
   if (
     /deepseek-reasoner|kimi-k2|kimi-for-coding|minimax-m2|glm-.*thinking/.test(
       id,
@@ -157,6 +159,7 @@ export function inferContextWindow(modelId: string): number | undefined {
     return 1_000_000;
   if (/^claude-(haiku-4-5|sonnet-4-5|opus-4-(?:1|5))(?:-|$)/.test(id))
     return 200_000;
+  if (id === "kimi-k3") return 1_000_000;
   if (
     /^(kimi-(?:k2\.7-code(?:-highspeed)?|k2\.6|k2\.5)|kimi-for-coding(?:-highspeed)?)$/.test(
       id,

@@ -2899,6 +2899,7 @@ export default function App() {
     { taskId: string; state: ConversationScrollState } | undefined
   >(undefined);
   const scrollAfterSendRef = useRef(false);
+  const programmaticScrollRef = useRef(false);
   const turnLayoutFrameRef = useRef<number | undefined>(undefined);
   const scrollTargetRef = useRef<HTMLElement | null>(null);
   const requestStartedRef = useRef<number | undefined>(undefined);
@@ -3027,8 +3028,11 @@ export default function App() {
     const messageList = conversation?.querySelector(".message-list");
     if (!messageList || typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(() => {
-      if (autoFollowRef.current)
+      if (autoFollowRef.current) {
         setActiveConversationTurn(conversationTurns.at(-1)?.id);
+        setShowScrollToBottom(false);
+        programmaticScrollRef.current = true;
+      }
       const pending = pendingScrollRestoreRef.current;
       if (!autoFollowRef.current && !pending?.state.atBottom) return;
       if (bottomLayoutFrameRef.current)
@@ -3050,6 +3054,7 @@ export default function App() {
             top: current.scrollHeight,
             atBottom: true,
           });
+        programmaticScrollRef.current = false;
       });
     });
     observer.observe(messageList);
@@ -3118,6 +3123,9 @@ export default function App() {
 
   function handleConversationScroll(container: HTMLElement) {
     scrollTargetRef.current = container;
+    // Programmatic bottom alignment also emits scroll events. Do not treat the
+    // transient intermediate position as the user scrolling away from bottom.
+    if (programmaticScrollRef.current) return;
     const distanceFromBottom =
       container.scrollHeight - container.scrollTop - container.clientHeight;
     // Take user scroll intent synchronously so a streaming resize cannot pull
@@ -3156,6 +3164,7 @@ export default function App() {
     const conversation = conversationRef.current;
     if (!conversation) return;
     autoFollowRef.current = true;
+    programmaticScrollRef.current = true;
     setShowScrollToBottom(false);
     endRef.current?.scrollIntoView({ block: "end", behavior });
     conversation.scrollTop = conversation.scrollHeight;
@@ -3166,6 +3175,11 @@ export default function App() {
       const current = conversationRef.current;
       if (!current || !autoFollowRef.current) return;
       current.scrollTop = current.scrollHeight;
+    });
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        programmaticScrollRef.current = false;
+      });
     });
     const taskId = displayedTaskIdRef.current;
     if (taskId)
@@ -3857,9 +3871,15 @@ export default function App() {
       scrollAfterSendRef.current = false;
       const conversation = conversationRef.current;
       if (conversation) {
+        programmaticScrollRef.current = true;
         conversation.scrollTop = conversation.scrollHeight;
         setShowScrollToBottom(false);
         setActiveConversationTurn(conversationTurns.at(-1)?.id);
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            programmaticScrollRef.current = false;
+          });
+        });
       }
     });
     return () => {

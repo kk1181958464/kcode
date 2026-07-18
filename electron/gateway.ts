@@ -72,22 +72,6 @@ export async function discoverModels(
   providerId: string,
 ): Promise<ModelConfig[]> {
   const provider = await getProviderWithKey(providerId);
-  const base = trim(provider.baseUrl);
-  if (/^https:\/\/api\.kimi\.com\/coding\/v1$/i.test(base)) {
-    return ["kimi-for-coding", "kimi-for-coding-highspeed"].map(
-      (modelId) => ({
-        id: `${provider.id}:${modelId}`,
-        modelId,
-        displayName:
-          modelId === "kimi-for-coding-highspeed"
-            ? "Kimi for Coding Highspeed"
-            : "Kimi for Coding",
-        protocol: provider.protocol,
-        contextWindow: 262144,
-        ...inferReasoningConfig(modelId, provider.protocol),
-      }),
-    );
-  }
   if (provider.protocol === "gemini-generate-content") {
     const response = await checkedFetch(`${trim(provider.baseUrl)}/v1beta/models?key=${encodeURIComponent(provider.apiKey)}`, {});
     const json = await response.json() as { models?: { name: string; displayName?: string; inputTokenLimit?: number }[] };
