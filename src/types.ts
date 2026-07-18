@@ -45,6 +45,7 @@ export type AgentToolName =
   | "browser_record_start"
   | "browser_record_stop"
   | "ssh_connect"
+  | "ssh_trust_host"
   | "ssh_run"
   | "ssh_list_directory"
   | "ssh_read_file"

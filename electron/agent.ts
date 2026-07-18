@@ -37,6 +37,7 @@ import {
   historyFingerprint,
 } from "./conversation-isolation";
 import { writeLog } from "./logger";
+import { networkFetch } from "./network";
 import { resolveGitExecutable } from "./executables";
 import { conciseFailureOutput } from "./activity-errors";
 import { powershellCommand } from "./powershell-command";
@@ -74,6 +75,7 @@ import {
   readSshFile,
   redactSshInput,
   runSshCommand,
+  trustSshFingerprint,
   undoSshActivity,
   uploadSshFile,
   writeSshFile,
@@ -367,7 +369,7 @@ async function fetchPublic(
   signal.addEventListener("abort", abort, { once: true });
   try {
     for (let redirects = 0; redirects <= 5; redirects++) {
-      const response = await fetch(url, {
+      const response = await networkFetch(url, {
         redirect: "manual",
         signal: controller.signal,
         headers: {
@@ -404,6 +406,20 @@ async function fetchPublic(
       if (signal.aborted) throw new Error("任务已取消");
       if (timedOut)
         throw new Error(`网页读取超时（${Math.round(timeoutMs / 1_000)} 秒）`);
+    }
+    const cause =
+      error && typeof error === "object" && "cause" in error
+        ? (error as { cause?: unknown }).cause
+        : undefined;
+    const details =
+      cause && typeof cause === "object"
+        ? (cause as { code?: string; message?: string })
+        : undefined;
+    const code = details?.code;
+    const message = details?.message || (error instanceof Error ? error.message : String(error));
+    if (/fetch failed/i.test(message)) {
+      const reason = code ? `${code}: ` : "";
+      throw new Error(`网页连接失败（${reason}${message}）URL: ${url.href}`);
     }
     throw error;
   } finally {
@@ -711,6 +727,21 @@ const tools = [
         hostFingerprint: { type: "string" },
       },
       required: ["host", "username"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "ssh_trust_host",
+    description:
+      "Persist a new SSH host fingerprint only after the user explicitly confirms that the displayed current fingerprint belongs to the intended server. Never call this automatically after a mismatch. After it succeeds, call ssh_connect again with the same host and port.",
+    parameters: {
+      type: "object",
+      properties: {
+        host: { type: "string" },
+        port: { type: "number", minimum: 1, maximum: 65535 },
+        hostFingerprint: { type: "string" },
+      },
+      required: ["host", "hostFingerprint"],
       additionalProperties: false,
     },
   },
@@ -2013,6 +2044,19 @@ async function execute(
     );
     return { output: JSON.stringify(result, null, 2) };
   }
+  if (call.name === "ssh_trust_host") {
+    const result = trustSshFingerprint(
+      String(call.input.host || ""),
+      Number(call.input.port) || 22,
+      String(call.input.hostFingerprint || ""),
+    );
+    return {
+      output: JSON.stringify({
+        ...result,
+        message: "已保存 SSH 主机指纹，请重新连接服务器。",
+      }, null, 2),
+    };
+  }
   if (call.name === "ssh_run") {
     const remoteCommand = String(call.input.command || "");
     const result = await runSshCommand(
@@ -3139,7 +3183,6 @@ async function modelTurn(
       firstByteTimeoutMs,
       retries: 1,
       retryDelayMs: 2_000,
-      onProgress: onReasoning,
     },
   );
   writeLog("info", "model.response", {
@@ -3479,6 +3522,7 @@ export async function* runAgent(
         browser_record_start: "开始网页录制",
         browser_record_stop: "停止网页录制",
         ssh_connect: "连接 SSH",
+        ssh_trust_host: "信任 SSH 主机",
         ssh_run: "运行远程命令",
         ssh_list_directory: "查看远程目录",
         ssh_read_file: "读取远程文件",

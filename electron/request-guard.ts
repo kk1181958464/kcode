@@ -1,3 +1,5 @@
+import { networkFetch } from "./network";
+
 const DEFAULT_FIRST_BYTE_TIMEOUT_MS = 120_000;
 const DEFAULT_IDLE_TIMEOUT_MS = 120_000;
 const WAIT_PROGRESS_INTERVAL_MS = 10_000;
@@ -60,7 +62,7 @@ export async function fetchWithRetry(
     firstByteTimeoutMs = DEFAULT_FIRST_BYTE_TIMEOUT_MS,
     retries = 1,
     retryDelayMs = 500,
-    fetchImpl = fetch,
+    fetchImpl = networkFetch,
     onProgress,
   } = options;
   let lastError: unknown;

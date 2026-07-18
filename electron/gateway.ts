@@ -5,6 +5,7 @@ import {
   parseResponsesEvent,
 } from "./protocols";
 import { getProviderWithKey } from "./store";
+import { networkFetch } from "./network";
 
 const trim = (url: string) => url.replace(/\/+$/, "");
 const apiEndpoint = (baseUrl: string, resource: string) => {
@@ -13,7 +14,7 @@ const apiEndpoint = (baseUrl: string, resource: string) => {
 };
 
 async function checkedFetch(url: string, init: RequestInit) {
-  const response = await fetch(url, init);
+  const response = await networkFetch(url, init);
   if (!response.ok) {
     const detail = (await response.text()).slice(0, 500);
     throw new Error(

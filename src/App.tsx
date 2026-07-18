@@ -3021,13 +3021,14 @@ export default function App() {
     )
       setActiveConversationTurn(conversationTurns[0]?.id);
     refreshTurnPositions();
-  }, [conversationTurns]);
+  }, [activeTaskId, conversationTurns.length]);
   useEffect(() => {
     const conversation = conversationRef.current;
     const messageList = conversation?.querySelector(".message-list");
     if (!messageList || typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(() => {
-      refreshTurnPositions();
+      if (autoFollowRef.current)
+        setActiveConversationTurn(conversationTurns.at(-1)?.id);
       const pending = pendingScrollRestoreRef.current;
       if (!autoFollowRef.current && !pending?.state.atBottom) return;
       if (bottomLayoutFrameRef.current)
@@ -3059,7 +3060,7 @@ export default function App() {
         bottomLayoutFrameRef.current = undefined;
       }
     };
-  }, [activeTaskId, messages.length]);
+  }, [activeTaskId, messages.length, conversationTurns.length]);
   useEffect(
     () => () => {
       if (scrollFrameRef.current) cancelAnimationFrame(scrollFrameRef.current);
@@ -3117,6 +3118,19 @@ export default function App() {
 
   function handleConversationScroll(container: HTMLElement) {
     scrollTargetRef.current = container;
+    const distanceFromBottom =
+      container.scrollHeight - container.scrollTop - container.clientHeight;
+    // Take user scroll intent synchronously so a streaming resize cannot pull
+    // the conversation back to the bottom before the rAF bookkeeping runs.
+    if (distanceFromBottom >= 72 && autoFollowRef.current) {
+      autoFollowRef.current = false;
+      setShowScrollToBottom(true);
+      refreshTurnPositions();
+      if (bottomLayoutFrameRef.current) {
+        cancelAnimationFrame(bottomLayoutFrameRef.current);
+        bottomLayoutFrameRef.current = undefined;
+      }
+    }
     if (scrollFrameRef.current) return;
     scrollFrameRef.current = requestAnimationFrame(() => {
       scrollFrameRef.current = undefined;
@@ -3138,12 +3152,21 @@ export default function App() {
     });
   }
 
-  function scrollToLatest(behavior: ScrollBehavior = "smooth") {
+  function scrollToLatest(behavior: ScrollBehavior = "auto") {
     const conversation = conversationRef.current;
     if (!conversation) return;
     autoFollowRef.current = true;
     setShowScrollToBottom(false);
-    conversation.scrollTo({ top: conversation.scrollHeight, behavior });
+    endRef.current?.scrollIntoView({ block: "end", behavior });
+    conversation.scrollTop = conversation.scrollHeight;
+    if (bottomLayoutFrameRef.current)
+      cancelAnimationFrame(bottomLayoutFrameRef.current);
+    bottomLayoutFrameRef.current = requestAnimationFrame(() => {
+      bottomLayoutFrameRef.current = undefined;
+      const current = conversationRef.current;
+      if (!current || !autoFollowRef.current) return;
+      current.scrollTop = current.scrollHeight;
+    });
     const taskId = displayedTaskIdRef.current;
     if (taskId)
       scrollStateByTaskRef.current.set(taskId, {
@@ -3621,7 +3644,17 @@ export default function App() {
           return;
         }
         if (event.type === "reasoning") {
-          if (isActive)
+          const isRequestProgress =
+            /^(请求已发送，正在等待上游模型首个响应|上游模型尚未返回首个响应|上游返回 \d{3}|上游长时间无响应|Responses API 返回 \d{3})/.test(
+              event.delta,
+            );
+          if (isRequestProgress) return;
+          const task = tasksRef.current.find((item) => item.id === taskId);
+          const hasRunningActivity = task?.activities.some(
+            (activity) =>
+              activity.status === "running" || activity.status === "waiting",
+          );
+          if (isActive && !hasRunningActivity)
             setAgentReasoning((current) =>
               (current + event.delta).replace(/\s+/g, " ").slice(-200),
             );
@@ -3832,7 +3865,12 @@ export default function App() {
     return () => {
       if (followFrameRef.current) cancelAnimationFrame(followFrameRef.current);
     };
-  }, [autoFollowEnabled, messages, activities, conversationTurns]);
+  }, [
+    autoFollowEnabled,
+    messages.length,
+    activities.length,
+    conversationTurns.length,
+  ]);
 
   async function clearCurrentConversation() {
     const requestId = currentRequest.current;
@@ -5391,7 +5429,7 @@ export default function App() {
                 className="scroll-to-bottom"
                 title="滚动到最新消息"
                 aria-label="滚动到最新消息"
-                onClick={() => scrollToLatest()}
+                onClick={() => scrollToLatest("auto")}
               >
                 <ArrowDown size={17} />
               </button>

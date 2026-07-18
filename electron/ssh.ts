@@ -83,6 +83,34 @@ export function configureSshKnownHosts(file: string) {
   }
 }
 
+export function trustSshFingerprint(
+  host: string,
+  port: number,
+  fingerprint: string,
+) {
+  if (!host.trim()) throw new Error("缺少 SSH 服务器地址。");
+  if (!Number.isInteger(port) || port < 1 || port > 65535)
+    throw new Error("SSH 端口必须是 1 到 65535 之间的整数。");
+  const normalized = normalizeFingerprint(fingerprint);
+  if (!/^[a-f0-9]{64}$/i.test(normalized))
+    throw new Error("SSH 主机指纹格式无效。");
+  const key = `${host.trim().toLowerCase()}:${port}`;
+  const previous = knownHosts.get(key);
+  knownHosts.set(key, normalized);
+  try {
+    persistKnownHosts();
+  } catch (error) {
+    if (previous) knownHosts.set(key, previous);
+    else knownHosts.delete(key);
+    throw error;
+  }
+  return {
+    host: host.trim(),
+    port,
+    hostFingerprint: displayFingerprint(normalized),
+  };
+}
+
 function persistKnownHosts() {
   if (!knownHostsFile)
     throw new Error("SSH 主机指纹存储尚未初始化，无法安全建立连接。");
