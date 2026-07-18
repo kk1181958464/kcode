@@ -2,6 +2,7 @@ import { app, safeStorage } from "electron";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { inferContextWindow, type ProviderConfig } from "../src/types";
+import { validateProviderBaseUrl } from "./provider-url";
 
 type StoredProvider = Omit<ProviderConfig, "hasApiKey"> & {
   encryptedApiKey?: string;
@@ -126,21 +127,7 @@ export async function listProviders() {
 }
 
 export async function saveProvider(provider: ProviderConfig, apiKey?: string) {
-  let baseUrl: URL;
-  try {
-    baseUrl = new URL(provider.baseUrl);
-  } catch {
-    throw new Error("Base URL 格式无效");
-  }
-  const localHost =
-    baseUrl.hostname === "localhost" ||
-    baseUrl.hostname === "127.0.0.1" ||
-    baseUrl.hostname === "::1";
-  if (
-    baseUrl.protocol !== "https:" &&
-    !(localHost && baseUrl.protocol === "http:")
-  )
-    throw new Error("Base URL 必须使用 HTTPS，本机服务可使用 HTTP");
+  validateProviderBaseUrl(provider.baseUrl);
   const all = await readStored();
   const previousIndex = all.findIndex((item) => item.id === provider.id);
   const previous = previousIndex >= 0 ? all[previousIndex] : undefined;

@@ -3150,6 +3150,8 @@ async function modelTurn(
     modelId: request.modelId,
     protocol,
     status: response.status,
+    requestBytes: Buffer.byteLength(JSON.stringify(body), "utf8"),
+    toolCount: runtimeTools.length,
     historyHash: historyFingerprint(history),
     upstreamRequestId:
       response.headers.get("x-request-id") ??

@@ -97,6 +97,17 @@ button {
 button:not(:disabled) {
   cursor: pointer;
 }
+button:not(:disabled) {
+  transition:
+    background-color 0.16s ease,
+    border-color 0.16s ease,
+    color 0.16s ease,
+    box-shadow 0.16s ease,
+    transform 0.16s cubic-bezier(0.22, 1, 0.36, 1);
+}
+button:not(:disabled):active {
+  transform: scale(0.97);
+}
 button:focus-visible,
 input:focus-visible,
 textarea:focus-visible,
@@ -110,7 +121,7 @@ select:focus-visible {
   display: grid;
   grid-template-columns: var(--sidebar-width, 256px) minmax(0, 1fr) 280px;
   background: var(--surface);
-  transition: grid-template-columns 0.18s ease;
+  transition: grid-template-columns 0.28s cubic-bezier(0.22, 1, 0.36, 1);
 }
 .app-shell.sidebar-collapsed {
   grid-template-columns: 0 minmax(0, 1fr) 280px;
@@ -145,6 +156,10 @@ select:focus-visible {
   overflow: hidden;
   opacity: 0;
   pointer-events: none;
+  transform: translateX(-10px);
+}
+.status-collapsed .status-panel {
+  transform: translateX(10px);
 }
 .sidebar {
   position: relative;
@@ -154,6 +169,9 @@ select:focus-visible {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  transition:
+    opacity 0.2s ease,
+    transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
 }
 .sidebar-resizer {
   position: absolute;
@@ -409,6 +427,9 @@ select:focus-visible {
   gap: 3px;
   padding: 0 4px;
   color: #3e4640;
+  transition:
+    background 0.2s ease,
+    transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
 }
 .workspace-group > header > svg {
   color: #536159;
@@ -451,7 +472,7 @@ select:focus-visible {
   opacity: 1;
 }
 .workspace-collapse svg {
-  transition: transform 0.15s;
+  transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
 }
 .workspace-collapse[aria-expanded="false"] svg {
   transform: rotate(-90deg);
@@ -493,6 +514,21 @@ select:focus-visible {
 }
 .workspace-group .tasks {
   padding-left: 24px;
+  max-height: 1200px;
+  overflow: hidden;
+  opacity: 1;
+  transform: translateY(0);
+  transition:
+    max-height 0.32s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.2s ease,
+    transform 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: max-height, opacity, transform;
+}
+.workspace-group .tasks.collapsed {
+  max-height: 0;
+  opacity: 0;
+  transform: translateY(-5px);
+  pointer-events: none;
 }
 .task-row {
   min-height: 34px;
@@ -504,6 +540,13 @@ select:focus-visible {
   line-height: 1.4;
   border-left: 2px solid transparent;
   border-radius: 6px;
+  transition:
+    background 0.18s ease,
+    border-color 0.18s ease,
+    transform 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.task-row:not(.dragging):hover {
+  transform: translateX(2px);
 }
 .task-grip {
   width: 14px;
@@ -2551,6 +2594,11 @@ select:focus-visible {
 .send.stop {
   background: #735e57;
 }
+.queued-state {
+  color: #68726b;
+  font-size: 10px;
+  font-weight: 600;
+}
 
 .status-panel {
   border-left: 1px solid var(--line);
@@ -3099,6 +3147,7 @@ select:focus-visible {
   inset: 0;
   z-index: 5;
   background: #18201818;
+  animation: overlay-in 0.2s ease-out;
 }
 .settings-panel {
   position: absolute;
@@ -3110,7 +3159,7 @@ select:focus-visible {
   padding: 0;
   overflow: hidden;
   overscroll-behavior: contain;
-  animation: slide-in 0.18s ease-out;
+  animation: slide-in 0.28s cubic-bezier(0.22, 1, 0.36, 1);
 }
 @keyframes slide-in {
   from {
@@ -3123,6 +3172,14 @@ select:focus-visible {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
+}
+@keyframes overlay-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 .settings-panel > header {
   height: 94px;
@@ -3659,6 +3716,7 @@ select:focus-visible {
   display: grid;
   place-items: center;
   z-index: 10;
+  animation: overlay-in 0.2s ease-out;
 }
 .update-backdrop {
   z-index: 50;
@@ -3795,7 +3853,7 @@ select:focus-visible {
   border-radius: 8px;
   padding: 24px;
   box-shadow: 0 24px 80px #11181135;
-  animation: modal-in 0.16s ease-out;
+  animation: modal-in 0.24s cubic-bezier(0.22, 1, 0.36, 1);
 }
 .task-modal {
   width: min(460px, calc(100vw - 40px));

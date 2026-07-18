@@ -169,7 +169,16 @@ type TaskRecord = {
   usedContextCount?: number;
   archived?: boolean;
 };
+type QueuedChatMessage = ChatMessage & { queued?: boolean };
 type ConversationScrollState = { top: number; atBottom: boolean };
+type TaskDrafts = Record<string, string>;
+function storedTaskDrafts(): TaskDrafts {
+  try {
+    return JSON.parse(localStorage.getItem("kcode.taskDrafts") || "{}") as TaskDrafts;
+  } catch {
+    return {};
+  }
+}
 const initialTask = (): TaskRecord => ({
   id: uid(),
   name: "kcode",
@@ -1639,6 +1648,7 @@ function MessageItem({
   attachments?: ContextFile[];
   assistantBody?: React.ReactNode;
 }) {
+  const queued = (message as QueuedChatMessage).queued;
   const [previewImage, setPreviewImage] = useState<ImageAttachment>();
   const legacyError =
     message.role === "assistant" && message.content.startsWith("请求失败：")
@@ -1661,6 +1671,9 @@ function MessageItem({
               <i />
               生成中
             </span>
+          )}
+          {message.role === "user" && queued && (
+            <span className="queued-state">排队中</span>
           )}
           {isError && (
             <span className="error-state">
@@ -2657,6 +2670,7 @@ function AppUpdateDialog({
 }
 
 export default function App() {
+  const initialDrafts = useRef<TaskDrafts>(storedTaskDrafts());
   const [tasks, setTasks] = useState<TaskRecord[]>(() =>
     localStorage.getItem("kcode.tasks") === null
       ? [initialTask()]
@@ -2704,7 +2718,9 @@ export default function App() {
   const [activities, setActivities] = useState<AgentActivity[]>(
     () => storedActiveTask()?.activities ?? [],
   );
-  const [input, setInput] = useState("");
+  const [input, setInput] = useState(
+    () => initialDrafts.current[storedActiveTask()?.id ?? ""] ?? "",
+  );
   const [settings, setSettings] = useState(false);
   const [updateOpen, setUpdateOpen] = useState(false);
   const [appUpdate, setAppUpdate] = useState<AppUpdateState>({
@@ -2890,6 +2906,10 @@ export default function App() {
   const sendRef = useRef<((override?: string) => Promise<void>) | undefined>(
     undefined,
   );
+  const queuedSendRef = useRef<
+    ((messageId: string) => Promise<void>) | undefined
+  >(undefined);
+  const startingQueuedRef = useRef(new Set<string>());
   const modelPickerRef = useRef<HTMLDivElement>(null);
   const effortPickerRef = useRef<HTMLDivElement>(null);
   const modelTriggerRef = useRef<HTMLButtonElement>(null);
@@ -2936,6 +2956,7 @@ export default function App() {
           setActiveTaskId(selectedTask?.id ?? "");
           setMessages(selectedTask?.messages ?? []);
           setActivities(selectedTask?.activities ?? []);
+          setInput(initialDrafts.current[selectedTask?.id ?? ""] ?? "");
           setRunningId(undefined);
           currentRequest.current = undefined;
         } else await window.kcode.state.save("tasks", tasksRef.current);
@@ -3221,6 +3242,19 @@ export default function App() {
   }, [tasks]);
 
   useEffect(() => {
+    if (!activeTask || runningId || summaryBusy) return;
+    const queued = activeTask.messages.find(
+      (message) =>
+        message.role === "user" && (message as QueuedChatMessage).queued,
+    );
+    if (!queued || startingQueuedRef.current.has(activeTask.id)) return;
+    startingQueuedRef.current.add(activeTask.id);
+    void queuedSendRef.current?.(queued.id).finally(() => {
+      startingQueuedRef.current.delete(activeTask.id);
+    });
+  }, [activeTask, runningId, summaryBusy]);
+
+  useEffect(() => {
     if (!activeTaskId && tasks[0]) {
       claimTaskView(tasks[0].id);
       setActiveTaskId(tasks[0].id);
@@ -3258,6 +3292,13 @@ export default function App() {
       ),
     );
   }, [messages, activities, activeTaskId]);
+  useEffect(() => {
+    const ownerTaskId = displayedTaskIdRef.current;
+    if (!ownerTaskId || ownerTaskId !== activeTaskId) return;
+    if (input) initialDrafts.current[ownerTaskId] = input;
+    else delete initialDrafts.current[ownerTaskId];
+    localStorage.setItem("kcode.taskDrafts", JSON.stringify(initialDrafts.current));
+  }, [input, activeTaskId]);
 
   function openSettings(section: SettingsSection) {
     setSettingsSection(section);
@@ -3905,7 +3946,7 @@ export default function App() {
     setActivities(task.activities);
     setSelected(task.modelSelection || selected);
     setReasoningEffort(task.reasoningEffort || defaultReasoningEffort);
-    setInput("");
+    setInput(initialDrafts.current[task.id] ?? "");
     setAttachedFiles([]);
     setUsage(task.usage ?? { input: 0, output: 0, cached: 0 });
     setUsageResolved(Boolean(task.usageResolved));
@@ -3958,6 +3999,8 @@ export default function App() {
   }
 
   async function removeTask(task: TaskRecord) {
+    delete initialDrafts.current[task.id];
+    localStorage.setItem("kcode.taskDrafts", JSON.stringify(initialDrafts.current));
     if (window.kcode) {
       await window.kcode.chat.cancelSummary(task.id);
       const requestIds = task.messages
@@ -3978,6 +4021,7 @@ export default function App() {
         setActiveTaskId(next.id);
         setMessages(next.messages);
         setActivities(next.activities);
+        setInput(initialDrafts.current[next.id] ?? "");
         setRunningId(next.runningId);
         currentRequest.current = next.runningId;
         requestStartedRef.current = next.startedAt;
@@ -4273,16 +4317,49 @@ export default function App() {
     flashContextToast("已恢复所选摘要版本");
   }
 
-  async function send(override?: string) {
+  function queueMessage() {
+    const text = input.trim();
+    if ((!text && !attachedImages.length) || !activeTask || summaryBusy) return;
+    const user: QueuedChatMessage = {
+      id: uid(),
+      role: "user",
+      content: text || "请分析这些图片",
+      createdAt: Date.now(),
+      images: attachedImages,
+      queued: true,
+    };
+    contextByMessageRef.current.set(user.id, attachedFiles);
+    setMessages((all) => [...all, user]);
+    setTasks((all) =>
+      all.map((task) =>
+        task.id === activeTask.id
+          ? {
+              ...task,
+              messages: [...task.messages, user],
+              updatedAt: Date.now(),
+            }
+          : task,
+      ),
+    );
+    setInput("");
+    setAttachedFiles([]);
+    setAttachedImages([]);
+    autoFollowRef.current = true;
+    scrollAfterSendRef.current = true;
+    setShowScrollToBottom(false);
+    flashContextToast("消息已排队，将在当前回复完成后发送");
+  }
+
+  async function send(override?: string, queuedMessageId?: string) {
     let text = (override ?? input).trim();
     const target = models.find(
       (x) => `${x.provider.id}|${x.model.id}` === selected,
     );
     if (
-      (!text && !attachedImages.length) ||
+      (!text && !attachedImages.length && !queuedMessageId) ||
       !target ||
       !activeTask ||
-      runningId ||
+      (runningId && !queuedMessageId) ||
       summaryBusy
     )
       return;
@@ -4307,16 +4384,38 @@ export default function App() {
         ),
       );
     }
-    const retrying = override !== undefined;
-    const cleanMessages = messages.filter(
+    const queuedIndex = queuedMessageId
+      ? messages.findIndex(
+          (message) =>
+            message.id === queuedMessageId &&
+            (message as QueuedChatMessage).queued,
+        )
+      : -1;
+    if (queuedMessageId && queuedIndex < 0) return;
+    const queuedMessage =
+      queuedIndex >= 0
+        ? (messages[queuedIndex] as QueuedChatMessage)
+        : undefined;
+    if (queuedMessage) text = queuedMessage.content;
+    const retrying = override !== undefined && !queuedMessage;
+    const sourceMessages =
+      queuedIndex >= 0 ? messages.slice(0, queuedIndex + 1) : messages;
+    const cleanMessages = sourceMessages.filter(
       (message) =>
         !(
           message.role === "assistant" &&
           (message.error || message.content.startsWith("请求失败："))
         ),
     );
-    const user: ChatMessage =
-      retrying && cleanMessages.at(-1)?.role === "user"
+    const user: ChatMessage = queuedMessage
+      ? {
+          id: queuedMessage.id,
+          role: queuedMessage.role,
+          content: queuedMessage.content,
+          createdAt: queuedMessage.createdAt,
+          images: queuedMessage.images,
+        }
+      : retrying && cleanMessages.at(-1)?.role === "user"
         ? (cleanMessages.at(-1) as ChatMessage)
         : {
             id: uid(),
@@ -4325,12 +4424,20 @@ export default function App() {
             createdAt: Date.now(),
             images: attachedImages,
           };
-    const nextMessages =
-      retrying && cleanMessages.at(-1)?.role === "user"
+    const nextMessages = queuedMessage
+      ? cleanMessages.map((message) =>
+          message.id === user.id ? user : message,
+        )
+      : retrying && cleanMessages.at(-1)?.role === "user"
         ? cleanMessages
         : [...cleanMessages, user];
-    const visibleMessages = retrying ? messages : [...messages, user];
-    if (!retrying) contextByMessageRef.current.set(user.id, attachedFiles);
+    const visibleMessages = queuedMessage
+      ? messages.map((message) => (message.id === user.id ? user : message))
+      : retrying
+        ? messages
+        : [...messages, user];
+    if (!retrying && !queuedMessage)
+      contextByMessageRef.current.set(user.id, attachedFiles);
     let requestSummary = activeTask?.contextSummary;
     let requestLedger = activeTask?.contextLedger;
     let compactedCount = activeTask?.compactedMessageCount ?? 0;
@@ -4468,11 +4575,13 @@ export default function App() {
             : task,
         ),
       );
-    setAttachedFiles([]);
-    setAttachedImages([]);
+    if (!queuedMessage) {
+      setAttachedFiles([]);
+      setAttachedImages([]);
+    }
     if (contextNotice) flashContextToast(contextNotice);
     setMessages(visibleMessages);
-    setInput("");
+    if (!queuedMessage) setInput("");
     setUsage({ input: 0, output: 0, cached: 0 });
     setUsageResolved(false);
     setDurationMs(0);
@@ -4564,6 +4673,16 @@ export default function App() {
       createdAt: Date.now(),
       model: target.model.displayName,
     };
+    const insertAssistant = (all: ChatMessage[]) => {
+      if (!queuedMessage) return [...all, assistantMessage];
+      const userIndex = all.findIndex((message) => message.id === user.id);
+      if (userIndex < 0) return [...all, assistantMessage];
+      return [
+        ...all.slice(0, userIndex + 1),
+        assistantMessage,
+        ...all.slice(userIndex + 1),
+      ];
+    };
     const stillActive = isTaskViewCurrent(
       activeTaskIdRef.current,
       displayedTaskIdRef.current,
@@ -4572,14 +4691,14 @@ export default function App() {
     if (stillActive) {
       currentRequest.current = id;
       setRunningId(id);
-      setMessages((all) => [...all, assistantMessage]);
+      setMessages(insertAssistant);
     }
     setTasks((all) =>
       all.map((task) =>
         task.id === taskId
           ? {
               ...task,
-              messages: [...visibleMessages, assistantMessage],
+              messages: insertAssistant(visibleMessages),
               runningId: id,
               runStatus: "running",
               startedAt: requestStartedAt,
@@ -4593,6 +4712,9 @@ export default function App() {
   }
 
   sendRef.current = send;
+  queuedSendRef.current = async (messageId: string) => {
+    await send(undefined, messageId);
+  };
   async function cancel() {
     if (runningId) {
       const requestId = runningId;
@@ -5035,8 +5157,10 @@ export default function App() {
                     <Trash2 size={13} />
                   </button>
                 </header>
-                {!collapsedWorkspaces.has(group.workspacePath) && (
-                  <div className="tasks">
+                <div
+                  className={`tasks ${collapsedWorkspaces.has(group.workspacePath) ? "collapsed" : ""}`}
+                  aria-hidden={collapsedWorkspaces.has(group.workspacePath)}
+                >
                     {group.conversations.map((task) => (
                       <div
                         key={task.id}
@@ -5103,8 +5227,7 @@ export default function App() {
                         </button>
                       </div>
                     ))}
-                  </div>
-                )}
+                </div>
               </section>
             ))}
           </div>
@@ -5350,7 +5473,8 @@ export default function App() {
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && !e.shiftKey) {
                     e.preventDefault();
-                    void send();
+                    if (runningId) queueMessage();
+                    else void send();
                   }
                 }}
                 placeholder={
@@ -5591,20 +5715,29 @@ export default function App() {
                       {usage.input + usage.output} tokens
                     </span>
                   )}
-                  {runningId ? (
+                  {runningId && (
                     <button className="send stop" onClick={cancel} title="停止">
                       <Square size={16} fill="currentColor" />
                     </button>
-                  ) : (
-                    <button
-                      className="send"
-                      onClick={() => void send()}
-                      disabled={!input.trim() || !selected || summaryBusy}
-                      title={summaryBusy ? "正在压缩上下文" : "发送"}
-                    >
-                      <Send size={17} />
-                    </button>
                   )}
+                  <button
+                    className="send"
+                    onClick={() => (runningId ? queueMessage() : void send())}
+                    disabled={
+                      (!input.trim() && !attachedImages.length) ||
+                      !selected ||
+                      summaryBusy
+                    }
+                    title={
+                      summaryBusy
+                        ? "正在压缩上下文"
+                        : runningId
+                          ? "加入发送队列"
+                          : "发送"
+                    }
+                  >
+                    <Send size={17} />
+                  </button>
                 </div>
               </div>
             </div>

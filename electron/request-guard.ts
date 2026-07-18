@@ -75,10 +75,13 @@ export async function fetchWithRetry(
       controller.abort();
     }, firstByteTimeoutMs);
     const startedAt = Date.now();
+    onProgress?.(
+      `请求已发送，正在等待上游模型首个响应${attempt ? `（第 ${attempt + 1} 次尝试）` : ""}…`,
+    );
     const progress = setInterval(() => {
       const seconds = Math.round((Date.now() - startedAt) / 1_000);
       onProgress?.(
-        `正在等待上游模型响应（${seconds} 秒）${attempt ? `，当前为第 ${attempt + 1} 次尝试` : ""}…`,
+        `上游模型尚未返回首个响应，已等待 ${seconds} 秒${attempt ? `（第 ${attempt + 1} 次尝试）` : ""}…`,
       );
     }, WAIT_PROGRESS_INTERVAL_MS);
     try {
