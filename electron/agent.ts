@@ -158,13 +158,13 @@ type ToolResult = Partial<
 async function* streamOperationProgress<T>(
   operation: (report: (output: string) => void) => Promise<T>,
 ): AsyncGenerator<string, T> {
-  const queue: string[] = [];
+  let latestOutput: string | undefined;
   let wake: (() => void) | undefined;
   let done = false;
   let result: T | undefined;
   let failure: unknown;
   const report = (output: string) => {
-    queue.push(output);
+    latestOutput = output;
     wake?.();
     wake = undefined;
   };
@@ -179,12 +179,16 @@ async function* streamOperationProgress<T>(
       done = true;
       wake?.();
     });
-  while (!done || queue.length) {
-    if (!queue.length)
+  while (!done || latestOutput !== undefined) {
+    if (latestOutput === undefined)
       await new Promise<void>((resolve) => {
         wake = resolve;
       });
-    while (queue.length) yield queue.shift()!;
+    if (latestOutput !== undefined) {
+      const output = latestOutput;
+      latestOutput = undefined;
+      yield output;
+    }
   }
   if (failure) throw failure;
   return result as T;
@@ -1551,20 +1555,35 @@ async function execute(
   if (call.name === "list_directory") {
     const directory = workspacePath(root, call.input.path);
     const recursive = Boolean(call.input.recursive);
-    const entries = await readdir(directory, {
-      withFileTypes: true,
-      recursive,
-    });
+    const lines: string[] = [];
+    const pending = [directory];
+    const ignored = new Set([
+      ".git",
+      "node_modules",
+      "dist",
+      "dist-electron",
+      "release",
+      "build",
+      ".next",
+      ".cache",
+    ]);
+    while (pending.length && lines.length < 1_000) {
+      if (signal.aborted) throw new Error("任务已取消");
+      const current = pending.shift()!;
+      const entries = await readdir(current, { withFileTypes: true });
+      for (const entry of entries) {
+        const fullPath = path.join(current, entry.name);
+        const relative = path.relative(directory, fullPath);
+        lines.push(`${entry.isDirectory() ? "[dir] " : "[file]"} ${relative}`);
+        if (lines.length >= 1_000) break;
+        if (recursive && entry.isDirectory() && !ignored.has(entry.name))
+          pending.push(fullPath);
+      }
+      if (!recursive) break;
+    }
     return {
       path: path.relative(root, directory) || ".",
-      output:
-        entries
-          .slice(0, 1000)
-          .map(
-            (entry) =>
-              `${entry.isDirectory() ? "[dir] " : "[file]"} ${entry.parentPath ? path.relative(directory, entry.parentPath) + path.sep : ""}${entry.name}`,
-          )
-          .join("\n") || "目录为空",
+      output: lines.join("\n") || "目录为空",
     };
   }
   if (call.name === "glob_files") {

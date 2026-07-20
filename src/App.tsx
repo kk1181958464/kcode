@@ -1,4 +1,13 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  memo,
+  startTransition,
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   Archive,
   ArchiveRestore,
@@ -2465,6 +2474,23 @@ const ConversationMessage = memo(function ConversationMessage({
       {requestId && !running && <FileChangesSummary activities={activities} />}
     </div>
   );
+}, (previous, next) => {
+  if (
+    previous.message !== next.message ||
+    previous.running !== next.running ||
+    previous.workspacePath !== next.workspacePath ||
+    previous.attachments !== next.attachments ||
+    previous.retryContent !== next.retryContent ||
+    previous.onRetry !== next.onRetry ||
+    previous.onActivityChange !== next.onActivityChange ||
+    previous.registerTurn !== next.registerTurn ||
+    previous.reasoning !== next.reasoning ||
+    previous.activities.length !== next.activities.length
+  )
+    return false;
+  return previous.activities.every(
+    (activity, index) => activity === next.activities[index],
+  );
 });
 
 const ConversationHistory = memo(function ConversationHistory({
@@ -2524,6 +2550,39 @@ const ConversationHistory = memo(function ConversationHistory({
       })}
       <div ref={endRef} />
     </div>
+  );
+});
+
+const ComposerTextarea = memo(function ComposerTextarea({
+  value,
+  disabled,
+  placeholder,
+  onChange,
+  onPaste,
+  onSubmit,
+}: {
+  value: string;
+  disabled: boolean;
+  placeholder: string;
+  onChange(value: string): void;
+  onPaste(event: React.ClipboardEvent<HTMLTextAreaElement>): void;
+  onSubmit(): void;
+}) {
+  return (
+    <textarea
+      aria-label="任务输入"
+      disabled={disabled}
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+      onPaste={onPaste}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" && !event.shiftKey) {
+          event.preventDefault();
+          onSubmit();
+        }
+      }}
+      placeholder={placeholder}
+    />
   );
 });
 
@@ -2885,12 +2944,21 @@ export default function App() {
   const currentRequest = useRef<string | undefined>(undefined);
   const requestTasksRef = useRef(new Map<string, string>());
   const assistantLengthsRef = useRef(new Map<string, number>());
+  const pendingTextRef = useRef(new Map<string, string>());
+  const textFlushTimerRef = useRef<number | undefined>(undefined);
+  const pendingTaskTextRef = useRef(new Map<string, string>());
+  const taskTextFlushTimerRef = useRef<number | undefined>(undefined);
+  const pendingReasoningRef = useRef("");
+  const reasoningFlushTimerRef = useRef<number | undefined>(undefined);
+  const draftSaveTimerRef = useRef<number | undefined>(undefined);
   const activeTaskIdRef = useRef(activeTaskId);
   const displayedTaskIdRef = useRef(activeTaskId);
   const tasksRef = useRef(tasks);
   const previewTimerRef = useRef<number | undefined>(undefined);
   const followFrameRef = useRef<number | undefined>(undefined);
   const bottomLayoutFrameRef = useRef<number | undefined>(undefined);
+  const bottomSettleTimerRef = useRef<number | undefined>(undefined);
+  const bottomSettleDeadlineRef = useRef(0);
   const scrollFrameRef = useRef<number | undefined>(undefined);
   const scrollStateByTaskRef = useRef(
     new Map<string, ConversationScrollState>(),
@@ -2903,6 +2971,19 @@ export default function App() {
   const turnLayoutFrameRef = useRef<number | undefined>(undefined);
   const scrollTargetRef = useRef<HTMLElement | null>(null);
   const requestStartedRef = useRef<number | undefined>(undefined);
+  const composerSubmitRef = useRef<() => void>(() => undefined);
+  const composerPasteRef = useRef<
+    (event: React.ClipboardEvent<HTMLTextAreaElement>) => void
+  >(() => undefined);
+  const handleComposerSubmit = useCallback(
+    () => composerSubmitRef.current(),
+    [],
+  );
+  const handleComposerPaste = useCallback(
+    (event: React.ClipboardEvent<HTMLTextAreaElement>) =>
+      composerPasteRef.current(event),
+    [],
+  );
   const contextByMessageRef = useRef(new Map<string, ContextFile[]>());
   const sendRef = useRef<((override?: string) => Promise<void>) | undefined>(
     undefined,
@@ -2921,6 +3002,7 @@ export default function App() {
   const turnButtonRefs = useRef(new Map<string, HTMLButtonElement>());
   const turnPositionsRef = useRef<{ id: string; top: number }[]>([]);
   const activeConversationTurnRef = useRef<string | undefined>(undefined);
+  const gitRefreshActivityRef = useRef<string | undefined>(undefined);
   const registerTurn = useCallback(
     (id: string, element: HTMLDivElement | null) => {
       if (element) turnRefs.current.set(id, element);
@@ -2983,30 +3065,24 @@ export default function App() {
   const summaryBusy = Boolean(
     activeTask && summarizingTasks.has(activeTask.id),
   );
-  const conversationTurns = useMemo(() => {
-    const turns: Array<{ id: string; question: string; answer: string }> = [];
-    for (const message of messages) {
-      if (message.role === "user") {
-        turns.push({
+  const conversationTurns = useMemo(
+    () =>
+      messages
+        .filter((message) => message.role === "user")
+        .map((message) => ({
           id: message.id,
           question: message.content,
-          answer: "正在生成…",
-        });
-        continue;
-      }
-      const currentTurn = turns.at(-1);
-      if (currentTurn && currentTurn.answer === "正在生成…")
-        currentTurn.answer = message.content || "正在生成…";
-    }
-    return turns;
-  }, [messages]);
+          answer: "点击跳转到此轮对话",
+        })),
+    [activeTaskId, messages.length],
+  );
   const activitiesByRequest = useMemo(() => {
     const grouped = new Map<string, AgentActivity[]>();
-    for (const activity of activities)
-      grouped.set(activity.requestId, [
-        ...(grouped.get(activity.requestId) ?? []),
-        activity,
-      ]);
+    for (const activity of activities) {
+      const group = grouped.get(activity.requestId);
+      if (group) group.push(activity);
+      else grouped.set(activity.requestId, [activity]);
+    }
     return grouped;
   }, [activities]);
   const handleActivityChange = useCallback((next: AgentActivity) => {
@@ -3054,7 +3130,8 @@ export default function App() {
             top: current.scrollHeight,
             atBottom: true,
           });
-        programmaticScrollRef.current = false;
+        if (!bottomSettleTimerRef.current)
+          programmaticScrollRef.current = false;
       });
     });
     observer.observe(messageList);
@@ -3071,8 +3148,21 @@ export default function App() {
       if (scrollFrameRef.current) cancelAnimationFrame(scrollFrameRef.current);
       if (bottomLayoutFrameRef.current)
         cancelAnimationFrame(bottomLayoutFrameRef.current);
+      if (bottomSettleTimerRef.current)
+        window.clearTimeout(bottomSettleTimerRef.current);
       if (turnLayoutFrameRef.current)
         cancelAnimationFrame(turnLayoutFrameRef.current);
+      if (textFlushTimerRef.current) window.clearTimeout(textFlushTimerRef.current);
+      if (taskTextFlushTimerRef.current)
+        window.clearTimeout(taskTextFlushTimerRef.current);
+      if (reasoningFlushTimerRef.current)
+        window.clearTimeout(reasoningFlushTimerRef.current);
+      if (draftSaveTimerRef.current)
+        window.clearTimeout(draftSaveTimerRef.current);
+      localStorage.setItem(
+        "kcode.taskDrafts",
+        JSON.stringify(initialDrafts.current),
+      );
     },
     [],
   );
@@ -3084,7 +3174,18 @@ export default function App() {
         .get(activeConversationTurnRef.current)
         ?.classList.remove("active");
     activeConversationTurnRef.current = id;
-    if (id) turnButtonRefs.current.get(id)?.classList.add("active");
+    if (id) {
+      const button = turnButtonRefs.current.get(id);
+      button?.classList.add("active");
+      const rail = button?.parentElement;
+      if (button && rail) {
+        const top = button.offsetTop;
+        const bottom = top + button.offsetHeight;
+        if (top < rail.scrollTop + 12) rail.scrollTop = Math.max(0, top - 12);
+        else if (bottom > rail.scrollTop + rail.clientHeight - 12)
+          rail.scrollTop = bottom - rail.clientHeight + 12;
+      }
+    }
   }
 
   function updateActiveTurn(container: HTMLElement) {
@@ -3166,8 +3267,35 @@ export default function App() {
     autoFollowRef.current = true;
     programmaticScrollRef.current = true;
     setShowScrollToBottom(false);
-    endRef.current?.scrollIntoView({ block: "end", behavior });
-    conversation.scrollTop = conversation.scrollHeight;
+    if (bottomSettleTimerRef.current)
+      window.clearTimeout(bottomSettleTimerRef.current);
+    bottomSettleDeadlineRef.current = performance.now() + 2_500;
+
+    const alignToLatest = () => {
+      const current = conversationRef.current;
+      if (!current || !autoFollowRef.current) {
+        programmaticScrollRef.current = false;
+        bottomSettleTimerRef.current = undefined;
+        return;
+      }
+      current.scrollTop = current.scrollHeight;
+      const taskId = displayedTaskIdRef.current;
+      if (taskId)
+        scrollStateByTaskRef.current.set(taskId, {
+          top: current.scrollHeight,
+          atBottom: true,
+        });
+      if (performance.now() < bottomSettleDeadlineRef.current) {
+        bottomSettleTimerRef.current = window.setTimeout(alignToLatest, 50);
+      } else {
+        bottomSettleTimerRef.current = undefined;
+        programmaticScrollRef.current = false;
+      }
+    };
+
+    if (behavior === "smooth")
+      endRef.current?.scrollIntoView({ block: "end", behavior });
+    alignToLatest();
     if (bottomLayoutFrameRef.current)
       cancelAnimationFrame(bottomLayoutFrameRef.current);
     bottomLayoutFrameRef.current = requestAnimationFrame(() => {
@@ -3176,18 +3304,16 @@ export default function App() {
       if (!current || !autoFollowRef.current) return;
       current.scrollTop = current.scrollHeight;
     });
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        programmaticScrollRef.current = false;
-      });
-    });
-    const taskId = displayedTaskIdRef.current;
-    if (taskId)
-      scrollStateByTaskRef.current.set(taskId, {
-        top: conversation.scrollHeight,
-        atBottom: true,
-      });
     setActiveConversationTurn(conversationTurns.at(-1)?.id);
+  }
+
+  function interruptBottomSettle() {
+    if (bottomSettleTimerRef.current) {
+      window.clearTimeout(bottomSettleTimerRef.current);
+      bottomSettleTimerRef.current = undefined;
+    }
+    bottomSettleDeadlineRef.current = 0;
+    programmaticScrollRef.current = false;
   }
 
   function scrollToTurn(turnId: string, index: number) {
@@ -3195,6 +3321,7 @@ export default function App() {
     const conversation = conversationRef.current;
     const element = turnRefs.current.get(turnId);
     if (!conversation || !element) return;
+    interruptBottomSettle();
     autoFollowRef.current = false;
     setShowScrollToBottom(true);
     conversation.scrollTo({
@@ -3259,20 +3386,29 @@ export default function App() {
         setCheckpoints(items.filter((item) => item.status !== "done")),
       );
   }, []);
+  const latestFileChangeActivity = useMemo(() => {
+    for (let index = activities.length - 1; index >= 0; index -= 1) {
+      const activity = activities[index];
+      if (
+        activity.status === "success" &&
+        ["write_file", "apply_patch", "move_path", "delete_path"].includes(
+          activity.tool,
+        )
+      )
+        return activity.id;
+    }
+    return undefined;
+  }, [activities]);
   useEffect(() => {
     if (
-      !activities.some(
-        (activity) =>
-          activity.status === "success" &&
-          ["write_file", "apply_patch", "move_path", "delete_path"].includes(
-            activity.tool,
-          ),
-      )
+      !latestFileChangeActivity ||
+      gitRefreshActivityRef.current === latestFileChangeActivity
     )
       return;
+    gitRefreshActivityRef.current = latestFileChangeActivity;
     const timer = window.setTimeout(() => void refreshGitState(), 300);
     return () => window.clearTimeout(timer);
-  }, [activities]);
+  }, [latestFileChangeActivity]);
 
   useEffect(() => {
     tasksRef.current = tasks;
@@ -3308,7 +3444,7 @@ export default function App() {
                 `数据库保存失败：${error instanceof Error ? error.message : String(error)}`,
               ),
             ),
-        250,
+        2_000,
       );
       if (activeTaskId)
         localStorage.setItem("kcode.activeTaskId", activeTaskId);
@@ -3320,21 +3456,33 @@ export default function App() {
   }, [tasks, activeTaskId, taskStorageReady]);
   useEffect(() => {
     const ownerTaskId = displayedTaskIdRef.current;
-    if (!ownerTaskId || ownerTaskId !== activeTaskId) return;
-    setTasks((all) =>
-      all.map((task) =>
-        task.id === ownerTaskId
-          ? { ...task, messages, activities, updatedAt: Date.now() }
-          : task,
-      ),
+    if (!ownerTaskId || ownerTaskId !== activeTaskId || runningId) return;
+    const timer = window.setTimeout(
+      () =>
+        setTasks((all) =>
+          all.map((task) =>
+            task.id === ownerTaskId
+              ? { ...task, messages, activities, updatedAt: Date.now() }
+              : task,
+          ),
+        ),
+      0,
     );
-  }, [messages, activities, activeTaskId]);
+    return () => window.clearTimeout(timer);
+  }, [messages, activities, activeTaskId, runningId]);
   useEffect(() => {
     const ownerTaskId = displayedTaskIdRef.current;
     if (!ownerTaskId || ownerTaskId !== activeTaskId) return;
     if (input) initialDrafts.current[ownerTaskId] = input;
     else delete initialDrafts.current[ownerTaskId];
-    localStorage.setItem("kcode.taskDrafts", JSON.stringify(initialDrafts.current));
+    if (!draftSaveTimerRef.current)
+      draftSaveTimerRef.current = window.setTimeout(() => {
+        draftSaveTimerRef.current = undefined;
+        localStorage.setItem(
+          "kcode.taskDrafts",
+          JSON.stringify(initialDrafts.current),
+        );
+      }, 500);
   }, [input, activeTaskId]);
 
   function openSettings(section: SettingsSection) {
@@ -3594,7 +3742,7 @@ export default function App() {
       requestStartedRef.current &&
       setDurationMs(Date.now() - requestStartedRef.current);
     update();
-    const timer = window.setInterval(update, 250);
+    const timer = window.setInterval(update, 1_000);
     return () => window.clearInterval(timer);
   }, [runningId]);
   useEffect(() => {
@@ -3607,6 +3755,119 @@ export default function App() {
     window.addEventListener("keydown", handleShortcut);
     return () => window.removeEventListener("keydown", handleShortcut);
   }, []);
+
+  function flushPendingText() {
+    if (textFlushTimerRef.current) {
+      window.clearTimeout(textFlushTimerRef.current);
+      textFlushTimerRef.current = undefined;
+    }
+    const pending = [...pendingTextRef.current.entries()];
+    pendingTextRef.current.clear();
+    if (!pending.length) return;
+    const deltaByRequest = new Map(pending);
+    const activeDeltas = pending.filter(([requestId]) => {
+      const taskId = requestTasksRef.current.get(requestId);
+      return Boolean(
+        taskId &&
+          isTaskViewCurrent(
+            activeTaskIdRef.current,
+            displayedTaskIdRef.current,
+            taskId,
+          ),
+      );
+    });
+    if (activeDeltas.length)
+      startTransition(() => {
+        setMessages((all) =>
+          all.map((message) => {
+            if (!message.id.startsWith("assistant:")) return message;
+            const delta = deltaByRequest.get(
+              message.id.slice("assistant:".length),
+            );
+            return delta
+              ? { ...message, content: message.content + delta }
+              : message;
+          }),
+        );
+      });
+    for (const [requestId, delta] of pending)
+      pendingTaskTextRef.current.set(
+        requestId,
+        (pendingTaskTextRef.current.get(requestId) ?? "") + delta,
+      );
+    scheduleTaskTextFlush();
+  }
+
+  function flushPendingTaskText() {
+    if (taskTextFlushTimerRef.current) {
+      window.clearTimeout(taskTextFlushTimerRef.current);
+      taskTextFlushTimerRef.current = undefined;
+    }
+    const pending = [...pendingTaskTextRef.current.entries()];
+    pendingTaskTextRef.current.clear();
+    if (!pending.length) return;
+    const deltaByRequest = new Map(pending);
+    const ownerTaskIds = new Set(
+      pending
+        .map(([requestId]) => requestTasksRef.current.get(requestId))
+        .filter((taskId): taskId is string => Boolean(taskId)),
+    );
+    startTransition(() => {
+      setTasks((all) =>
+        all.map((task) => {
+          if (!ownerTaskIds.has(task.id)) return task;
+          return {
+            ...task,
+            messages: task.messages.map((message) => {
+              if (!message.id.startsWith("assistant:")) return message;
+              const delta = deltaByRequest.get(
+                message.id.slice("assistant:".length),
+              );
+              return delta
+                ? { ...message, content: message.content + delta }
+                : message;
+            }),
+            updatedAt: Date.now(),
+          };
+        }),
+      );
+    });
+  }
+
+  function scheduleTextFlush() {
+    if (textFlushTimerRef.current) return;
+    textFlushTimerRef.current = window.setTimeout(flushPendingText, 100);
+  }
+
+  function scheduleTaskTextFlush() {
+    if (taskTextFlushTimerRef.current) return;
+    taskTextFlushTimerRef.current = window.setTimeout(flushPendingTaskText, 1_500);
+  }
+
+  function clearPendingReasoning() {
+    pendingReasoningRef.current = "";
+    if (reasoningFlushTimerRef.current) {
+      window.clearTimeout(reasoningFlushTimerRef.current);
+      reasoningFlushTimerRef.current = undefined;
+    }
+    setAgentReasoning("");
+  }
+
+  function scheduleReasoningFlush() {
+    if (reasoningFlushTimerRef.current) return;
+    reasoningFlushTimerRef.current = window.setTimeout(() => {
+      reasoningFlushTimerRef.current = undefined;
+      const next = pendingReasoningRef.current;
+      pendingReasoningRef.current = "";
+      if (!next) return;
+      startTransition(() => {
+        setAgentReasoning((current) =>
+          (current + next).replace(/\s+/g, " ").slice(-200),
+        );
+      });
+    }, 100);
+  }
+
   useEffect(
     () =>
       window.kcode?.chat.onEvent((id, event) => {
@@ -3618,7 +3879,7 @@ export default function App() {
           taskId,
         );
         if (event.type === "activity") {
-          if (isActive) setAgentReasoning("");
+          if (isActive) clearPendingReasoning();
           const task = tasksRef.current.find((item) => item.id === taskId);
           const previous = task?.activities.find(
             (item) => item.id === event.activity.id,
@@ -3668,36 +3929,23 @@ export default function App() {
             (activity) =>
               activity.status === "running" || activity.status === "waiting",
           );
-          if (isActive && !hasRunningActivity)
-            setAgentReasoning((current) =>
-              (current + event.delta).replace(/\s+/g, " ").slice(-200),
-            );
+          if (isActive && !hasRunningActivity) {
+            pendingReasoningRef.current += event.delta;
+            scheduleReasoningFlush();
+          }
           return;
         }
         if (event.type === "text") {
-          if (isActive) setAgentReasoning("");
+          if (isActive) clearPendingReasoning();
           assistantLengthsRef.current.set(
             id,
             (assistantLengthsRef.current.get(id) ?? 0) + event.delta.length,
           );
-          const updateMessages = (all: ChatMessage[]) =>
-            all.map((m) =>
-              m.id === `assistant:${id}`
-                ? { ...m, content: m.content + event.delta }
-                : m,
-            );
-          setTasks((all) =>
-            all.map((task) =>
-              task.id === taskId
-                ? {
-                    ...task,
-                    messages: updateMessages(task.messages),
-                    updatedAt: Date.now(),
-                  }
-                : task,
-            ),
+          pendingTextRef.current.set(
+            id,
+            (pendingTextRef.current.get(id) ?? "") + event.delta,
           );
-          if (isActive) setMessages(updateMessages);
+          scheduleTextFlush();
         }
         if (event.type === "usage") {
           const nextUsage = {
@@ -3752,6 +4000,9 @@ export default function App() {
           }
         }
         if (event.type === "error") {
+          if (isActive) clearPendingReasoning();
+          flushPendingText();
+          flushPendingTaskText();
           const updateMessages = (all: ChatMessage[]) =>
             all.map((m) =>
               m.id === `assistant:${id}` ? { ...m, error: event.message } : m,
@@ -3794,6 +4045,9 @@ export default function App() {
           assistantLengthsRef.current.delete(id);
         }
         if (event.type === "done") {
+          if (isActive) clearPendingReasoning();
+          flushPendingText();
+          flushPendingTaskText();
           setTasks((all) =>
             all.map((task) => {
               if (task.id !== taskId) return task;
@@ -3834,7 +4088,6 @@ export default function App() {
             currentRequest.current = undefined;
             setRunningId(undefined);
             setUsageResolved(true);
-            setAgentReasoning("");
           }
           requestTasksRef.current.delete(id);
           assistantLengthsRef.current.delete(id);
@@ -4462,13 +4715,23 @@ export default function App() {
     const retrying = override !== undefined && !queuedMessage;
     const sourceMessages =
       queuedIndex >= 0 ? messages.slice(0, queuedIndex + 1) : messages;
-    const cleanMessages = sourceMessages.filter(
-      (message) =>
-        !(
-          message.role === "assistant" &&
-          (message.error || message.content.startsWith("请求失败："))
-        ),
-    );
+    const latestAssistant = [...sourceMessages]
+      .reverse()
+      .find((message) => message.role === "assistant");
+    const interruptedAssistant =
+      latestAssistant?.error && latestAssistant.content.trim()
+        ? latestAssistant
+        : undefined;
+    const cleanMessages = sourceMessages.filter((message) => {
+      if (message.role !== "assistant") return true;
+      const legacyErrorOnly = message.content.startsWith("请求失败：");
+      // Keep useful partial output from interrupted rounds in the next request.
+      // Only discard assistant placeholders that contain no model output.
+      return !(
+        legacyErrorOnly ||
+        (message.error && !message.content.trim())
+      );
+    });
     const user: ChatMessage = queuedMessage
       ? {
           id: queuedMessage.id,
@@ -4597,9 +4860,13 @@ export default function App() {
             `<context_file name="${file.name}">\n${file.content}\n</context_file>`,
         )
         .join("\n\n");
+      const recoveryContext =
+        interruptedAssistant && role === "user" && id === user.id
+          ? "\n\n<interrupted_turn_recovery>上一轮因上游或模型错误中断。失败前已经生成的助手输出保留在历史中，工作区也可能已经发生修改。请从已有结果和当前工作区状态继续：先核对现状，再完成剩余步骤；不要从头重复已经完成的分析或修改，也不要假定尚未验证的步骤已经完成。</interrupted_turn_recovery>"
+          : "";
       return {
         role,
-        content: fileContext ? `${content}\n\n${fileContext}` : content,
+        content: `${fileContext ? `${content}\n\n${fileContext}` : content}${recoveryContext}`,
         images,
       };
     });
@@ -4897,13 +5164,23 @@ export default function App() {
     ? `${selectedTarget.provider.id}|${selectedTarget.model.modelId}`
     : "";
   const calibrationFactor = tokenCalibration[selectedCalibrationKey] ?? 1;
-  const localContextTokens = Math.ceil(
-    (AGENT_STATIC_TOKENS +
-      Math.ceil((activeTask?.contextSummary?.length ?? 0) / 3) +
-      estimateMessageTokens(
-        messages.slice(activeTask?.compactedMessageCount ?? 0),
-      )) *
+  const deferredMessages = useDeferredValue(messages);
+  const localContextTokens = useMemo(
+    () =>
+      Math.ceil(
+        (AGENT_STATIC_TOKENS +
+          Math.ceil((activeTask?.contextSummary?.length ?? 0) / 3) +
+          estimateMessageTokens(
+            deferredMessages.slice(activeTask?.compactedMessageCount ?? 0),
+          )) *
+          calibrationFactor,
+      ),
+    [
+      activeTask?.compactedMessageCount,
+      activeTask?.contextSummary,
       calibrationFactor,
+      deferredMessages,
+    ],
   );
   // The context gauge must reflect what the model actually reads each turn (the
   // last prompt token count), not usage.input, which accumulates every turn's
@@ -4932,9 +5209,11 @@ export default function App() {
         [selectedTarget.provider.id]: selectedTarget.model.id,
       }));
   }, [selected, supportsReasoning]);
-  const lastUserMessage = [...messages]
-    .reverse()
-    .find((message) => message.role === "user");
+  const lastUserMessage = useMemo(() => {
+    for (let index = messages.length - 1; index >= 0; index -= 1)
+      if (messages[index].role === "user") return messages[index];
+    return undefined;
+  }, [messages]);
   const runStatus: TaskRunStatus = runningId
     ? "running"
     : (activeTask?.runStatus ?? "idle");
@@ -4947,12 +5226,17 @@ export default function App() {
     cancelled: "本轮任务已停止",
     paused: "上次任务已中断",
   };
-  const latestActivities = activeTask
-    ? activities.filter(
-        (activity) =>
-          !activeTask.runningId || activity.requestId === activeTask.runningId,
-      )
-    : [];
+  const latestActivities = useMemo(
+    () =>
+      activeTask
+        ? activities.filter(
+            (activity) =>
+              !activeTask.runningId ||
+              activity.requestId === activeTask.runningId,
+          )
+        : [],
+    [activeTask?.runningId, activities],
+  );
   const livePhase =
     runStatus === "running"
       ? workingPhase(
@@ -5020,6 +5304,14 @@ export default function App() {
       setModelMenuOpen(false);
     }
   }
+
+  composerSubmitRef.current = () => {
+    if (runningId) queueMessage();
+    else void send();
+  };
+  composerPasteRef.current = (event) => {
+    void pasteImages(event);
+  };
 
   return (
     <div className="window-root">
@@ -5352,6 +5644,9 @@ export default function App() {
             ref={conversationRef}
             className="conversation"
             onScroll={(event) => handleConversationScroll(event.currentTarget)}
+            onWheelCapture={interruptBottomSettle}
+            onTouchStart={interruptBottomSettle}
+            onPointerDown={interruptBottomSettle}
           >
             {conversationTurns.length > 1 && (
               <nav
@@ -5378,6 +5673,7 @@ export default function App() {
                     }}
                     onClick={() => scrollToTurn(turn.id, index)}
                     aria-label={`跳转到：${turn.question.slice(0, 40)}`}
+                    title={turn.question.slice(0, 80)}
                   >
                     <span className="turn-tick" />
                     <span className="turn-preview">
@@ -5526,19 +5822,12 @@ export default function App() {
                   {contextToast}
                 </div>
               )}
-              <textarea
-                aria-label="任务输入"
+              <ComposerTextarea
                 disabled={summaryBusy}
                 value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onPaste={(event) => void pasteImages(event)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault();
-                    if (runningId) queueMessage();
-                    else void send();
-                  }
-                }}
+                onChange={setInput}
+                onPaste={handleComposerPaste}
+                onSubmit={handleComposerSubmit}
                 placeholder={
                   summaryBusy
                     ? "正在压缩上下文，完成后可继续发送"

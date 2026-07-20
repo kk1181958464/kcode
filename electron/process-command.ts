@@ -2,6 +2,7 @@
 
 const FORCE_RESOLVE_AFTER_KILL_MS = 4_000;
 const HEARTBEAT_INTERVAL_MS = 5_000;
+const OUTPUT_PROGRESS_INTERVAL_MS = 100;
 
 export function terminateChildProcess(
   child: ChildProcessWithoutNullStreams | { pid?: number; kill: (signal?: NodeJS.Signals) => boolean },
@@ -95,6 +96,7 @@ export function runSpawnedCommand(options: {
     const startedAt = Date.now();
     let lastOutputAt = startedAt;
     let lastHeartbeatAt = 0;
+    let progressTimer: NodeJS.Timeout | undefined;
 
     const decode = (bytes: Buffer) => {
       try {
@@ -126,13 +128,21 @@ export function runSpawnedCommand(options: {
       onOutput(progressText());
     };
 
+    const scheduleOutputProgress = () => {
+      if (!onOutput || progressTimer) return;
+      progressTimer = setTimeout(() => {
+        progressTimer = undefined;
+        emitProgress(true);
+      }, OUTPUT_PROGRESS_INTERVAL_MS);
+    };
+
     const append = (chunk: Buffer) => {
       chunks.push(chunk);
       byteLength += chunk.length;
       while (byteLength > maxOutputBytes && chunks.length > 1)
         byteLength -= chunks.shift()!.length;
       lastOutputAt = Date.now();
-      emitProgress(true);
+      scheduleOutputProgress();
     };
 
     const finish = (result: SpawnedCommandResult) => {
@@ -142,6 +152,7 @@ export function runSpawnedCommand(options: {
       clearTimeout(forceTimer);
       clearInterval(heartbeatTimer);
       clearTimeout(idleTimer);
+      if (progressTimer) clearTimeout(progressTimer);
       signal.removeEventListener("abort", onAbort);
       resolve(result);
     };

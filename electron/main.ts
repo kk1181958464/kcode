@@ -633,7 +633,7 @@ app.whenReady().then(() => {
       let lastCheckpointAt = 0;
       const queueCheckpoint = (force = false) => {
         const now = Date.now();
-        if (!force && now - lastCheckpointAt < 250) return;
+        if (!force && now - lastCheckpointAt < 5_000) return;
         lastCheckpointAt = now;
         const snapshot = {
           id,
