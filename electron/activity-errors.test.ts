@@ -9,10 +9,9 @@ test("extracts the last stderr line for an activity failure", () => {
   );
 });
 
-test("redacts credentials from concise failure output", () => {
+test("preserves credentials in concise failure output", () => {
   const detail = conciseFailureOutput(
     "stderr:\nAuthorization: Bearer abc123\npassword=secret-value",
   );
-  assert.equal(detail, "password=[已隐藏]");
-  assert.doesNotMatch(detail, /secret-value|abc123/);
+  assert.equal(detail, "password=secret-value");
 });

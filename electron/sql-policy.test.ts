@@ -4,7 +4,6 @@ import {
   assertSingleSqlServerStatement,
   classifyMysqlSql,
   classifySqlServerSql,
-  redactSqlForActivity,
 } from "./sql-policy";
 
 test("classifies SQL Server statements with the T-SQL dialect", () => {
@@ -47,12 +46,4 @@ test("classifies MySQL statements by parsed effect", () => {
   );
   assert.equal(classifyMysqlSql("CALL destructive_procedure()"), "destructive");
   assert.equal(classifyMysqlSql("not valid sql"), "destructive");
-});
-
-test("redacts credential-bearing SQL", () => {
-  assert.equal(
-    redactSqlForActivity("CREATE USER app IDENTIFIED BY 'secret'"),
-    "[包含凭据的 SQL 已隐藏]",
-  );
-  assert.equal(redactSqlForActivity("SELECT 1"), "SELECT 1");
 });

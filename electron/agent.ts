@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import {
   isLikelyNetworkCommand,
-  redactCommandForDisplay,
   runSpawnedCommand,
   terminateChildProcess,
 } from "./process-command";
@@ -52,6 +51,11 @@ import {
   rememberChatFallback,
   shouldFallbackResponses,
 } from "./protocol-fallback";
+import {
+  claimedGitOperations,
+  requestedGitOperations,
+  successfulGitEvidence,
+} from "./git-operation-verification";
 import { getProviderWithKey } from "./store";
 import {
   bindBrowserRequest,
@@ -73,9 +77,7 @@ import {
   downloadSshFile,
   listSshDirectory,
   readSshFile,
-  redactSshInput,
   runSshCommand,
-  trustSshFingerprint,
   undoSshActivity,
   uploadSshFile,
   writeSshFile,
@@ -86,7 +88,6 @@ import {
   connectMysql,
   disconnectMysql,
   queryMysql,
-  redactMysqlInput,
   type MysqlConnectInput,
 } from "./mysql";
 import {
@@ -95,7 +96,6 @@ import {
   connectSqlServer,
   disconnectSqlServer,
   querySqlServer,
-  redactSqlServerInput,
   type SqlServerConnectInput,
 } from "./sqlserver";
 import {
@@ -104,13 +104,11 @@ import {
   connectMongo,
   disconnectMongo,
   executeMongo,
-  redactMongoInput,
   type MongoConnectInput,
 } from "./mongodb";
 import {
   classifyMysqlSql,
   classifySqlServerSql,
-  redactSqlForActivity,
 } from "./sql-policy";
 import {
   resolveProjectDiagnostic,
@@ -714,7 +712,7 @@ const tools = [
   {
     name: "ssh_connect",
     description:
-      "Connect this task to an SSH server using credentials explicitly supplied by the user. The privateKey value must be the key content, not a local path. Host keys use persistent trust-on-first-use and changed keys are rejected; only pass hostFingerprint when the user explicitly confirms it. The connection remains available while switching tasks.",
+      "Connect this task to an SSH server using credentials explicitly supplied by the user. The privateKey value must be the key content, not a local path. Host keys are not verified. The connection remains available while switching tasks.",
     parameters: {
       type: "object",
       properties: {
@@ -724,31 +722,15 @@ const tools = [
         password: { type: "string" },
         privateKey: { type: "string" },
         passphrase: { type: "string" },
-        hostFingerprint: { type: "string" },
       },
       required: ["host", "username"],
       additionalProperties: false,
     },
   },
   {
-    name: "ssh_trust_host",
-    description:
-      "Persist a new SSH host fingerprint only after the user explicitly confirms that the displayed current fingerprint belongs to the intended server. Never call this automatically after a mismatch. After it succeeds, call ssh_connect again with the same host and port.",
-    parameters: {
-      type: "object",
-      properties: {
-        host: { type: "string" },
-        port: { type: "number", minimum: 1, maximum: 65535 },
-        hostFingerprint: { type: "string" },
-      },
-      required: ["host", "hostFingerprint"],
-      additionalProperties: false,
-    },
-  },
-  {
     name: "ssh_run",
     description:
-      "Run a command on the SSH server connected to this task. Defaults to a 180 second timeout and stops when the task is cancelled. Set pty and stdin only for commands that require controlled interactive input; stdin is hidden from activity records.",
+      "Run a command on the SSH server connected to this task. Defaults to a 180 second timeout and stops when the task is cancelled. Set pty and stdin only for commands that require controlled interactive input.",
     parameters: {
       type: "object",
       properties: {
@@ -871,7 +853,6 @@ const tools = [
         sshPassword: { type: "string" },
         sshPrivateKey: { type: "string" },
         sshPassphrase: { type: "string" },
-        sshHostFingerprint: { type: "string" },
         host: { type: "string" },
         port: { type: "number", minimum: 1, maximum: 65535 },
         username: { type: "string" },
@@ -939,7 +920,6 @@ const tools = [
         sshPassword: { type: "string" },
         sshPrivateKey: { type: "string" },
         sshPassphrase: { type: "string" },
-        sshHostFingerprint: { type: "string" },
         host: { type: "string" },
         port: { type: "number", minimum: 1, maximum: 65535 },
         username: { type: "string" },
@@ -971,7 +951,7 @@ const tools = [
   {
     name: "mongodb_connect",
     description:
-      "Connect this task directly to MongoDB using a URI or host credentials. Public direct hosts use TLS by default. Credentials supplied in a URI are never shown in activity logs.",
+      "Connect this task directly to MongoDB using a URI or host credentials. Public direct hosts use TLS by default. Credentials are shown in activity details.",
     parameters: {
       type: "object",
       properties: {
@@ -1003,7 +983,6 @@ const tools = [
         sshPassword: { type: "string" },
         sshPrivateKey: { type: "string" },
         sshPassphrase: { type: "string" },
-        sshHostFingerprint: { type: "string" },
         host: { type: "string" },
         port: { type: "number", minimum: 1, maximum: 65535 },
         username: { type: "string" },
@@ -2035,27 +2014,10 @@ async function execute(
           typeof call.input.passphrase === "string"
             ? call.input.passphrase
             : undefined,
-        hostFingerprint:
-          typeof call.input.hostFingerprint === "string"
-            ? call.input.hostFingerprint
-            : undefined,
       },
       signal,
     );
     return { output: JSON.stringify(result, null, 2) };
-  }
-  if (call.name === "ssh_trust_host") {
-    const result = trustSshFingerprint(
-      String(call.input.host || ""),
-      Number(call.input.port) || 22,
-      String(call.input.hostFingerprint || ""),
-    );
-    return {
-      output: JSON.stringify({
-        ...result,
-        message: "已保存 SSH 主机指纹，请重新连接服务器。",
-      }, null, 2),
-    };
   }
   if (call.name === "ssh_run") {
     const remoteCommand = String(call.input.command || "");
@@ -2187,10 +2149,6 @@ async function execute(
             typeof call.input.sshPassphrase === "string"
               ? call.input.sshPassphrase
               : undefined,
-          hostFingerprint:
-            typeof call.input.sshHostFingerprint === "string"
-              ? call.input.sshHostFingerprint
-              : undefined,
         },
         signal,
       );
@@ -2221,7 +2179,7 @@ async function execute(
     const sql = String(call.input.sql || "");
     const values = Array.isArray(call.input.values) ? call.input.values : [];
     return {
-      command: redactSqlForActivity(sql),
+      command: sql,
       output: await queryMysql(
         browserSessionId,
         requestId,
@@ -2270,10 +2228,6 @@ async function execute(
             typeof call.input.sshPassphrase === "string"
               ? call.input.sshPassphrase
               : undefined,
-          hostFingerprint:
-            typeof call.input.sshHostFingerprint === "string"
-              ? call.input.sshHostFingerprint
-              : undefined,
         },
         signal,
       );
@@ -2303,7 +2257,7 @@ async function execute(
     const sql = String(call.input.sql || "");
     const values = Array.isArray(call.input.values) ? call.input.values : [];
     return {
-      command: redactSqlForActivity(sql),
+      command: sql,
       output: await querySqlServer(
         browserSessionId,
         requestId,
@@ -2351,10 +2305,6 @@ async function execute(
           passphrase:
             typeof call.input.sshPassphrase === "string"
               ? call.input.sshPassphrase
-              : undefined,
-          hostFingerprint:
-            typeof call.input.sshHostFingerprint === "string"
-              ? call.input.sshHostFingerprint
               : undefined,
         },
         signal,
@@ -2901,7 +2851,7 @@ async function modelTurn(
       )
     : [];
   const isolation = createConversationIsolation(request.taskId, requestId);
-  const system = `${isolation.boundary}\nYou are a coding agent working in ${root}. Use the provided native tools to inspect and modify the project. Each run_command invocation uses a fresh PowerShell process, so environment variable changes do not persist to later commands; combine dependent setup and execution in one command. Prefer apply_patch for precise edits and write_file for new or complete files. Never invoke apply_patch, file deletion, file moves, or directory operations through run_command when a native tool exists. File tool paths accept absolute paths, including other drives (for example D:\\B on Windows); use them to read or write files the user explicitly points to outside ${root}, and resolve relative paths against ${root}. When you mention a file in your reply, always write its full workspace-relative path (for example src/views/Gooddetail.vue, not just Gooddetail.vue) so the user can tell exactly which file it is. Use web_search for current or externally verifiable information and fetch_url to inspect primary sources; preserve source URLs in the final answer. For interactive or authenticated sites use browser_open, browser_snapshot, browser_click, and browser_type. Credentials explicitly supplied by the user may be entered directly with browser_type. Browser recording is opt-in: call browser_record_start only after an explicit user request such as 开始录制, and call browser_record_stop when the user asks to stop or generate Python. Never record ordinary browsing by default. For independent work that can run concurrently, use spawn_agent with self-contained, non-overlapping tasks, then wait_agent before giving a final answer. Use list_agents, message_agent, and stop_agent to coordinate them. Subagents inherit this task's model, workspace, and permission policy; confirmation requests from background agents are forwarded to the main task UI. For remote servers, call ssh_connect with credentials explicitly supplied by the user, then use ssh_run and the SSH SFTP tools. Use ssh_upload_file to send a local file to the server and ssh_download_file to fetch a remote file to a local path; these transfer binary content directly, unlike ssh_write_file which only writes inline UTF-8 text. Use pty/stdin only when a remote command requires controlled interactive input; never place a password in the command string. SSH exec sessions are non-interactive and may not load shell profiles; when a remote command depends on profile-defined PATH values, invoke the appropriate login shell explicitly. SSH host keys are persisted on first use and changed keys must be confirmed by the user. For databases, use mysql_connect for direct MySQL access or mysql_connect_via_ssh for an SSH tunnel, then mysql_query; use ? placeholders and values for user-provided data when practical. Public direct MySQL connections use TLS by default and you must not retry with ssl=false unless the user explicitly approves. Never echo passwords, private keys, or passphrases in text, commands, or SQL. If CAPTCHA, SMS, passkey, or two-factor verification appears, pause and ask the user to complete it in the visible browser. Do not claim an action succeeded until its tool result confirms it.${request.recoveryContext ? `\n\n<recovery_context>${request.recoveryContext}</recovery_context>\nThis task resumed after an interruption. Verify prior side effects before repeating them, and recreate any interrupted subagent work that is still needed.` : ""}`;
+  const system = `${isolation.boundary}\nYou are a coding agent working in ${root}. Use the provided native tools to inspect and modify the project. Each run_command invocation uses a fresh PowerShell process, so environment variable changes do not persist to later commands; combine dependent setup and execution in one command. Prefer apply_patch for precise edits and write_file for new or complete files. Never invoke apply_patch, file deletion, file moves, or directory operations through run_command when a native tool exists. File tool paths accept absolute paths, including other drives (for example D:\\B on Windows); use them to read or write files the user explicitly points to outside ${root}, and resolve relative paths against ${root}. When you mention a file in your reply, always write its full workspace-relative path (for example src/views/Gooddetail.vue, not just Gooddetail.vue) so the user can tell exactly which file it is. Use web_search for current or externally verifiable information and fetch_url to inspect primary sources; preserve source URLs in the final answer. For interactive or authenticated sites use browser_open, browser_snapshot, browser_click, and browser_type. Credentials explicitly supplied by the user may be entered directly with browser_type. Browser recording is opt-in: call browser_record_start only after an explicit user request such as 开始录制, and call browser_record_stop when the user asks to stop or generate Python. Never record ordinary browsing by default. For independent work that can run concurrently, use spawn_agent with self-contained, non-overlapping tasks, then wait_agent before giving a final answer. Use list_agents, message_agent, and stop_agent to coordinate them. Subagents inherit this task's model, workspace, reasoning, and permissions. For remote servers, call ssh_connect with credentials explicitly supplied by the user, then use ssh_run and the SSH SFTP tools. Use ssh_upload_file to send a local file to the server and ssh_download_file to fetch a remote file to a local path; these transfer binary content directly, unlike ssh_write_file which only writes inline UTF-8 text. SSH exec sessions are non-interactive and may not load shell profiles; when a remote command depends on profile-defined PATH values, invoke the appropriate login shell explicitly. SSH host keys are not verified. Credentials supplied by the user may appear in commands, tool activity details, subagent tasks, and conversation text. For databases, use mysql_connect for direct MySQL access or mysql_connect_via_ssh for an SSH tunnel, then mysql_query; use ? placeholders and values for user-provided data when practical. Public direct MySQL connections use TLS by default and you must not retry with ssl=false unless the user explicitly approves. If CAPTCHA, SMS, passkey, or two-factor verification appears, pause and ask the user to complete it in the visible browser. Do not claim an action succeeded until its tool result confirms it.${request.recoveryContext ? `\n\n<recovery_context>${request.recoveryContext}</recovery_context>\nThis task resumed after an interruption. Verify prior side effects before repeating them, and recreate any interrupted subagent work that is still needed.` : ""}`;
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...isolation.headers,
@@ -3368,13 +3318,15 @@ export async function* runAgent(
     kind: "message",
     ...m,
   }));
+  const requestedGitOps = requestedGitOperations(history);
   const toolsEnabled = !isCasualGreeting(request.messages.at(-1));
   const usage = { input: 0, output: 0, cached: 0 };
   let lastPromptTokens = 0;
   let round = 0,
     stalledRounds = 0,
     lastFingerprint = "",
-    unverifiedBrowserClaims = 0;
+    unverifiedBrowserClaims = 0,
+    unverifiedGitClaims = 0;
   while (!signal.aborted) {
     round += 1;
     if (
@@ -3413,8 +3365,9 @@ export async function* runAgent(
       });
     let turn: Turn | undefined,
       streamedText = "";
-    const bufferBrowserText =
+    const bufferModelText =
       browserIsOpen(browserSessionId) ||
+      requestedGitOps.size > 0 ||
       listSubagents(requestId).some((agent) => !agent.collected);
     for await (const event of streamModelTurn(
       root,
@@ -3429,7 +3382,7 @@ export async function* runAgent(
         yield { type: "reasoning", delta: event.delta };
       else {
         streamedText += event.delta;
-        if (!bufferBrowserText) yield { type: "text", delta: event.delta };
+        if (!bufferModelText) yield { type: "text", delta: event.delta };
       }
     }
     if (!turn) throw new Error("模型流结束但没有完成结果");
@@ -3456,6 +3409,30 @@ export async function* runAgent(
           "<runtime_verification>你声称执行了网页操作，但本轮没有任何浏览器工具调用。不要描述或假设操作成功；请立即使用 browser_snapshot 获取当前页面，再调用 browser_click/browser_type 实际执行，并通过新的页面快照验证结果。</runtime_verification>",
       });
       continue;
+    }
+    const claimedGitOps = claimedGitOperations(turn.text);
+    const gitEvidence = successfulGitEvidence(history);
+    const missingGitEvidence = [...claimedGitOps].filter(
+      (operation) => requestedGitOps.has(operation) && !gitEvidence.has(operation),
+    );
+    if (!turn.calls.length && missingGitEvidence.length) {
+      if (unverifiedGitClaims < 2) {
+        unverifiedGitClaims += 1;
+        history.push({ kind: "message", role: "assistant", content: turn.text });
+        history.push({
+          kind: "message",
+          role: "user",
+          content: `<runtime_verification>你声称 Git/发布操作已经成功，但本次任务没有对应的成功工具结果。缺少证据：${missingGitEvidence.join(", ")}。不要重复成功结论；请实际调用工具执行操作，并在结束前用 git_status/git_log 以及 gh run list/gh run view 验证本地提交、远端推送和 Actions 运行。若无法执行，请明确报告未完成及原因。</runtime_verification>`,
+        });
+        continue;
+      }
+      yield {
+        type: "text",
+        delta: `未检测到可验证的 Git/发布工具结果，无法确认以下操作已经完成：${missingGitEvidence.join(", ")}。`,
+      };
+      closeSubagentMessageQueue(requestId);
+      yield { type: "done" };
+      return;
     }
     if (!turn.calls.length) {
       const lateInstructions = drainSubagentMessages(requestId);
@@ -3484,7 +3461,7 @@ export async function* runAgent(
         continue;
       }
     }
-    if (turn.text && (bufferBrowserText || !streamedText)) {
+    if (turn.text && (bufferModelText || !streamedText)) {
       history.push({ kind: "message", role: "assistant", content: turn.text });
       yield { type: "text", delta: turn.text };
     } else if (turn.text)
@@ -3528,7 +3505,6 @@ export async function* runAgent(
         browser_record_start: "开始网页录制",
         browser_record_stop: "停止网页录制",
         ssh_connect: "连接 SSH",
-        ssh_trust_host: "信任 SSH 主机",
         ssh_run: "运行远程命令",
         ssh_list_directory: "查看远程目录",
         ssh_read_file: "读取远程文件",
@@ -3566,22 +3542,14 @@ export async function* runAgent(
           call.name === "spawn_agent"
             ? {
                 name: String(call.input.name || ""),
-                task: "任务详情已隐藏，仅发送给子 Agent",
+                task: String(call.input.task || ""),
               }
             : call.name === "message_agent"
               ? {
                   agentId: String(call.input.agentId || ""),
-                  message: "追加指令已隐藏，仅发送给子 Agent",
+                  message: String(call.input.message || ""),
                 }
-              : call.name.startsWith("ssh_")
-                ? redactSshInput(call.input)
-                : call.name.startsWith("mysql_")
-                  ? redactMysqlInput(call.input)
-                  : call.name.startsWith("sqlserver_")
-                    ? redactSqlServerInput(call.input)
-                    : call.name.startsWith("mongodb_")
-                      ? redactMongoInput(call.input)
-                      : call.input,
+              : call.input,
         path:
           typeof call.input.path === "string"
             ? call.input.path
@@ -3590,7 +3558,7 @@ export async function* runAgent(
               : undefined,
         command:
           typeof call.input.command === "string"
-            ? redactCommandForDisplay(call.input.command)
+            ? call.input.command
             : undefined,
         round,
       };

@@ -146,20 +146,7 @@ export function compactConversation(
     )
     .map((activity) => {
       const input = (activity.input ?? {}) as Record<string, unknown>;
-      const value = (key: string) =>
-        typeof input[key] === "string" || typeof input[key] === "number"
-          ? String(input[key])
-          : "";
-      if (activity.tool === "ssh_connect")
-        return `SSH ${value("username")}@${value("host")}:${value("port") || "22"}`;
-      const via = value("sshHost")
-        ? `（经 SSH ${value("sshUsername")}@${value("sshHost")}）`
-        : "";
-      if (activity.tool.startsWith("sqlserver_"))
-        return `SQL Server ${value("username")}@${value("host")}:${value("port") || "1433"}/${value("database")}${via}`;
-      if (activity.tool.startsWith("mongodb_"))
-        return `MongoDB ${value("username")}@${value("host")}:${value("port") || "27017"}/${value("database")}${via}`;
-      return `MySQL ${value("username")}@${value("host")}:${value("port") || "3306"}/${value("database")}${via}`;
+      return `${activity.tool} ${JSON.stringify(input)}`;
     });
   const nextLedger: ContextLedger = {
     goals: uniqueRecent([...ledger.goals, ...goals]),

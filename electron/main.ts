@@ -38,7 +38,7 @@ import {
   runAgent,
   undoActivity,
 } from "./agent";
-import { closeAllSshSessions, configureSshKnownHosts } from "./ssh";
+import { closeAllSshSessions } from "./ssh";
 import { closeAllMysqlSessions } from "./mysql";
 import { closeAllSqlServerSessions } from "./sqlserver";
 import { closeAllMongoSessions } from "./mongodb";
@@ -309,10 +309,10 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
-  configureSshKnownHosts(
-    path.join(app.getPath("userData"), "ssh-known-hosts.json"),
-  );
   if (process.platform === "darwin") app.dock?.setIcon(appIcon(256));
+  void rm(path.join(app.getPath("userData"), "ssh-known-hosts.json"), {
+    force: true,
+  });
   void rm(path.join(app.getPath("userData"), "credentials.json"), {
     force: true,
   });

@@ -51,13 +51,3 @@ export function assertSingleSqlServerStatement(sql: string) {
     throw new Error("SQL Server SQL 语句无法安全解析，已拒绝执行。");
   }
 }
-
-export function redactSqlForActivity(sql: string) {
-  if (
-    /\b(create\s+user|alter\s+user|set\s+password|identified\s+(?:with\s+\S+\s+)?by)\b/i.test(
-      sql,
-    )
-  )
-    return "[包含凭据的 SQL 已隐藏]";
-  return sql;
-}

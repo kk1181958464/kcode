@@ -2,7 +2,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   isLikelyNetworkCommand,
-  redactCommandForDisplay,
   runSpawnedCommand,
   terminateChildProcess,
 } from "./process-command";
@@ -87,15 +86,7 @@ test("kills silent commands after idle timeout", async () => {
   assert.match(result.output, /没有新输出，已判定卡住/);
 });
 
-test("redacts CLI passwords and detects network commands", () => {
-  assert.match(
-    redactCommandForDisplay('PuTTY\\plink.exe -ssh -pw "AAaa19981004" root@1.2.3.4'),
-    /-pw \*\*\*/,
-  );
-  assert.doesNotMatch(
-    redactCommandForDisplay('PuTTY\\plink.exe -ssh -pw "AAaa19981004" root@1.2.3.4'),
-    /AAaa19981004/,
-  );
+test("detects network commands", () => {
   assert.equal(isLikelyNetworkCommand("ssh-keyscan -T 15 host"), true);
   assert.equal(isLikelyNetworkCommand("Get-ChildItem"), false);
 });

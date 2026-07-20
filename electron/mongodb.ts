@@ -87,35 +87,6 @@ export function shouldUseMongoTls(host: string, viaSsh: boolean) {
   return true;
 }
 
-function redactMongoUri(uri: string) {
-  return uri.replace(/^(mongodb(?:\+srv)?:\/\/)([^/@]+)@/i, "$1[已隐藏]@");
-}
-
-export function redactMongoInput(input: Record<string, unknown>) {
-  const redacted = { ...input };
-  for (const key of [
-    "password",
-    "sshPassword",
-    "sshPrivateKey",
-    "sshPassphrase",
-    "tlsCA",
-    "tlsCertificateKeyFile",
-  ])
-    if (key in redacted) redacted[key] = "[已隐藏]";
-  if (typeof redacted.uri === "string")
-    redacted.uri = redactMongoUri(redacted.uri);
-  for (const key of [
-    "filter",
-    "document",
-    "documents",
-    "update",
-    "pipeline",
-    "options",
-  ])
-    if (key in redacted) redacted[key] = "[已隐藏]";
-  return redacted;
-}
-
 function parseMongoUri(uri: string) {
   const match = /^(mongodb(?:\+srv)?):\/\/([^/?]+)(.*)$/i.exec(uri.trim());
   if (!match) throw new Error("MongoDB URI 格式无效。");

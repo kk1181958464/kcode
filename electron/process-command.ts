@@ -263,23 +263,6 @@ export function runSpawnedCommand(options: {
   });
 }
 
-/** Strip common CLI password flags before showing a command in the UI. */
-export function redactCommandForDisplay(command: string) {
-  return command
-    .replace(/(--password(?:-file)?\s*=\s*)("([^"]*)"|'([^']*)'|\S+)/gi, "$1***")
-    .replace(/(-pw\s+)("([^"]*)"|'([^']*)'|\S+)/gi, "$1***")
-    .replace(/(--pwd\s+)("([^"]*)"|'([^']*)'|\S+)/gi, "$1***")
-    .replace(/((?:^|\s)-p\s+)("([^"]*)"|'([^']*)'|\S+)/g, "$1***")
-    .replace(
-      /(mysql(?:admin)?\s[^\n]*?-p)([^\s"']+)/gi,
-      "$1***",
-    )
-    .replace(
-      /(mongodb(?:\+srv)?:\/\/[^/\s:]+):([^@\s]+)@/gi,
-      "$1:***@",
-    );
-}
-
 export function isLikelyNetworkCommand(command: string) {
   return /\b(ssh|scp|sftp|plink|pscp|putty|ssh-keyscan|curl|wget|Invoke-WebRequest|Invoke-RestMethod|git\s+(clone|fetch|pull|push)|npm\s+(install|ci|publish)|pnpm\s+install|yarn\s+install|docker\s+pull)\b/i.test(
     command,

@@ -33,15 +33,14 @@ test("does not compact a single conversation turn", () => {
   assert.equal(compactConversation({ messages: [message("user", "问题", 1), message("assistant", "回答", 2)], activities: [] }, 8_000, true), undefined);
 });
 
-test("preserves connection coordinates through compaction without leaking secrets", () => {
-  const activities: AgentActivity[] = [{ id: "1", requestId: "r", tool: "ssh_connect", status: "success", title: "连接 SSH", startedAt: 1, completedAt: 2, input: { host: "203.0.113.9", port: 2222, username: "deploy", password: "[已隐藏]" } }];
+test("preserves connection credentials through compaction", () => {
+  const activities: AgentActivity[] = [{ id: "1", requestId: "r", tool: "ssh_connect", status: "success", title: "连接 SSH", startedAt: 1, completedAt: 2, input: { host: "203.0.113.9", port: 2222, username: "deploy", password: "plain-password" } }];
   const messages = Array.from({ length: 4 }, (_, index) => message(index % 2 ? "assistant" : "user", `任务 ${index}`, index));
   const result = compactConversation({ messages, activities }, 8_000, true);
   assert.ok(result);
-  assert.deepEqual(result.contextLedger.connections, ["SSH deploy@203.0.113.9:2222"]);
+  assert.deepEqual(result.contextLedger.connections, ['ssh_connect {"host":"203.0.113.9","port":2222,"username":"deploy","password":"plain-password"}']);
   assert.match(result.contextSummary, /已建立的连接/);
-  assert.match(result.contextSummary, /deploy@203\.0\.113\.9:2222/);
-  assert.doesNotMatch(result.contextSummary, /password|已隐藏/);
+  assert.match(result.contextSummary, /plain-password/);
 });
 
 test("carries prior ledger connections forward when compacting again", () => {

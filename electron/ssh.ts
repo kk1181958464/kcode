@@ -1,10 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
   mkdirSync,
-  readFileSync,
-  renameSync,
   statSync,
-  writeFileSync,
 } from "node:fs";
 import path from "node:path";
 import { Client, type ClientChannel, type SFTPWrapper } from "ssh2";
@@ -26,7 +23,6 @@ type SshSession = {
   host: string;
   port: number;
   username: string;
-  fingerprint: string;
 };
 
 type RemoteUndoSnapshot = {
@@ -40,7 +36,6 @@ type RemoteUndoSnapshot = {
   host: string;
   port: number;
   username: string;
-  fingerprint: string;
 };
 
 export type SshConnectInput = {
@@ -50,87 +45,10 @@ export type SshConnectInput = {
   password?: string;
   privateKey?: string;
   passphrase?: string;
-  hostFingerprint?: string;
 };
 
 const sessions = new Map<string, SshSession>();
 const remoteUndoSnapshots = new Map<string, RemoteUndoSnapshot>();
-const knownHosts = new Map<string, string>();
-let knownHostsFile = "";
-
-function normalizeFingerprint(value: string) {
-  const normalized = value
-    .trim()
-    .replace(/^SHA256:/i, "")
-    .replace(/:/g, "");
-  if (/^[A-Za-z0-9+/]{40,}={0,2}$/.test(normalized))
-    return Buffer.from(normalized, "base64").toString("hex");
-  return normalized.toLowerCase();
-}
-
-function displayFingerprint(value: string) {
-  return `SHA256:${Buffer.from(value, "hex").toString("base64").replace(/=+$/, "")}`;
-}
-
-export function configureSshKnownHosts(file: string) {
-  knownHostsFile = file;
-  knownHosts.clear();
-  try {
-    const stored = JSON.parse(readFileSync(file, "utf8")) as Record<
-      string,
-      string
-    >;
-    for (const [host, fingerprint] of Object.entries(stored))
-      knownHosts.set(host, normalizeFingerprint(fingerprint));
-  } catch (error) {
-    const code =
-      typeof error === "object" && error && "code" in error
-        ? String(error.code)
-        : "";
-    if (code !== "ENOENT") throw error;
-  }
-}
-
-export function trustSshFingerprint(
-  host: string,
-  port: number,
-  fingerprint: string,
-) {
-  if (!host.trim()) throw new Error("缺少 SSH 服务器地址。");
-  if (!Number.isInteger(port) || port < 1 || port > 65535)
-    throw new Error("SSH 端口必须是 1 到 65535 之间的整数。");
-  const normalized = normalizeFingerprint(fingerprint);
-  if (!/^[a-f0-9]{64}$/i.test(normalized))
-    throw new Error("SSH 主机指纹格式无效。");
-  const key = `${host.trim().toLowerCase()}:${port}`;
-  const previous = knownHosts.get(key);
-  knownHosts.set(key, normalized);
-  try {
-    persistKnownHosts();
-  } catch (error) {
-    if (previous) knownHosts.set(key, previous);
-    else knownHosts.delete(key);
-    throw error;
-  }
-  return {
-    host: host.trim(),
-    port,
-    hostFingerprint: displayFingerprint(normalized),
-  };
-}
-
-function persistKnownHosts() {
-  if (!knownHostsFile)
-    throw new Error("SSH 主机指纹存储尚未初始化，无法安全建立连接。");
-  mkdirSync(path.dirname(knownHostsFile), { recursive: true });
-  const temporary = `${knownHostsFile}.${process.pid}.tmp`;
-  writeFileSync(
-    temporary,
-    JSON.stringify(Object.fromEntries(knownHosts), null, 2),
-    "utf8",
-  );
-  renameSync(temporary, knownHostsFile);
-}
 
 type SshCredentialKind = "password" | "private-key" | "password-and-key";
 
@@ -153,8 +71,6 @@ function friendlySshError(error: unknown, credentialKind?: SshCredentialKind) {
       return "SSH 私钥认证失败，请检查用户名、私钥内容、私钥口令及服务器 authorized_keys。";
     return "SSH 身份验证失败，请检查用户名、密码、私钥、私钥口令及服务器允许的认证方式。";
   }
-  if (/host fingerprint|host denied|verification failed/i.test(message))
-    return "SSH 主机指纹不匹配，连接已拒绝。";
   if (/timed out|timeout/i.test(message))
     return "SSH 连接超时，请检查服务器地址、端口和防火墙。";
   if (/ECONNREFUSED/i.test(message))
@@ -181,13 +97,6 @@ function getSession(sessionId: string, requestId: string) {
   return session;
 }
 
-export function redactSshInput(input: Record<string, unknown>) {
-  const redacted = { ...input };
-  for (const key of ["password", "privateKey", "passphrase", "stdin"])
-    if (key in redacted) redacted[key] = "[已隐藏]";
-  return redacted;
-}
-
 export async function connectSsh(
   sessionId: string,
   requestId: string,
@@ -204,8 +113,6 @@ export async function connectSsh(
     throw new Error("缺少 SSH 密码或私钥内容。");
   if (!Number.isInteger(port) || port < 1 || port > 65535)
     throw new Error("SSH 端口必须是 1 到 65535 之间的整数。");
-  if (!knownHostsFile && !input.hostFingerprint)
-    throw new Error("SSH 主机指纹存储尚未初始化，无法安全建立连接。");
 
   const client = new Client();
   const credentialKind: SshCredentialKind =
@@ -225,15 +132,6 @@ export async function connectSsh(
       if (value.client === client) sessions.delete(key);
   };
   client.on("error", handleClientError);
-  const hostKey = `${host.toLowerCase()}:${port}`;
-  const suppliedFingerprint = input.hostFingerprint
-    ? normalizeFingerprint(input.hostFingerprint)
-    : "";
-  const trustedFingerprint =
-    suppliedFingerprint || knownHosts.get(hostKey) || "";
-  let actualFingerprint = "";
-  let fingerprintMismatch = false;
-
   await new Promise<void>((resolve, reject) => {
     let settled = false;
     const finish = (error?: unknown) => {
@@ -250,13 +148,7 @@ export async function connectSsh(
     const abort = () => finish(new Error("SSH 连接已取消。"));
     const ready = () => finish();
     const failed = (error: Error) =>
-      finish(
-        new Error(
-          fingerprintMismatch
-            ? `SSH 主机指纹不匹配，连接已拒绝。已保存 ${displayFingerprint(trustedFingerprint)}，服务器当前为 ${displayFingerprint(actualFingerprint)}。请核验后再明确提供新指纹。`
-            : friendlySshError(error, credentialKind),
-        ),
-      );
+      finish(new Error(friendlySshError(error, credentialKind)));
     signal.addEventListener("abort", abort, { once: true });
     client.once("ready", ready);
     client.once("error", failed);
@@ -272,14 +164,6 @@ export async function connectSsh(
         readyTimeout: 30_000,
         keepaliveInterval: 10_000,
         keepaliveCountMax: 3,
-        hostHash: "sha256",
-        hostVerifier: (fingerprint: string) => {
-          actualFingerprint = normalizeFingerprint(fingerprint);
-          fingerprintMismatch = Boolean(
-            trustedFingerprint && actualFingerprint !== trustedFingerprint,
-          );
-          return !fingerprintMismatch;
-        },
       });
     } catch (error) {
       finish(new Error(friendlySshError(error, credentialKind)));
@@ -290,26 +174,6 @@ export async function connectSsh(
     client.destroy();
     throw new Error("SSH 连接已取消。");
   }
-  if (!actualFingerprint) {
-    client.destroy();
-    throw new Error("SSH 服务器未提供可验证的主机指纹。");
-  }
-
-  if (knownHosts.get(hostKey) !== actualFingerprint) {
-    const previous = knownHosts.get(hostKey);
-    knownHosts.set(hostKey, actualFingerprint);
-    try {
-      persistKnownHosts();
-    } catch (error) {
-      if (previous) knownHosts.set(hostKey, previous);
-      else knownHosts.delete(hostKey);
-      client.destroy();
-      throw new Error(
-        `SSH 主机指纹保存失败：${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-  }
-
   const previous = sessions.get(sessionId);
   const session: SshSession = {
     client,
@@ -317,7 +181,6 @@ export async function connectSsh(
     host,
     port,
     username,
-    fingerprint: actualFingerprint,
   };
   sessions.set(sessionId, session);
   client.on("close", () => {
@@ -330,8 +193,6 @@ export async function connectSsh(
     host,
     port,
     username,
-    hostFingerprint: displayFingerprint(actualFingerprint),
-    hostTrust: trustedFingerprint ? "verified" : "trusted-on-first-use",
   };
 }
 
@@ -755,7 +616,6 @@ export async function writeSshFile(
       host: session.host,
       port: session.port,
       username: session.username,
-      fingerprint: session.fingerprint,
     });
     return { bytes: Buffer.byteLength(content), before, after: content };
   } finally {
@@ -874,8 +734,7 @@ export async function undoSshActivity(activityId: string, force = false) {
   if (
     session.host !== snapshot.host ||
     session.port !== snapshot.port ||
-    session.username !== snapshot.username ||
-    session.fingerprint !== snapshot.fingerprint
+    session.username !== snapshot.username
   )
     return {
       success: false,

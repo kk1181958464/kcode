@@ -1,29 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { executeMongo, redactMongoInput, shouldUseMongoTls } from "./mongodb";
-
-test("redacts MongoDB URI, database, SSH, and TLS credentials", () => {
-  assert.deepEqual(
-    redactMongoInput({
-      uri: "mongodb://app:p%40ss@db.example.com:27017/app?retryWrites=true",
-      password: "secret",
-      sshPassword: "ssh-secret",
-      sshPrivateKey: "private-key",
-      sshPassphrase: "key-passphrase",
-      tlsCA: "C:/secrets/ca.pem",
-      tlsCertificateKeyFile: "C:/secrets/client.pem",
-    }),
-    {
-      uri: "mongodb://[已隐藏]@db.example.com:27017/app?retryWrites=true",
-      password: "[已隐藏]",
-      sshPassword: "[已隐藏]",
-      sshPrivateKey: "[已隐藏]",
-      sshPassphrase: "[已隐藏]",
-      tlsCA: "[已隐藏]",
-      tlsCertificateKeyFile: "[已隐藏]",
-    },
-  );
-});
+import { executeMongo, shouldUseMongoTls } from "./mongodb";
 
 test("defaults public direct MongoDB to TLS but not private or tunneled hosts", () => {
   assert.equal(shouldUseMongoTls("mongo.example.com", false), true);

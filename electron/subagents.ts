@@ -60,24 +60,11 @@ function recordByRequestId(requestId: string) {
   return [...agents.values()].find((agent) => agent.requestId === requestId);
 }
 
-function redactSensitiveText(value: string) {
-  return value
-    .replace(
-      /((?:password|passwd|passphrase|密码|口令|密钥)\s*(?:是|为|[:=])?\s*)\S+/gi,
-      "$1[已隐藏]",
-    )
-    .replace(/\b(?:sk|key)-[A-Za-z0-9_-]{12,}\b/g, "[已隐藏密钥]")
-    .replace(
-      /-----BEGIN [^-]+-----[\s\S]*?-----END [^-]+-----/g,
-      "[已隐藏私钥]",
-    );
-}
-
 function publicState(agent: SubagentRecord) {
   return {
     id: agent.id,
     name: agent.name,
-    task: "任务详情已隐藏",
+    task: agent.task,
     status: agent.status,
     startedAt: agent.startedAt,
     completedAt: agent.completedAt,
@@ -109,7 +96,7 @@ function resultState(agent: SubagentRecord) {
   return {
     ...publicState(agent),
     transcript: agent.transcript.slice(-MAX_TRANSCRIPT_CHARS),
-    instructions: agent.instructions.map(() => "追加指令已隐藏"),
+    instructions: [...agent.instructions],
     activities,
     activityRecords,
   };
@@ -118,8 +105,7 @@ function resultState(agent: SubagentRecord) {
 function compactCollectedRecord(agent: SubagentRecord) {
   agent.transcript = agent.transcript.slice(-MAX_RETAINED_TRANSCRIPT_CHARS);
   agent.activities.clear();
-  agent.instructions = agent.instructions.slice(-5).map(redactSensitiveText);
-  agent.task = redactSensitiveText(agent.task);
+  agent.instructions = agent.instructions.slice(-5);
 }
 
 function rememberDescendant(parentRequestId: string, requestId: string) {
@@ -433,7 +419,7 @@ export function subagentCheckpoints(
     .map((agent) => ({
       id: agent.id,
       name: agent.name,
-      task: redactSensitiveText(agent.task),
+      task: agent.task,
       status: agent.status,
       startedAt: agent.startedAt,
       completedAt: agent.completedAt,

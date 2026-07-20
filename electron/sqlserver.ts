@@ -4,7 +4,6 @@ import mssql, { type config as SqlServerConfig } from "mssql";
 import { openSshForward } from "./ssh";
 import {
   assertSingleSqlServerStatement,
-  redactSqlForActivity,
 } from "./sql-policy";
 
 const MAX_RESULT_ROWS = 1_000;
@@ -72,22 +71,6 @@ export function shouldEncryptSqlServer(host: string, viaSsh: boolean) {
 
 export function shouldTrustSqlServerCertificate(host: string) {
   return isPrivateSqlServerHost(host);
-}
-
-export function redactSqlServerInput(input: Record<string, unknown>) {
-  const redacted = { ...input };
-  for (const key of [
-    "password",
-    "sshPassword",
-    "sshPrivateKey",
-    "sshPassphrase",
-  ])
-    if (key in redacted) redacted[key] = "[已隐藏]";
-  if ("values" in redacted && Array.isArray(redacted.values))
-    redacted.values = `[已隐藏 ${redacted.values.length} 个参数]`;
-  if (typeof redacted.sql === "string")
-    redacted.sql = redactSqlForActivity(redacted.sql);
-  return redacted;
 }
 
 function friendlySqlServerError(error: unknown) {

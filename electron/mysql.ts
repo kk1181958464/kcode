@@ -6,7 +6,6 @@ import {
   type FieldPacket,
 } from "mysql2";
 import { openSshForward } from "./ssh";
-import { redactSqlForActivity } from "./sql-policy";
 
 const MAX_RESULT_ROWS = 1_000;
 const MAX_RESULT_CHARS = 200_000;
@@ -96,24 +95,6 @@ export function shouldUseMysqlTls(host: string, viaSsh: boolean) {
       normalized.startsWith("feb")
     );
   return true;
-}
-
-export function redactMysqlInput(input: Record<string, unknown>) {
-  const redacted = { ...input };
-  for (const key of [
-    "password",
-    "sshPassword",
-    "sshPrivateKey",
-    "sshPassphrase",
-    "sslKey",
-    "sslPassphrase",
-  ])
-    if (key in redacted) redacted[key] = "[已隐藏]";
-  if ("values" in redacted && Array.isArray(redacted.values))
-    redacted.values = `[已隐藏 ${redacted.values.length} 个参数]`;
-  if (typeof redacted.sql === "string")
-    redacted.sql = redactSqlForActivity(redacted.sql);
-  return redacted;
 }
 
 export async function connectMysql(

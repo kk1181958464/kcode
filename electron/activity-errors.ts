@@ -1,15 +1,5 @@
 export function conciseFailureOutput(value: string, maxLength = 280) {
-  const sanitized = value
-    .replace(/\u001b\[[0-9;]*m/g, "")
-    .replace(
-      /-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----/gi,
-      "[私钥已隐藏]",
-    )
-    .replace(/(authorization\s*:\s*bearer\s+)\S+/gi, "$1[已隐藏]")
-    .replace(
-      /\b(password|passwd|token|secret|api[_-]?key)\s*[=:]\s*\S+/gi,
-      "$1=[已隐藏]",
-    );
+  const sanitized = value.replace(/\u001b\[[0-9;]*m/g, "");
   const stderr = sanitized.includes("stderr:\n")
     ? sanitized.slice(sanitized.lastIndexOf("stderr:\n") + 8)
     : sanitized;

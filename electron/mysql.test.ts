@@ -9,40 +9,8 @@ import {
   connectMysql,
   disconnectMysql,
   queryMysql,
-  redactMysqlInput,
   shouldUseMysqlTls,
 } from "./mysql";
-
-test("redacts MySQL and SSH tunnel credentials from activity input", () => {
-  assert.deepEqual(
-    redactMysqlInput({
-      host: "10.0.0.5",
-      username: "app",
-      password: "database-password",
-      sshHost: "gateway.example.com",
-      sshUsername: "deploy",
-      sshPassword: "ssh-password",
-      sshPrivateKey: "private-key",
-      sshPassphrase: "key-passphrase",
-      sslKey: "tls-private-key",
-      values: ["secret-value"],
-      sql: "CREATE USER app IDENTIFIED BY 'secret'",
-    }),
-    {
-      host: "10.0.0.5",
-      username: "app",
-      password: "[已隐藏]",
-      sshHost: "gateway.example.com",
-      sshUsername: "deploy",
-      sshPassword: "[已隐藏]",
-      sshPrivateKey: "[已隐藏]",
-      sshPassphrase: "[已隐藏]",
-      sslKey: "[已隐藏]",
-      values: "[已隐藏 1 个参数]",
-      sql: "[包含凭据的 SQL 已隐藏]",
-    },
-  );
-});
 
 test("defaults public direct MySQL to TLS but not private or tunneled hosts", () => {
   assert.equal(shouldUseMysqlTls("db.example.com", false), true);
