@@ -129,10 +129,13 @@ const iconPath = () =>
     path.resolve(__dirname, "../../", iconFileName),
   ].find(existsSync);
 const icoPath = () =>
-  [
-    path.join(process.resourcesPath, "icon.ico"),
-    path.resolve(__dirname, "../../build/icon.ico"),
-  ].find(existsSync);
+  (app.isPackaged
+    ? [path.join(process.resourcesPath, "icon.ico")]
+    : [
+        path.resolve(app.getAppPath(), "build/icon.ico"),
+        path.resolve(__dirname, "../../build/icon.ico"),
+      ]
+  ).find(existsSync);
 const windowIcon = () =>
   process.platform === "win32" ? icoPath() || iconPath() : iconPath();
 const appIcon = (size = 32) => {

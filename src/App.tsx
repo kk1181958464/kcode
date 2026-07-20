@@ -4,6 +4,7 @@ import {
   useCallback,
   useDeferredValue,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -33,6 +34,7 @@ import {
   GitCompareArrows,
   GripVertical,
   LockOpen,
+  Monitor,
   Minus,
   Minimize2,
   PanelLeftClose,
@@ -49,9 +51,11 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   Square,
+  Sun,
   Terminal,
   Trash2,
   UserRound,
+  Moon,
   X,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
@@ -65,6 +69,7 @@ import {
 } from "./context";
 import type { ContextLedger } from "./context";
 import {
+  finishTaskRequest,
   isTaskViewCurrent,
   recoverOrphanedFailure,
   recoverInterruptedActivities,
@@ -135,6 +140,7 @@ async function copyWithToast(text: string, successMessage = "复制成功") {
 const uid = () => crypto.randomUUID();
 const EMPTY_ACTIVITIES: AgentActivity[] = [];
 type SettingsSection = "general" | "models" | "permissions" | "recordings";
+type ThemePreference = "system" | "light" | "dark";
 type TaskRecord = {
   id: string;
   name: string;
@@ -825,6 +831,8 @@ function SettingsPanel({
   onAutoFollowChange,
   statusPanelEnabled,
   onStatusPanelChange,
+  theme,
+  onThemeChange,
   permissionMode,
   onPermissionModeChange,
   permissionPolicy,
@@ -841,6 +849,8 @@ function SettingsPanel({
   onAutoFollowChange(value: boolean): void;
   statusPanelEnabled: boolean;
   onStatusPanelChange(value: boolean): void;
+  theme: ThemePreference;
+  onThemeChange(value: ThemePreference): void;
   permissionMode: PermissionMode;
   onPermissionModeChange(value: PermissionMode): void;
   permissionPolicy: PermissionPolicy;
@@ -1100,6 +1110,32 @@ function SettingsPanel({
                   <p>调整当前工作台的默认行为。</p>
                 </div>
                 <div className="settings-group">
+                  <div className="settings-row">
+                    <span>
+                      <strong>外观主题</strong>
+                      <small>选择工作台配色，跟随系统会实时响应系统设置</small>
+                    </span>
+                    <div className="settings-segmented theme-segmented" aria-label="外观主题">
+                      {(
+                        [
+                          ["light", "浅色", Sun],
+                          ["dark", "深色", Moon],
+                          ["system", "跟随系统", Monitor],
+                        ] as const
+                      ).map(([value, label, Icon]) => (
+                        <button
+                          key={value}
+                          type="button"
+                          className={theme === value ? "active" : ""}
+                          aria-pressed={theme === value}
+                          onClick={() => onThemeChange(value)}
+                        >
+                          <Icon size={13} />
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                   <div className="settings-row">
                     <span>
                       <strong>默认推理强度</strong>
@@ -2498,6 +2534,7 @@ const ConversationMessage = memo(function ConversationMessage({
 
 const ConversationHistory = memo(function ConversationHistory({
   messages,
+  hasOlderMessages,
   activitiesByRequest,
   runningId,
   workspacePath,
@@ -2510,6 +2547,7 @@ const ConversationHistory = memo(function ConversationHistory({
   reasoning,
 }: {
   messages: ChatMessage[];
+  hasOlderMessages: boolean;
   activitiesByRequest: Map<string, AgentActivity[]>;
   runningId?: string;
   workspacePath: string;
@@ -2523,6 +2561,12 @@ const ConversationHistory = memo(function ConversationHistory({
 }) {
   return (
     <div className="message-list" aria-live="polite">
+      {hasOlderMessages && (
+        <div className="conversation-history-loader" aria-hidden="true">
+          <span />
+          向上滚动加载更早对话
+        </div>
+      )}
       {messages.map((message) => {
         const requestId = message.id.startsWith("assistant:")
           ? message.id.slice("assistant:".length)
@@ -2733,6 +2777,9 @@ function AppUpdateDialog({
 
 export default function App() {
   const initialDrafts = useRef<TaskDrafts>(storedTaskDrafts());
+  const attachmentDraftsRef = useRef(
+    new Map<string, { files: ContextFile[]; images: ImageAttachment[] }>(),
+  );
   const [tasks, setTasks] = useState<TaskRecord[]>(() =>
     localStorage.getItem("kcode.tasks") === null
       ? [initialTask()]
@@ -2784,12 +2831,28 @@ export default function App() {
     () => initialDrafts.current[storedActiveTask()?.id ?? ""] ?? "",
   );
   const [settings, setSettings] = useState(false);
+  const [theme, setTheme] = useState<ThemePreference>(() => {
+    const saved = localStorage.getItem("kcode.theme");
+    return saved === "light" || saved === "dark" ? saved : "system";
+  });
   const [updateOpen, setUpdateOpen] = useState(false);
   const [appUpdate, setAppUpdate] = useState<AppUpdateState>({
     status: "idle",
     currentVersion: "",
     portable: false,
   });
+  useEffect(() => {
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    const applyTheme = () => {
+      const resolved = theme === "system" ? (media.matches ? "dark" : "light") : theme;
+      document.documentElement.dataset.theme = resolved;
+      document.documentElement.style.colorScheme = resolved;
+    };
+    applyTheme();
+    if (theme !== "system") return;
+    media.addEventListener("change", applyTheme);
+    return () => media.removeEventListener("change", applyTheme);
+  }, [theme]);
   useEffect(() => {
     let active = true;
     void window.kcode.updater.state().then((state) => {
@@ -3000,12 +3063,20 @@ export default function App() {
   const modelTriggerRef = useRef<HTMLButtonElement>(null);
   const conversationRef = useRef<HTMLElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
+  const turnRailRef = useRef<HTMLElement>(null);
   const autoFollowRef = useRef(true);
   const turnRefs = useRef(new Map<string, HTMLDivElement>());
   const turnButtonRefs = useRef(new Map<string, HTMLButtonElement>());
   const turnPositionsRef = useRef<{ id: string; top: number }[]>([]);
   const activeConversationTurnRef = useRef<string | undefined>(undefined);
+  const pendingTurnTargetRef = useRef<string | undefined>(undefined);
+  const prependScrollHeightRef = useRef<number | undefined>(undefined);
+  const loadingOlderTurnsRef = useRef(false);
+  const pagedTaskRef = useRef<string | undefined>(undefined);
   const gitRefreshActivityRef = useRef<string | undefined>(undefined);
+  const [conversationPageSize, setConversationPageSize] = useState(18);
+  const [visibleTurnStart, setVisibleTurnStart] = useState(0);
+  const [turnRailOverflow, setTurnRailOverflow] = useState({ up: false, down: false });
   const registerTurn = useCallback(
     (id: string, element: HTMLDivElement | null) => {
       if (element) turnRefs.current.set(id, element);
@@ -3079,6 +3150,13 @@ export default function App() {
         })),
     [activeTaskId, messages.length],
   );
+  const visibleMessages = useMemo(() => {
+    const firstTurn = conversationTurns[visibleTurnStart];
+    if (!firstTurn) return messages;
+    const firstMessage = messages.findIndex((message) => message.id === firstTurn.id);
+    return firstMessage > 0 ? messages.slice(firstMessage) : messages;
+  }, [conversationTurns, messages, visibleTurnStart]);
+  const hasOlderMessages = visibleTurnStart > 0;
   const activitiesByRequest = useMemo(() => {
     const grouped = new Map<string, AgentActivity[]>();
     for (const activity of activities) {
@@ -3093,6 +3171,63 @@ export default function App() {
       all.map((item) => (item.id === next.id ? next : item)),
     );
   }, []);
+  useLayoutEffect(() => {
+    if (!activeTaskId || pagedTaskRef.current === activeTaskId) return;
+    pagedTaskRef.current = activeTaskId;
+    setVisibleTurnStart(Math.max(0, conversationTurns.length - conversationPageSize));
+    pendingTurnTargetRef.current = undefined;
+    prependScrollHeightRef.current = undefined;
+    loadingOlderTurnsRef.current = false;
+  }, [activeTaskId, conversationPageSize, conversationTurns.length]);
+  useEffect(() => {
+    const rail = turnRailRef.current;
+    if (!rail || typeof ResizeObserver === "undefined") return;
+    const update = () => {
+      const nextSize = Math.max(4, Math.floor((rail.clientHeight - 24) / 28));
+      setConversationPageSize((current) => (current === nextSize ? current : nextSize));
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(rail);
+    return () => observer.disconnect();
+  }, [activeTaskId, conversationTurns.length > 1]);
+  useEffect(() => {
+    const minimum = Math.max(0, conversationTurns.length - conversationPageSize);
+    if (autoFollowRef.current && visibleTurnStart !== minimum)
+      setVisibleTurnStart(minimum);
+  }, [conversationPageSize, conversationTurns.length]);
+  useLayoutEffect(() => {
+    const conversation = conversationRef.current;
+    const previousHeight = prependScrollHeightRef.current;
+    if (conversation && previousHeight !== undefined) {
+      conversation.scrollTop += conversation.scrollHeight - previousHeight;
+      prependScrollHeightRef.current = undefined;
+      loadingOlderTurnsRef.current = false;
+    }
+    const targetId = pendingTurnTargetRef.current;
+    const target = targetId ? turnRefs.current.get(targetId) : undefined;
+    if (conversation && targetId && target) {
+      conversation.scrollTop = Math.max(0, target.offsetTop - 20);
+      setActiveConversationTurn(targetId);
+      pendingTurnTargetRef.current = undefined;
+    }
+    refreshTurnPositions();
+  }, [visibleTurnStart]);
+
+  const updateTurnRailOverflow = useCallback(() => {
+    const rail = turnRailRef.current;
+    if (!rail) return;
+    const next = {
+      up: rail.scrollTop > 4,
+      down: rail.scrollTop + rail.clientHeight < rail.scrollHeight - 4,
+    };
+    setTurnRailOverflow((current) =>
+      current.up === next.up && current.down === next.down ? current : next,
+    );
+  }, []);
+  useEffect(() => {
+    requestAnimationFrame(updateTurnRailOverflow);
+  }, [conversationTurns.length, updateTurnRailOverflow]);
   useEffect(() => {
     const ids = new Set(conversationTurns.map((turn) => turn.id));
     if (
@@ -3230,6 +3365,18 @@ export default function App() {
     // Programmatic bottom alignment also emits scroll events. Do not treat the
     // transient intermediate position as the user scrolling away from bottom.
     if (programmaticScrollRef.current) return;
+    if (
+      container.scrollTop <= 48 &&
+      visibleTurnStart > 0 &&
+      !loadingOlderTurnsRef.current
+    ) {
+      loadingOlderTurnsRef.current = true;
+      prependScrollHeightRef.current = container.scrollHeight;
+      setVisibleTurnStart((current) =>
+        Math.max(0, current - conversationPageSize),
+      );
+      return;
+    }
     const distanceFromBottom =
       container.scrollHeight - container.scrollTop - container.clientHeight;
     // Take user scroll intent synchronously so a streaming resize cannot pull
@@ -3267,6 +3414,8 @@ export default function App() {
   function scrollToLatest(behavior: ScrollBehavior = "auto") {
     const conversation = conversationRef.current;
     if (!conversation) return;
+    const latestStart = Math.max(0, conversationTurns.length - conversationPageSize);
+    if (visibleTurnStart !== latestStart) setVisibleTurnStart(latestStart);
     autoFollowRef.current = true;
     programmaticScrollRef.current = true;
     setShowScrollToBottom(false);
@@ -3323,10 +3472,15 @@ export default function App() {
     if (index === conversationTurns.length - 1) return scrollToLatest("auto");
     const conversation = conversationRef.current;
     const element = turnRefs.current.get(turnId);
-    if (!conversation || !element) return;
+    if (!conversation) return;
     interruptBottomSettle();
     autoFollowRef.current = false;
     setShowScrollToBottom(true);
+    if (!element) {
+      pendingTurnTargetRef.current = turnId;
+      setVisibleTurnStart(Math.max(0, Math.min(index, conversationTurns.length - conversationPageSize)));
+      return;
+    }
     conversation.scrollTo({
       top: Math.max(0, element.offsetTop - 20),
       behavior: "auto",
@@ -3533,6 +3687,11 @@ export default function App() {
     localStorage.setItem("kcode.statusPanel", String(value));
   }
 
+  function updateTheme(value: ThemePreference) {
+    setTheme(value);
+    localStorage.setItem("kcode.theme", value);
+  }
+
   function updatePermissionMode(value: PermissionMode) {
     setPermissionMode(value);
     localStorage.setItem("kcode.permissionMode", value);
@@ -3640,6 +3799,7 @@ export default function App() {
     const removed = tasks.filter(
       (task) => task.workspacePath === workspacePath,
     );
+    removed.forEach((task) => attachmentDraftsRef.current.delete(task.id));
     if (window.kcode) {
       await Promise.all(
         removed.map((task) => window.kcode.chat.cancelSummary(task.id)),
@@ -3662,6 +3822,7 @@ export default function App() {
     if (activeTask?.workspacePath === workspacePath) {
       const next = nextTasks[0];
       if (next) {
+        const attachmentDraft = attachmentDraftsRef.current.get(next.id);
         claimTaskView(next.id);
         setActiveTaskId(next.id);
         setMessages(next.messages);
@@ -3669,6 +3830,8 @@ export default function App() {
         setRunningId(next.runningId);
         currentRequest.current = next.runningId;
         requestStartedRef.current = next.startedAt;
+        setAttachedFiles(attachmentDraft?.files ?? []);
+        setAttachedImages(attachmentDraft?.images ?? []);
         setSelected(next.modelSelection || selected);
         setReasoningEffort(next.reasoningEffort || defaultReasoningEffort);
       } else {
@@ -3881,6 +4044,23 @@ export default function App() {
           displayedTaskIdRef.current,
           taskId,
         );
+        if (event.type !== "done" && event.type !== "error")
+          setTasks((all) => {
+            const index = all.findIndex((task) => task.id === taskId);
+            const task = all[index];
+            if (
+              !task ||
+              (task.runningId === id && task.runStatus === "running")
+            )
+              return all;
+            const next = [...all];
+            next[index] = {
+              ...task,
+              runningId: id,
+              runStatus: "running",
+            };
+            return next;
+          });
         if (event.type === "activity") {
           if (isActive) clearPendingReasoning();
           const task = tasksRef.current.find((item) => item.id === taskId);
@@ -4016,9 +4196,11 @@ export default function App() {
                 ? {
                     ...task,
                     messages: updateMessages(task.messages),
-                    runningId: undefined,
-                    runStatus:
+                    ...finishTaskRequest(
+                      task.runningId,
+                      id,
                       task.runStatus === "cancelled" ? "cancelled" : "failed",
+                    ),
                     updatedAt: Date.now(),
                   }
                 : task,
@@ -4034,7 +4216,7 @@ export default function App() {
               ),
             );
           }
-          if (isActive) {
+          if (isActive && currentRequest.current === id) {
             currentRequest.current = undefined;
             setRunningId(undefined);
           }
@@ -4070,8 +4252,7 @@ export default function App() {
                   imageSemantics[image.id] = assistant.content.slice(0, 4_000);
               return {
                 ...task,
-                runningId: undefined,
-                runStatus: "completed",
+                ...finishTaskRequest(task.runningId, id, "completed"),
                 usageResolved: true,
                 imageSemantics,
                 updatedAt: Date.now(),
@@ -4087,7 +4268,7 @@ export default function App() {
               ),
             );
           }
-          if (isActive) {
+          if (isActive && currentRequest.current === id) {
             currentRequest.current = undefined;
             setRunningId(undefined);
             setUsageResolved(true);
@@ -4159,6 +4340,7 @@ export default function App() {
     setInput("");
     setAttachedFiles([]);
     setAttachedImages([]);
+    if (activeTask?.id) attachmentDraftsRef.current.delete(activeTask.id);
     setContextError("");
     setUsedContextCount(0);
     setUsage({ input: 0, output: 0, cached: 0 });
@@ -4234,6 +4416,11 @@ export default function App() {
 
   async function switchTask(task: TaskRecord) {
     if (task.id === activeTaskId) return;
+    if (activeTaskId)
+      attachmentDraftsRef.current.set(activeTaskId, {
+        files: attachedFiles,
+        images: attachedImages,
+      });
     const conversation = conversationRef.current;
     if (conversation && displayedTaskIdRef.current) {
       // When follow mode is active, the container may be between layout
@@ -4265,12 +4452,13 @@ export default function App() {
     setSelected(task.modelSelection || selected);
     setReasoningEffort(task.reasoningEffort || defaultReasoningEffort);
     setInput(initialDrafts.current[task.id] ?? "");
-    setAttachedFiles([]);
+    const attachmentDraft = attachmentDraftsRef.current.get(task.id);
+    setAttachedFiles(attachmentDraft?.files ?? []);
     setUsage(task.usage ?? { input: 0, output: 0, cached: 0 });
     setUsageResolved(Boolean(task.usageResolved));
     setDurationMs(task.durationMs ?? 0);
     setUsedContextCount(task.usedContextCount ?? 0);
-    setAttachedImages([]);
+    setAttachedImages(attachmentDraft?.images ?? []);
     contextByMessageRef.current.clear();
     autoFollowRef.current = targetScroll.atBottom;
     setShowScrollToBottom(!targetScroll.atBottom);
@@ -4318,6 +4506,7 @@ export default function App() {
 
   async function removeTask(task: TaskRecord) {
     delete initialDrafts.current[task.id];
+    attachmentDraftsRef.current.delete(task.id);
     localStorage.setItem("kcode.taskDrafts", JSON.stringify(initialDrafts.current));
     if (window.kcode) {
       await window.kcode.chat.cancelSummary(task.id);
@@ -4335,6 +4524,7 @@ export default function App() {
     if (task.id === activeTaskId) {
       const next = nextTasks[0];
       if (next) {
+        const attachmentDraft = attachmentDraftsRef.current.get(next.id);
         claimTaskView(next.id);
         setActiveTaskId(next.id);
         setMessages(next.messages);
@@ -4345,6 +4535,8 @@ export default function App() {
         requestStartedRef.current = next.startedAt;
         setSelected(next.modelSelection || selected);
         setReasoningEffort(next.reasoningEffort || defaultReasoningEffort);
+        setAttachedFiles(attachmentDraft?.files ?? []);
+        setAttachedImages(attachmentDraft?.images ?? []);
       } else {
         claimTaskView("");
         setActiveTaskId("");
@@ -4662,6 +4854,7 @@ export default function App() {
     setInput("");
     setAttachedFiles([]);
     setAttachedImages([]);
+    attachmentDraftsRef.current.delete(activeTask.id);
     autoFollowRef.current = true;
     scrollAfterSendRef.current = true;
     setShowScrollToBottom(false);
@@ -4910,6 +5103,7 @@ export default function App() {
     if (!queuedMessage) {
       setAttachedFiles([]);
       setAttachedImages([]);
+      attachmentDraftsRef.current.delete(activeTask.id);
     }
     if (contextNotice) flashContextToast(contextNotice);
     setMessages(visibleMessages);
@@ -5603,7 +5797,7 @@ export default function App() {
                         >
                           <span>{task.name}</span>
                         </button>
-                        {task.runningId && (
+                        {(task.runningId || task.runStatus === "running") && (
                           <small className="task-running">运行中</small>
                         )}
                         <button
@@ -5697,14 +5891,22 @@ export default function App() {
           >
             {conversationTurns.length > 1 && (
               <nav
+                ref={turnRailRef}
                 className="turn-rail"
                 aria-label="对话记录导航"
+                onScroll={updateTurnRailOverflow}
                 style={
                   {
                     "--turn-count": conversationTurns.length,
                   } as React.CSSProperties
                 }
               >
+                <span className={`turn-rail-cue up ${turnRailOverflow.up ? "visible" : ""}`}>
+                  <ChevronDown size={12} />
+                </span>
+                <span className={`turn-rail-cue down ${turnRailOverflow.down ? "visible" : ""}`}>
+                  <ChevronDown size={12} />
+                </span>
                 <div className="turn-rail-line" />
                 {conversationTurns.map((turn, index) => (
                   <button
@@ -5775,7 +5977,8 @@ export default function App() {
               </div>
             ) : (
               <ConversationHistory
-                messages={messages}
+                messages={visibleMessages}
+                hasOlderMessages={hasOlderMessages}
                 activitiesByRequest={activitiesByRequest}
                 runningId={runningId}
                 workspacePath={activeTask?.workspacePath || ""}
@@ -6602,6 +6805,8 @@ export default function App() {
             onAutoFollowChange={updateAutoFollow}
             statusPanelEnabled={statusOpen}
             onStatusPanelChange={updateStatusPanel}
+            theme={theme}
+            onThemeChange={updateTheme}
             permissionMode={permissionMode}
             onPermissionModeChange={updatePermissionMode}
             permissionPolicy={permissionPolicy}

@@ -1,18 +1,61 @@
 :root {
   font-family: Inter, "Segoe UI", sans-serif;
-  color: #20231f;
-  background: #f3f4f1;
+  color: #3b4340;
+  background: #e7ebe9;
   font-synthesis: none;
-  --ink: #20231f;
-  --muted: #777b73;
-  --line: #dfe1dc;
-  --surface: #fbfcfa;
-  --panel: #f1f2ef;
-  --accent: #315f49;
-  --accent-soft: #e6efe9;
-  --shadow-soft: 0 2px 10px rgb(27 36 30 / 6%);
-  --shadow-raised: 0 8px 26px rgb(24 33 27 / 11%);
-  --shadow-float: 0 16px 44px rgb(20 29 23 / 16%);
+  --ink: #3b4340;
+  --muted: #626b67;
+  --line: #cbd2cf;
+  --surface: #e9edeb;
+  --surface-raised: #f1f3f2;
+  --surface-muted: #e0e5e2;
+  --panel: #e3e8e5;
+  --sidebar-surface: #dde3e0;
+  --accent: #466f68;
+  --accent-hover: #385e58;
+  --accent-soft: #d6e4df;
+  --link: #41677d;
+  --danger: #96554f;
+  --danger-soft: #eee1df;
+  --warning: #7c683e;
+  --warning-soft: #ece6d8;
+  --success: #4d705e;
+  --success-soft: #dce7e0;
+  --code-surface: #29302e;
+  --code-toolbar: #333b38;
+  --code-ink: #d5ddd9;
+  --shadow-soft: 0 2px 10px rgb(39 49 45 / 4%);
+  --shadow-raised: 0 8px 26px rgb(35 45 41 / 8%);
+  --shadow-float: 0 16px 44px rgb(30 40 36 / 12%);
+}
+
+:root[data-theme="dark"] {
+  color: #c8cfcc;
+  background: #1c211f;
+  --ink: #c8cfcc;
+  --muted: #929c98;
+  --line: #39413e;
+  --surface: #1c211f;
+  --surface-raised: #252b29;
+  --surface-muted: #2b3230;
+  --panel: #202624;
+  --sidebar-surface: #181d1b;
+  --accent: #6e968c;
+  --accent-hover: #7fa89e;
+  --accent-soft: #2c403a;
+  --link: #83a9bd;
+  --danger: #d59a94;
+  --danger-soft: #432d2b;
+  --warning: #c5ad78;
+  --warning-soft: #403929;
+  --success: #8cb39d;
+  --success-soft: #293c33;
+  --code-surface: #151a18;
+  --code-toolbar: #202724;
+  --code-ink: #c5cfca;
+  --shadow-soft: 0 2px 12px rgb(0 0 0 / 16%);
+  --shadow-raised: 0 10px 30px rgb(0 0 0 / 22%);
+  --shadow-float: 0 18px 50px rgb(0 0 0 / 30%);
 }
 
 * {
@@ -768,6 +811,45 @@ select:focus-visible {
 .turn-rail::-webkit-scrollbar {
   display: none;
 }
+.turn-rail-cue {
+  position: sticky;
+  left: 9px;
+  z-index: 4;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  margin-bottom: -18px;
+  opacity: 0;
+  color: #697269;
+  filter: drop-shadow(0 1px 2px #fff);
+  pointer-events: none;
+  transition: opacity 160ms ease;
+}
+.turn-rail-cue.visible {
+  opacity: 0.85;
+}
+.turn-rail-cue.up {
+  top: 4px;
+}
+.turn-rail-cue.up svg {
+  transform: rotate(180deg);
+  animation: turn-rail-cue-up 1.35s ease-in-out infinite;
+}
+.turn-rail-cue.down {
+  top: calc(100% - 22px);
+}
+.turn-rail-cue.down svg {
+  animation: turn-rail-cue-down 1.35s ease-in-out infinite;
+}
+@keyframes turn-rail-cue-up {
+  0%, 100% { transform: rotate(180deg) translateY(0); }
+  50% { transform: rotate(180deg) translateY(3px); }
+}
+@keyframes turn-rail-cue-down {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(3px); }
+}
 .turn-rail-line {
   position: sticky;
   top: 0;
@@ -940,6 +1022,27 @@ select:focus-visible {
   max-width: 850px;
   margin: 0 auto;
   padding: 34px 34px 100px 58px;
+}
+.conversation-history-loader {
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin: -18px 0 14px;
+  color: #7a817a;
+  font-size: 10px;
+}
+.conversation-history-loader span {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #819587;
+  animation: history-loader-pulse 1.5s ease-in-out infinite;
+}
+@keyframes history-loader-pulse {
+  0%, 100% { opacity: 0.35; transform: scale(0.8); }
+  50% { opacity: 1; transform: scale(1); }
 }
 .conversation-turn-item {
   content-visibility: auto;
@@ -3358,6 +3461,17 @@ select:focus-visible {
   box-shadow: 0 1px 2px #18201812;
   font-weight: 650;
 }
+.theme-segmented button {
+  min-width: 68px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+}
+.theme-segmented {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
 .setting-switch {
   position: relative;
   flex: 0 0 auto;
@@ -4543,6 +4657,233 @@ select:focus {
   background: #fff5f4;
   color: #8d3c35;
 }
+
+/* Dark mode keeps persistent surfaces close in luminance and reserves brighter
+   colors for interaction and status, reducing glare during long sessions. */
+:root[data-theme="dark"] body,
+:root[data-theme="dark"] .window-root,
+:root[data-theme="dark"] .app-shell,
+:root[data-theme="dark"] .main,
+:root[data-theme="dark"] .conversation {
+  color: var(--ink);
+  background: var(--surface);
+}
+:root[data-theme="dark"] .window-titlebar,
+:root[data-theme="dark"] .status-panel,
+:root[data-theme="dark"] .topbar,
+:root[data-theme="dark"] .settings-nav,
+:root[data-theme="dark"] .sidebar-footer {
+  background: var(--panel);
+  border-color: var(--line);
+}
+:root[data-theme="dark"] .sidebar {
+  background: var(--sidebar-surface);
+  border-color: var(--line);
+}
+:root[data-theme="dark"] .settings-layer {
+  background: rgb(5 8 7 / 54%);
+}
+:root[data-theme="dark"] .modal-backdrop {
+  background: rgb(5 8 7 / 66%);
+}
+:root[data-theme="dark"] .browser-panel,
+:root[data-theme="dark"] .browser-panel > header,
+:root[data-theme="dark"] .update-dialog {
+  border-color: var(--line);
+  background: var(--panel);
+}
+:root[data-theme="dark"] .browser-panel > header,
+:root[data-theme="dark"] .update-dialog {
+  background-image: none;
+}
+:root[data-theme="dark"] .update-dialog > header,
+:root[data-theme="dark"] .update-dialog > footer {
+  border-color: var(--line);
+}
+:root[data-theme="dark"] .topbar {
+  box-shadow: none;
+}
+:root[data-theme="dark"] .window-titlebar > span,
+:root[data-theme="dark"] .window-controls button,
+:root[data-theme="dark"] .settings-section-header p,
+:root[data-theme="dark"] .settings-row small,
+:root[data-theme="dark"] .settings-nav button,
+:root[data-theme="dark"] .composer textarea::placeholder,
+:root[data-theme="dark"] .activity-copy-button,
+:root[data-theme="dark"] .message-meta time {
+  color: var(--muted);
+}
+:root[data-theme="dark"] .window-controls button:hover,
+:root[data-theme="dark"] .icon:hover,
+:root[data-theme="dark"] .workspace-group > header > button:hover,
+:root[data-theme="dark"] .message-actions button:hover,
+:root[data-theme="dark"] .git-section-head button:hover,
+:root[data-theme="dark"] .task-row:not(.dragging):hover,
+:root[data-theme="dark"] .new-task:hover,
+:root[data-theme="dark"] .execution-summary-head:hover,
+:root[data-theme="dark"] .changed-file-row:not(.no-diff):hover,
+:root[data-theme="dark"] .activity-copy-button:hover {
+  background: var(--surface-muted);
+  color: var(--ink);
+}
+:root[data-theme="dark"] .task-row.active,
+:root[data-theme="dark"] .workspace.active,
+:root[data-theme="dark"] .tasks button.active,
+:root[data-theme="dark"] .settings-nav button.active {
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+:root[data-theme="dark"] .task-filter,
+:root[data-theme="dark"] .workspace-icon,
+:root[data-theme="dark"] .framed,
+:root[data-theme="dark"] .prompts button,
+:root[data-theme="dark"] .connect-model,
+:root[data-theme="dark"] .turn-preview,
+:root[data-theme="dark"] .file-changes-summary,
+:root[data-theme="dark"] .agent-activity,
+:root[data-theme="dark"] .execution-summary-detail,
+:root[data-theme="dark"] .activity-detail,
+:root[data-theme="dark"] .activity-icon,
+:root[data-theme="dark"] .approval-actions button,
+:root[data-theme="dark"] .message-avatar,
+:root[data-theme="dark"] .message-images button,
+:root[data-theme="dark"] .composer,
+:root[data-theme="dark"] .scroll-to-bottom,
+:root[data-theme="dark"] .context-file,
+:root[data-theme="dark"] .browser-address input,
+:root[data-theme="dark"] .activity-copy-button,
+:root[data-theme="dark"] .model-menu,
+:root[data-theme="dark"] .effort-menu,
+:root[data-theme="dark"] .sync-models,
+:root[data-theme="dark"] .secondary,
+:root[data-theme="dark"] .git-diff-view,
+:root[data-theme="dark"] .modal,
+:root[data-theme="dark"] .settings-panel,
+:root[data-theme="dark"] .summary-dialog,
+:root[data-theme="dark"] input,
+:root[data-theme="dark"] textarea,
+:root[data-theme="dark"] select {
+  border-color: var(--line);
+  background: var(--surface-raised);
+  color: var(--ink);
+}
+:root[data-theme="dark"] .composer-wrap {
+  background: linear-gradient(to top, var(--surface) 78%, transparent);
+}
+:root[data-theme="dark"] .composer {
+  box-shadow: 0 8px 26px rgb(0 0 0 / 18%);
+}
+:root[data-theme="dark"] .composer:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgb(110 150 140 / 14%);
+}
+:root[data-theme="dark"] .message.user .message-body {
+  border-color: #3d4b46;
+  background: #29332f;
+}
+:root[data-theme="dark"] .message.assistant .message-body,
+:root[data-theme="dark"] .message-body {
+  color: var(--ink);
+}
+:root[data-theme="dark"] .message-body blockquote {
+  border-left-color: var(--accent);
+  background: #252e2b;
+  color: #adb7b3;
+}
+:root[data-theme="dark"] .message-body :not(pre) > code,
+:root[data-theme="dark"] .message-body th,
+:root[data-theme="dark"] .message-body td {
+  border-color: var(--line);
+}
+:root[data-theme="dark"] .message-body :not(pre) > code,
+:root[data-theme="dark"] .message-body th {
+  background: #252c2a;
+}
+:root[data-theme="dark"] .code-block {
+  border-color: #36403c;
+  background: var(--code-surface);
+  color: var(--code-ink);
+}
+:root[data-theme="dark"] .code-toolbar {
+  background: var(--code-toolbar);
+  color: #aab5b0;
+}
+:root[data-theme="dark"] .settings-layout,
+:root[data-theme="dark"] .settings-content,
+:root[data-theme="dark"] .settings-section,
+:root[data-theme="dark"] .provider-block,
+:root[data-theme="dark"] .provider-row,
+:root[data-theme="dark"] .settings-group {
+  border-color: var(--line);
+  background-color: transparent;
+}
+:root[data-theme="dark"] .settings-row {
+  border-color: var(--line);
+}
+:root[data-theme="dark"] .settings-segmented {
+  border-color: var(--line);
+  background: #1b211f;
+}
+:root[data-theme="dark"] .settings-segmented button {
+  color: var(--muted);
+}
+:root[data-theme="dark"] .settings-segmented button.active {
+  background: var(--surface-muted);
+  color: var(--ink);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 24%);
+}
+:root[data-theme="dark"] .setting-switch {
+  background: #46504c;
+}
+:root[data-theme="dark"] .setting-switch.on {
+  background: var(--accent);
+}
+:root[data-theme="dark"] .setting-switch span {
+  background: #dfe5e2;
+}
+:root[data-theme="dark"] .error-state,
+:root[data-theme="dark"] .message-error,
+:root[data-theme="dark"] .activity-error-reason,
+:root[data-theme="dark"] .error,
+:root[data-theme="dark"] .app-toast.error {
+  border-color: #68423e;
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+:root[data-theme="dark"] .agent-activity.waiting,
+:root[data-theme="dark"] .activity-exit-note {
+  border-color: #625638;
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+:root[data-theme="dark"] .run-state,
+:root[data-theme="dark"] .app-toast {
+  border-color: #3f5d50;
+  background: var(--success-soft);
+  color: var(--success);
+}
+:root[data-theme="dark"] .diff-add {
+  background: #263a30;
+  color: #9bc4a8;
+}
+:root[data-theme="dark"] .diff-del {
+  background: #402c2b;
+  color: #d6a09a;
+}
+:root[data-theme="dark"] .diff-hunk {
+  background: #293237;
+  color: #9eb1bb;
+}
+:root[data-theme="dark"] .turn-rail-line::before {
+  background: #3d4743;
+}
+:root[data-theme="dark"] .turn-tick {
+  background: #66736e;
+}
+:root[data-theme="dark"] .turn-rail > button:hover .turn-tick,
+:root[data-theme="dark"] .turn-rail > button.active .turn-tick {
+  background: #a4b8b0;
+}
 .app-toast > svg {
   flex: 0 0 auto;
 }
@@ -4581,4 +4922,232 @@ select:focus {
 .activity-copy-button:hover {
   background: #f3f5f2;
   color: #2f3731;
+}
+
+/* Low-glare workspace palette. Persistent surfaces stay close in luminance;
+   color is reserved for links, state, and direct interaction. */
+body,
+.window-root,
+.app-shell {
+  color: var(--ink);
+  background: var(--surface);
+}
+.window-titlebar {
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+.window-titlebar > span,
+.topbar span,
+.tasks small,
+.workspace small,
+.brand small,
+.status-panel p,
+.status-panel dt,
+.activity-title small,
+.activity-status,
+.message-meta time,
+.conversation-history-loader {
+  color: var(--muted);
+}
+.window-controls button {
+  color: #4d5753;
+}
+.window-controls button:hover,
+.icon:hover,
+.workspace-group > header > button:hover,
+.message-actions button:hover,
+.git-section-head button:hover {
+  background: #dde3e0;
+}
+.sidebar,
+.sidebar-footer {
+  background: var(--sidebar-surface);
+}
+.main,
+.conversation {
+  background: var(--surface);
+}
+.topbar {
+  background: rgb(239 242 241 / 94%);
+  box-shadow: none;
+}
+.status-panel {
+  background: var(--panel);
+  box-shadow: none;
+}
+.task-filter,
+.workspace-icon,
+.framed,
+.prompts button,
+.connect-model,
+.turn-preview,
+.file-changes-summary,
+.agent-activity,
+.execution-summary-detail,
+.activity-detail,
+.activity-icon,
+.approval-actions button,
+.message-avatar,
+.message-images button,
+.composer,
+.scroll-to-bottom,
+.context-file,
+.browser-address input,
+.activity-copy-button {
+  border-color: var(--line);
+  background: var(--surface-raised);
+}
+.task-row.active,
+.workspace.active,
+.tasks button.active {
+  background: #d9e1de;
+}
+.task-row:not(.dragging):hover,
+.new-task:hover,
+.execution-summary-head:hover,
+.changed-file-row:not(.no-diff):hover,
+.activity-undo:hover:not(:disabled),
+.prompts button:hover,
+.scroll-to-bottom:hover,
+.activity-copy-button:hover {
+  background: var(--surface-muted);
+}
+.composer-wrap {
+  background: linear-gradient(to top, var(--surface) 78%, transparent);
+}
+.composer {
+  background: var(--surface-raised);
+  box-shadow: 0 6px 22px rgb(38 49 45 / 7%);
+}
+.composer:focus-within {
+  border-color: #8da49d;
+  box-shadow:
+    0 0 0 2px rgb(70 111 104 / 9%),
+    0 8px 25px rgb(38 49 45 / 8%);
+}
+.composer textarea {
+  color: var(--ink);
+  background: transparent;
+}
+.composer textarea::placeholder {
+  color: #89928e;
+}
+.message.user .message-body {
+  border-color: #d7ddda;
+  background: #e6ebe8;
+  box-shadow: none;
+}
+.message.assistant .message-body {
+  color: #343b38;
+}
+.message-body a {
+  color: var(--link);
+}
+.message-body blockquote {
+  border-left-color: #78928b;
+  background: #e8eeeb;
+  color: #535d59;
+}
+.message-body :not(pre) > code,
+.message-body th {
+  border-color: var(--line);
+  background: #e7ebe9;
+}
+.message-body th,
+.message-body td {
+  border-color: var(--line);
+}
+.code-block {
+  border-color: #4a5551;
+  background: var(--code-surface);
+  color: var(--code-ink);
+}
+.code-toolbar {
+  background: var(--code-toolbar);
+  color: #bfc9c4;
+}
+.file-changes-summary > header,
+.execution-summary-icon,
+.file-changes-icon,
+.model-menu,
+.effort-menu,
+.sync-models,
+.secondary,
+.summary-dialog footer button,
+.git-diff-view,
+.modal,
+.settings-panel,
+.summary-dialog {
+  background: var(--surface-raised);
+}
+.status-panel,
+.settings-panel,
+.modal,
+.summary-dialog,
+.file-changes-summary,
+.agent-activity {
+  box-shadow: var(--shadow-soft);
+}
+.run-state {
+  background: var(--success-soft);
+  color: var(--success);
+}
+.error-state,
+.message-error,
+.activity-error-reason,
+.error {
+  border-color: #dfc8c5;
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.agent-activity.failed {
+  border-color: #d9c6c3;
+}
+.agent-activity.waiting,
+.activity-exit-note {
+  border-color: #d9d0b9;
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+.diff-add {
+  background: #e1ece5;
+  color: #3f6651;
+}
+.diff-del {
+  background: #f1e3e1;
+  color: #8a4b45;
+}
+.diff-hunk {
+  background: #e5e9ec;
+  color: #596771;
+}
+.send:not(.stop),
+.primary {
+  background: var(--accent);
+  box-shadow: none;
+}
+.send:hover:not(:disabled):not(.stop),
+.primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  box-shadow: none;
+}
+.turn-rail-line::before {
+  background: #cbd2ce;
+}
+.turn-tick {
+  background: #aeb9b4;
+}
+.turn-rail > button:hover .turn-tick,
+.turn-rail > button.active .turn-tick {
+  background: #53645e;
+}
+.app-toast {
+  border-color: #bfd1c7;
+  background: #e8f1ec;
+  color: #3e6551;
+}
+.app-toast.error {
+  border-color: #dfc4c0;
+  background: var(--danger-soft);
+  color: var(--danger);
 }

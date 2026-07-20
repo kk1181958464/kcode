@@ -3,6 +3,19 @@ import type { AgentActivity, ChatMessage } from "./types";
 export type TaskRunStatus =
   "idle" | "running" | "completed" | "failed" | "cancelled" | "paused";
 
+export function finishTaskRequest(
+  currentRequestId: string | undefined,
+  finishedRequestId: string,
+  finishedStatus: Exclude<TaskRunStatus, "idle" | "running" | "paused">,
+) {
+  const hasNewerRequest = Boolean(
+    currentRequestId && currentRequestId !== finishedRequestId,
+  );
+  return hasNewerRequest
+    ? { runningId: currentRequestId, runStatus: "running" as const }
+    : { runningId: undefined, runStatus: finishedStatus };
+}
+
 export function isTaskViewCurrent(
   activeTaskId: string,
   displayedTaskId: string,

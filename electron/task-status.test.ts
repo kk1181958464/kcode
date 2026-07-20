@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  finishTaskRequest,
   isTaskViewCurrent,
   recoverOrphanedFailure,
   recoverInterruptedActivities,
@@ -89,4 +90,19 @@ test("rejects stale task views during a conversation switch", () => {
   assert.equal(isTaskViewCurrent("task-b", "task-b", "task-b"), true);
   assert.equal(isTaskViewCurrent("task-b", "task-a", "task-b"), false);
   assert.equal(isTaskViewCurrent("task-a", "task-b", "task-a"), false);
+});
+
+test("a finished request cannot clear a newer queued request", () => {
+  assert.deepEqual(finishTaskRequest("request-b", "request-a", "completed"), {
+    runningId: "request-b",
+    runStatus: "running",
+  });
+  assert.deepEqual(finishTaskRequest("request-a", "request-a", "completed"), {
+    runningId: undefined,
+    runStatus: "completed",
+  });
+  assert.deepEqual(finishTaskRequest(undefined, "request-a", "failed"), {
+    runningId: undefined,
+    runStatus: "failed",
+  });
 });
