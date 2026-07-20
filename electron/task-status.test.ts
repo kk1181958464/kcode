@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   isTaskViewCurrent,
+  recoverOrphanedFailure,
   recoverInterruptedActivities,
   recoverTaskRunStatus,
 } from "../src/task-status";
@@ -52,6 +53,20 @@ test("recovers structured failures with partial or empty output", () => {
       "failed",
     );
   }
+});
+
+test("restores a visible error for a failed turn with only a user message", () => {
+  const user: ChatMessage = {
+    id: "user-1",
+    role: "user",
+    content: "continue",
+    createdAt: 1,
+  };
+  const recovered = recoverOrphanedFailure([user], "failed", 10);
+  assert.equal(recovered.length, 2);
+  assert.equal(recovered[1].role, "assistant");
+  assert.match(recovered[1].error ?? "", /生成失败/);
+  assert.equal(recoverOrphanedFailure(recovered, "failed", 20), recovered);
 });
 
 test("marks interrupted tool activities as failed", () => {

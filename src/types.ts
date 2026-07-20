@@ -191,6 +191,7 @@ export type ChatMessage = {
 };
 
 export type ModelRequest = {
+  requestId?: string;
   taskId?: string;
   providerId: string;
   modelId: string;

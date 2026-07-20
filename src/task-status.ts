@@ -38,6 +38,26 @@ export function recoverTaskRunStatus(task: {
   return "idle";
 }
 
+export function recoverOrphanedFailure(
+  messages: ChatMessage[],
+  status: TaskRunStatus,
+  createdAt: number,
+) {
+  const latest = messages.at(-1) as (ChatMessage & { queued?: boolean }) | undefined;
+  if (status !== "failed" || latest?.role !== "user" || latest.queued)
+    return messages;
+  return [
+    ...messages,
+    {
+      id: `assistant:recovered-failure:${latest.id}`,
+      role: "assistant" as const,
+      content: "",
+      createdAt,
+      error: "生成失败：上一次模型请求在启动阶段中断，未返回内容。请重试或切换模型/供应商。",
+    },
+  ];
+}
+
 export function recoverInterruptedActivities(
   activities: AgentActivity[],
   completedAt: number,

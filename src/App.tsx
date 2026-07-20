@@ -66,6 +66,7 @@ import {
 import type { ContextLedger } from "./context";
 import {
   isTaskViewCurrent,
+  recoverOrphanedFailure,
   recoverInterruptedActivities,
   recoverTaskRunStatus,
   type TaskRunStatus,
@@ -200,11 +201,13 @@ const initialTask = (): TaskRecord => ({
   runStatus: "idle",
 });
 function normalizeStoredTask(task: TaskRecord): TaskRecord {
+  const runStatus = recoverTaskRunStatus(task);
   return {
     ...task,
+    messages: recoverOrphanedFailure(task.messages, runStatus, task.updatedAt),
     runningId: undefined,
     startedAt: undefined,
-    runStatus: recoverTaskRunStatus(task),
+    runStatus,
     activities: recoverInterruptedActivities(task.activities, task.updatedAt),
   };
 }
@@ -4982,17 +4985,7 @@ export default function App() {
       }, 45);
       return;
     }
-    const id = await window.kcode.chat.start({
-      taskId,
-      providerId: target.provider.id,
-      modelId: target.model.modelId,
-      messages: history,
-      reasoningEffort,
-      permissionMode,
-      permissionPolicy,
-      workspacePath: activeTask.workspacePath,
-      contextWindow: selectedContextWindow,
-    });
+    const id = uid();
     requestTasksRef.current.set(id, taskId);
     assistantLengthsRef.current.set(id, 0);
     const assistantMessage: ChatMessage = {
@@ -5038,6 +5031,60 @@ export default function App() {
           : task,
       ),
     );
+    try {
+      await window.kcode.chat.start({
+        requestId: id,
+        taskId,
+        providerId: target.provider.id,
+        modelId: target.model.modelId,
+        messages: history,
+        reasoningEffort,
+        permissionMode,
+        permissionPolicy,
+        workspacePath: activeTask.workspacePath,
+        contextWindow: selectedContextWindow,
+      });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      const failure = detail
+        ? `生成失败：模型请求未能启动。${detail}`
+        : "生成失败：模型请求未能启动，请稍后重试或切换模型/供应商。";
+      const markFailed = (all: ChatMessage[]) =>
+        all.map((message) =>
+          message.id === assistantMessage.id
+            ? { ...message, error: failure }
+            : message,
+        );
+      const elapsed = Date.now() - requestStartedAt;
+      if (stillActive) {
+        setMessages(markFailed);
+        currentRequest.current = undefined;
+        setRunningId(undefined);
+      }
+      setDurationMs(elapsed);
+      setUsageResolved(true);
+      setTasks((all) =>
+        all.map((task) =>
+          task.id === taskId
+            ? {
+                ...task,
+                messages: markFailed(task.messages),
+                runningId: undefined,
+                runStatus: "failed",
+                durationMs: elapsed,
+                usageResolved: true,
+                pendingTokenEstimate: undefined,
+                pendingCalibrationKey: undefined,
+                updatedAt: Date.now(),
+              }
+            : task,
+        ),
+      );
+      requestTasksRef.current.delete(id);
+      assistantLengthsRef.current.delete(id);
+      scrollAfterSendRef.current = true;
+      return;
+    }
   }
 
   sendRef.current = send;

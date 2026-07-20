@@ -16,6 +16,7 @@ const imageSchema = z.object({
 });
 
 export const modelRequestSchema = z.object({
+  requestId: idSchema.optional(),
   taskId: z.string().optional(),
   providerId: idSchema,
   modelId: idSchema,

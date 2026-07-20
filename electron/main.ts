@@ -610,7 +610,7 @@ app.whenReady().then(() => {
   );
   ipcMain.handle("chat:start", (event, rawRequest: ModelRequest) => {
     const request = modelRequestSchema.parse(rawRequest) as ModelRequest;
-    const id = randomUUID();
+    const id = request.requestId ?? randomUUID();
     const controller = new AbortController();
     const startedAt = Date.now();
     controllers.set(id, controller);

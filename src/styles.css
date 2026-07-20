@@ -943,7 +943,9 @@ select:focus-visible {
 }
 .conversation-turn-item {
   content-visibility: auto;
-  contain-intrinsic-block-size: auto 320px;
+  /* A stable fallback height prevents Chromium from collapsing skipped turns
+     while restoring a very long conversation at the bottom. */
+  contain-intrinsic-size: auto 320px;
 }
 .agent-activity {
   margin: -14px 0 22px 41px;
