@@ -3,6 +3,8 @@ import { autoUpdater, type ProgressInfo } from "electron-updater";
 import type { AppUpdateState } from "../src/types";
 import { writeLog } from "./logger";
 import { releaseNotesText } from "./release-notes";
+import { networkFetch } from "./network";
+import { resolveLatestUpdateSource } from "./update-source";
 
 const RELEASES_URL = "https://github.com/kk1181958464/kcode/releases/latest";
 const STARTUP_DELAY_MS = 5_000;
@@ -38,6 +40,32 @@ function check() {
   checkPromise = (async () => {
     setState({ status: "checking", error: undefined, progress: undefined });
     try {
+      try {
+        const source = await resolveLatestUpdateSource(networkFetch);
+        autoUpdater.setFeedURL({
+          provider: "generic",
+          url: source.feedUrl,
+          channel: "latest",
+          requestHeaders: {
+            "Cache-Control": "no-cache, no-store, max-age=0",
+            Pragma: "no-cache",
+          },
+        });
+        setState({ version: source.version });
+        writeLog("info", "updater.source.resolved", source);
+      } catch (error) {
+        autoUpdater.setFeedURL({
+          provider: "github",
+          owner: "kk1181958464",
+          repo: "kcode",
+          releaseType: "release",
+        });
+        writeLog("warn", "updater.source.resolve.failed", error);
+      }
+      autoUpdater.requestHeaders = {
+        "Cache-Control": "no-cache, no-store, max-age=0",
+        Pragma: "no-cache",
+      };
       await autoUpdater.checkForUpdates();
     } catch (error) {
       writeLog("error", "updater.check.failed", error);
@@ -76,6 +104,10 @@ export function initializeAppUpdater(beforeInstall: () => void) {
   autoUpdater.autoInstallOnAppQuit = true;
   autoUpdater.allowPrerelease = false;
   autoUpdater.fullChangelog = true;
+  autoUpdater.requestHeaders = {
+    "Cache-Control": "no-cache, no-store, max-age=0",
+    Pragma: "no-cache",
+  };
   autoUpdater.logger = {
     info: (...args) => writeLog("info", "updater", args),
     warn: (...args) => writeLog("warn", "updater", args),

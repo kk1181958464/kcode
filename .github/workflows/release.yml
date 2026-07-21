@@ -65,12 +65,17 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run dist:mac
+      - name: Verify macOS auto-update artifacts
+        run: |
+          test -f release/latest-mac.yml
+          grep -q 'sha512:' release/latest-mac.yml
       - uses: actions/upload-artifact@v7
         with:
           name: KCode-${{ github.ref_name }}-macos
           path: |
             release/*.dmg
             release/*.zip
+            release/latest-mac.yml
   linux:
     runs-on: ubuntu-latest
     timeout-minutes: 40
@@ -86,12 +91,17 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run dist:linux
+      - name: Verify Linux auto-update artifacts
+        run: |
+          test -f release/latest-linux.yml
+          grep -q 'sha512:' release/latest-linux.yml
       - uses: actions/upload-artifact@v7
         with:
           name: KCode-${{ github.ref_name }}-linux
           path: |
             release/*.AppImage
             release/*.deb
+            release/latest-linux.yml
 
   publish:
     needs: [windows, macos, linux]
