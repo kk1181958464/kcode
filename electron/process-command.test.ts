@@ -54,13 +54,14 @@ test("emits progress heartbeats while a command is silent", async () => {
   const updates: string[] = [];
   const resultPromise = runSpawnedCommand({
     executable: process.execPath,
-    args: nodeSleepArgs(6),
+    args: nodeSleepArgs(2),
     cwd: process.cwd(),
     signal: controller.signal,
     timeoutMs: 20_000,
+    heartbeatIntervalMs: 100,
     onOutput: (output) => updates.push(output),
   });
-  await new Promise((resolve) => setTimeout(resolve, 5500));
+  await new Promise((resolve) => setTimeout(resolve, 350));
   controller.abort();
   const result = await resultPromise;
   assert.ok(

@@ -65,6 +65,8 @@ export function runSpawnedCommand(options: {
   timeoutMs?: number;
   /** Kill the process if no stdout/stderr arrives for this long. */
   idleTimeoutMs?: number;
+  /** Override the progress heartbeat interval, primarily for deterministic tests. */
+  heartbeatIntervalMs?: number;
   onOutput?: (output: string) => void;
   maxOutputBytes?: number;
 }): Promise<SpawnedCommandResult> {
@@ -76,6 +78,7 @@ export function runSpawnedCommand(options: {
     signal,
     timeoutMs = 30_000,
     idleTimeoutMs,
+    heartbeatIntervalMs = HEARTBEAT_INTERVAL_MS,
     onOutput,
     maxOutputBytes = 100_000,
   } = options;
@@ -112,9 +115,9 @@ export function runSpawnedCommand(options: {
       const base = processOutput().trimEnd();
       const silentMs = Date.now() - lastOutputAt;
       const elapsedMs = Date.now() - startedAt;
-      if (silentMs < HEARTBEAT_INTERVAL_MS) return base;
+      if (silentMs < heartbeatIntervalMs) return base;
       const note =
-        silentMs >= HEARTBEAT_INTERVAL_MS
+        silentMs >= heartbeatIntervalMs
           ? `[进度] 进程仍在运行，已执行 ${formatSeconds(elapsedMs)} 秒，最近 ${formatSeconds(silentMs)} 秒没有新输出。若长时间无反馈，可点停止强制终止。`
           : "";
       return base ? `${base}\n${note}` : note;
@@ -123,7 +126,8 @@ export function runSpawnedCommand(options: {
     const emitProgress = (force = false) => {
       if (!onOutput) return;
       const now = Date.now();
-      if (!force && now - lastHeartbeatAt < HEARTBEAT_INTERVAL_MS - 50) return;
+      if (!force && now - lastHeartbeatAt < Math.max(1, heartbeatIntervalMs - 10))
+        return;
       lastHeartbeatAt = now;
       onOutput(progressText());
     };
@@ -219,7 +223,7 @@ export function runSpawnedCommand(options: {
       armForceResolve(false);
     }, timeoutMs);
 
-    const heartbeatTimer = setInterval(() => emitProgress(), HEARTBEAT_INTERVAL_MS);
+    const heartbeatTimer = setInterval(() => emitProgress(), heartbeatIntervalMs);
     heartbeatTimer.unref?.();
     armIdleTimer();
     // Immediate first heartbeat so the UI is not empty while waiting.
