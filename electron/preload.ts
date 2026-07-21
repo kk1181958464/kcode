@@ -37,6 +37,13 @@ const api: KCodeApi = {
     remove: (id) => ipcRenderer.invoke("providers:remove", id),
     discover: (id) => ipcRenderer.invoke("providers:discover", id),
   },
+  skills: {
+    list: (refresh) => ipcRenderer.invoke("skills:list", refresh),
+    install: (id) => ipcRenderer.invoke("skills:install", id),
+    uninstall: (id) => ipcRenderer.invoke("skills:uninstall", id),
+    setEnabled: (id, enabled) =>
+      ipcRenderer.invoke("skills:set-enabled", id, enabled),
+  },
   chat: {
     start: (request) => ipcRenderer.invoke("chat:start", request),
     cancel: (id) => ipcRenderer.invoke("chat:cancel", id),

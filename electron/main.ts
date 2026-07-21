@@ -83,6 +83,12 @@ import {
   workspacePathSchema,
 } from "./ipc-validation";
 import { initializeAppUpdater, scheduleUpdateChecks } from "./app-updater";
+import { createSkillStore, type ListedSkill } from "./skill-store";
+import {
+  clearAgentSkillCache,
+  configureAgentSkills,
+} from "./agent-skills";
+import { networkFetch } from "./network";
 
 const controllers = new Map<string, AbortController>();
 // Turn raw upstream/proxy error codes into a readable message for the user.
@@ -116,6 +122,7 @@ app.setName("KCode");
 if (process.platform === "win32") app.setAppUserModelId(appUserModelId);
 let mainWindow: BrowserWindow | undefined;
 let tray: Tray | undefined;
+let skillStore: ReturnType<typeof createSkillStore> | undefined;
 let unreadTasks = 0;
 const svgImage = (svg: string) =>
   nativeImage.createFromDataURL(
@@ -178,6 +185,32 @@ function showMainWindow() {
   mainWindow.restore();
   mainWindow.focus();
   updateUnread(0);
+}
+function publicSkill(skill: ListedSkill) {
+  return {
+    id: skill.id,
+    name: skill.name,
+    description: skill.description ?? "此 Skill 暂无说明。",
+    version: skill.version ?? "0.0.0",
+    author: skill.author ?? "Community",
+    license: skill.license,
+    repository: skill.repository,
+    categories: skill.categories,
+    verified: skill.verified,
+    hasScripts: skill.hasScripts,
+    source: skill.bundled
+      ? ("bundled" as const)
+      : skill.installed
+        ? ("user" as const)
+        : ("registry" as const),
+    installed: skill.installed,
+    enabled: skill.enabled,
+  };
+}
+async function listPublicSkills(refresh = false) {
+  if (!skillStore) throw new Error("Skill 商店尚未初始化");
+  if (refresh) skillStore.refresh();
+  return (await skillStore.list(refresh)).map(publicSkill);
 }
 function notifyTask(result: "done" | "error", message?: string) {
   if (mainWindow?.isFocused() && !mainWindow.isMinimized()) return;
@@ -312,6 +345,22 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  const bundledSkillsRoot = app.isPackaged
+    ? path.join(process.resourcesPath, "skills")
+    : path.join(app.getAppPath(), "skills");
+  const userSkillsRoot = path.join(app.getPath("userData"), "skills");
+  const skillStateFile = path.join(
+    app.getPath("userData"),
+    "skill-store-state.json",
+  );
+  skillStore = createSkillStore({
+    bundledSkillsRoot,
+    bundledRegistryPath: path.join(bundledSkillsRoot, "registry.json"),
+    userSkillsRoot,
+    stateFile: skillStateFile,
+    fetchImpl: networkFetch,
+  });
+  configureAgentSkills({ userSkillsRoot, stateFile: skillStateFile });
   if (process.platform === "darwin") app.dock?.setIcon(appIcon(256));
   void rm(path.join(app.getPath("userData"), "ssh-known-hosts.json"), {
     force: true,
@@ -378,6 +427,30 @@ app.whenReady().then(() => {
   );
   ipcMain.handle("providers:remove", (_e, id: string) => removeProvider(id));
   ipcMain.handle("providers:discover", (_e, id: string) => discoverModels(id));
+  ipcMain.handle("skills:list", (_e, refresh?: boolean) =>
+    listPublicSkills(Boolean(refresh)),
+  );
+  ipcMain.handle("skills:install", async (_e, id: string) => {
+    if (!skillStore) throw new Error("Skill 商店尚未初始化");
+    await skillStore.install(id);
+    clearAgentSkillCache();
+    return listPublicSkills();
+  });
+  ipcMain.handle("skills:uninstall", async (_e, id: string) => {
+    if (!skillStore) throw new Error("Skill 商店尚未初始化");
+    await skillStore.uninstall(id);
+    clearAgentSkillCache();
+    return listPublicSkills();
+  });
+  ipcMain.handle(
+    "skills:set-enabled",
+    async (_e, id: string, enabled: boolean) => {
+      if (!skillStore) throw new Error("Skill 商店尚未初始化");
+      enabled ? await skillStore.enable(id) : await skillStore.disable(id);
+      clearAgentSkillCache();
+      return listPublicSkills();
+    },
+  );
   ipcMain.handle("browser:activate", (_e, sessionId?: string) =>
     activateBrowserSession(optionalIdSchema.parse(sessionId)),
   );

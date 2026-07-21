@@ -312,6 +312,23 @@ export type BrowserRecordingFile = {
   pythonPath?: string;
 };
 
+export type SkillStoreItem = {
+  id: string;
+  name: string;
+  description: string;
+  version: string;
+  author: string;
+  license?: string;
+  repository?: string;
+  categories: string[];
+  verified: boolean;
+  hasScripts: boolean;
+  source: "bundled" | "registry" | "user";
+  installed: boolean;
+  enabled: boolean;
+  updateAvailable?: boolean;
+};
+
 export type ModelEvent =
   | { type: "text"; delta: string }
   | { type: "reasoning"; delta: string }
@@ -379,6 +396,12 @@ export type KCodeApi = {
     save(provider: ProviderConfig, apiKey?: string): Promise<ProviderConfig[]>;
     remove(id: string): Promise<ProviderConfig[]>;
     discover(id: string): Promise<ModelConfig[]>;
+  };
+  skills: {
+    list(refresh?: boolean): Promise<SkillStoreItem[]>;
+    install(id: string): Promise<SkillStoreItem[]>;
+    uninstall(id: string): Promise<SkillStoreItem[]>;
+    setEnabled(id: string, enabled: boolean): Promise<SkillStoreItem[]>;
   };
   chat: {
     start(request: ModelRequest): Promise<string>;

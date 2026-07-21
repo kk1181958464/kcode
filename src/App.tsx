@@ -1,9 +1,11 @@
 import {
+  forwardRef,
   memo,
   startTransition,
   useCallback,
   useDeferredValue,
   useEffect,
+  useImperativeHandle,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -16,6 +18,7 @@ import {
   ArrowLeft,
   ArrowRight,
   Bot,
+  Blocks,
   BrainCircuit,
   Check,
   CheckCircle2,
@@ -93,6 +96,7 @@ import type {
   GitWorkspaceState,
   ImageAttachment,
   ReasoningMode,
+  SkillStoreItem,
 } from "./types";
 
 async function copyTextToClipboard(text: string): Promise<boolean> {
@@ -139,7 +143,12 @@ async function copyWithToast(text: string, successMessage = "复制成功") {
 
 const uid = () => crypto.randomUUID();
 const EMPTY_ACTIVITIES: AgentActivity[] = [];
-type SettingsSection = "general" | "models" | "permissions" | "recordings";
+type SettingsSection =
+  | "general"
+  | "models"
+  | "skills"
+  | "permissions"
+  | "recordings";
 type ThemePreference = "system" | "light" | "dark";
 type TaskRecord = {
   id: string;
@@ -865,6 +874,11 @@ function SettingsPanel({
   );
   const [confirmingProvider, setConfirmingProvider] = useState<string>();
   const [recordings, setRecordings] = useState<BrowserRecordingFile[]>([]);
+  const [skills, setSkills] = useState<SkillStoreItem[]>([]);
+  const [skillsLoaded, setSkillsLoaded] = useState(false);
+  const [skillQuery, setSkillQuery] = useState("");
+  const [skillBusy, setSkillBusy] = useState<string>();
+  const [skillError, setSkillError] = useState("");
   const [storage, setStorage] = useState<{
     tasks: number;
     bytes: number;
@@ -873,6 +887,23 @@ function SettingsPanel({
   useEffect(() => {
     if (section === "recordings" && window.kcode?.browser)
       void window.kcode.browser.recordings().then(setRecordings);
+  }, [section]);
+  useEffect(() => {
+    if (section !== "skills" || !window.kcode?.skills) return;
+    setSkillError("");
+    setSkillsLoaded(false);
+    void window.kcode.skills
+      .list()
+      .then((items) => {
+        setSkills(items);
+        setSkillsLoaded(true);
+        return window.kcode.skills.list(true);
+      })
+      .then(setSkills)
+      .catch((error) =>
+        setSkillError(error instanceof Error ? error.message : String(error)),
+      )
+      .finally(() => setSkillsLoaded(true));
   }, [section]);
   useEffect(() => {
     if (section === "general")
@@ -996,6 +1027,29 @@ function SettingsPanel({
       return next;
     });
   }
+  async function runSkillAction(
+    id: string,
+    action: () => Promise<SkillStoreItem[]>,
+  ) {
+    setSkillBusy(id);
+    setSkillError("");
+    try {
+      setSkills(await action());
+    } catch (error) {
+      setSkillError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSkillBusy(undefined);
+    }
+  }
+  const visibleSkills = skills.filter((skill) => {
+    const query = skillQuery.trim().toLowerCase();
+    return (
+      !query ||
+      `${skill.name} ${skill.description} ${skill.author} ${skill.categories.join(" ")}`
+        .toLowerCase()
+        .includes(query)
+    );
+  });
   return (
     <div
       className="settings-layer"
@@ -1035,6 +1089,14 @@ function SettingsPanel({
               <small>
                 {providers.filter((provider) => provider.enabled).length}
               </small>
+            </button>
+            <button
+              className={section === "skills" ? "active" : ""}
+              onClick={() => setSection("skills")}
+            >
+              <Blocks size={16} />
+              <span>Skills</span>
+              <small>{skills.filter((skill) => skill.installed).length || ""}</small>
             </button>
             <button
               className={section === "permissions" ? "active" : ""}
@@ -1482,6 +1544,131 @@ function SettingsPanel({
                       )}
                     </div>
                   ))}
+                </div>
+              </section>
+            )}
+            {section === "skills" && (
+              <section className="settings-section skill-store-section">
+                <div className="settings-section-header with-action">
+                  <div>
+                    <h3>Skill 商店</h3>
+                    <p>安装可复用的 Agent 工作方法。社区 Skill 在运行前仍受 KCode 工具权限约束。</p>
+                  </div>
+                  <button
+                    className="secondary"
+                    disabled={Boolean(skillBusy)}
+                    onClick={() => {
+                      setSkillBusy("$refresh");
+                      setSkillError("");
+                      void window.kcode.skills
+                        .list(true)
+                        .then(setSkills)
+                        .catch((error) =>
+                          setSkillError(
+                            error instanceof Error ? error.message : String(error),
+                          ),
+                        )
+                        .finally(() => setSkillBusy(undefined));
+                    }}
+                  >
+                    <RefreshCw
+                      size={14}
+                      className={skillBusy === "$refresh" ? "spinning" : ""}
+                    />
+                    刷新
+                  </button>
+                </div>
+                <div className="skill-store-toolbar">
+                  <Search size={15} />
+                  <input
+                    value={skillQuery}
+                    onChange={(event) => setSkillQuery(event.target.value)}
+                    placeholder="搜索 Skill、作者或分类"
+                  />
+                </div>
+                {skillError && <p className="error">{skillError}</p>}
+                <div className="skill-store-list">
+                  {!skillsLoaded ? (
+                    <div className="settings-empty">正在加载 Skill…</div>
+                  ) : visibleSkills.length ? (
+                    visibleSkills.map((skill) => (
+                      <article className="skill-store-card" key={skill.id}>
+                        <div className="skill-store-icon">
+                          <Blocks size={18} />
+                        </div>
+                        <div className="skill-store-copy">
+                          <div className="skill-store-title">
+                            <strong>{skill.name}</strong>
+                            <span>v{skill.version}</span>
+                            {skill.verified && <span className="verified">已验证</span>}
+                            {skill.source === "bundled" && <span>内置</span>}
+                          </div>
+                          <p>{skill.description}</p>
+                          <div className="skill-store-meta">
+                            <span>{skill.author}</span>
+                            {skill.license && <span>{skill.license}</span>}
+                            {skill.hasScripts && (
+                              <span className="script-warning">包含脚本</span>
+                            )}
+                            {skill.categories.map((category) => (
+                              <span key={category}>{category}</span>
+                            ))}
+                          </div>
+                        </div>
+                        <div className="skill-store-actions">
+                          {skill.installed ? (
+                            <>
+                              <button
+                                className={`setting-switch ${skill.enabled ? "on" : ""}`}
+                                role="switch"
+                                aria-label={`${skill.enabled ? "停用" : "启用"} ${skill.name}`}
+                                aria-checked={skill.enabled}
+                                disabled={skillBusy === skill.id}
+                                onClick={() =>
+                                  void runSkillAction(skill.id, () =>
+                                    window.kcode.skills.setEnabled(
+                                      skill.id,
+                                      !skill.enabled,
+                                    ),
+                                  )
+                                }
+                              >
+                                <span />
+                              </button>
+                              {skill.source !== "bundled" && (
+                                <button
+                                  className="secondary text"
+                                  disabled={skillBusy === skill.id}
+                                  onClick={() =>
+                                    void runSkillAction(skill.id, () =>
+                                      window.kcode.skills.uninstall(skill.id),
+                                    )
+                                  }
+                                >
+                                  卸载
+                                </button>
+                              )}
+                            </>
+                          ) : (
+                            <button
+                              className="primary"
+                              disabled={Boolean(skillBusy)}
+                              onClick={() =>
+                                void runSkillAction(skill.id, () =>
+                                  window.kcode.skills.install(skill.id),
+                                )
+                              }
+                            >
+                              <Download size={14} />
+                              {skillBusy === skill.id ? "安装中" : "安装"}
+                            </button>
+                          )}
+                        </div>
+                      </article>
+                    ))
+                  ) : (
+                    <div className="settings-empty">没有匹配的 Skill</div>
+                  )}
                 </div>
               </section>
             )}
@@ -2600,27 +2787,53 @@ const ConversationHistory = memo(function ConversationHistory({
   );
 });
 
-const ComposerTextarea = memo(function ComposerTextarea({
-  value,
-  disabled,
-  placeholder,
-  onChange,
-  onPaste,
-  onSubmit,
-}: {
+type ComposerTextareaHandle = {
+  replaceValue(value: string): void;
+};
+
+type ComposerTextareaProps = {
   value: string;
   disabled: boolean;
   placeholder: string;
   onChange(value: string): void;
   onPaste(event: React.ClipboardEvent<HTMLTextAreaElement>): void;
   onSubmit(): void;
-}) {
+};
+
+const ComposerTextarea = memo(forwardRef<ComposerTextareaHandle, ComposerTextareaProps>(({
+  value: initialValue,
+  disabled,
+  placeholder,
+  onChange,
+  onPaste,
+  onSubmit,
+}, ref) => {
+  const [value, setValue] = useState(initialValue);
+  const valueRef = useRef(initialValue);
+
+  useImperativeHandle(ref, () => ({
+    replaceValue: (next) => {
+      valueRef.current = next;
+      setValue(next);
+    },
+  }), []);
+
+  useEffect(() => {
+    valueRef.current = initialValue;
+    setValue(initialValue);
+  }, [initialValue]);
+
   return (
     <textarea
       aria-label="任务输入"
       disabled={disabled}
       value={value}
-      onChange={(event) => onChange(event.target.value)}
+      onChange={(event) => {
+        const next = event.target.value;
+        valueRef.current = next;
+        setValue(next);
+        onChange(next);
+      }}
       onPaste={onPaste}
       onKeyDown={(event) => {
         if (event.key === "Enter" && !event.shiftKey) {
@@ -2631,7 +2844,7 @@ const ComposerTextarea = memo(function ComposerTextarea({
       placeholder={placeholder}
     />
   );
-});
+}));
 
 const updateBytes = (value = 0) => {
   if (!Number.isFinite(value) || value <= 0) return "0 B";
@@ -2827,9 +3040,23 @@ export default function App() {
   const [activities, setActivities] = useState<AgentActivity[]>(
     () => storedActiveTask()?.activities ?? [],
   );
-  const [input, setInput] = useState(
+  const [input, setInputState] = useState(
     () => initialDrafts.current[storedActiveTask()?.id ?? ""] ?? "",
   );
+  const composerRef = useRef<ComposerTextareaHandle>(null);
+  const composerValueRef = useRef(input);
+  const composerHasTextRef = useRef(Boolean(input.trim()));
+  const [composerHasText, setComposerHasText] = useState(
+    composerHasTextRef.current,
+  );
+  function setInput(value: string) {
+    composerValueRef.current = value;
+    composerRef.current?.replaceValue(value);
+    const hasText = Boolean(value.trim());
+    composerHasTextRef.current = hasText;
+    setComposerHasText(hasText);
+    setInputState(value);
+  }
   const [settings, setSettings] = useState(false);
   const [theme, setTheme] = useState<ThemePreference>(() => {
     const saved = localStorage.getItem("kcode.theme");
@@ -3050,6 +3277,34 @@ export default function App() {
       composerPasteRef.current(event),
     [],
   );
+  const handleComposerChange = useCallback((value: string) => {
+    composerValueRef.current = value;
+    const taskId = displayedTaskIdRef.current;
+    if (taskId) {
+      if (value) initialDrafts.current[taskId] = value;
+      else delete initialDrafts.current[taskId];
+    }
+    if (!draftSaveTimerRef.current)
+      draftSaveTimerRef.current = window.setTimeout(() => {
+        draftSaveTimerRef.current = undefined;
+        localStorage.setItem(
+          "kcode.taskDrafts",
+          JSON.stringify(initialDrafts.current),
+        );
+      }, 500);
+    const hasText = Boolean(value.trim());
+    if (hasText !== composerHasTextRef.current) {
+      composerHasTextRef.current = hasText;
+      setComposerHasText(hasText);
+    }
+  }, []);
+  useEffect(() => {
+    composerValueRef.current = input;
+    composerRef.current?.replaceValue(input);
+    const hasText = Boolean(input.trim());
+    composerHasTextRef.current = hasText;
+    setComposerHasText(hasText);
+  }, [input]);
   const contextByMessageRef = useRef(new Map<string, ContextFile[]>());
   const sendRef = useRef<((override?: string) => Promise<void>) | undefined>(
     undefined,
@@ -4828,7 +5083,7 @@ export default function App() {
   }
 
   function queueMessage() {
-    const text = input.trim();
+    const text = composerValueRef.current.trim();
     if ((!text && !attachedImages.length) || !activeTask || summaryBusy) return;
     const user: QueuedChatMessage = {
       id: uid(),
@@ -4862,7 +5117,7 @@ export default function App() {
   }
 
   async function send(override?: string, queuedMessageId?: string) {
-    let text = (override ?? input).trim();
+    let text = (override ?? composerValueRef.current).trim();
     const target = models.find(
       (x) => `${x.provider.id}|${x.model.id}` === selected,
     );
@@ -6073,9 +6328,10 @@ export default function App() {
                 </div>
               )}
               <ComposerTextarea
+                ref={composerRef}
                 disabled={summaryBusy}
                 value={input}
-                onChange={setInput}
+                onChange={handleComposerChange}
                 onPaste={handleComposerPaste}
                 onSubmit={handleComposerSubmit}
                 placeholder={
@@ -6325,7 +6581,7 @@ export default function App() {
                     className="send"
                     onClick={() => (runningId ? queueMessage() : void send())}
                     disabled={
-                      (!input.trim() && !attachedImages.length) ||
+                      (!composerHasText && !attachedImages.length) ||
                       !selected ||
                       summaryBusy
                     }

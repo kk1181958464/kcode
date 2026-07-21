@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "skills": [
+    {
+      "id": "frontend-design",
+      "name": "Frontend Design",
+      "description": "为页面、组件、配色、排版与动效提供有明确审美方向的前端设计指导。",
+      "version": "1.0.0",
+      "author": "Anthropic",
+      "license": "Apache-2.0",
+      "repository": "https://github.com/anthropics/skills/tree/main/skills/frontend-design",
+      "categories": ["frontend", "design", "ui"],
+      "verified": true,
+      "hasScripts": false,
+      "files": [
+        {
+          "path": "SKILL.md",
+          "url": "https://raw.githubusercontent.com/anthropics/skills/fa0fa64bdc967915dc8399e803be67759e1e62b8/skills/frontend-design/SKILL.md",
+          "sha256": "1608ea77fbb6fc30d13a97d12cfa8ebf31358d40f0dd97beed24829d6b3f45dd"
+        },
+        {
+          "path": "LICENSE.txt",
+          "url": "https://raw.githubusercontent.com/anthropics/skills/fa0fa64bdc967915dc8399e803be67759e1e62b8/skills/frontend-design/LICENSE.txt",
+          "sha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594"
+        }
+      ]
+    }
+  ]
+}

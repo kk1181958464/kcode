@@ -5740,6 +5740,134 @@ select:focus-visible {
   text-align: center;
 }
 
+.skill-store-section {
+  min-height: 0;
+}
+
+.skill-store-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 38px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  color: var(--muted);
+  transition:
+    border-color var(--motion-fast) var(--ease-out),
+    box-shadow var(--motion-fast) var(--ease-out);
+}
+
+.skill-store-toolbar:focus-within {
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+
+.skill-store-toolbar input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--ink);
+}
+
+.skill-store-list {
+  display: grid;
+  gap: 8px;
+}
+
+.skill-store-card {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 92px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-soft);
+  transition:
+    border-color var(--motion-fast) var(--ease-out),
+    box-shadow var(--motion-fast) var(--ease-out),
+    transform var(--motion-fast) var(--ease-out);
+}
+
+.skill-store-card:hover {
+  border-color: var(--line-strong);
+  box-shadow: var(--shadow-card);
+  transform: translateY(-1px);
+}
+
+.skill-store-icon {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border-radius: 9px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.skill-store-copy {
+  min-width: 0;
+}
+
+.skill-store-copy > p {
+  margin: 5px 0 8px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.skill-store-title,
+.skill-store-meta,
+.skill-store-actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.skill-store-title strong {
+  color: var(--ink);
+}
+
+.skill-store-title > span,
+.skill-store-meta > span {
+  padding: 2px 6px;
+  border-radius: 5px;
+  background: var(--surface-muted);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.skill-store-title .verified {
+  background: color-mix(in srgb, var(--success) 12%, transparent);
+  color: var(--success);
+}
+
+.skill-store-meta .script-warning {
+  background: color-mix(in srgb, var(--warning) 13%, transparent);
+  color: var(--warning);
+}
+
+.skill-store-actions {
+  justify-content: flex-end;
+}
+
+@media (max-width: 620px) {
+  .skill-store-card {
+    grid-template-columns: 34px minmax(0, 1fr);
+  }
+
+  .skill-store-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-end;
+  }
+}
+
 /* Final interaction and accessibility polish. */
 ::selection {
   background: color-mix(in srgb, var(--accent) 24%, transparent);
