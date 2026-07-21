@@ -56,6 +56,12 @@ import {
   requestedGitOperations,
   successfulGitEvidence,
 } from "./git-operation-verification";
+import {
+  claimedCodingOperations,
+  requestedCodingOperations,
+  shouldRequireCodingTool,
+  successfulCodingEvidence,
+} from "./coding-operation-verification";
 import { getProviderWithKey } from "./store";
 import {
   bindBrowserRequest,
@@ -2743,6 +2749,7 @@ async function* streamModelTurn(
   history: HistoryItem[],
   signal: AbortSignal,
   toolsEnabled: boolean,
+  requireToolCall: boolean,
 ): AsyncGenerator<TurnStreamEvent> {
   const queue: TurnStreamEvent[] = [];
   let wake: (() => void) | undefined,
@@ -2785,6 +2792,7 @@ async function* streamModelTurn(
           history,
           signal,
           toolsEnabled,
+          requireToolCall,
           pushText,
           pushReasoning,
         );
@@ -2835,6 +2843,7 @@ async function modelTurn(
   history: HistoryItem[],
   signal: AbortSignal,
   toolsEnabled = true,
+  requireToolCall = false,
   onText?: (delta: string) => void,
   onReasoning?: (delta: string) => void,
   protocolOverride?: Protocol,
@@ -2938,6 +2947,7 @@ async function modelTurn(
       ...(runtimeTools.length
         ? {
             tools: runtimeTools.map((t) => ({ type: "function", function: t })),
+            ...(requireToolCall ? { tool_choice: "required" } : {}),
           }
         : {}),
       reasoning_effort:
@@ -3200,6 +3210,7 @@ async function modelTurn(
       history,
       signal,
       toolsEnabled,
+      requireToolCall,
       onText,
       onReasoning,
       "openai-chat",
@@ -3338,6 +3349,7 @@ export async function* runAgent(
     ...m,
   }));
   const requestedGitOps = requestedGitOperations(history);
+  const requestedCodingOps = requestedCodingOperations(history);
   const toolsEnabled = !isCasualGreeting(request.messages.at(-1));
   const usage = { input: 0, output: 0, cached: 0 };
   let lastPromptTokens = 0;
@@ -3345,7 +3357,8 @@ export async function* runAgent(
     stalledRounds = 0,
     lastFingerprint = "",
     unverifiedBrowserClaims = 0,
-    unverifiedGitClaims = 0;
+    unverifiedGitClaims = 0,
+    unverifiedCodingClaims = 0;
   while (!signal.aborted) {
     round += 1;
     if (
@@ -3387,6 +3400,7 @@ export async function* runAgent(
     const bufferModelText =
       browserIsOpen(browserSessionId) ||
       requestedGitOps.size > 0 ||
+      requestedCodingOps.size > 0 ||
       listSubagents(requestId).some((agent) => !agent.collected);
     for await (const event of streamModelTurn(
       root,
@@ -3395,6 +3409,11 @@ export async function* runAgent(
       history,
       signal,
       toolsEnabled,
+      shouldRequireCodingTool(
+        request.modelId,
+        requestedCodingOps,
+        successfulCodingEvidence(history),
+      ),
     )) {
       if (event.type === "complete") turn = event.turn;
       else if (event.type === "reasoning")
@@ -3448,6 +3467,31 @@ export async function* runAgent(
       yield {
         type: "text",
         delta: `未检测到可验证的 Git/发布工具结果，无法确认以下操作已经完成：${missingGitEvidence.join(", ")}。`,
+      };
+      closeSubagentMessageQueue(requestId);
+      yield { type: "done" };
+      return;
+    }
+    const claimedCodingOps = claimedCodingOperations(turn.text);
+    const codingEvidence = successfulCodingEvidence(history);
+    const missingCodingEvidence = [...claimedCodingOps].filter(
+      (operation) =>
+        requestedCodingOps.has(operation) && !codingEvidence.has(operation),
+    );
+    if (!turn.calls.length && missingCodingEvidence.length) {
+      if (unverifiedCodingClaims < 2) {
+        unverifiedCodingClaims += 1;
+        history.push({ kind: "message", role: "assistant", content: turn.text });
+        history.push({
+          kind: "message",
+          role: "user",
+          content: `<runtime_verification>你声称编码任务已经完成，但本次任务没有对应的成功工具结果。缺少证据：${missingCodingEvidence.join(", ")}。不要继续总结或假设文件已经改变；请立即使用工作区工具实际检查和修改，并用 diagnostics 或真实命令验证。若无法执行，请明确报告未完成及原因。</runtime_verification>`,
+        });
+        continue;
+      }
+      yield {
+        type: "text",
+        delta: `未检测到可验证的编码工具结果，无法确认以下操作已经完成：${missingCodingEvidence.join(", ")}。文件没有被 KCode 确认修改。`,
       };
       closeSubagentMessageQueue(requestId);
       yield { type: "done" };
