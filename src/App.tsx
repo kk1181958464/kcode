@@ -24,6 +24,7 @@ import {
   CheckCircle2,
   ChevronDown,
   CircleAlert,
+  CircleHelp,
   CloudDownload,
   Clock3,
   Code2,
@@ -1551,32 +1552,91 @@ function SettingsPanel({
               <section className="settings-section skill-store-section">
                 <div className="settings-section-header with-action">
                   <div>
-                    <h3>Skill 商店</h3>
+                    <div className="skill-store-heading">
+                      <h3>Skill 商店</h3>
+                      <span className="skill-install-help">
+                        <button
+                          type="button"
+                          className="skill-install-help-trigger"
+                          aria-label="查看 Skill 安装说明"
+                          aria-describedby="skill-install-help-tooltip"
+                        >
+                          <CircleHelp size={16} />
+                        </button>
+                        <span
+                          id="skill-install-help-tooltip"
+                          className="skill-install-help-tooltip"
+                          role="tooltip"
+                        >
+                          <strong>安装 Skill</strong>
+                          <span>1. 商店中的 Skill：点击条目右侧“安装”。</span>
+                          <span>
+                            2. GitHub 或社区 Skill：先下载完整目录，确认目录根部包含
+                            <code>SKILL.md</code>。
+                          </span>
+                          <span>3. 点击“导入本地”，选择该 Skill 目录。</span>
+                          <span>
+                            也可以点击“打开目录”，手工放入 Skill 文件夹后刷新列表。
+                          </span>
+                        </span>
+                      </span>
+                    </div>
                     <p>安装可复用的 Agent 工作方法。社区 Skill 在运行前仍受 KCode 工具权限约束。</p>
                   </div>
-                  <button
-                    className="secondary"
-                    disabled={Boolean(skillBusy)}
-                    onClick={() => {
-                      setSkillBusy("$refresh");
-                      setSkillError("");
-                      void window.kcode.skills
-                        .list(true)
-                        .then(setSkills)
-                        .catch((error) =>
+                  <div className="skill-store-header-actions">
+                    <button
+                      className="secondary"
+                      disabled={Boolean(skillBusy)}
+                      onClick={() => {
+                        setSkillError("");
+                        void window.kcode.skills.revealFolder().catch((error) =>
                           setSkillError(
                             error instanceof Error ? error.message : String(error),
                           ),
+                        );
+                      }}
+                    >
+                      <FolderOpen size={14} />
+                      打开目录
+                    </button>
+                    <button
+                      className="secondary"
+                      disabled={Boolean(skillBusy)}
+                      onClick={() =>
+                        void runSkillAction("$import", () =>
+                          window.kcode.skills.importLocal(),
                         )
-                        .finally(() => setSkillBusy(undefined));
-                    }}
-                  >
-                    <RefreshCw
-                      size={14}
-                      className={skillBusy === "$refresh" ? "spinning" : ""}
-                    />
-                    刷新
-                  </button>
+                      }
+                    >
+                      <Download size={14} />
+                      {skillBusy === "$import" ? "导入中" : "导入本地"}
+                    </button>
+                    <button
+                      className="secondary"
+                      disabled={Boolean(skillBusy)}
+                      onClick={() => {
+                        setSkillBusy("$refresh");
+                        setSkillError("");
+                        void window.kcode.skills
+                          .list(true)
+                          .then(setSkills)
+                          .catch((error) =>
+                            setSkillError(
+                              error instanceof Error
+                                ? error.message
+                                : String(error),
+                            ),
+                          )
+                          .finally(() => setSkillBusy(undefined));
+                      }}
+                    >
+                      <RefreshCw
+                        size={14}
+                        className={skillBusy === "$refresh" ? "spinning" : ""}
+                      />
+                      刷新
+                    </button>
+                  </div>
                 </div>
                 <div className="skill-store-toolbar">
                   <Search size={15} />
@@ -1586,6 +1646,9 @@ function SettingsPanel({
                     placeholder="搜索 Skill、作者或分类"
                   />
                 </div>
+                <p className="skill-store-help">
+                  商店条目可直接安装；GitHub 或社区 Skill 请先下载包含 SKILL.md 的完整目录，再选择“导入本地”。
+                </p>
                 {skillError && <p className="error">{skillError}</p>}
                 <div className="skill-store-list">
                   {!skillsLoaded ? (
@@ -1667,7 +1730,9 @@ function SettingsPanel({
                       </article>
                     ))
                   ) : (
-                    <div className="settings-empty">没有匹配的 Skill</div>
+                    <div className="settings-empty">
+                      没有匹配的 Skill。可从本地导入包含 SKILL.md 的目录，或将目录复制到用户 Skill 目录后刷新。
+                    </div>
                   )}
                 </div>
               </section>
@@ -1868,6 +1933,14 @@ const MarkdownMessage = memo(function MarkdownMessage({
       {content}
     </ReactMarkdown>
   );
+});
+
+const StreamingMessageText = memo(function StreamingMessageText({
+  content,
+}: {
+  content: string;
+}) {
+  return <div className="streaming-message-text">{content}</div>;
 });
 
 function MessageItem({
@@ -2510,7 +2583,12 @@ const AssistantTimeline = memo(function AssistantTimeline({
   if (!groups.length)
     return (
       <>
-        {message.content && <MarkdownMessage content={message.content} />}
+        {message.content &&
+          (running ? (
+            <StreamingMessageText content={message.content} />
+          ) : (
+            <MarkdownMessage content={message.content} />
+          ))}
         {running && (
           <AgentWorkingState
             activities={activities}
@@ -2542,9 +2620,12 @@ const AssistantTimeline = memo(function AssistantTimeline({
           </div>
         );
       })}
-      {message.content.slice(cursor) && (
-        <MarkdownMessage content={message.content.slice(cursor)} />
-      )}
+      {message.content.slice(cursor) &&
+        (running ? (
+          <StreamingMessageText content={message.content.slice(cursor)} />
+        ) : (
+          <MarkdownMessage content={message.content.slice(cursor)} />
+        ))}
       {running && (
         <AgentWorkingState
           activities={activities}
@@ -3284,19 +3365,31 @@ export default function App() {
       if (value) initialDrafts.current[taskId] = value;
       else delete initialDrafts.current[taskId];
     }
-    if (!draftSaveTimerRef.current)
-      draftSaveTimerRef.current = window.setTimeout(() => {
-        draftSaveTimerRef.current = undefined;
-        localStorage.setItem(
-          "kcode.taskDrafts",
-          JSON.stringify(initialDrafts.current),
-        );
-      }, 500);
+    if (draftSaveTimerRef.current)
+      window.clearTimeout(draftSaveTimerRef.current);
+    draftSaveTimerRef.current = window.setTimeout(() => {
+      draftSaveTimerRef.current = undefined;
+      localStorage.setItem(
+        "kcode.taskDrafts",
+        JSON.stringify(initialDrafts.current),
+      );
+    }, 1_200);
     const hasText = Boolean(value.trim());
     if (hasText !== composerHasTextRef.current) {
       composerHasTextRef.current = hasText;
       setComposerHasText(hasText);
     }
+  }, []);
+  const clearTaskDraft = useCallback((taskId: string) => {
+    if (draftSaveTimerRef.current) {
+      window.clearTimeout(draftSaveTimerRef.current);
+      draftSaveTimerRef.current = undefined;
+    }
+    delete initialDrafts.current[taskId];
+    localStorage.setItem(
+      "kcode.taskDrafts",
+      JSON.stringify(initialDrafts.current),
+    );
   }, []);
   useEffect(() => {
     composerValueRef.current = input;
@@ -3882,21 +3975,6 @@ export default function App() {
     );
     return () => window.clearTimeout(timer);
   }, [messages, activities, activeTaskId, runningId]);
-  useEffect(() => {
-    const ownerTaskId = displayedTaskIdRef.current;
-    if (!ownerTaskId || ownerTaskId !== activeTaskId) return;
-    if (input) initialDrafts.current[ownerTaskId] = input;
-    else delete initialDrafts.current[ownerTaskId];
-    if (!draftSaveTimerRef.current)
-      draftSaveTimerRef.current = window.setTimeout(() => {
-        draftSaveTimerRef.current = undefined;
-        localStorage.setItem(
-          "kcode.taskDrafts",
-          JSON.stringify(initialDrafts.current),
-        );
-      }, 500);
-  }, [input, activeTaskId]);
-
   function openSettings(section: SettingsSection) {
     setSettingsSection(section);
     setSettings(true);
@@ -4257,7 +4335,15 @@ export default function App() {
 
   function scheduleTextFlush() {
     if (textFlushTimerRef.current) return;
-    textFlushTimerRef.current = window.setTimeout(flushPendingText, 100);
+    let longestResponse = 0;
+    for (const requestId of pendingTextRef.current.keys())
+      longestResponse = Math.max(
+        longestResponse,
+        assistantLengthsRef.current.get(requestId) ?? 0,
+      );
+    const delay =
+      longestResponse > 24_000 ? 280 : longestResponse > 8_000 ? 180 : 100;
+    textFlushTimerRef.current = window.setTimeout(flushPendingText, delay);
   }
 
   function scheduleTaskTextFlush() {
@@ -4342,18 +4428,20 @@ export default function App() {
                 )
               : [...all, positionedActivity];
           };
-          setTasks((all) =>
-            all.map((task) =>
-              task.id === taskId
-                ? {
-                    ...task,
-                    activities: updateActivities(task.activities),
-                    updatedAt: Date.now(),
-                  }
-                : task,
-            ),
-          );
-          if (isActive) setActivities(updateActivities);
+          startTransition(() => {
+            setTasks((all) =>
+              all.map((task) =>
+                task.id === taskId
+                  ? {
+                      ...task,
+                      activities: updateActivities(task.activities),
+                      updatedAt: Date.now(),
+                    }
+                  : task,
+              ),
+            );
+            if (isActive) setActivities(updateActivities);
+          });
           return;
         }
         if (event.type === "reasoning") {
@@ -5106,6 +5194,7 @@ export default function App() {
           : task,
       ),
     );
+    clearTaskDraft(activeTask.id);
     setInput("");
     setAttachedFiles([]);
     setAttachedImages([]);
@@ -5356,6 +5445,7 @@ export default function App() {
         ),
       );
     if (!queuedMessage) {
+      clearTaskDraft(activeTask.id);
       setAttachedFiles([]);
       setAttachedImages([]);
       attachmentDraftsRef.current.delete(activeTask.id);

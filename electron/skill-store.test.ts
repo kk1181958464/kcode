@@ -172,6 +172,32 @@ test("persists enable state and uninstalls user skills without removing bundled 
   }
 });
 
+test("imports a local skill directory into the user skill root", async () => {
+  const context = await fixture(async () => response({ skills: [] }));
+  const source = path.join(context.root, "local-skill");
+  await mkdir(path.join(source, "references"), { recursive: true });
+  await writeFile(
+    path.join(source, "SKILL.md"),
+    "---\nname: local-skill\ndescription: Local test skill\n---\nUse it.\n",
+  );
+  await writeFile(path.join(source, "references", "guide.md"), "guide");
+  try {
+    const imported = await context.store.importDirectory(source);
+    assert.equal(imported.id, "local-skill");
+    assert.equal(imported.installed, true);
+    assert.equal(imported.enabled, true);
+    assert.equal(
+      await readFile(
+        path.join(context.userSkillsRoot, "local-skill", "references", "guide.md"),
+        "utf8",
+      ),
+      "guide",
+    );
+  } finally {
+    await rm(context.root, { recursive: true, force: true });
+  }
+});
+
 test("falls back to bundled registry when remote fetch fails and refresh clears cache", async () => {
   let calls = 0;
   const context = await fixture(async () => {

@@ -400,6 +400,8 @@ export type KCodeApi = {
   skills: {
     list(refresh?: boolean): Promise<SkillStoreItem[]>;
     install(id: string): Promise<SkillStoreItem[]>;
+    importLocal(): Promise<SkillStoreItem[]>;
+    revealFolder(): Promise<void>;
     uninstall(id: string): Promise<SkillStoreItem[]>;
     setEnabled(id: string, enabled: boolean): Promise<SkillStoreItem[]>;
   };

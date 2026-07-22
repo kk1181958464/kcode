@@ -4287,6 +4287,93 @@ select:focus {
   }
 }
 
+/* Skill installation controls added after the original store UI. */
+.skill-store-heading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.skill-install-help {
+  position: relative;
+  display: inline-flex;
+}
+
+.skill-install-help-trigger {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-xs);
+  color: var(--muted);
+}
+
+.skill-install-help-trigger:hover,
+.skill-install-help-trigger:focus-visible {
+  background: var(--surface-hover);
+  color: var(--ink);
+}
+
+.skill-install-help-tooltip {
+  position: absolute;
+  z-index: 80;
+  top: calc(100% + 7px);
+  left: -8px;
+  width: min(320px, calc(100vw - 48px));
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-float);
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.55;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-4px);
+  transition:
+    opacity var(--motion-fast) ease,
+    transform var(--motion-fast) var(--motion-ease);
+}
+
+.skill-install-help-tooltip strong {
+  color: var(--ink);
+}
+
+.skill-install-help:hover .skill-install-help-tooltip,
+.skill-install-help:focus-within .skill-install-help-tooltip {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.skill-store-header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.skill-store-help {
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+@media (max-width: 620px) {
+  .skill-store-header-actions {
+    justify-content: flex-start;
+  }
+
+  .skill-install-help-tooltip {
+    left: auto;
+    right: -8px;
+  }
+}
+
 
 .app-toast {
   position: fixed;

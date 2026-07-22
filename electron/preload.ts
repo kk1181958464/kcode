@@ -40,6 +40,8 @@ const api: KCodeApi = {
   skills: {
     list: (refresh) => ipcRenderer.invoke("skills:list", refresh),
     install: (id) => ipcRenderer.invoke("skills:install", id),
+    importLocal: () => ipcRenderer.invoke("skills:import-local"),
+    revealFolder: () => ipcRenderer.invoke("skills:reveal-folder"),
     uninstall: (id) => ipcRenderer.invoke("skills:uninstall", id),
     setEnabled: (id, enabled) =>
       ipcRenderer.invoke("skills:set-enabled", id, enabled),

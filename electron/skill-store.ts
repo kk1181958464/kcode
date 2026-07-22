@@ -1,12 +1,14 @@
 import { createHash } from "node:crypto";
 import {
   access,
+  copyFile,
   mkdir,
   mkdtemp,
   readFile,
   readdir,
   rename,
   rm,
+  stat,
   writeFile,
 } from "node:fs/promises";
 import path from "node:path";
@@ -409,6 +411,84 @@ export function createSkillStore(options: CreateSkillStoreOptions) {
     }
   }
 
+  async function importDirectory(sourceDirectory: string) {
+    const source = path.resolve(sourceDirectory);
+    const id = path.basename(source);
+    validateSkillId(id);
+    await access(path.join(source, "SKILL.md"));
+    await mkdir(options.userSkillsRoot, { recursive: true });
+    const stagingRoot = await mkdtemp(
+      path.join(options.userSkillsRoot, ".import-"),
+    );
+    const stagedSkill = path.join(stagingRoot, id);
+    const target = path.join(options.userSkillsRoot, id);
+    const backup = path.join(
+      options.userSkillsRoot,
+      `.backup-${id}-${Date.now()}`,
+    );
+    let fileCount = 0;
+    let totalBytes = 0;
+    let backedUp = false;
+    let promoted = false;
+
+    async function copyDirectory(from: string, to: string) {
+      await mkdir(to, { recursive: true });
+      const entries = await readdir(from, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isSymbolicLink())
+          throw new Error(`Skill 不能包含符号链接: ${entry.name}`);
+        const sourcePath = path.join(from, entry.name);
+        const targetPath = path.join(to, entry.name);
+        if (entry.isDirectory()) {
+          await copyDirectory(sourcePath, targetPath);
+          continue;
+        }
+        if (!entry.isFile()) continue;
+        fileCount += 1;
+        if (fileCount > MAX_SKILL_FILES)
+          throw new Error(`Skill ${id} 文件数量超过限制`);
+        const info = await stat(sourcePath);
+        if (info.size > MAX_SKILL_FILE_BYTES)
+          throw new Error(`Skill 文件过大: ${entry.name}`);
+        totalBytes += info.size;
+        if (totalBytes > MAX_SKILL_TOTAL_BYTES)
+          throw new Error(`Skill ${id} 总大小超过限制`);
+        await copyFile(sourcePath, targetPath);
+      }
+    }
+
+    try {
+      await copyDirectory(source, stagedSkill);
+      await access(path.join(stagedSkill, "SKILL.md"));
+      try {
+        await rename(target, backup);
+        backedUp = true;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+      await rename(stagedSkill, target);
+      promoted = true;
+      const state = await readState();
+      state.installed[id] = {
+        id,
+        installedAt: new Date().toISOString(),
+      };
+      if (!(id in state.enabled)) state.enabled[id] = true;
+      await writeState(state);
+      if (backedUp)
+        await rm(backup, { recursive: true, force: true }).catch(
+          () => undefined,
+        );
+      return (await list()).find((entry) => entry.id === id)!;
+    } catch (error) {
+      if (promoted) await rm(target, { recursive: true, force: true });
+      if (backedUp) await rename(backup, target).catch(() => undefined);
+      throw error;
+    } finally {
+      await rm(stagingRoot, { recursive: true, force: true });
+    }
+  }
+
   async function uninstall(id: string) {
     validateSkillId(id);
     const target = path.join(options.userSkillsRoot, id);
@@ -439,6 +519,7 @@ export function createSkillStore(options: CreateSkillStoreOptions) {
   return {
     list,
     install,
+    importDirectory,
     uninstall,
     enable: (id: string) => setEnabled(id, true),
     disable: (id: string) => setEnabled(id, false),

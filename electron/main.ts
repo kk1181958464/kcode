@@ -436,6 +436,29 @@ app.whenReady().then(() => {
     clearAgentSkillCache();
     return listPublicSkills();
   });
+  ipcMain.handle("skills:import-local", async (event) => {
+    if (!skillStore) throw new Error("Skill 商店尚未初始化");
+    const owner = BrowserWindow.fromWebContents(event.sender) ?? mainWindow;
+    const result = owner
+      ? await dialog.showOpenDialog(owner, {
+          title: "选择包含 SKILL.md 的 Skill 目录",
+          properties: ["openDirectory"],
+        })
+      : await dialog.showOpenDialog({
+          title: "选择包含 SKILL.md 的 Skill 目录",
+          properties: ["openDirectory"],
+        });
+    if (result.canceled || !result.filePaths[0]) return listPublicSkills();
+    await skillStore.importDirectory(result.filePaths[0]);
+    clearAgentSkillCache();
+    return listPublicSkills();
+  });
+  ipcMain.handle("skills:reveal-folder", async () => {
+    if (!skillStore) throw new Error("Skill 商店尚未初始化");
+    await mkdir(userSkillsRoot, { recursive: true });
+    const error = await shell.openPath(userSkillsRoot);
+    if (error) throw new Error(error);
+  });
   ipcMain.handle("skills:uninstall", async (_e, id: string) => {
     if (!skillStore) throw new Error("Skill 商店尚未初始化");
     await skillStore.uninstall(id);
