@@ -2741,6 +2741,7 @@ async function parseStreamedTurn(
 
 type TurnStreamEvent =
   | { type: "text"; delta: string }
+  | { type: "text_reset" }
   | { type: "reasoning"; delta: string }
   | { type: "complete"; turn: Turn };
 async function* streamModelTurn(
@@ -2799,13 +2800,15 @@ async function* streamModelTurn(
         );
         return;
       } catch (error) {
-        if (
-          signal.aborted ||
-          emittedText ||
-          attempt >= 3 ||
-          !isRetryableStreamError(error)
-        )
+        if (signal.aborted || attempt >= 3 || !isRetryableStreamError(error))
           throw error;
+        // If the answer had already started streaming when the upstream broke,
+        // discard the partial text (via a reset event the UI honors) before
+        // retrying, so the re-run streams a fresh, non-duplicated answer.
+        if (emittedText) {
+          enqueue({ type: "text_reset" });
+          emittedText = false;
+        }
         const delay =
           2_000 * 2 ** (attempt - 1) + Math.floor(Math.random() * 750);
         pushReasoning(
@@ -3423,7 +3426,12 @@ export async function* runAgent(
       if (event.type === "complete") turn = event.turn;
       else if (event.type === "reasoning")
         yield { type: "reasoning", delta: event.delta };
-      else {
+      else if (event.type === "text_reset") {
+        // Upstream broke mid-answer and is being retried; drop what we streamed
+        // so the fresh attempt does not append onto a truncated fragment.
+        streamedText = "";
+        if (!bufferModelText) yield { type: "text_reset" };
+      } else {
         streamedText += event.delta;
         if (!bufferModelText) yield { type: "text", delta: event.delta };
       }

@@ -97,28 +97,58 @@ export async function discoverModels(
   }));
 }
 
+// Third-party relays sometimes hold a stream open but stop sending data (a
+// "silent hang"): reader.read() would then block forever and the task appears
+// frozen. Guard every read with an idle watchdog; on timeout we cancel the
+// reader and throw a message that isRetryableStreamError recognizes, so the
+// agent layer can transparently reconnect.
+const SSE_IDLE_TIMEOUT_MS = 60_000;
 async function* sse(response: Response): AsyncGenerator<unknown> {
   if (!response.body) throw new Error("服务未返回响应流");
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
-  while (true) {
-    const { done, value } = await reader.read();
-    buffer += decoder.decode(value, { stream: !done });
-    const parts = buffer.split(/\r?\n\r?\n/);
-    buffer = parts.pop() ?? "";
-    for (const part of parts) {
-      for (const line of part.split(/\r?\n/)) {
-        if (!line.startsWith("data:")) continue;
-        const data = line.slice(5).trim();
-        if (data === "[DONE]") {
-          yield { type: "__sse_done" };
-          continue;
+  const readWithIdleTimeout = () =>
+    new Promise<ReadableStreamReadResult<Uint8Array>>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        // Cancel the underlying stream so the socket is released, then surface
+        // a retryable error. A late read() settle after this is a harmless
+        // no-op because the promise is already rejected.
+        reader.cancel().catch(() => {});
+        reject(new Error("上游长时间没有新数据（连接疑似中断）"));
+      }, SSE_IDLE_TIMEOUT_MS);
+      reader.read().then(
+        (result) => {
+          clearTimeout(timer);
+          resolve(result);
+        },
+        (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      );
+    });
+  try {
+    while (true) {
+      const { done, value } = await readWithIdleTimeout();
+      buffer += decoder.decode(value, { stream: !done });
+      const parts = buffer.split(/\r?\n\r?\n/);
+      buffer = parts.pop() ?? "";
+      for (const part of parts) {
+        for (const line of part.split(/\r?\n/)) {
+          if (!line.startsWith("data:")) continue;
+          const data = line.slice(5).trim();
+          if (data === "[DONE]") {
+            yield { type: "__sse_done" };
+            continue;
+          }
+          if (data) yield JSON.parse(data);
         }
-        if (data) yield JSON.parse(data);
       }
+      if (done) break;
     }
-    if (done) break;
+  } finally {
+    reader.cancel().catch(() => {});
   }
 }
 

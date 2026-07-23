@@ -331,6 +331,7 @@ export type SkillStoreItem = {
 
 export type ModelEvent =
   | { type: "text"; delta: string }
+  | { type: "text_reset" }
   | { type: "reasoning"; delta: string }
   | {
       type: "usage";

@@ -11,6 +11,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 import {
   Archive,
   ArchiveRestore,
@@ -151,6 +152,21 @@ type SettingsSection =
   | "permissions"
   | "recordings";
 type ThemePreference = "system" | "light" | "dark";
+type AccentPreference =
+  | "indigo"
+  | "violet"
+  | "emerald"
+  | "blue"
+  | "orange"
+  | "mono";
+const ACCENT_OPTIONS: { value: AccentPreference; label: string; swatch: string }[] = [
+  { value: "indigo", label: "靛蓝", swatch: "#5b6cff" },
+  { value: "violet", label: "紫罗兰", swatch: "#7c3aed" },
+  { value: "emerald", label: "翡翠绿", swatch: "#10a37f" },
+  { value: "blue", label: "钢青蓝", swatch: "#2563eb" },
+  { value: "orange", label: "陶土橙", swatch: "#e0663a" },
+  { value: "mono", label: "纯净黑白", swatch: "#171717" },
+];
 type TaskRecord = {
   id: string;
   name: string;
@@ -843,6 +859,8 @@ function SettingsPanel({
   onStatusPanelChange,
   theme,
   onThemeChange,
+  accent,
+  onAccentChange,
   permissionMode,
   onPermissionModeChange,
   permissionPolicy,
@@ -861,6 +879,8 @@ function SettingsPanel({
   onStatusPanelChange(value: boolean): void;
   theme: ThemePreference;
   onThemeChange(value: ThemePreference): void;
+  accent: AccentPreference;
+  onAccentChange(value: AccentPreference): void;
   permissionMode: PermissionMode;
   onPermissionModeChange(value: PermissionMode): void;
   permissionPolicy: PermissionPolicy;
@@ -1195,6 +1215,31 @@ function SettingsPanel({
                         >
                           <Icon size={13} />
                           {label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="settings-row">
+                    <span>
+                      <strong>配色方案</strong>
+                      <small>选择强调色，适用于按钮、消息气泡与高亮</small>
+                    </span>
+                    <div
+                      className="settings-segmented accent-segmented"
+                      aria-label="配色方案"
+                    >
+                      {ACCENT_OPTIONS.map(({ value, label, swatch }) => (
+                        <button
+                          key={value}
+                          type="button"
+                          title={label}
+                          aria-label={label}
+                          aria-pressed={accent === value}
+                          className={`accent-swatch${accent === value ? " active" : ""}`}
+                          style={{ ["--sw" as string]: swatch, background: swatch }}
+                          onClick={() => onAccentChange(value)}
+                        >
+                          <Check size={14} strokeWidth={3} />
                         </button>
                       ))}
                     </div>
@@ -1935,14 +1980,6 @@ const MarkdownMessage = memo(function MarkdownMessage({
   );
 });
 
-const StreamingMessageText = memo(function StreamingMessageText({
-  content,
-}: {
-  content: string;
-}) {
-  return <div className="streaming-message-text">{content}</div>;
-});
-
 function MessageItem({
   message,
   running,
@@ -1958,6 +1995,14 @@ function MessageItem({
 }) {
   const queued = (message as QueuedChatMessage).queued;
   const [previewImage, setPreviewImage] = useState<ImageAttachment>();
+  useEffect(() => {
+    if (!previewImage) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setPreviewImage(undefined);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [previewImage]);
   const legacyError =
     message.role === "assistant" && message.content.startsWith("请求失败：")
       ? message.content.slice("请求失败：".length)
@@ -2053,30 +2098,33 @@ function MessageItem({
           {error && <div className="message-error">请求失败：{error}</div>}
         </div>
       </div>
-      {previewImage && (
-        <div
-          className="image-lightbox"
-          role="dialog"
-          aria-modal="true"
-          aria-label={`查看图片 ${previewImage.name}`}
-          onMouseDown={(event) =>
-            event.target === event.currentTarget && setPreviewImage(undefined)
-          }
-        >
-          <div className="image-lightbox-content">
-            <button
-              className="image-lightbox-close"
-              type="button"
-              title="关闭"
-              onClick={() => setPreviewImage(undefined)}
-            >
-              <X size={18} />
-            </button>
-            <img src={previewImage.dataUrl} alt={previewImage.name} />
-            <span>{previewImage.name}</span>
-          </div>
-        </div>
-      )}
+      {previewImage &&
+        createPortal(
+          <div
+            className="image-lightbox"
+            role="dialog"
+            aria-modal="true"
+            aria-label={`查看图片 ${previewImage.name}`}
+            onMouseDown={(event) =>
+              event.target === event.currentTarget && setPreviewImage(undefined)
+            }
+          >
+            <div className="image-lightbox-content">
+              <button
+                className="image-lightbox-close"
+                type="button"
+                title="关闭"
+                aria-label="关闭图片预览"
+                onClick={() => setPreviewImage(undefined)}
+              >
+                <X size={18} />
+              </button>
+              <img src={previewImage.dataUrl} alt={previewImage.name} />
+              <span>{previewImage.name}</span>
+            </div>
+          </div>,
+          document.body,
+        )}
     </article>
   );
 }
@@ -2583,12 +2631,7 @@ const AssistantTimeline = memo(function AssistantTimeline({
   if (!groups.length)
     return (
       <>
-        {message.content &&
-          (running ? (
-            <StreamingMessageText content={message.content} />
-          ) : (
-            <MarkdownMessage content={message.content} />
-          ))}
+        {message.content && <MarkdownMessage content={message.content} />}
         {running && (
           <AgentWorkingState
             activities={activities}
@@ -2620,12 +2663,9 @@ const AssistantTimeline = memo(function AssistantTimeline({
           </div>
         );
       })}
-      {message.content.slice(cursor) &&
-        (running ? (
-          <StreamingMessageText content={message.content.slice(cursor)} />
-        ) : (
-          <MarkdownMessage content={message.content.slice(cursor)} />
-        ))}
+      {message.content.slice(cursor) && (
+        <MarkdownMessage content={message.content.slice(cursor)} />
+      )}
       {running && (
         <AgentWorkingState
           activities={activities}
@@ -2800,7 +2840,7 @@ const ConversationMessage = memo(function ConversationMessage({
   );
 });
 
-const ConversationHistory = memo(function ConversationHistory({
+const ConversationHistory = memo(function ConversationHistoryInner({
   messages,
   hasOlderMessages,
   activitiesByRequest,
@@ -2866,6 +2906,20 @@ const ConversationHistory = memo(function ConversationHistory({
       <div ref={endRef} />
     </div>
   );
+}, (prev, next) => {
+  if (prev.messages.length !== next.messages.length) return false;
+  if (prev.runningId !== next.runningId) return false;
+  if (prev.reasoning !== next.reasoning) return false;
+  if (prev.hasOlderMessages !== next.hasOlderMessages) return false;
+  if (prev.retryContent !== next.retryContent) return false;
+  if (prev.workspacePath !== next.workspacePath) return false;
+  const prevLast = prev.messages[prev.messages.length - 1];
+  const nextLast = next.messages[next.messages.length - 1];
+  if (prevLast && nextLast) {
+    if ((prevLast.content?.length ?? 0) !== (nextLast.content?.length ?? 0)) return false;
+  }
+  if (prev.activitiesByRequest !== next.activitiesByRequest) return false;
+  return true;
 });
 
 type ComposerTextareaHandle = {
@@ -3143,6 +3197,15 @@ export default function App() {
     const saved = localStorage.getItem("kcode.theme");
     return saved === "light" || saved === "dark" ? saved : "system";
   });
+  const [accent, setAccent] = useState<AccentPreference>(() => {
+    const saved = localStorage.getItem("kcode.accent");
+    return ACCENT_OPTIONS.some((o) => o.value === saved)
+      ? (saved as AccentPreference)
+      : "indigo";
+  });
+  useEffect(() => {
+    document.documentElement.dataset.accent = accent;
+  }, [accent]);
   const [updateOpen, setUpdateOpen] = useState(false);
   const [appUpdate, setAppUpdate] = useState<AppUpdateState>({
     status: "idle",
@@ -4025,6 +4088,11 @@ export default function App() {
     localStorage.setItem("kcode.theme", value);
   }
 
+  function updateAccent(value: AccentPreference) {
+    setAccent(value);
+    localStorage.setItem("kcode.accent", value);
+  }
+
   function updatePermissionMode(value: PermissionMode) {
     setPermissionMode(value);
     localStorage.setItem("kcode.permissionMode", value);
@@ -4459,6 +4527,41 @@ export default function App() {
             pendingReasoningRef.current += event.delta;
             scheduleReasoningFlush();
           }
+          return;
+        }
+        if (event.type === "text_reset") {
+          // Upstream broke mid-answer and the agent is retrying: discard the
+          // partial text we streamed so far, both buffered and already
+          // committed, so the retry renders a clean, non-duplicated answer.
+          pendingTextRef.current.delete(id);
+          pendingTaskTextRef.current.delete(id);
+          assistantLengthsRef.current.set(id, 0);
+          const taskId = requestTasksRef.current.get(id);
+          startTransition(() => {
+            if (isActive)
+              setMessages((all) =>
+                all.map((message) =>
+                  message.id === `assistant:${id}`
+                    ? { ...message, content: "" }
+                    : message,
+                ),
+              );
+            if (taskId)
+              setTasks((all) =>
+                all.map((task) =>
+                  task.id === taskId
+                    ? {
+                        ...task,
+                        messages: task.messages.map((message) =>
+                          message.id === `assistant:${id}`
+                            ? { ...message, content: "" }
+                            : message,
+                        ),
+                      }
+                    : task,
+                ),
+              );
+          });
           return;
         }
         if (event.type === "text") {
@@ -7153,6 +7256,8 @@ export default function App() {
             onStatusPanelChange={updateStatusPanel}
             theme={theme}
             onThemeChange={updateTheme}
+            accent={accent}
+            onAccentChange={updateAccent}
             permissionMode={permissionMode}
             onPermissionModeChange={updatePermissionMode}
             permissionPolicy={permissionPolicy}

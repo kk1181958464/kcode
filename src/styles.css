@@ -1,79 +1,90 @@
 :root {
   font-family: Inter, "Segoe UI", sans-serif;
-  color: #171a1f;
-  background: #f6f7f9;
+  color: #18181b;
+  background: #ffffff;
   font-synthesis: none;
-  --ink: #171a1f;
-  --muted: #5d6570;
-  --line: #e4e7eb;
-  --surface: #f6f7f9;
+  /* Neutral zinc scale — cool, flat, Linear/Vercel-grade. */
+  --ink: #18181b;
+  --muted: #71717a;
+  --line: #e4e4e7;
+  --line-strong: #d4d4d8;
+  --surface: #ffffff;
   --surface-raised: #ffffff;
-  --surface-muted: #f1f3f5;
-  --panel: #f1f3f5;
-  --sidebar-surface: #f1f3f5;
-  --accent: #4f6bfe;
-  --accent-hover: #3f59e8;
-  --accent-soft: #e9edff;
-  --link: #4159d8;
-  --danger: #d64545;
+  --surface-muted: #f4f4f5;
+  --panel: #fafafa;
+  --sidebar-surface: #fafafa;
+  /* Default accent (Indigo). Overridden per [data-accent] palette below. */
+  --accent: #5b6cff;
+  --accent-hover: #4a59ec;
+  --accent-soft: #eef0ff;
+  --accent-ink: #ffffff;
+  --link: #4f5bd8;
+  --danger: #e5484d;
   --danger-soft: #fef2f2;
-  --warning: #b7791f;
+  --warning: #d97706;
   --warning-soft: #fffbeb;
-  --success: #228b64;
+  --success: #16a34a;
   --success-soft: #f0fdf4;
   --success-hover: #15803d;
-  --danger-hover: #b91c1c;
-  --code-surface: #1e293b;
-  --code-toolbar: #283548;
-  --code-ink: #e2e8f0;
-  --shadow-soft: 0 2px 10px rgb(15 23 42 / 5%);
-  --shadow-raised: 0 8px 26px rgb(15 23 42 / 9%);
-  --shadow-float: 0 16px 44px rgb(15 23 42 / 14%);
-  --surface-hover: #e9ecef;
-  --surface-selected: #e9edff;
-  --focus-ring: rgb(79 107 254 / 22%);
-  --radius-xs: 6px;
-  --radius-sm: 8px;
-  --radius-md: 12px;
-  --radius-lg: 16px;
+  --danger-hover: #c93b40;
+  --code-surface: #18181b;
+  --code-toolbar: #27272a;
+  --code-ink: #e4e4e7;
+  /* Minimal elevation — borders do the work, shadows only for floats. */
+  --shadow-soft: 0 1px 2px rgb(24 24 27 / 4%);
+  --shadow-raised: 0 4px 16px rgb(24 24 27 / 7%);
+  --shadow-float: 0 12px 40px rgb(24 24 27 / 12%);
+  --shadow-card: 0 2px 8px rgb(24 24 27 / 6%);
+  --surface-hover: #f4f4f5;
+  --surface-selected: #eef0ff;
+  --focus-ring: rgb(91 108 255 / 26%);
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
   --motion-fast: 120ms;
   --motion-standard: 180ms;
   --motion-slow: 260ms;
   --motion-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 :root[data-theme="dark"] {
-  color: #e4e7eb;
-  background: #101216;
-  --ink: #e4e7eb;
-  --muted: #9aa3ad;
-  --line: #2d333c;
-  --surface: #101216;
-  --surface-raised: #15181d;
-  --surface-muted: #1b1f26;
-  --panel: #1b1f26;
-  --sidebar-surface: #15181d;
-  --accent: #7286ff;
-  --accent-hover: #8797ff;
-  --accent-soft: #252d57;
-  --link: #91a0ff;
-  --danger: #e26b6b;
-  --danger-soft: #3f1a1a;
-  --warning: #d69b46;
-  --warning-soft: #3f2e0a;
-  --success: #4cb585;
-  --success-soft: #1a3f2e;
-  --success-hover: #22c55e;
-  --danger-hover: #ef4444;
-  --code-surface: #0f172a;
-  --code-toolbar: #1e293b;
-  --code-ink: #cbd5e1;
-  --shadow-soft: 0 2px 12px rgb(0 0 0 / 16%);
-  --shadow-raised: 0 10px 30px rgb(0 0 0 / 22%);
-  --shadow-float: 0 18px 50px rgb(0 0 0 / 30%);
-  --surface-hover: #232832;
-  --surface-selected: #252d57;
-  --focus-ring: rgb(114 134 255 / 28%);
+  color: #ededf0;
+  background: #0e0e11;
+  /* Near-black neutral surfaces; brightness reserved for accent + status. */
+  --ink: #ededf0;
+  --muted: #8b8b94;
+  --line: #26262b;
+  --line-strong: #34343b;
+  --surface: #0e0e11;
+  --surface-raised: #17171b;
+  --surface-muted: #1c1c21;
+  --panel: #141417;
+  --sidebar-surface: #141417;
+  --accent: #6e7bff;
+  --accent-hover: #8290ff;
+  --accent-soft: #21223a;
+  --accent-ink: #ffffff;
+  --link: #97a2ff;
+  --danger: #f0595e;
+  --danger-soft: #351a1c;
+  --warning: #e0983c;
+  --warning-soft: #38290f;
+  --success: #3fb950;
+  --success-soft: #14311d;
+  --success-hover: #4ac95c;
+  --danger-hover: #f0595e;
+  --code-surface: #0a0a0c;
+  --code-toolbar: #17171b;
+  --code-ink: #d4d4d8;
+  --shadow-soft: 0 1px 2px rgb(0 0 0 / 30%);
+  --shadow-raised: 0 6px 20px rgb(0 0 0 / 40%);
+  --shadow-float: 0 14px 44px rgb(0 0 0 / 55%);
+  --shadow-card: 0 2px 10px rgb(0 0 0 / 35%);
+  --surface-hover: #202026;
+  --surface-selected: #21223a;
+  --focus-ring: rgb(110 123 255 / 34%);
 }
 
 * {
@@ -1612,51 +1623,59 @@ select:focus-visible {
 .image-lightbox {
   position: fixed;
   inset: 0;
-  z-index: 3000;
+  z-index: 2147483000;
   display: grid;
   place-items: center;
-  padding: 28px;
-  background: rgb(20 24 21 / 72%);
+  width: 100vw;
+  height: 100vh;
+  padding: 24px;
+  background: rgb(15 23 42 / 82%);
+  backdrop-filter: blur(10px);
 }
 .image-lightbox-content {
   position: relative;
   display: flex;
-  max-width: min(1100px, 92vw);
-  max-height: 90vh;
+  width: min(1400px, 96vw);
+  height: min(92vh, 900px);
+  max-width: 96vw;
+  max-height: 92vh;
   flex-direction: column;
   align-items: center;
-  gap: 9px;
+  justify-content: center;
+  gap: 10px;
 }
 .image-lightbox-content > img {
   display: block;
+  width: auto;
+  height: auto;
   max-width: 100%;
-  max-height: calc(90vh - 42px);
+  max-height: calc(92vh - 42px);
   object-fit: contain;
-  border-radius: 6px;
-  background: var(--surface-raised);
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.2);
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 24px 80px rgb(0 0 0 / 35%);
 }
 .image-lightbox-content > span {
   max-width: 80vw;
   overflow: hidden;
-  color: #fff;
-  font-size: 11px;
+  color: rgb(255 255 255 / 82%);
+  font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .image-lightbox-close {
   position: absolute;
-  top: 8px;
-  right: 8px;
+  top: -4px;
+  right: -4px;
   z-index: 1;
   display: grid;
-  width: 32px;
-  height: 32px;
+  width: 38px;
+  height: 38px;
   place-items: center;
   padding: 0;
   border: 1px solid rgb(255 255 255 / 35%);
-  border-radius: 6px;
-  background: rgb(20 24 21 / 72%);
+  border-radius: 10px;
+  background: rgb(15 23 42 / 82%);
   color: #fff;
   cursor: pointer;
 }
@@ -3401,18 +3420,35 @@ select:focus-visible {
   border-top: 1px solid #e6e8e3;
 }
 .settings-model-list > div {
-  min-height: 39px;
+  min-height: 72px;
   display: grid;
-  grid-template-columns: 25px minmax(110px, 1fr) minmax(210px, auto) 32px;
+  grid-template-columns: 25px minmax(0, 1fr) 32px;
+  grid-template-rows: auto auto;
   align-items: center;
-  gap: 7px;
+  column-gap: 9px;
+  row-gap: 5px;
+  padding: 9px 0;
   border-bottom: 1px solid #eef0ec;
 }
 .model-reasoning-config {
+  grid-column: 2 / -1;
+  min-width: 0;
   display: flex;
   align-items: center;
-  justify-content: flex-end;
-  gap: 6px;
+  justify-content: flex-start;
+  gap: 7px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+  scrollbar-width: thin;
+}
+
+.model-reasoning-config::-webkit-scrollbar {
+  height: 4px;
+}
+
+.model-reasoning-config::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border-radius: 999px;
 }
 .model-context-input {
   display: flex;
@@ -3422,19 +3458,22 @@ select:focus-visible {
   font-size: 9px;
 }
 .model-context-input input {
-  width: 82px;
+  width: 104px;
+  flex: 0 0 104px;
   height: 28px;
   padding: 4px 6px;
   font-size: 9px;
 }
 .model-reasoning-config select {
-  width: 94px;
+  width: 118px;
+  flex: 0 0 118px;
   height: 28px;
   padding: 4px 6px;
   font-size: 9px;
 }
 .model-effort-toggles {
   display: flex;
+  flex: 0 0 auto;
   gap: 2px;
 }
 .model-effort-toggles button {
@@ -3456,6 +3495,32 @@ select:focus-visible {
   display: flex;
   flex-direction: column;
   gap: 1px;
+}
+
+.settings-model-list > div > span:nth-child(2) {
+  grid-column: 2;
+  grid-row: 1;
+  overflow: hidden;
+}
+
+.settings-model-list > div > .remove-model {
+  grid-column: 3;
+  grid-row: 1;
+  align-self: center;
+}
+
+.settings-nav {
+  min-width: 202px;
+}
+
+@media (max-width: 900px) {
+  .settings-nav {
+    min-width: 184px;
+  }
+
+  .settings-model-list {
+    margin-left: 18px;
+  }
 }
 .settings-model-list strong,
 .settings-model-list small {
@@ -5957,8 +6022,20 @@ select:focus-visible {
 
 /* Final interaction and accessibility polish. */
 ::selection {
-  background: color-mix(in srgb, var(--accent) 24%, transparent);
-  color: var(--ink);
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+/* Dark surfaces (black message bubble, code blocks, diffs): use a light,
+   translucent highlight so the selection region stays visible and text stays
+   bright — never dark-on-dark. */
+.message.user .message-body ::selection,
+.message.user .message-body::selection,
+.code-block ::selection,
+.code-block pre::selection,
+.activity-detail pre::selection,
+.git-diff-view::selection {
+  background: rgb(255 255 255 / 30%);
+  color: #fff;
 }
 
 button:disabled,
@@ -6087,3 +6164,641 @@ button[aria-busy="true"] {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ========================================================================== */
+/* KCODE UI — Linear/Vercel normalization                                     */
+/* Neutralizes the warm greenish-grays and gradients left in the base layer   */
+/* so every surface resolves through the token system.                        */
+/* ========================================================================== */
+
+/* --- Custom scrollbars: thin, neutral, unobtrusive --- */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background: var(--line-strong);
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+/* --- Brand / logo --- */
+.logo-large {
+  border-radius: var(--radius-md);
+  background: var(--accent);
+  box-shadow: none;
+}
+.brand small,
+.workspace-group > header > small,
+.brand strong {
+  color: var(--muted);
+}
+.brand strong {
+  color: var(--ink);
+  letter-spacing: -0.01em;
+}
+
+/* --- Sidebar residual warm-grays --- */
+.new-task,
+.add-provider {
+  border-color: var(--line);
+  box-shadow: none;
+}
+.new-task:active {
+  background: var(--surface-hover);
+}
+.task-filter {
+  border-color: var(--line);
+}
+.task-filter button:hover,
+.task-filter button.active {
+  background: var(--surface-hover);
+  color: var(--accent);
+}
+.workspace-group > header > small {
+  color: var(--muted);
+}
+.workspace-group.drop-target,
+.task-row.drop-target {
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+.workspace-group > header > .workspace-delete:hover {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.workspace-grip,
+.task-grip {
+  color: var(--muted);
+}
+.sidebar-footer {
+  border-top-color: var(--line);
+}
+
+/* --- Turn rail --- */
+.turn-rail-line::before,
+.turn-tick {
+  background: var(--line-strong);
+}
+.turn-rail > button:hover .turn-tick {
+  background: var(--muted);
+}
+.turn-rail > button.active .turn-tick {
+  background: var(--accent);
+}
+.turn-preview {
+  border-color: var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-float);
+}
+/* --- Welcome screen --- */
+.context-dot {
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.welcome h2 {
+  letter-spacing: -0.02em;
+}
+.prompts button {
+  border-color: var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+}
+.prompts button:hover {
+  border-color: var(--line-strong);
+  background: var(--surface-hover);
+}
+.prompts button span {
+  color: var(--muted);
+}
+.connect-model {
+  border-color: var(--line);
+}
+.connect-model:hover {
+  border-color: var(--line-strong);
+}
+
+/* --- Composer context files --- */
+.context-file {
+  border-color: var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+}
+.file-icon {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.context-file button:hover,
+.context-error button:hover {
+  background: var(--surface-hover);
+}
+.context-error {
+  border-color: color-mix(in srgb, var(--danger) 22%, var(--line));
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.context-toast {
+  border-color: color-mix(in srgb, var(--success) 26%, var(--line));
+  background: var(--success-soft);
+  color: var(--success);
+}
+.context-button b {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.pasted-image {
+  border-color: var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-muted);
+}
+.pasted-image button {
+  background: color-mix(in srgb, var(--ink) 82%, transparent);
+  color: var(--surface-raised);
+}
+
+/* --- Connection / model status dots --- */
+.connection i,
+.provider-row .status i,
+.topbar span i,
+.model-provider-dot {
+  background: var(--muted);
+}
+.connection.online i,
+.provider-row .status.connected i,
+.model-provider-dot.online {
+  background: var(--success);
+  box-shadow: 0 0 0 2px var(--success-soft);
+}
+/* --- Agent working indicator (was warm green) --- */
+.agent-working {
+  color: var(--muted);
+}
+.agent-working-mark {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.agent-working-track {
+  background: var(--surface-muted);
+}
+.agent-working-track i {
+  background: var(--accent);
+}
+.agent-working-reasoning {
+  color: var(--muted);
+}
+.agent-working-recent span {
+  color: var(--muted);
+}
+.agent-working-recent span.success,
+.agent-working-recent span.completed {
+  color: var(--success);
+}
+.agent-working-recent span.failed,
+.agent-working-recent span.denied {
+  color: var(--danger);
+}
+.agent-working-recent span.waiting {
+  color: var(--warning);
+}
+.thinking span,
+.live-dot,
+.conversation-history-loader span {
+  background: var(--accent);
+}
+
+/* --- Assistant avatar mark --- */
+.message-avatar {
+  border-color: var(--line);
+  color: var(--muted);
+}
+
+/* --- File-change summary + diff --- */
+.file-changes-icon {
+  background: var(--surface-muted);
+  color: var(--muted);
+}
+.file-changes-summary b,
+.diff-count b,
+.changed-file-row small b {
+  color: var(--success);
+}
+.file-changes-summary i,
+.diff-count i {
+  color: var(--danger);
+}
+.changed-file-block,
+.file-changes-summary > div {
+  border-color: var(--line);
+}
+.changed-file-block .diff-view,
+.changed-file-row {
+  border-color: var(--line);
+}
+.diff-add {
+  background: var(--success-soft);
+  color: var(--success);
+}
+.diff-del {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.diff-hunk {
+  background: var(--surface-muted);
+  color: var(--muted);
+}
+.activity-diff {
+  background: var(--surface-muted) !important;
+}
+
+/* --- Approval / restore / selected folder --- */
+.approval-actions span {
+  color: var(--muted);
+}
+.approval-actions button {
+  border-color: var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+}
+.approval-actions .allow {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+.restore-dialog-icon,
+.delete-dialog-icon {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.restore-dialog p b {
+  color: var(--ink);
+}
+.selected-folder {
+  border-color: var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-muted);
+}
+.selected-folder > svg {
+  color: var(--muted);
+}
+.selected-folder small {
+  color: var(--muted);
+}
+/* --- Status panel residuals --- */
+.status-panel > header svg {
+  color: var(--success);
+  background: var(--success-soft);
+}
+.context-usage-bar i {
+  background: var(--accent);
+}
+.git-summary > svg {
+  color: var(--success);
+}
+.git-summary > b em {
+  color: var(--danger);
+}
+.permission-row {
+  color: var(--success);
+}
+.permission-row strong {
+  color: var(--ink);
+}
+.run-metrics > div {
+  color: var(--success);
+}
+.compact-context-button {
+  border-color: var(--line);
+  background: var(--surface-raised);
+  color: var(--ink);
+}
+.compact-context-button:hover:not(:disabled) {
+  border-color: var(--line-strong);
+  background: var(--surface-hover);
+}
+.view-summary-button {
+  color: var(--accent);
+}
+
+/* --- Code toolbar --- */
+.code-toolbar {
+  border-bottom-color: color-mix(in srgb, var(--line) 40%, transparent);
+}
+
+/* --- Flatten every remaining decorative gradient into flat token fills --- */
+.file-changes-summary > header,
+.execution-summary-icon,
+.file-changes-icon,
+.sync-models,
+.secondary,
+.summary-dialog footer button,
+.modal,
+.summary-dialog,
+.model-menu,
+.effort-menu {
+  background-image: none !important;
+}
+.send:not(.stop) {
+  background: var(--accent);
+  box-shadow: 0 2px 7px var(--focus-ring);
+}
+.primary {
+  background: var(--accent);
+  box-shadow: 0 1px 2px rgb(24 24 27 / 10%);
+}
+
+/* --- Selection dialogs / misc borders that referenced warm grays --- */
+.task-modal-actions,
+.modal footer,
+.restore-dialog footer {
+  border-top-color: var(--line);
+}
+.task-name-field,
+.form-grid label {
+  color: var(--muted);
+}
+.error {
+  background: var(--danger-soft);
+}
+.danger-button:hover {
+  background: var(--danger-soft);
+}
+
+/* --- Fix skill-store focus ring: --focus-ring is a color, needs shadow syntax --- */
+.skill-store-toolbar:focus-within {
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+.skill-store-card:hover {
+  border-color: var(--line-strong);
+}
+
+/* --- Segmented / switch residuals --- */
+.setting-switch span,
+.switch span {
+  background: #fff;
+}
+:root[data-theme="dark"] .setting-switch span,
+:root[data-theme="dark"] .switch span {
+  background: #ededf0;
+}
+
+/* --- Selected-item checkmarks: one accent, used sparingly --- */
+.provider-menu-level > button > svg:nth-last-child(2),
+.model-menu [role="listbox"] section > button > svg,
+.effort-menu > button > svg,
+.permission-options > button > svg {
+  color: var(--accent);
+}
+.provider-next {
+  color: var(--muted) !important;
+}
+.model-menu-icon,
+.provider-menu-mark {
+  border-color: var(--line);
+  background: var(--surface-muted);
+  color: var(--muted);
+}
+.provider-menu-mark.online {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* --- Message thumbnails / lightbox close --- */
+.message-images button,
+.context-file button {
+  border-color: var(--line);
+}
+.sync-result {
+  color: var(--success);
+}
+.sync-models:hover:not(:disabled) {
+  color: var(--accent);
+}
+
+/* ========================================================================== */
+/* KCODE UI — high-impact pass (deliberately visible changes)                 */
+/* ========================================================================== */
+
+/* 1) User message: solid accent bubble with white text (ChatGPT-style) */
+.message.user .message-body {
+  padding: 12px 15px !important;
+  border: 0 !important;
+  border-radius: 16px 16px 4px 16px !important;
+  background: var(--accent) !important;
+  color: #fff !important;
+  box-shadow: 0 4px 14px var(--focus-ring) !important;
+}
+.message.user .message-body a { color: #fff; text-decoration: underline; }
+.message.user .message-body :not(pre) > code {
+  border-color: rgb(255 255 255 / 28%);
+  background: rgb(255 255 255 / 16%);
+  color: #fff;
+}
+
+/* 2) Assistant avatar: solid accent square, brand-forward */
+.message-avatar.assistant,
+.message.assistant .message-avatar {
+  border-color: var(--accent) !important;
+  background: var(--accent) !important;
+  color: #fff !important;
+}
+
+/* 3) Active task: full accent-soft fill + bold accent left bar + accent text */
+.task-row.active {
+  background: var(--accent-soft) !important;
+  border-left: 3px solid var(--accent) !important;
+}
+.task-row.active .task-main span {
+  color: var(--accent) !important;
+  font-weight: 650 !important;
+}
+
+/* 4) New-task button: filled accent-soft, more presence */
+.new-task {
+  background: var(--accent-soft) !important;
+  color: var(--accent) !important;
+  font-weight: 650 !important;
+}
+.new-task .new-task-icon {
+  background: var(--accent) !important;
+  color: #fff !important;
+}
+.new-task kbd { color: color-mix(in srgb, var(--accent) 60%, var(--muted)); }
+
+/* 5) Brand wordmark: bigger, tighter, confident */
+.brand strong { font-size: 15px !important; letter-spacing: -0.02em !important; }
+
+/* 6) Title heading: larger, tighter */
+.topbar h1 { font-size: 15px !important; font-weight: 700 !important; letter-spacing: -0.02em !important; }
+
+/* 7) Section eyebrows: uppercase, spaced, quieter */
+.workspace-label, .task-label {
+  font-size: 10px !important;
+  font-weight: 650 !important;
+  letter-spacing: 0.08em !important;
+  text-transform: uppercase !important;
+  color: var(--muted) !important;
+}
+
+/* 8) Composer: bigger radius, stronger focus glow, clear presence */
+.composer {
+  border-radius: 14px !important;
+  border: 1px solid var(--line-strong) !important;
+}
+.composer:focus-within {
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 4px var(--focus-ring), 0 8px 28px rgb(24 24 27 / 8%) !important;
+}
+
+/* 9) Send button: pill-ish, punchy */
+.send { border-radius: 12px !important; }
+
+/* 10) Sidebar: subtle tinted separation from the canvas */
+.sidebar {
+  background: var(--panel) !important;
+}
+
+/* ========================================================================== */
+/* KCODE UI — monochrome accent-ink mapping                                   */
+/* Any text/glyph resting on an accent fill inverts with the theme so it       */
+/* stays legible when accent is near-black (light) or near-white (dark).       */
+/* ========================================================================== */
+.primary,
+.primary:hover:not(:disabled),
+.task-modal-actions .primary,
+.update-dialog > footer button.primary,
+.send:not(.stop),
+.send:hover:not(:disabled):not(.stop),
+.approval-actions .allow,
+.new-task .new-task-icon,
+.new-task:hover .new-task-icon,
+.message.user .message-body,
+.message-avatar.assistant,
+.message.assistant .message-avatar {
+  color: var(--accent-ink) !important;
+}
+.message.user .message-body a {
+  color: var(--accent-ink) !important;
+}
+.message.user .message-body :not(pre) > code {
+  border-color: color-mix(in srgb, var(--accent-ink) 26%, transparent) !important;
+  background: color-mix(in srgb, var(--accent-ink) 14%, transparent) !important;
+  color: var(--accent-ink) !important;
+}
+/* Danger fills always take white ink (danger stays red in both themes). */
+.danger-button.confirm,
+.delete-dialog > footer .danger,
+.restore-dialog footer .danger,
+.send.stop {
+  color: #fff !important;
+}
+
+/* ========================================================================== */
+/* KCODE UI — selectable accent palettes                                      */
+/* Driven by <html data-accent="…">. Each palette only remaps the accent      */
+/* family; neutrals/surfaces stay shared so themes cross-compose cleanly.     */
+/* ========================================================================== */
+
+/* Indigo (default) */
+:root[data-accent="indigo"] {
+  --accent: #5b6cff; --accent-hover: #4a59ec; --accent-soft: #eef0ff;
+  --accent-ink: #fff; --link: #4f5bd8;
+  --surface-selected: #eef0ff; --focus-ring: rgb(91 108 255 / 26%);
+}
+:root[data-theme="dark"][data-accent="indigo"] {
+  --accent: #6e7bff; --accent-hover: #8290ff; --accent-soft: #21223a;
+  --accent-ink: #fff; --link: #97a2ff;
+  --surface-selected: #21223a; --focus-ring: rgb(110 123 255 / 34%);
+}
+
+/* Violet */
+:root[data-accent="violet"] {
+  --accent: #7c3aed; --accent-hover: #6d28d9; --accent-soft: #f3ecff;
+  --accent-ink: #fff; --link: #6d28d9;
+  --surface-selected: #f3ecff; --focus-ring: rgb(124 58 237 / 26%);
+}
+:root[data-theme="dark"][data-accent="violet"] {
+  --accent: #a78bfa; --accent-hover: #b9a4fc; --accent-soft: #2a2044;
+  --accent-ink: #12081f; --link: #c4b5fd;
+  --surface-selected: #2a2044; --focus-ring: rgb(167 139 250 / 34%);
+}
+
+/* Emerald */
+:root[data-accent="emerald"] {
+  --accent: #10a37f; --accent-hover: #0d8c6d; --accent-soft: #e6f7f1;
+  --accent-ink: #fff; --link: #0d8c6d;
+  --surface-selected: #e6f7f1; --focus-ring: rgb(16 163 127 / 26%);
+}
+:root[data-theme="dark"][data-accent="emerald"] {
+  --accent: #2dd4a7; --accent-hover: #4de0bb; --accent-soft: #0f2e26;
+  --accent-ink: #05201a; --link: #5ee3c1;
+  --surface-selected: #0f2e26; --focus-ring: rgb(45 212 167 / 32%);
+}
+
+/* Blue */
+:root[data-accent="blue"] {
+  --accent: #2563eb; --accent-hover: #1d4ed8; --accent-soft: #e8f0fe;
+  --accent-ink: #fff; --link: #1d4ed8;
+  --surface-selected: #e8f0fe; --focus-ring: rgb(37 99 235 / 26%);
+}
+:root[data-theme="dark"][data-accent="blue"] {
+  --accent: #4a9eff; --accent-hover: #6bb0ff; --accent-soft: #12233b;
+  --accent-ink: #041322; --link: #7cbaff;
+  --surface-selected: #12233b; --focus-ring: rgb(74 158 255 / 32%);
+}
+
+/* Orange (terracotta) */
+:root[data-accent="orange"] {
+  --accent: #e0663a; --accent-hover: #cc5228; --accent-soft: #fdeee7;
+  --accent-ink: #fff; --link: #cc5228;
+  --surface-selected: #fdeee7; --focus-ring: rgb(224 102 58 / 26%);
+}
+:root[data-theme="dark"][data-accent="orange"] {
+  --accent: #f4884f; --accent-hover: #f79c6b; --accent-soft: #3a2015;
+  --accent-ink: #1f0e06; --link: #f9a578;
+  --surface-selected: #3a2015; --focus-ring: rgb(244 136 79 / 32%);
+}
+
+/* Mono (Vercel black/white) */
+:root[data-accent="mono"] {
+  --accent: #171717; --accent-hover: #2a2a2a; --accent-soft: #ededee;
+  --accent-ink: #fff; --link: #171717;
+  --surface-selected: #ededee; --focus-ring: rgb(23 23 23 / 16%);
+}
+:root[data-theme="dark"][data-accent="mono"] {
+  --accent: #ededed; --accent-hover: #fff; --accent-soft: #1e1e1e;
+  --accent-ink: #0a0a0a; --link: #ededed;
+  --surface-selected: #1e1e1e; --focus-ring: rgb(255 255 255 / 20%);
+}
+
+/* Palette swatch chips in settings */
+.accent-segmented { flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.accent-swatch {
+  position: relative;
+  width: 30px; height: 30px;
+  display: grid; place-items: center;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--sw, #5b6cff);
+  color: #fff;
+  cursor: pointer;
+  transition: transform var(--motion-fast) var(--motion-ease),
+              box-shadow var(--motion-fast) ease;
+}
+.accent-swatch:hover { transform: translateY(-1px) scale(1.05); }
+.accent-swatch.active {
+  box-shadow: 0 0 0 2px var(--surface-raised), 0 0 0 4px var(--sw, #5b6cff);
+}
+.accent-swatch svg { opacity: 0; transition: opacity var(--motion-fast) ease; }
+.accent-swatch.active svg { opacity: 1; }
