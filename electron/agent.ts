@@ -212,6 +212,7 @@ type Turn = {
   calls: ToolCall[];
   rawCalls: unknown[];
   usage: { input: number; output: number; cached: number };
+  finishReason?: string;
 };
 type HistoryItem =
   | {
@@ -3366,7 +3367,8 @@ export async function* runAgent(
     lastFingerprint = "",
     unverifiedBrowserClaims = 0,
     unverifiedGitClaims = 0,
-    unverifiedCodingClaims = 0;
+    unverifiedCodingClaims = 0,
+    autoContinues = 0;
   while (!signal.aborted) {
     round += 1;
     if (
@@ -3543,10 +3545,35 @@ export async function* runAgent(
     } else if (turn.text)
       history.push({ kind: "message", role: "assistant", content: turn.text });
     if (!turn.calls.length) {
+      // A round with no tool call normally means the model is done. But two
+      // cases masquerade as "done" while the task is unfinished: (1) the
+      // response was truncated (finish_reason length/max_tokens) before its
+      // tool calls arrived; (2) some models — notably Grok — end a round with
+      // only a "接下来我会…/next I'll…" narration and no actual tool call.
+      // Both would otherwise force the user to type "继续". Detect them and
+      // auto-continue a bounded number of times.
+      const truncated = /^(length|max_tokens|max_output_tokens)$/i.test(
+        turn.finishReason ?? "",
+      );
+      const intendsToContinue =
+        /(接下来|下一步|现在(就)?(开始|来)|我(会|将|来|先|需要)[^。\n]{0,14}(检查|查看|修改|实现|继续|编辑|运行|执行|创建|添加|修复|验证|测试|读取|搜索|分析|处理|核对|补充)|继续(执行|处理|检查|实现|完成)|让我(先|来|继续)|马上|正在[^。\n]{0,10}(检查|实现|修改|处理)|then i['’]?ll|i['’]?ll (now|proceed|continue|check|start|go ahead|next|implement|fix|add|verify|run)|next,? i(['’]?ll| will| am)|let me (now|check|start|look|continue|implement))/i.test(
+          (turn.text || "").slice(-180),
+        );
+      if ((truncated || intendsToContinue) && autoContinues < 4) {
+        autoContinues += 1;
+        history.push({
+          kind: "message",
+          role: "user",
+          content: `<runtime_verification>${truncated ? "上一轮响应似乎被截断（未收到完整的工具调用）。" : "你描述了下一步计划，但本轮没有实际调用任何工具。"}如果任务尚未完成，请立即调用相应工具继续执行，不要只描述计划；如果任务确实已经全部完成，请明确给出最终结论。</runtime_verification>`,
+        });
+        continue;
+      }
       closeSubagentMessageQueue(requestId);
       yield { type: "done" };
       return;
     }
+    // A productive round refreshes the auto-continue budget.
+    autoContinues = 0;
     history.push({ kind: "calls", calls: turn.calls, rawCalls: turn.rawCalls });
     const roundFingerprints: string[] = [];
     let roundAdvanced = false;

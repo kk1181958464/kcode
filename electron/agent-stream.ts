@@ -6,6 +6,9 @@ export type AssembledTurn = {
   calls: { id: string; name: AgentToolName; input: Record<string, unknown> }[];
   rawCalls: unknown[];
   usage: { input: number; output: number; cached: number };
+  // Normalized upstream stop reason (e.g. "length"/"max_tokens" for truncation,
+  // "stop"/"end_turn" for a natural finish). Empty when the protocol omits it.
+  finishReason: string;
 };
 type PendingCall = { id: string; name: string; args: string; raw?: any };
 
@@ -16,6 +19,7 @@ export class AgentStreamAssembler {
   private responseItems: any[] = [];
   private anthropicBlocks: any[] = [];
   private completed = false;
+  private finishReason = "";
   constructor(
     private protocol: Protocol,
     private onText?: (delta: string) => void,
@@ -30,7 +34,10 @@ export class AgentStreamAssembler {
     // disconnect looks identical to a finished answer.
     if (event.type === "__sse_done") this.completed = true;
     if (this.protocol === "openai-chat") {
-      if (event.choices?.[0]?.finish_reason) this.completed = true;
+      if (event.choices?.[0]?.finish_reason) {
+        this.completed = true;
+        this.finishReason = event.choices[0].finish_reason;
+      }
       const delta = event.choices?.[0]?.delta ?? {};
       this.addText(delta.content);
       this.addReasoning(delta.reasoning_content ?? delta.reasoning);
@@ -60,8 +67,14 @@ export class AgentStreamAssembler {
         event.type === "response.completed" ||
         event.type === "response.incomplete" ||
         event.type === "response.failed"
-      )
+      ) {
         this.completed = true;
+        if (event.type === "response.incomplete")
+          this.finishReason =
+            event.response?.incomplete_details?.reason === "max_output_tokens"
+              ? "length"
+              : (event.response?.incomplete_details?.reason ?? "incomplete");
+      }
       if (event.type === "response.output_text.delta")
         this.addText(event.delta);
       if (
@@ -103,8 +116,10 @@ export class AgentStreamAssembler {
         };
     } else if (this.protocol === "anthropic-messages") {
       if (event.type === "message_stop") this.completed = true;
-      if (event.type === "message_delta" && event.delta?.stop_reason)
+      if (event.type === "message_delta" && event.delta?.stop_reason) {
         this.completed = true;
+        this.finishReason = event.delta.stop_reason;
+      }
       if (event.type === "message_start")
         this.usage.input =
           event.message?.usage?.input_tokens ?? this.usage.input;
@@ -138,7 +153,10 @@ export class AgentStreamAssembler {
       if (event.type === "message_delta")
         this.usage.output = event.usage?.output_tokens ?? this.usage.output;
     } else {
-      if (event.candidates?.[0]?.finishReason) this.completed = true;
+      if (event.candidates?.[0]?.finishReason) {
+        this.completed = true;
+        this.finishReason = event.candidates[0].finishReason;
+      }
       for (const part of event.candidates?.[0]?.content?.parts ?? []) {
         if (typeof part.text === "string") this.addText(part.text);
         if (part.functionCall)
@@ -221,7 +239,13 @@ export class AgentStreamAssembler {
       rawCalls = [...this.calls.values()]
         .map((call) => call.raw)
         .filter(Boolean);
-    return { text: this.text, calls, rawCalls, usage: this.usage };
+    return {
+      text: this.text,
+      calls,
+      rawCalls,
+      usage: this.usage,
+      finishReason: this.finishReason,
+    };
   }
   private addText(delta?: string) {
     if (!delta) return;
