@@ -1925,58 +1925,99 @@ function DiffView({ text, className }: { text: string; className?: string }) {
   );
 }
 
-const MarkdownMessage = memo(function MarkdownMessage({
+const markdownComponents = {
+  a: ({ children, href, ...props }: any) => (
+    <a
+      {...props}
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      onClick={(event: React.MouseEvent<HTMLAnchorElement>) => {
+        if (!href || !/^https?:\/\//i.test(href)) return;
+        event.preventDefault();
+        openExternalUrl(href);
+      }}
+    >
+      {children}
+    </a>
+  ),
+  pre: ({ children }: any) => {
+    const code = String(
+      (children as { props?: { children?: unknown } })?.props?.children ?? "",
+    ).replace(/\n$/, "");
+    return (
+      <div className="code-block">
+        <div className="code-toolbar">
+          <span>
+            <Code2 size={13} />
+            代码
+          </span>
+          <button title="复制代码" onClick={() => void copyWithToast(code)}>
+            <Copy size={13} />
+            复制
+          </button>
+        </div>
+        <pre>{children}</pre>
+      </div>
+    );
+  },
+};
+
+// Split markdown into top-level blocks at blank lines, keeping fenced code
+// blocks (``` / ~~~) intact. Block-level memoization means a streaming answer
+// only re-parses its last growing block each flush instead of the whole
+// message — keeping the main thread free so the composer never janks.
+function splitMarkdownBlocks(src: string): string[] {
+  const lines = src.split("\n");
+  const blocks: string[] = [];
+  let current: string[] = [];
+  let fence: string | null = null;
+  const flush = () => {
+    if (current.length) {
+      blocks.push(current.join("\n"));
+      current = [];
+    }
+  };
+  for (const line of lines) {
+    const marker = /^\s*(```+|~~~+)/.exec(line);
+    if (marker) {
+      const kind = marker[1][0]; // ` or ~
+      if (!fence) fence = kind;
+      else if (fence === kind) fence = null;
+      current.push(line);
+      continue;
+    }
+    if (!fence && line.trim() === "") flush();
+    else current.push(line);
+  }
+  flush();
+  return blocks;
+}
+
+const MarkdownBlock = memo(function MarkdownBlock({
   content,
 }: {
   content: string;
 }) {
   return (
-    <ReactMarkdown
-      remarkPlugins={[remarkGfm]}
-      components={{
-        a: ({ children, href, ...props }) => (
-          <a
-            {...props}
-            href={href}
-            target="_blank"
-            rel="noreferrer"
-            onClick={(event) => {
-              if (!href || !/^https?:\/\//i.test(href)) return;
-              event.preventDefault();
-              openExternalUrl(href);
-            }}
-          >
-            {children}
-          </a>
-        ),
-        pre: ({ children }) => {
-          const code = String(
-            (children as { props?: { children?: unknown } })?.props?.children ??
-              "",
-          ).replace(/\n$/, "");
-          return (
-            <div className="code-block">
-              <div className="code-toolbar">
-                <span>
-                  <Code2 size={13} />
-                  代码
-                </span>
-                <button
-                  title="复制代码"
-                  onClick={() => void copyWithToast(code)}
-                >
-                  <Copy size={13} />
-                  复制
-                </button>
-              </div>
-              <pre>{children}</pre>
-            </div>
-          );
-        },
-      }}
-    >
+    <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
       {content}
     </ReactMarkdown>
+  );
+});
+
+const MarkdownMessage = memo(function MarkdownMessage({
+  content,
+}: {
+  content: string;
+}) {
+  const blocks = useMemo(() => splitMarkdownBlocks(content), [content]);
+  return (
+    <>
+      {blocks.map((block, index) => (
+        <MarkdownBlock key={index} content={block} />
+      ))}
+    </>
   );
 });
 
@@ -2432,7 +2473,7 @@ function activityFileChanges(activity: AgentActivity) {
   ];
 }
 
-function ExecutionSummary({
+const ExecutionSummary = memo(function ExecutionSummary({
   activities,
   running,
   requestId,
@@ -2446,36 +2487,47 @@ function ExecutionSummary({
   onActivityChange(activity: AgentActivity): void;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const commands = activities.filter((activity) =>
-    commandTools.includes(activity.tool),
-  ).length;
-  const agents = activities.filter(
-    (activity) => activity.tool === "spawn_agent",
-  ).length;
-  const files = new Set(
-    activities
-      .filter((activity) => fileTools.includes(activity.tool))
-      .flatMap(activityFileChanges)
-      .map((change) => change.path),
-  ).size;
-  const failures = activities.filter(
-    (activity) => activity.status === "failed",
-  ).length;
-  const waiting = activities.some((activity) => activity.status === "waiting");
-  const inProgress = activities.some(
-    (activity) =>
-      activity.status === "running" || activity.status === "waiting",
-  );
-  const summary = [
-    commands ? `运行了 ${commands} 个命令` : "",
-    agents ? `启动了 ${agents} 个子 Agent` : "",
-    files ? `编辑了 ${files} 个文件` : "",
-    !commands && !agents && !files ? `执行了 ${activities.length} 个步骤` : "",
-    failures ? `${failures} 项失败` : "",
-    running ? (inProgress ? "正在执行" : "正在继续") : "",
-  ]
-    .filter(Boolean)
-    .join(" · ");
+  // Recomputing these six passes on every streaming flush is wasted work; the
+  // result only changes when the activity set changes.
+  const { summary, waiting } = useMemo(() => {
+    const commands = activities.filter((activity) =>
+      commandTools.includes(activity.tool),
+    ).length;
+    const agents = activities.filter(
+      (activity) => activity.tool === "spawn_agent",
+    ).length;
+    const files = new Set(
+      activities
+        .filter((activity) => fileTools.includes(activity.tool))
+        .flatMap(activityFileChanges)
+        .map((change) => change.path),
+    ).size;
+    const failures = activities.filter(
+      (activity) => activity.status === "failed",
+    ).length;
+    const isWaiting = activities.some(
+      (activity) => activity.status === "waiting",
+    );
+    const inProgress = activities.some(
+      (activity) =>
+        activity.status === "running" || activity.status === "waiting",
+    );
+    return {
+      waiting: isWaiting,
+      summary: [
+        commands ? `运行了 ${commands} 个命令` : "",
+        agents ? `启动了 ${agents} 个子 Agent` : "",
+        files ? `编辑了 ${files} 个文件` : "",
+        !commands && !agents && !files
+          ? `执行了 ${activities.length} 个步骤`
+          : "",
+        failures ? `${failures} 项失败` : "",
+        running ? (inProgress ? "正在执行" : "正在继续") : "",
+      ]
+        .filter(Boolean)
+        .join(" · "),
+    };
+  }, [activities, running]);
   useEffect(() => {
     if (waiting) setExpanded(true);
   }, [waiting]);
@@ -2508,7 +2560,19 @@ function ExecutionSummary({
       )}
     </section>
   );
-}
+}, (prev, next) => {
+  if (
+    prev.running !== next.running ||
+    prev.requestId !== next.requestId ||
+    prev.workspacePath !== next.workspacePath ||
+    prev.onActivityChange !== next.onActivityChange ||
+    prev.activities.length !== next.activities.length
+  )
+    return false;
+  return prev.activities.every(
+    (activity, index) => activity === next.activities[index],
+  );
+});
 
 function AgentWorkingState({
   activities,

@@ -516,7 +516,6 @@ select:focus-visible {
     max-height 0.32s cubic-bezier(0.22, 1, 0.36, 1),
     opacity 0.2s ease,
     transform 0.32s cubic-bezier(0.22, 1, 0.36, 1);
-  will-change: max-height, opacity, transform;
 }
 .workspace-group .tasks.collapsed {
   max-height: 0;
@@ -4774,10 +4773,12 @@ select:focus-visible {
 .topbar {
   height: 58px;
   padding-inline: 16px;
-  background: color-mix(in srgb, var(--surface-raised) 88%, transparent);
+  background: color-mix(in srgb, var(--surface-raised) 92%, transparent);
   border-bottom-color: var(--line);
   box-shadow: none;
-  backdrop-filter: blur(18px) saturate(130%);
+  /* Lighter blur radius: the conversation scrolls under the bar during
+     streaming auto-follow, and blur(18px) forces a costly per-frame repaint. */
+  backdrop-filter: blur(10px) saturate(120%);
 }
 
 .topbar h1 {
