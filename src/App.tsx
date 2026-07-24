@@ -2999,6 +2999,11 @@ type ComposerTextareaProps = {
   onSubmit(): void;
 };
 
+// Uncontrolled on purpose: a controlled textarea re-renders React on every
+// keystroke, which (a) contends with streaming re-renders on the main thread
+// and (b) fights the IME during Chinese composition — both surface as typing
+// lag. Here the DOM owns the text; the parent is notified via onChange and can
+// push values in imperatively via replaceValue (draft load, clear-after-send).
 const ComposerTextarea = memo(forwardRef<ComposerTextareaHandle, ComposerTextareaProps>(({
   value: initialValue,
   disabled,
@@ -3007,32 +3012,29 @@ const ComposerTextarea = memo(forwardRef<ComposerTextareaHandle, ComposerTextare
   onPaste,
   onSubmit,
 }, ref) => {
-  const [value, setValue] = useState(initialValue);
-  const valueRef = useRef(initialValue);
+  const innerRef = useRef<HTMLTextAreaElement>(null);
 
   useImperativeHandle(ref, () => ({
     replaceValue: (next) => {
-      valueRef.current = next;
-      setValue(next);
+      const node = innerRef.current;
+      if (node && node.value !== next) node.value = next;
     },
   }), []);
 
+  // Sync only when the external value changes (task switch / draft load),
+  // never on keystrokes — otherwise this would defeat the uncontrolled design.
   useEffect(() => {
-    valueRef.current = initialValue;
-    setValue(initialValue);
+    const node = innerRef.current;
+    if (node && node.value !== initialValue) node.value = initialValue;
   }, [initialValue]);
 
   return (
     <textarea
+      ref={innerRef}
       aria-label="任务输入"
       disabled={disabled}
-      value={value}
-      onChange={(event) => {
-        const next = event.target.value;
-        valueRef.current = next;
-        setValue(next);
-        onChange(next);
-      }}
+      defaultValue={initialValue}
+      onChange={(event) => onChange(event.target.value)}
       onPaste={onPaste}
       onKeyDown={(event) => {
         if (event.key === "Enter" && !event.shiftKey) {

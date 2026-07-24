@@ -99,6 +99,12 @@ function friendlyModelError(raw: string): string {
     return "模型响应流意外中断（上游可能断流），请重试或点击继续。若频繁出现，可压缩上下文或换模型/供应商。";
   if (/stream[_ ]?read[_ ]?error|stream error/i.test(text))
     return "与模型的连接中断（上游流读取失败），已自动重试仍未成功，请重试。";
+  if (
+    /ERR_INCOMPLETE_CHUNKED_ENCODING|ERR_CONTENT_LENGTH_MISMATCH|ERR_CONNECTION_(CLOSED|RESET|ABORTED|FAILED)|ERR_HTTP2_PROTOCOL_ERROR|ERR_QUIC_PROTOCOL_ERROR|ERR_EMPTY_RESPONSE|ERR_RESPONSE_HEADERS_TRUNCATED/i.test(
+      text,
+    )
+  )
+    return "上游中转在响应传输途中断开了连接（常见于不稳定的第三方中转），已自动重试仍未成功。可点击继续，或压缩上下文后重试；若频繁出现建议更换更稳定的供应商。";
   if (/overload|too many requests|429|rate.?limit/i.test(text))
     return "模型服务当前繁忙或达到频率限制，请稍后重试。";
   if (

@@ -188,11 +188,13 @@ export async function readResponseText(
   }
 }
 // Mid-stream / proxy failures that are worth retrying: upstream overload, rate
-// limiting, 5xx, stream idle timeouts, and generic proxy phrasing such as
-// "Upstream request failed" (often emitted on 200 SSE error events).
+// limiting, 5xx, stream idle timeouts, generic proxy phrasing such as
+// "Upstream request failed" (often emitted on 200 SSE error events), and the
+// Chromium net:: errors that surface when a relay drops a chunked SSE stream
+// before its terminating chunk (ERR_INCOMPLETE_CHUNKED_ENCODING and friends).
 export function isRetryableStreamError(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
-  return /overload|rate.?limit|too many requests|429|50[0-9]|bad gateway|service unavailable|gateway time|upstream( request)? (failed|error)|upstream failed|proxy error|temporarily|stream[_ ]?read[_ ]?error|stream error|connection (reset|closed|error)|ECONNRESET|ECONNREFUSED|ETIMEDOUT|socket hang up|network|fetch failed|长时间没有新数据|超时|连接|意外中断|未收到完整响应|工具调用参数不完整/i.test(
+  return /overload|rate.?limit|too many requests|429|50[0-9]|bad gateway|service unavailable|gateway time|upstream( request)? (failed|error)|upstream failed|proxy error|temporarily|stream[_ ]?read[_ ]?error|stream error|connection (reset|closed|error)|ECONNRESET|ECONNREFUSED|ETIMEDOUT|socket hang up|network|fetch failed|ERR_INCOMPLETE_CHUNKED_ENCODING|ERR_CONTENT_LENGTH_MISMATCH|ERR_CONNECTION_(CLOSED|RESET|ABORTED|FAILED)|ERR_NETWORK_CHANGED|ERR_HTTP2_PROTOCOL_ERROR|ERR_QUIC_PROTOCOL_ERROR|ERR_EMPTY_RESPONSE|ERR_RESPONSE_HEADERS_TRUNCATED|长时间没有新数据|超时|连接|意外中断|未收到完整响应|工具调用参数不完整/i.test(
     message,
   );
 }
