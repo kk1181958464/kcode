@@ -1,0 +1,1191 @@
+/* ============================================================
+   KCode — Aurora Glass Component Overrides
+   Glass effects and dark theme styling for all UI components.
+   Tokens defined in styles/tokens.css; backdrop in styles/base.css.
+   ============================================================ */
+
+.window-root {
+  background: transparent;
+  position: relative;
+  z-index: 1;
+}
+
+/* ---------- 标题栏 ---------- */
+.window-titlebar {
+  background: rgba(10, 14, 24, 0.72);
+  backdrop-filter: var(--blur);
+  border-bottom: 1px solid var(--glass-border);
+}
+.window-titlebar > span {
+  color: var(--muted);
+  letter-spacing: 0.4px;
+}
+.window-controls button {
+  color: var(--muted);
+}
+.window-controls button:hover {
+  background: rgba(150, 175, 220, 0.1);
+  color: var(--ink);
+}
+.window-controls .window-close:hover {
+  background: #e5484d;
+  color: #fff;
+}
+.window-controls .window-update.has-update {
+  color: var(--accent);
+}
+.window-update i {
+  background: var(--accent);
+  box-shadow: 0 0 0 2px rgba(10, 14, 24, 0.9), 0 0 8px var(--accent-glow);
+}
+
+/* ---------- 三栏骨架 ---------- */
+.app-shell {
+  background: transparent;
+}
+
+/* ---------- 侧栏（玻璃） ---------- */
+.sidebar {
+  background: var(--glass-bg);
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  border-right: 1px solid var(--glass-border);
+}
+.sidebar-footer {
+  border-top: 1px solid var(--glass-border);
+}
+
+/* 任务行 */
+.task-row {
+  transition:
+    background 0.16s ease,
+    border-color 0.16s ease,
+    transform 0.12s ease;
+}
+.task-row:hover {
+  background: rgba(150, 175, 220, 0.08);
+}
+.task-row.active,
+.task-row[aria-selected="true"],
+.task-row.selected {
+  background: linear-gradient(
+    90deg,
+    var(--accent-soft),
+    rgba(124, 108, 255, 0.08)
+  );
+  border-left-color: var(--accent);
+}
+.task-grip {
+  color: var(--muted);
+}
+
+/* ---------- 主聊天区 ---------- */
+.chat-top,
+.topbar,
+.main-top {
+  background: rgba(11, 15, 26, 0.55);
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  border-bottom: 1px solid var(--glass-border);
+}
+
+/* ---------- 消息 ---------- */
+.message-avatar {
+  background: var(--glass-bg-strong);
+  border: 1px solid var(--glass-border-strong);
+  color: var(--ink);
+  box-shadow: inset 0 1px 0 var(--glass-hi);
+}
+.message-avatar.assistant {
+  background: linear-gradient(140deg, var(--accent), var(--accent-2));
+  border-color: transparent;
+  color: var(--accent-ink);
+  box-shadow: 0 4px 16px var(--accent-glow);
+}
+.message-meta > span:first-child {
+  color: var(--ink);
+}
+.message-meta time {
+  color: var(--muted);
+}
+
+/* 用户气泡（玻璃） */
+.message.user .message-body,
+.message.user .msg-bubble,
+.message.user .message-content > .message-body {
+  background: var(--glass-bg-strong);
+  border: 1px solid var(--glass-border-strong);
+  border-radius: 14px;
+  padding: 11px 14px;
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  box-shadow: var(--shadow-soft), inset 0 1px 0 var(--glass-hi);
+}
+
+.message-actions button {
+  color: var(--muted);
+}
+.message-actions button:hover {
+  background: rgba(150, 175, 220, 0.12);
+  color: var(--ink);
+}
+
+/* ---------- 输入区 ---------- */
+.composer-wrap {
+  background: linear-gradient(
+    to top,
+    var(--bg-1) 60%,
+    rgba(11, 15, 26, 0)
+  );
+}
+.composer {
+  background: var(--glass-bg-strong);
+  border: 1px solid var(--glass-border-strong);
+  border-radius: 16px;
+  backdrop-filter: var(--blur-lg);
+  -webkit-backdrop-filter: var(--blur-lg);
+  box-shadow: var(--shadow-raised), inset 0 1px 0 var(--glass-hi);
+}
+.composer:focus-within {
+  border-color: var(--accent);
+  box-shadow:
+    0 0 0 1px var(--accent-glow),
+    0 16px 40px rgba(0, 0, 0, 0.5),
+    inset 0 1px 0 var(--glass-hi);
+}
+.composer textarea {
+  background: transparent;
+  color: var(--ink);
+  border-radius: 16px 16px 0 0;
+}
+.composer textarea::placeholder {
+  color: var(--muted);
+}
+
+.scroll-to-bottom {
+  background: var(--glass-bg-strong);
+  border: 1px solid var(--glass-border-strong);
+  backdrop-filter: var(--blur);
+  color: var(--ink);
+  box-shadow: var(--shadow-raised);
+}
+.scroll-to-bottom:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* 发送按钮 */
+.send {
+  background: linear-gradient(140deg, var(--accent), var(--accent-2));
+  color: var(--accent-ink);
+  box-shadow: 0 4px 16px var(--accent-glow);
+  border-radius: 9px;
+}
+.send:hover:not(:disabled) {
+  filter: brightness(1.08);
+  box-shadow: 0 6px 22px var(--accent-glow);
+}
+.send.stop {
+  background: linear-gradient(140deg, #ff7a6b, #e5484d);
+  color: #1a0606;
+  box-shadow: 0 4px 16px rgba(229, 72, 77, 0.4);
+}
+
+/* ---------- 右侧状态栏（玻璃） ---------- */
+.status-panel {
+  background: var(--glass-bg);
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  border-left: 1px solid var(--glass-border);
+}
+.status-rail {
+  border-left: 1px solid var(--glass-border);
+}
+.browser-panel {
+  background: var(--bg-0);
+  border-left: 1px solid var(--glass-border);
+}
+
+/* ---------- 通用卡片 / 面板容器统一玻璃化 ---------- */
+.card,
+.panel,
+.tool-card,
+.step-card,
+.sub-card,
+.status-card,
+.status-block,
+.tool-step,
+.plan-card,
+.usage-card {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: 12px;
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  box-shadow: inset 0 1px 0 var(--glass-hi);
+}
+
+/* ---------- 徽章 / 药丸 ---------- */
+.badge,
+.chip,
+.pill,
+.tag {
+  background: rgba(150, 175, 220, 0.1);
+  border: 1px solid var(--glass-border);
+  color: var(--ink);
+}
+.badge.accent,
+.chip.accent,
+.status-dot.ok + *,
+.badge-success {
+  background: var(--accent-soft);
+  border-color: rgba(56, 225, 200, 0.3);
+  color: var(--accent);
+}
+
+/* 运行状态点 */
+.status-dot,
+.dot-running {
+  box-shadow: 0 0 0 0 var(--accent-glow);
+}
+.status-dot.running,
+.dot-running {
+  background: var(--accent);
+  animation: kc-pulse 1.6s ease-out infinite;
+}
+@keyframes kc-pulse {
+  0% {
+    box-shadow: 0 0 0 0 var(--accent-glow);
+  }
+  70% {
+    box-shadow: 0 0 0 6px rgba(56, 225, 200, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(56, 225, 200, 0);
+  }
+}
+
+/* ---------- 按钮 ---------- */
+.secondary {
+  background: rgba(150, 175, 220, 0.08);
+  border: 1px solid var(--glass-border-strong);
+  color: var(--ink);
+}
+.secondary:hover {
+  background: rgba(150, 175, 220, 0.14);
+  border-color: var(--accent);
+}
+.primary {
+  background: linear-gradient(140deg, var(--accent), var(--accent-2));
+  border: 1px solid transparent;
+  color: var(--accent-ink);
+  box-shadow: 0 4px 16px var(--accent-glow);
+}
+.primary:hover {
+  filter: brightness(1.08);
+}
+.danger-button:hover {
+  background: rgba(229, 72, 77, 0.14);
+  color: #ff8a8a;
+}
+
+/* 通用输入控件 */
+input,
+select,
+textarea {
+  color: var(--ink);
+}
+input:not([type="checkbox"]):not([type="radio"]),
+select {
+  background: rgba(10, 14, 24, 0.5);
+  border: 1px solid var(--glass-border-strong);
+  border-radius: 8px;
+  color: var(--ink);
+}
+input::placeholder {
+  color: var(--muted);
+}
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ---------- 模态 ---------- */
+.modal-backdrop,
+.update-backdrop {
+  background: rgba(4, 7, 14, 0.62);
+  backdrop-filter: saturate(140%) blur(6px);
+}
+.modal,
+.task-modal,
+.update-dialog {
+  background: var(--glass-bg-strong);
+  border: 1px solid var(--glass-border-strong);
+  border-radius: 16px;
+  backdrop-filter: var(--blur-lg);
+  -webkit-backdrop-filter: var(--blur-lg);
+  box-shadow: var(--shadow-float), inset 0 1px 0 var(--glass-hi);
+  color: var(--ink);
+}
+.task-name-field {
+  background: rgba(10, 14, 24, 0.5);
+  border: 1px solid var(--glass-border-strong);
+  color: var(--ink);
+}
+
+/* ---------- 分隔线 / 通用边框回退 ---------- */
+hr,
+.divider,
+.separator {
+  border-color: var(--glass-border);
+  background: var(--glass-border);
+}
+
+/* ============================================================
+   Aurora Glass — 内部组件完整覆盖层（补齐旧浅色残留）
+   下面按 UI 区域，将 styles.css 里未被玻璃化的选择器逐一改造为
+   深色 / 玻璃质感，并修正在深底上不可读的深色文字。
+   ============================================================ */
+
+/* ---------- 侧栏内部：新建任务 / 搜索 / 工作区 ---------- */
+.new-task {
+  color: var(--ink);
+}
+.new-task:hover {
+  background: rgba(150, 175, 220, 0.1);
+}
+.new-task:active {
+  background: rgba(150, 175, 220, 0.16);
+}
+.new-task-icon {
+  background: rgba(56, 225, 200, 0.12);
+  color: var(--accent);
+}
+.new-task:hover .new-task-icon {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.new-task kbd {
+  color: var(--muted);
+}
+.workspace-label,
+.task-label,
+.eyebrow {
+  color: var(--muted);
+}
+.task-filter {
+  background: rgba(10, 14, 24, 0.4);
+  border: 1px solid var(--glass-border);
+  color: var(--muted);
+}
+.task-filter:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+.task-filter input {
+  color: var(--ink);
+}
+.task-filter button:hover,
+.task-filter button.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.workspace.active,
+.tasks button.active {
+  background: rgba(150, 175, 220, 0.12);
+}
+.workspace-icon {
+  background: rgba(20, 27, 44, 0.6);
+  border: 1px solid var(--glass-border);
+}
+.workspace small {
+  color: var(--muted);
+}
+.workspace-group > header,
+.workspace-group > header > .workspace-name {
+  color: var(--ink);
+}
+.workspace-group > header > svg {
+  color: var(--muted);
+}
+.workspace-group > header > small {
+  color: var(--muted);
+}
+.workspace-group.drop-target {
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+.workspace-grip,
+.task-grip {
+  color: var(--muted);
+}
+.workspace-group > header > button {
+  color: var(--muted);
+}
+.workspace-group > header > button:hover {
+  background: rgba(150, 175, 220, 0.12);
+  color: var(--ink);
+}
+.workspace-group > header > .workspace-delete:hover,
+.task-delete:hover {
+  background: rgba(229, 72, 77, 0.16);
+  color: #ff8a8a;
+}
+.workspace-group > header > .workspace-delete.confirm {
+  background: #b0433c;
+  color: #fff;
+}
+.task-archive:hover {
+  background: rgba(150, 175, 220, 0.12);
+  color: var(--ink);
+}
+.task-running {
+  color: var(--accent);
+}
+
+/* ---------- 回合导航轨（turn rail）---------- */
+.turn-rail-line {
+  background: var(--glass-border);
+}
+.turn-tick {
+  background: rgba(150, 172, 210, 0.4);
+}
+.turn-rail > button:hover .turn-tick {
+  background: var(--muted);
+}
+.turn-rail > button.active .turn-tick {
+  background: var(--accent);
+}
+.turn-preview {
+  background: var(--glass-bg-strong);
+  border: 1px solid var(--glass-border-strong);
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  box-shadow: var(--shadow-raised);
+}
+.turn-preview strong {
+  color: var(--ink);
+}
+.turn-preview small {
+  color: var(--muted);
+}
+
+/* ---------- 欢迎屏 ---------- */
+.welcome-context {
+  color: var(--muted);
+}
+.context-dot {
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.logo-large {
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
+}
+.welcome p {
+  color: var(--muted);
+}
+.prompts button {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  color: var(--ink);
+}
+.prompts button:hover {
+  border-color: var(--accent);
+  background: rgba(56, 225, 200, 0.06);
+}
+.prompts button span {
+  color: var(--muted);
+}
+.connect-model {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border-strong);
+  color: var(--ink);
+}
+.connect-model:hover {
+  border-color: var(--accent);
+}
+
+/* ---------- 执行活动 / 时间线 / 文件变更 ---------- */
+.agent-activity {
+  background: rgba(20, 27, 44, 0.42);
+  border: 1px solid var(--glass-border);
+}
+.agent-activity.failed {
+  border-color: rgba(229, 72, 77, 0.35);
+}
+.agent-activity.waiting {
+  border-color: rgba(216, 178, 74, 0.35);
+  background: rgba(60, 50, 20, 0.35);
+}
+.execution-summary-head {
+  color: var(--muted);
+}
+.execution-summary-head:hover {
+  background: rgba(150, 175, 220, 0.08);
+}
+.execution-summary-head strong {
+  color: var(--ink);
+}
+.execution-summary.has-failures > .execution-summary-head {
+  color: #ff9b93;
+}
+.execution-summary-detail {
+  background: rgba(20, 27, 44, 0.42);
+  border: 1px solid var(--glass-border);
+}
+.execution-summary-detail .agent-activity {
+  border-bottom: 1px solid var(--glass-border);
+  background: transparent;
+}
+.file-changes-summary {
+  background: rgba(20, 27, 44, 0.42);
+  border: 1px solid var(--glass-border);
+}
+.file-changes-icon {
+  background: rgba(56, 225, 200, 0.1);
+  color: var(--accent);
+}
+.file-changes-summary b {
+  color: #6fd39a;
+}
+.file-changes-summary i {
+  color: #ff9b93;
+}
+.file-changes-summary > div,
+.changed-file-block {
+  border-top-color: var(--glass-border);
+  border-bottom-color: var(--glass-border);
+}
+.changed-file-row:not(.no-diff):hover {
+  background: rgba(150, 175, 220, 0.06);
+}
+.changed-file-chevron {
+  color: var(--muted);
+}
+.changed-file-block .diff-view {
+  border-top: 1px solid var(--glass-border);
+}
+.activity-head:focus-visible {
+  outline-color: var(--accent);
+}
+.activity-head > svg {
+  color: var(--muted);
+}
+.activity-undo {
+  color: var(--muted);
+}
+.activity-undo:hover:not(:disabled) {
+  background: rgba(150, 175, 220, 0.12);
+  color: var(--ink);
+}
+.activity-running-detail,
+.activity-running-detail small,
+.activity-output-label,
+.activity-detail pre {
+  color: var(--muted);
+}
+.activity-diff {
+  background: rgba(10, 14, 24, 0.4) !important;
+}
+
+/* ---------- 统一 diff 配色（深色）---------- */
+.diff-add {
+  background: rgba(63, 185, 120, 0.14);
+  color: #86e0a4;
+}
+.diff-del {
+  background: rgba(229, 72, 77, 0.14);
+  color: #ff9b93;
+}
+.diff-hunk {
+  background: rgba(124, 108, 255, 0.14);
+  color: #a99cff;
+}
+.diff-meta {
+  color: var(--muted);
+}
+.diff-context {
+  color: #aab4c6;
+}
+.git-diff-view,
+.diff-view {
+  color: #c3ccdb;
+}
+
+/* ---------- 实时执行进度（agent working）---------- */
+.agent-working {
+  color: var(--muted);
+}
+.agent-working-mark {
+  background: rgba(56, 225, 200, 0.12);
+  color: var(--accent);
+}
+.agent-working-head strong {
+  color: var(--ink);
+}
+.agent-working-head small,
+.agent-working-head time {
+  color: var(--muted);
+}
+.agent-working-track {
+  background: rgba(150, 175, 220, 0.14);
+}
+.agent-working-track i {
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+}
+.agent-working-reasoning {
+  color: var(--muted);
+}
+.agent-working-recent span {
+  color: var(--muted);
+}
+.agent-working-recent span.success,
+.agent-working-recent span.completed {
+  color: #6fd39a;
+}
+.agent-working-recent span.failed,
+.agent-working-recent span.denied {
+  color: #ff9b93;
+}
+.agent-working-recent span.waiting {
+  color: #e3c06a;
+}
+
+/* ---------- 输入区内部：上下文文件 / 工具条 ---------- */
+.context-files {
+  scrollbar-width: thin;
+}
+.context-file {
+  background: rgba(20, 27, 44, 0.5);
+  border: 1px solid var(--glass-border);
+}
+.file-icon {
+  background: rgba(56, 225, 200, 0.1);
+  color: var(--accent);
+}
+.context-file small {
+  color: var(--muted);
+}
+.context-file button,
+.context-error button {
+  color: var(--muted);
+}
+.context-file button:hover,
+.context-error button:hover {
+  background: rgba(150, 175, 220, 0.12);
+}
+.context-error {
+  background: rgba(229, 72, 77, 0.12);
+  border: 1px solid rgba(229, 72, 77, 0.3);
+  color: #ff9b93;
+}
+.context-toast {
+  background: rgba(56, 225, 200, 0.12);
+  border: 1px solid rgba(56, 225, 200, 0.3);
+  color: var(--accent);
+}
+.composer-bar {
+  background: transparent;
+  border-top: 1px solid var(--glass-border);
+}
+.context-button {
+  color: var(--muted);
+}
+.context-button:hover:not(:disabled) {
+  background: rgba(150, 175, 220, 0.12);
+  color: var(--ink);
+}
+.context-button b {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.connection {
+  border-left: 1px solid var(--glass-border);
+  color: var(--muted);
+}
+.connection i,
+.provider-row .status i {
+  background: var(--muted);
+}
+.connection.online i,
+.provider-row .status.connected i {
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+/* ---------- 模型 / 推理强度选择器 ---------- */
+.model-trigger {
+  color: var(--ink);
+}
+.model-trigger:hover:not(:disabled),
+.model-trigger[aria-expanded="true"] {
+  background: rgba(150, 175, 220, 0.12);
+}
+.model-trigger-label small {
+  color: var(--muted);
+}
+.model-trigger-label strong {
+  color: var(--ink);
+}
+.model-trigger-label b {
+  color: var(--muted);
+}
+.model-provider-dot {
+  background: var(--muted);
+}
+.model-provider-dot.online {
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+.model-trigger svg:last-child,
+.effort-trigger svg:last-child {
+  color: var(--muted);
+}
+.model-menu,
+.model-submenu,
+.effort-menu {
+  background: var(--glass-bg-strong);
+  border: 1px solid var(--glass-border-strong);
+  backdrop-filter: var(--blur-lg);
+  -webkit-backdrop-filter: var(--blur-lg);
+  box-shadow: var(--shadow-float);
+}
+.model-menu [role="listbox"] section + section {
+  border-top: 1px solid var(--glass-border);
+}
+.provider-menu-level > button:hover,
+.provider-menu-level > button[aria-selected="true"] {
+  background: rgba(150, 175, 220, 0.1);
+}
+.provider-menu-mark {
+  background: rgba(20, 27, 44, 0.6);
+  border: 1px solid var(--glass-border);
+  color: var(--muted);
+}
+.provider-menu-mark.online {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.provider-menu-level small {
+  color: var(--muted);
+}
+.provider-menu-level > button > svg:nth-last-child(2) {
+  color: var(--accent);
+}
+.provider-next {
+  color: var(--muted) !important;
+}
+.effort-picker {
+  border-left: 1px solid var(--glass-border);
+}
+.effort-trigger {
+  color: var(--muted);
+}
+.effort-trigger:hover:not(:disabled),
+.effort-trigger[aria-expanded="true"] {
+  background: rgba(150, 175, 220, 0.12);
+}
+.effort-menu header {
+  color: var(--muted);
+}
+.effort-menu > button:hover,
+.effort-menu > button.active {
+  background: rgba(150, 175, 220, 0.1);
+}
+.effort-menu small {
+  color: var(--muted);
+}
+.effort-menu > button > svg {
+  color: var(--accent);
+}
+
+/* ---------- 右侧状态栏内部 ---------- */
+.status-panel h3 {
+  color: var(--ink);
+}
+.status-panel p,
+.status-panel dt {
+  color: var(--muted);
+}
+.progress {
+  background: rgba(150, 175, 220, 0.14);
+}
+.progress i {
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+}
+.git-section-head button {
+  color: var(--muted);
+}
+.git-section-head button:hover {
+  background: rgba(150, 175, 220, 0.12);
+}
+.git-summary > svg {
+  color: var(--accent);
+}
+.git-summary small {
+  color: var(--muted);
+}
+.git-summary > b i {
+  color: #6fd39a;
+}
+.git-summary > b em {
+  color: #ff9b93;
+}
+.git-diff-toggle {
+  background: rgba(20, 27, 44, 0.5);
+  border: 1px solid var(--glass-border);
+  color: var(--muted);
+}
+.git-diff-toggle:hover {
+  background: rgba(150, 175, 220, 0.1);
+}
+.git-diff-view {
+  background: rgba(10, 14, 24, 0.5);
+  border: 1px solid var(--glass-border);
+}
+.permission-row {
+  color: var(--accent);
+}
+.permission-row strong {
+  color: var(--ink);
+}
+.permission-row small {
+  color: var(--muted);
+}
+.run-metrics > div {
+  color: var(--accent);
+}
+.run-metrics small {
+  color: var(--muted);
+}
+.run-metrics strong {
+  color: var(--ink);
+}
+.resume-checkpoint {
+  background: rgba(56, 225, 200, 0.08);
+  border: 1px solid rgba(56, 225, 200, 0.22);
+  color: var(--accent);
+}
+.resume-checkpoint small {
+  color: var(--muted);
+}
+.token-split {
+  color: var(--muted);
+}
+.token-split i {
+  background: var(--muted);
+}
+.context-usage > div:first-child {
+  color: var(--muted);
+}
+.context-usage > div:first-child strong {
+  color: var(--ink);
+}
+.context-usage-bar {
+  background: rgba(150, 175, 220, 0.14);
+}
+.context-usage-bar i {
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+}
+.context-usage small {
+  color: var(--muted);
+}
+
+/* ---------- 浏览器面板控件 ---------- */
+.browser-panel > header {
+  background: rgba(11, 15, 26, 0.72);
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  border-bottom: 1px solid var(--glass-border);
+}
+.browser-address input {
+  background: rgba(10, 14, 24, 0.5);
+  border: 1px solid var(--glass-border-strong);
+  color: var(--ink);
+}
+.browser-address input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+.browser-recording {
+  color: #ff9b93;
+}
+.browser-recording i {
+  background: #e5484d;
+  box-shadow: 0 0 0 3px rgba(229, 72, 77, 0.25);
+}
+.browser-resizer:hover::after,
+.resizing-browser .browser-resizer::after {
+  background: var(--accent);
+}
+.browser-show-tab {
+  background: var(--glass-bg-strong);
+  border: 1px solid var(--glass-border-strong);
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  color: var(--ink);
+  box-shadow: var(--shadow-raised);
+}
+.browser-show-tab:hover {
+  border-color: var(--accent);
+}
+.browser-show-tab svg {
+  color: var(--accent);
+}
+
+/* ---------- 设置面板 ---------- */
+.settings-layer {
+  background: rgba(4, 7, 14, 0.55);
+  backdrop-filter: saturate(140%) blur(6px);
+}
+.settings-panel {
+  background: rgba(11, 15, 26, 0.9);
+  border-left: 1px solid var(--glass-border-strong);
+  backdrop-filter: var(--blur-lg);
+  -webkit-backdrop-filter: var(--blur-lg);
+  box-shadow: var(--shadow-float);
+}
+.settings-panel > header {
+  border-bottom: 1px solid var(--glass-border);
+}
+.settings-panel > header p {
+  color: var(--muted);
+}
+.settings-nav {
+  background: rgba(8, 11, 18, 0.5);
+  border-right: 1px solid var(--glass-border);
+}
+.settings-nav button {
+  color: var(--muted);
+}
+.settings-nav button:hover {
+  background: rgba(150, 175, 220, 0.1);
+  color: var(--ink);
+}
+.settings-nav button.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+.settings-nav button small {
+  background: rgba(20, 27, 44, 0.7);
+  color: var(--muted);
+}
+.settings-section-header p {
+  color: var(--muted);
+}
+.settings-group,
+.settings-row {
+  border-color: var(--glass-border);
+}
+.settings-row small {
+  color: var(--muted);
+}
+.settings-segmented {
+  background: rgba(20, 27, 44, 0.6);
+  border: 1px solid var(--glass-border);
+}
+.settings-segmented button {
+  color: var(--muted);
+}
+.settings-segmented button.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  box-shadow: none;
+}
+.setting-switch,
+.switch {
+  background: rgba(150, 175, 220, 0.2);
+}
+.setting-switch.on,
+.switch.on {
+  background: var(--accent);
+}
+.setting-switch span,
+.switch span {
+  background: #fff;
+}
+.permission-options > button {
+  background: rgba(20, 27, 44, 0.4);
+  border: 1px solid var(--glass-border);
+}
+.permission-options > button:hover {
+  border-color: var(--glass-border-strong);
+}
+.permission-options > button.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.permission-option-icon {
+  background: rgba(20, 27, 44, 0.6);
+  color: var(--muted);
+}
+.permission-options > button.active .permission-option-icon {
+  background: rgba(56, 225, 200, 0.16);
+  color: var(--accent);
+}
+.permission-options > button.active.danger {
+  border-color: rgba(229, 72, 77, 0.4);
+  background: rgba(229, 72, 77, 0.1);
+}
+.permission-options > button.active.danger .permission-option-icon,
+.permission-options > button.active.danger > svg {
+  background: rgba(229, 72, 77, 0.16);
+  color: #ff9b93;
+}
+.permission-options small {
+  color: var(--muted);
+}
+.permission-options > button > svg {
+  color: var(--accent);
+}
+.permission-detail-list {
+  border-top: 1px solid var(--glass-border);
+}
+.permission-detail-list label {
+  color: var(--muted);
+}
+.provider-row {
+  background: rgba(20, 27, 44, 0.4);
+  border: 1px solid var(--glass-border);
+}
+.provider-row:hover {
+  border-color: var(--glass-border-strong);
+}
+.provider-mark {
+  background: rgba(20, 27, 44, 0.6);
+}
+.provider-mark.active {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.provider-row small,
+.provider-row .status {
+  color: var(--muted);
+}
+.remove-model:hover {
+  background: rgba(229, 72, 77, 0.14);
+  color: #ff8a8a;
+}
+
+/* ---------- 对话框（新建 / 删除 / 更新 / 恢复）---------- */
+.delete-dialog,
+.restore-dialog {
+  background: var(--glass-bg-strong);
+  border: 1px solid var(--glass-border-strong);
+  backdrop-filter: var(--blur-lg);
+  -webkit-backdrop-filter: var(--blur-lg);
+  box-shadow: var(--shadow-float), inset 0 1px 0 var(--glass-hi);
+  color: var(--ink);
+}
+.update-dialog,
+.modal {
+  color: var(--ink);
+}
+.update-dialog > header,
+.delete-dialog > header {
+  border-bottom: 1px solid var(--glass-border);
+}
+.settings-panel > header p,
+.update-dialog > header small {
+  color: var(--muted);
+}
+.update-dialog-icon {
+  background: rgba(56, 225, 200, 0.12);
+  color: var(--accent);
+}
+.delete-dialog-icon,
+.restore-dialog-icon {
+  background: rgba(229, 72, 77, 0.14);
+  color: #ff9b93;
+}
+.update-notes {
+  background: rgba(10, 14, 24, 0.5);
+  border: 1px solid var(--glass-border);
+  color: var(--muted);
+}
+.update-progress {
+  background: rgba(150, 175, 220, 0.14);
+}
+.update-progress i {
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+}
+.update-message span,
+.update-content span,
+.update-content small {
+  color: var(--muted);
+}
+.update-message.success > svg {
+  color: var(--accent);
+}
+.update-message.warning > svg {
+  color: #ff9b93;
+}
+.update-message .spin {
+  color: var(--accent);
+}
+.update-dialog > footer,
+.delete-dialog > footer,
+.task-modal-actions,
+.restore-dialog footer {
+  border-top: 1px solid var(--glass-border);
+}
+.delete-dialog > footer {
+  background: transparent;
+}
+.update-dialog > footer button,
+.delete-dialog > footer button,
+.task-modal-actions button,
+.restore-dialog footer button {
+  background: rgba(150, 175, 220, 0.08);
+  border: 1px solid var(--glass-border-strong);
+  color: var(--ink);
+}
+.update-dialog > footer button.primary,
+.task-modal-actions .primary {
+  background: linear-gradient(140deg, var(--accent), var(--accent-2));
+  border-color: transparent;
+  color: var(--accent-ink);
+}
+.delete-dialog > footer .danger,
+.restore-dialog footer .danger {
+  background: linear-gradient(140deg, #ff7a6b, #e5484d);
+  border-color: transparent;
+  color: #1a0606;
+}
+.delete-dialog > footer .danger:hover {
+  filter: brightness(1.08);
+  background: linear-gradient(140deg, #ff7a6b, #e5484d);
+}
+.delete-dialog-body p,
+.delete-dialog-body ul {
+  color: var(--muted);
+}
+.delete-dialog-body strong,
+.restore-dialog p b {
+  color: var(--ink);
+}
+.selected-folder {
+  background: rgba(20, 27, 44, 0.5);
+  border: 1px solid var(--glass-border);
+}
+.selected-folder > svg {
+  color: var(--muted);
+}
+.selected-folder small {
+  color: var(--muted);
+}
+.task-name-field {
+  color: var(--muted);
+}
+.restore-backdrop {
+  background: rgba(4, 7, 14, 0.6);
+}
+.restore-dialog p {
+  color: var(--muted);
+}
+

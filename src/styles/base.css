@@ -1,0 +1,110 @@
+/* ============================================================
+   KCode — Base: resets, body, aurora backdrop, scrollbar, selection
+   ============================================================ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--bg-0);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-base);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow: hidden;
+}
+
+/* Aurora glow layer behind glass */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(50% 42% at 14% 8%, rgba(56, 225, 200, 0.22), transparent 70%),
+    radial-gradient(46% 40% at 88% 4%, rgba(124, 108, 255, 0.24), transparent 72%),
+    radial-gradient(60% 55% at 82% 96%, rgba(56, 132, 255, 0.16), transparent 74%),
+    radial-gradient(42% 46% at 4% 92%, rgba(124, 108, 255, 0.14), transparent 72%),
+    linear-gradient(160deg, #080b14 0%, #0a0e1a 50%, #070912 100%);
+}
+
+/* Grid texture */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0.4;
+  background-image:
+    linear-gradient(rgba(120, 150, 200, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(120, 150, 200, 0.045) 1px, transparent 1px);
+  background-size: 46px 46px;
+  mask-image: radial-gradient(120% 120% at 50% 0%, #000 30%, transparent 90%);
+}
+
+/* Scrollbar */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(150, 175, 220, 0.28) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: rgba(150, 175, 220, 0.22);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(56, 225, 200, 0.45);
+  background-clip: padding-box;
+}
+
+::selection {
+  background: rgba(56, 225, 200, 0.28);
+  color: #fff;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  border: none;
+  background: none;
+}
+
+input, textarea {
+  font: inherit;
+  color: inherit;
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

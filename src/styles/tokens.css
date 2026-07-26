@@ -1,0 +1,71 @@
+/* ============================================================
+   KCode — Design Tokens (Aurora Glass Dark)
+   Single source of truth for all color, spacing, and effect tokens.
+   ============================================================ */
+
+:root {
+  color-scheme: dark;
+
+  /* Text */
+  --ink: #e8ecf4;
+  --muted: #9aa4b8;
+  --line: rgba(148, 168, 200, 0.16);
+
+  /* Surfaces */
+  --bg-0: #070a12;
+  --bg-1: #0b0f1a;
+  --surface: #0b0f1a;
+  --panel: rgba(24, 32, 50, 0.55);
+
+  /* Accent: cyan → purple */
+  --accent: #38e1c8;
+  --accent-2: #7c6cff;
+  --accent-ink: #041016;
+  --accent-soft: rgba(56, 225, 200, 0.14);
+  --accent-glow: rgba(56, 225, 200, 0.35);
+
+  /* Glass */
+  --glass-bg: rgba(20, 27, 44, 0.55);
+  --glass-bg-strong: rgba(23, 31, 51, 0.72);
+  --glass-border: rgba(150, 172, 210, 0.14);
+  --glass-border-strong: rgba(160, 185, 225, 0.22);
+  --glass-hi: rgba(255, 255, 255, 0.06);
+  --blur: saturate(150%) blur(18px);
+  --blur-lg: saturate(160%) blur(28px);
+
+  /* Shadows */
+  --shadow-soft: 0 2px 12px rgba(0, 0, 0, 0.35);
+  --shadow-raised: 0 12px 32px rgba(0, 0, 0, 0.45);
+  --shadow-float: 0 24px 60px rgba(0, 0, 0, 0.6);
+
+  /* Radius */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+
+  /* Spacing */
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 14px;
+  --space-lg: 20px;
+  --space-xl: 32px;
+
+  /* Typography */
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", "Cascadia Code", "SF Mono", Consolas, monospace;
+  --font-size-xs: 11px;
+  --font-size-sm: 12px;
+  --font-size-base: 13px;
+  --font-size-md: 14px;
+  --font-size-lg: 16px;
+
+  /* Semantic: status */
+  --success: #4ade80;
+  --warning: #facc15;
+  --danger: #e5484d;
+  --info: var(--accent);
+
+  background: var(--bg-1);
+  color: var(--ink);
+}
