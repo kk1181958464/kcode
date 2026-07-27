@@ -8,6 +8,7 @@ export const EMPTY_ACTIVITIES: AgentActivity[] = [];
 export type SettingsSection =
   "general" | "models" | "skills" | "permissions" | "recordings";
 export type ThemePreference = "system" | "light" | "dark";
+export type InterfaceStyle = "glass" | "minimal";
 export type AccentPreference =
   "indigo" | "violet" | "emerald" | "blue" | "orange" | "mono";
 export const ACCENT_OPTIONS: {

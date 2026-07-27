@@ -2,6 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
 import "./styles.css";
+import "./theme-glass.css";
 
 const savedTheme = localStorage.getItem("kcode.theme");
 const initialTheme =
@@ -11,8 +12,14 @@ const initialTheme =
       ? "dark"
       : "light";
 document.documentElement.dataset.theme = initialTheme;
+document.documentElement.dataset.style =
+  localStorage.getItem("kcode.interfaceStyle") === "minimal"
+    ? "minimal"
+    : "glass";
 document.documentElement.style.colorScheme = initialTheme;
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
-  <React.StrictMode><App /></React.StrictMode>,
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>,
 );

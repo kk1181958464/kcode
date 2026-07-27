@@ -81,6 +81,7 @@ import {
   uid,
   type AccentPreference,
   type ConversationScrollState,
+  type InterfaceStyle,
   type QueuedChatMessage,
   type SettingsSection,
   type TaskDrafts,
@@ -227,6 +228,11 @@ export default function App() {
     const saved = localStorage.getItem("kcode.theme");
     return saved === "light" || saved === "dark" ? saved : "system";
   });
+  const [interfaceStyle, setInterfaceStyle] = useState<InterfaceStyle>(() =>
+    localStorage.getItem("kcode.interfaceStyle") === "minimal"
+      ? "minimal"
+      : "glass",
+  );
   const [accent, setAccent] = useState<AccentPreference>(() => {
     const saved = localStorage.getItem("kcode.accent");
     return ACCENT_OPTIONS.some((o) => o.value === saved)
@@ -236,6 +242,9 @@ export default function App() {
   useEffect(() => {
     document.documentElement.dataset.accent = accent;
   }, [accent]);
+  useEffect(() => {
+    document.documentElement.dataset.style = interfaceStyle;
+  }, [interfaceStyle]);
   const [updateOpen, setUpdateOpen] = useState(false);
   const [appUpdate, setAppUpdate] = useState<AppUpdateState>({
     status: "idle",
@@ -1140,6 +1149,11 @@ export default function App() {
   function updateTheme(value: ThemePreference) {
     setTheme(value);
     localStorage.setItem("kcode.theme", value);
+  }
+
+  function updateInterfaceStyle(value: InterfaceStyle) {
+    setInterfaceStyle(value);
+    localStorage.setItem("kcode.interfaceStyle", value);
   }
 
   function updateAccent(value: AccentPreference) {
@@ -3570,6 +3584,8 @@ export default function App() {
             onStatusPanelChange={updateStatusPanel}
             theme={theme}
             onThemeChange={updateTheme}
+            interfaceStyle={interfaceStyle}
+            onInterfaceStyleChange={updateInterfaceStyle}
             accent={accent}
             onAccentChange={updateAccent}
             permissionMode={permissionMode}
