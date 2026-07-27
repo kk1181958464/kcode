@@ -136,6 +136,10 @@ import { TitleBar } from "./components/chrome/TitleBar";
 import { TopBar } from "./components/topbar/TopBar";
 import { Sidebar } from "./components/sidebar/Sidebar";
 import { StatusPanel } from "./components/status/StatusPanel";
+import {
+  STREAM_PACING_INTERVAL_MS,
+  takeStreamPacedSlice,
+} from "./stream-pacing";
 import { registerAppToastHandler, type AppToast } from "./lib/toast";
 import { useEventCallback } from "./lib/use-event-callback";
 import {
@@ -419,6 +423,7 @@ export default function App() {
   const requestTasksRef = useRef(new Map<string, string>());
   const assistantLengthsRef = useRef(new Map<string, number>());
   const pendingTextRef = useRef(new Map<string, string>());
+  const pendingTextSinceRef = useRef(new Map<string, number>());
   // Keep streaming responsive without asking React and layout to work at 60fps.
   const textFlushTimerRef = useRef<number | undefined>(undefined);
   const pendingTaskTextRef = useRef(new Map<string, string>());
@@ -1399,18 +1404,32 @@ export default function App() {
     if (previous !== undefined) setVisibleTurnStart(previous);
   }, []);
 
-  // Merge each short stream window in one render. Artificially replaying a
-  // backlog character-by-character keeps React and layout busy long after the
-  // network event and competes directly with typing and scrolling.
-  function flushPendingText(_drainAll = false) {
+  // Decouple uneven upstream chunks from the visual cadence. Normal output is
+  // released in stable slices; a large backlog accelerates gradually.
+  function flushPendingText(drainAll = false) {
     if (!pendingTextRef.current.size) return;
     const slices: [string, string][] = [];
+    const now = Date.now();
     for (const [requestId, buffered] of pendingTextRef.current) {
       if (!buffered) continue;
-      slices.push([requestId, buffered]);
-      pendingTextRef.current.delete(requestId);
+      const bufferedSince = pendingTextSinceRef.current.get(requestId) ?? now;
+      const paced = takeStreamPacedSlice(
+        buffered,
+        drainAll,
+        now - bufferedSince >= STREAM_PACING_INTERVAL_MS * 2,
+      );
+      if (paced.slice) slices.push([requestId, paced.slice]);
+      if (paced.remaining)
+        pendingTextRef.current.set(requestId, paced.remaining);
+      else {
+        pendingTextRef.current.delete(requestId);
+        pendingTextSinceRef.current.delete(requestId);
+      }
     }
-    if (!slices.length) return;
+    if (!slices.length) {
+      if (!drainAll && pendingTextRef.current.size) scheduleTextFlush();
+      return;
+    }
     const deltaByRequest = new Map(slices);
     const hasActive = slices.some(([requestId]) => {
       const taskId = requestTasksRef.current.get(requestId);
@@ -1453,6 +1472,7 @@ export default function App() {
         (pendingTaskTextRef.current.get(requestId) ?? "") + delta,
       );
     scheduleTaskTextFlush();
+    if (!drainAll && pendingTextRef.current.size) scheduleTextFlush();
   }
 
   function flushPendingTaskText() {
@@ -1502,7 +1522,7 @@ export default function App() {
     textFlushTimerRef.current = window.setTimeout(() => {
       textFlushTimerRef.current = undefined;
       flushPendingText();
-    }, 100);
+    }, STREAM_PACING_INTERVAL_MS);
   }
 
   function scheduleTaskTextFlush() {
@@ -1628,6 +1648,7 @@ export default function App() {
           // partial text we streamed so far, both buffered and already
           // committed, so the retry renders a clean, non-duplicated answer.
           pendingTextRef.current.delete(id);
+          pendingTextSinceRef.current.delete(id);
           pendingTaskTextRef.current.delete(id);
           assistantLengthsRef.current.set(id, 0);
           const taskId = requestTasksRef.current.get(id);
@@ -1664,10 +1685,9 @@ export default function App() {
             id,
             (assistantLengthsRef.current.get(id) ?? 0) + event.delta.length,
           );
-          pendingTextRef.current.set(
-            id,
-            (pendingTextRef.current.get(id) ?? "") + event.delta,
-          );
+          const pending = pendingTextRef.current.get(id) ?? "";
+          if (!pending) pendingTextSinceRef.current.set(id, Date.now());
+          pendingTextRef.current.set(id, pending + event.delta);
           scheduleTextFlush();
         }
         if (event.type === "usage") {
