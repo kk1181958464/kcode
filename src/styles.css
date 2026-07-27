@@ -383,7 +383,8 @@ select:focus-visible {
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
   padding: 0 4px 12px 0;
-  contain: layout paint style;
+  contain: layout paint;
+  touch-action: pan-y;
 }
 .task-filter {
   margin: 0 3px 8px;
@@ -421,8 +422,7 @@ select:focus-visible {
   margin-top: 9px;
 }
 .workspace-group {
-  content-visibility: auto;
-  contain-intrinsic-size: auto 72px;
+  contain: layout paint;
 }
 .workspace-group > header {
   display: grid;
@@ -433,9 +433,7 @@ select:focus-visible {
   line-height: 1;
   color: var(--ink);
   cursor: pointer;
-  transition:
-    background 0.2s ease,
-    transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+  transition: background-color 120ms ease;
 }
 .workspace-group > header > .workspace-collapse {
   height: 25px;
@@ -463,10 +461,14 @@ select:focus-visible {
   color: var(--muted);
   cursor: grab;
   opacity: 0;
+  pointer-events: none;
 }
 .workspace-group:hover .workspace-grip,
 .workspace-group.dragging .workspace-grip {
   opacity: 1;
+}
+.workspace-group:hover .workspace-grip {
+  pointer-events: auto;
 }
 .workspace-group.dragging {
   opacity: 0.42;
@@ -484,6 +486,7 @@ select:focus-visible {
   background: transparent;
   color: var(--muted);
   opacity: 0;
+  pointer-events: none;
 }
 .workspace-group > header > .workspace-collapse {
   width: 22px;
@@ -519,6 +522,7 @@ select:focus-visible {
 .workspace-group:hover > header > button,
 .workspace-group > header > button:focus {
   opacity: 1;
+  pointer-events: auto;
 }
 .workspace-group > header > button:hover {
   background: var(--surface-muted);
@@ -550,15 +554,21 @@ select:focus-visible {
   pointer-events: none;
 }
 .task-row {
+  min-height: 32px;
+  padding: 3px 5px 3px 2px;
   display: flex;
   gap: 8px;
   align-items: center;
   font-size: 11px;
   line-height: 1.4;
   border-left: 2px solid transparent;
-  transition:
-    background 0.18s ease,
-    border-color 0.18s ease;
+  transition: none;
+  cursor: pointer;
+  border-radius: 6px;
+}
+.task-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 .task-grip {
   width: 14px;
@@ -568,10 +578,12 @@ select:focus-visible {
   color: var(--muted);
   cursor: grab;
   opacity: 0;
+  pointer-events: none;
 }
 .task-row:hover .task-grip,
 .task-row.dragging .task-grip {
   opacity: 1;
+  pointer-events: auto;
 }
 .task-row.dragging {
   opacity: 0.42;
@@ -588,6 +600,9 @@ select:focus-visible {
   padding: 0;
   background: transparent;
   text-align: left;
+  display: flex;
+  align-items: center;
+  min-height: 26px;
 }
 .task-main span {
   display: block;
@@ -609,6 +624,7 @@ select:focus-visible {
   background: transparent;
   color: #7b827b;
   opacity: 0;
+  pointer-events: none;
 }
 .task-row:hover .task-delete,
 .task-row:hover .task-archive,
@@ -616,6 +632,7 @@ select:focus-visible {
 .task-archive:focus,
 .task-delete.confirm {
   opacity: 1;
+  pointer-events: auto;
 }
 .task-delete:hover {
   background: var(--danger-soft);
@@ -662,6 +679,7 @@ select:focus-visible {
 }
 
 .main {
+  position: relative;
   min-width: 0;
   min-height: 0;
   display: flex;
@@ -976,6 +994,61 @@ select:focus-visible {
 .message-list {
   margin: 0 auto;
   padding: 34px 34px 100px 58px;
+}
+.conversation-search {
+  position: absolute;
+  z-index: 30;
+  top: 58px;
+  right: 18px;
+  width: min(420px, calc(100% - 36px));
+  min-height: 40px;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto 30px 30px 30px;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 6px 5px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-raised);
+  color: var(--muted);
+  box-shadow: var(--shadow-float);
+  animation: menu-in 0.16s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.conversation-search input {
+  width: 100%;
+  min-width: 0;
+  height: 30px;
+  padding: 0 7px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--ink);
+  box-shadow: none;
+}
+.conversation-search-count {
+  min-width: 42px;
+  color: var(--muted);
+  font-size: 10px;
+  text-align: right;
+  white-space: nowrap;
+}
+.conversation-search button {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+}
+.conversation-search button:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--ink);
+}
+.conversation-search button:disabled {
+  opacity: 0.35;
 }
 .conversation-history-loader {
   min-height: 36px;

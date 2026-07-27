@@ -120,6 +120,7 @@ const SettingsPanel = lazy(() =>
   })),
 );
 import { ConversationArea } from "./components/conversation/ConversationArea";
+import { ConversationSearch } from "./components/conversation/ConversationSearch";
 import {
   ComposerTextarea,
   type ComposerTextareaHandle,
@@ -224,6 +225,8 @@ export default function App() {
     setInputState(value);
   }
   const [settings, setSettings] = useState(false);
+  const [conversationSearchOpen, setConversationSearchOpen] = useState(false);
+  const searchPreviousTurnStartRef = useRef<number | undefined>(undefined);
   const [theme, setTheme] = useState<ThemePreference>(() => {
     const saved = localStorage.getItem("kcode.theme");
     return saved === "light" || saved === "dark" ? saved : "system";
@@ -416,14 +419,12 @@ export default function App() {
   const requestTasksRef = useRef(new Map<string, string>());
   const assistantLengthsRef = useRef(new Map<string, number>());
   const pendingTextRef = useRef(new Map<string, string>());
-  // rAF-driven typewriter: reveals buffered text a small slice per frame (~60fps)
-  // so output reads as smooth char-by-char typing instead of timer-flush bursts.
-  const textRafRef = useRef<number | undefined>(undefined);
+  // Keep streaming responsive without asking React and layout to work at 60fps.
+  const textFlushTimerRef = useRef<number | undefined>(undefined);
   const pendingTaskTextRef = useRef(new Map<string, string>());
   const taskTextFlushTimerRef = useRef<number | undefined>(undefined);
   const pendingReasoningRef = useRef("");
   const reasoningFlushTimerRef = useRef<number | undefined>(undefined);
-  const draftSaveTimerRef = useRef<number | undefined>(undefined);
   const activeTaskIdRef = useRef(activeTaskId);
   const displayedTaskIdRef = useRef(activeTaskId);
   const tasksRef = useRef(tasks);
@@ -464,27 +465,28 @@ export default function App() {
       if (value) initialDrafts.current[taskId] = value;
       else delete initialDrafts.current[taskId];
     }
-    if (draftSaveTimerRef.current)
-      window.clearTimeout(draftSaveTimerRef.current);
-    draftSaveTimerRef.current = window.setTimeout(() => {
-      draftSaveTimerRef.current = undefined;
-      localStorage.setItem(
-        "kcode.taskDrafts",
-        JSON.stringify(initialDrafts.current),
-      );
-    }, 1_200);
   }, []);
-  const clearTaskDraft = useCallback((taskId: string) => {
-    if (draftSaveTimerRef.current) {
-      window.clearTimeout(draftSaveTimerRef.current);
-      draftSaveTimerRef.current = undefined;
-    }
-    delete initialDrafts.current[taskId];
+  const persistTaskDrafts = useCallback(() => {
     localStorage.setItem(
       "kcode.taskDrafts",
       JSON.stringify(initialDrafts.current),
     );
   }, []);
+  const clearTaskDraft = useCallback((taskId: string) => {
+    delete initialDrafts.current[taskId];
+    persistTaskDrafts();
+  }, [persistTaskDrafts]);
+  useEffect(() => {
+    const persistWhenHidden = () => {
+      if (document.visibilityState === "hidden") persistTaskDrafts();
+    };
+    window.addEventListener("blur", persistTaskDrafts);
+    document.addEventListener("visibilitychange", persistWhenHidden);
+    return () => {
+      window.removeEventListener("blur", persistTaskDrafts);
+      document.removeEventListener("visibilitychange", persistWhenHidden);
+    };
+  }, [persistTaskDrafts]);
   useEffect(() => {
     composerValueRef.current = input;
     composerRef.current?.replaceValue(input);
@@ -744,19 +746,15 @@ export default function App() {
         window.clearTimeout(bottomSettleTimerRef.current);
       if (turnLayoutFrameRef.current)
         cancelAnimationFrame(turnLayoutFrameRef.current);
-      if (textRafRef.current) cancelAnimationFrame(textRafRef.current);
+      if (textFlushTimerRef.current)
+        window.clearTimeout(textFlushTimerRef.current);
       if (taskTextFlushTimerRef.current)
         window.clearTimeout(taskTextFlushTimerRef.current);
       if (reasoningFlushTimerRef.current)
         window.clearTimeout(reasoningFlushTimerRef.current);
-      if (draftSaveTimerRef.current)
-        window.clearTimeout(draftSaveTimerRef.current);
-      localStorage.setItem(
-        "kcode.taskDrafts",
-        JSON.stringify(initialDrafts.current),
-      );
+      persistTaskDrafts();
     },
-    [],
+    [persistTaskDrafts],
   );
 
   function setActiveConversationTurn(id?: string) {
@@ -1369,32 +1367,48 @@ export default function App() {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "n") {
         event.preventDefault();
         void startNewTask();
+      } else if (
+        (event.ctrlKey || event.metaKey) &&
+        event.key.toLowerCase() === "f" &&
+        !settings &&
+        !browserState.open
+      ) {
+        event.preventDefault();
+        setConversationSearchOpen(true);
       }
     };
     window.addEventListener("keydown", handleShortcut);
     return () => window.removeEventListener("keydown", handleShortcut);
+  }, [settings, browserState.open]);
+
+  useEffect(() => {
+    setConversationSearchOpen(false);
+    searchPreviousTurnStartRef.current = undefined;
+  }, [activeTaskId]);
+
+  const revealAllConversationMessages = useCallback(() => {
+    if (visibleTurnStart === 0) return;
+    searchPreviousTurnStartRef.current = visibleTurnStart;
+    setVisibleTurnStart(0);
+  }, [visibleTurnStart]);
+
+  const closeConversationSearch = useCallback(() => {
+    setConversationSearchOpen(false);
+    const previous = searchPreviousTurnStartRef.current;
+    searchPreviousTurnStartRef.current = undefined;
+    if (previous !== undefined) setVisibleTurnStart(previous);
   }, []);
 
-  // Consume the buffered text: `drainAll` empties it in one shot (stream end /
-  // error), otherwise each call reveals a small slice per request so the rAF
-  // loop paints steady char-by-char output. The task-mirror gets the same slice
-  // so persisted storage never runs ahead of what's on screen.
-  function flushPendingText(drainAll = false) {
+  // Merge each short stream window in one render. Artificially replaying a
+  // backlog character-by-character keeps React and layout busy long after the
+  // network event and competes directly with typing and scrolling.
+  function flushPendingText(_drainAll = false) {
     if (!pendingTextRef.current.size) return;
-    // Slice a bounded prefix from each request's buffer; keep the remainder.
     const slices: [string, string][] = [];
     for (const [requestId, buffered] of pendingTextRef.current) {
       if (!buffered) continue;
-      // Drain the current backlog in ~1s of frames (min 3 chars/frame) so
-      // fast bursts catch up smoothly while slow streams still type gently.
-      const step = drainAll
-        ? buffered.length
-        : Math.max(3, Math.ceil(buffered.length / 60));
-      const slice = buffered.slice(0, step);
-      const rest = buffered.slice(step);
-      slices.push([requestId, slice]);
-      if (rest) pendingTextRef.current.set(requestId, rest);
-      else pendingTextRef.current.delete(requestId);
+      slices.push([requestId, buffered]);
+      pendingTextRef.current.delete(requestId);
     }
     if (!slices.length) return;
     const deltaByRequest = new Map(slices);
@@ -1439,8 +1453,6 @@ export default function App() {
         (pendingTaskTextRef.current.get(requestId) ?? "") + delta,
       );
     scheduleTaskTextFlush();
-    // More buffered text remains → keep the typewriter running next frame.
-    if (!drainAll && pendingTextRef.current.size) scheduleTextFlush();
   }
 
   function flushPendingTaskText() {
@@ -1486,11 +1498,11 @@ export default function App() {
   }
 
   function scheduleTextFlush() {
-    if (textRafRef.current) return;
-    textRafRef.current = requestAnimationFrame(() => {
-      textRafRef.current = undefined;
+    if (textFlushTimerRef.current) return;
+    textFlushTimerRef.current = window.setTimeout(() => {
+      textFlushTimerRef.current = undefined;
       flushPendingText();
-    });
+    }, 100);
   }
 
   function scheduleTaskTextFlush() {
@@ -1712,9 +1724,9 @@ export default function App() {
         }
         if (event.type === "error") {
           if (isActive) clearPendingReasoning();
-          if (textRafRef.current) {
-            cancelAnimationFrame(textRafRef.current);
-            textRafRef.current = undefined;
+          if (textFlushTimerRef.current) {
+            window.clearTimeout(textFlushTimerRef.current);
+            textFlushTimerRef.current = undefined;
           }
           flushPendingText(true);
           flushPendingTaskText();
@@ -1763,9 +1775,9 @@ export default function App() {
         }
         if (event.type === "done") {
           if (isActive) clearPendingReasoning();
-          if (textRafRef.current) {
-            cancelAnimationFrame(textRafRef.current);
-            textRafRef.current = undefined;
+          if (textFlushTimerRef.current) {
+            window.clearTimeout(textFlushTimerRef.current);
+            textFlushTimerRef.current = undefined;
           }
           flushPendingText(true);
           flushPendingTaskText();
@@ -1954,6 +1966,7 @@ export default function App() {
 
   async function switchTask(task: TaskRecord) {
     if (task.id === activeTaskId) return;
+    persistTaskDrafts();
     if (activeTaskId)
       attachmentDraftsRef.current.set(activeTaskId, {
         files: attachedFiles,
@@ -3177,6 +3190,12 @@ export default function App() {
             updateStatusPanel={onUpdateStatusPanel}
             gitState={gitState}
           />
+          <ConversationSearch
+            open={conversationSearchOpen}
+            containerRef={conversationRef}
+            onClose={closeConversationSearch}
+            onRevealAll={revealAllConversationMessages}
+          />
           <ConversationArea
             conversationRef={conversationRef}
             handleConversationScroll={handleConversationScroll}
@@ -3289,6 +3308,7 @@ export default function App() {
                 disabled={summaryBusy}
                 value={input}
                 onChange={handleComposerChange}
+                onBlur={persistTaskDrafts}
                 onPaste={handleComposerPaste}
                 onSubmit={handleComposerSubmit}
                 placeholder={

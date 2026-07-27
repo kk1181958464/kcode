@@ -203,8 +203,27 @@ export const Sidebar = memo(function Sidebar({
                 <div
                   key={task.id}
                   draggable
+                  role="button"
+                  tabIndex={0}
                   className={`task-row ${task.id === activeTask?.id ? "active" : ""} ${draggedTaskId === task.id ? "dragging" : ""} ${taskDropTarget === task.id && draggedTaskId !== task.id ? "drop-target" : ""}`}
                   title={`${task.name}\n${task.workspacePath}`}
+                  onClick={(event) => {
+                    if (draggedTaskId) return;
+                    if (
+                      (event.target as HTMLElement).closest(
+                        "button, .task-grip",
+                      )
+                    )
+                      return;
+                    void switchTask(task.id);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.target !== event.currentTarget) return;
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      void switchTask(task.id);
+                    }
+                  }}
                   onDragStart={(event) => {
                     event.stopPropagation();
                     setDraggedTaskId(task.id);
@@ -234,19 +253,19 @@ export const Sidebar = memo(function Sidebar({
                   <span className="task-grip" title="拖动排序">
                     <GripVertical size={13} />
                   </span>
-                  <button
-                    className="task-main"
-                    onClick={() => void switchTask(task.id)}
-                  >
+                  <div className="task-main">
                     <span>{task.name}</span>
-                  </button>
+                  </div>
                   {(task.runningId || task.runStatus === "running") && (
                     <small className="task-running">运行中</small>
                   )}
                   <button
                     className="task-archive"
                     title={task.archived ? "移出归档" : "归档对话"}
-                    onClick={() => toggleTaskArchived(task.id)}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      toggleTaskArchived(task.id);
+                    }}
                   >
                     {task.archived ? (
                       <ArchiveRestore size={13} />
@@ -257,7 +276,10 @@ export const Sidebar = memo(function Sidebar({
                   <button
                     className="task-delete"
                     title={`删除对话 ${task.name}`}
-                    onClick={() => setDeleteTarget({ kind: "task", task })}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setDeleteTarget({ kind: "task", task });
+                    }}
                   >
                     <Trash2 size={13} />
                   </button>
@@ -285,6 +307,7 @@ export const Sidebar = memo(function Sidebar({
 }, sidebarPropsEqual);
 
 function sidebarPropsEqual(previous: SidebarProps, next: SidebarProps) {
+  if (previous === next) return true;
   if (
     previous.activeTask?.id !== next.activeTask?.id ||
     previous.taskQuery !== next.taskQuery ||
@@ -297,9 +320,14 @@ function sidebarPropsEqual(previous: SidebarProps, next: SidebarProps) {
   for (const path of previous.collapsedWorkspaces)
     if (!next.collapsedWorkspaces.has(path)) return false;
 
-  for (let groupIndex = 0; groupIndex < previous.workspaceGroups.length; groupIndex += 1) {
+  for (
+    let groupIndex = 0;
+    groupIndex < previous.workspaceGroups.length;
+    groupIndex += 1
+  ) {
     const previousGroup = previous.workspaceGroups[groupIndex];
     const nextGroup = next.workspaceGroups[groupIndex];
+    if (previousGroup === nextGroup) continue;
     if (
       previousGroup.workspacePath !== nextGroup.workspacePath ||
       previousGroup.name !== nextGroup.name ||
@@ -307,7 +335,11 @@ function sidebarPropsEqual(previous: SidebarProps, next: SidebarProps) {
     )
       return false;
 
-    for (let taskIndex = 0; taskIndex < previousGroup.conversations.length; taskIndex += 1) {
+    for (
+      let taskIndex = 0;
+      taskIndex < previousGroup.conversations.length;
+      taskIndex += 1
+    ) {
       const previousTask = previousGroup.conversations[taskIndex];
       const nextTask = nextGroup.conversations[taskIndex];
       if (

@@ -15,6 +15,7 @@ type ComposerTextareaProps = {
   disabled: boolean;
   placeholder: string;
   onChange(value: string): void;
+  onBlur(): void;
   onPaste(event: React.ClipboardEvent<HTMLTextAreaElement>): void;
   onSubmit(): void;
 };
@@ -32,6 +33,7 @@ export const ComposerTextarea = memo(
         disabled,
         placeholder,
         onChange,
+        onBlur,
         onPaste,
         onSubmit,
       },
@@ -63,6 +65,7 @@ export const ComposerTextarea = memo(
           aria-label="任务输入"
           disabled={disabled}
           defaultValue={initialValue}
+          onBlur={onBlur}
           onChange={(event) => onChange(event.target.value)}
           onPaste={onPaste}
           onKeyDown={(event) => {
