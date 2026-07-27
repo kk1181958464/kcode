@@ -1,7 +1,9 @@
 import {
   forwardRef,
+  lazy,
   memo,
   startTransition,
+  Suspense,
   useCallback,
   useDeferredValue,
   useEffect,
@@ -71,6 +73,7 @@ import {
   AGENT_STATIC_TOKENS,
   compactConversation,
   estimateMessageTokens,
+  estimateTextTokens,
 } from "./context";
 import type { ContextLedger } from "./context";
 import {
@@ -81,7 +84,6 @@ import {
   uid,
   type AccentPreference,
   type ConversationScrollState,
-  type InterfaceStyle,
   type QueuedChatMessage,
   type SettingsSection,
   type TaskDrafts,
@@ -106,19 +108,27 @@ import {
   activityFocus,
   activityTarget,
   clipWorkingText,
+  errorMessage,
   formatBytes,
   formatDuration,
   workingPhase,
 } from "./lib/format";
-import { ProviderModal } from "./components/settings/ProviderModal";
-import { SettingsPanel } from "./components/settings/SettingsPanel";
-import { DiffView } from "./components/common/DiffView";
+// Heavy, behind-a-click panels — lazy so they stay off the first-paint bundle.
+const SettingsPanel = lazy(() =>
+  import("./components/settings/SettingsPanel").then((m) => ({
+    default: m.SettingsPanel,
+  })),
+);
 import { ConversationArea } from "./components/conversation/ConversationArea";
 import {
   ComposerTextarea,
   type ComposerTextareaHandle,
 } from "./components/composer/ComposerTextarea";
-import { AppUpdateDialog } from "./components/dialogs/AppUpdateDialog";
+const AppUpdateDialog = lazy(() =>
+  import("./components/dialogs/AppUpdateDialog").then((m) => ({
+    default: m.AppUpdateDialog,
+  })),
+);
 import { DeleteDialog, NewTaskDialog } from "./components/dialogs/TaskDialogs";
 import { BrowserPanel } from "./components/browser/BrowserPanel";
 import { TitleBar } from "./components/chrome/TitleBar";
@@ -126,6 +136,7 @@ import { TopBar } from "./components/topbar/TopBar";
 import { Sidebar } from "./components/sidebar/Sidebar";
 import { StatusPanel } from "./components/status/StatusPanel";
 import { registerAppToastHandler, type AppToast } from "./lib/toast";
+import { useEventCallback } from "./lib/use-event-callback";
 import {
   finishTaskRequest,
   isTaskViewCurrent,
@@ -182,10 +193,6 @@ export default function App() {
     const saved = Number(localStorage.getItem("kcode.sidebarWidth"));
     return Number.isFinite(saved) && saved >= 210 && saved <= 420 ? saved : 256;
   });
-  const [draggedTaskId, setDraggedTaskId] = useState<string>();
-  const [taskDropTarget, setTaskDropTarget] = useState<string>();
-  const [draggedWorkspace, setDraggedWorkspace] = useState<string>();
-  const [workspaceDropTarget, setWorkspaceDropTarget] = useState<string>();
   const [collapsedWorkspaces, setCollapsedWorkspaces] = useState<Set<string>>(
     () => {
       try {
@@ -228,11 +235,6 @@ export default function App() {
     const saved = localStorage.getItem("kcode.theme");
     return saved === "light" || saved === "dark" ? saved : "system";
   });
-  const [interfaceStyle, setInterfaceStyle] = useState<InterfaceStyle>(() =>
-    localStorage.getItem("kcode.interfaceStyle") === "minimal"
-      ? "minimal"
-      : "glass",
-  );
   const [accent, setAccent] = useState<AccentPreference>(() => {
     const saved = localStorage.getItem("kcode.accent");
     return ACCENT_OPTIONS.some((o) => o.value === saved)
@@ -242,9 +244,6 @@ export default function App() {
   useEffect(() => {
     document.documentElement.dataset.accent = accent;
   }, [accent]);
-  useEffect(() => {
-    document.documentElement.dataset.style = interfaceStyle;
-  }, [interfaceStyle]);
   const [updateOpen, setUpdateOpen] = useState(false);
   const [appUpdate, setAppUpdate] = useState<AppUpdateState>({
     status: "idle",
@@ -424,7 +423,9 @@ export default function App() {
   const requestTasksRef = useRef(new Map<string, string>());
   const assistantLengthsRef = useRef(new Map<string, number>());
   const pendingTextRef = useRef(new Map<string, string>());
-  const textFlushTimerRef = useRef<number | undefined>(undefined);
+  // rAF-driven typewriter: reveals buffered text a small slice per frame (~60fps)
+  // so output reads as smooth char-by-char typing instead of timer-flush bursts.
+  const textRafRef = useRef<number | undefined>(undefined);
   const pendingTaskTextRef = useRef(new Map<string, string>());
   const taskTextFlushTimerRef = useRef<number | undefined>(undefined);
   const pendingReasoningRef = useRef("");
@@ -482,7 +483,10 @@ export default function App() {
     const hasText = Boolean(value.trim());
     if (hasText !== composerHasTextRef.current) {
       composerHasTextRef.current = hasText;
-      setComposerHasText(hasText);
+      // Off the keystroke critical path: this toggles the send button and
+      // re-renders the whole App. As a transition it stays interruptible, so
+      // the native keystroke paints immediately instead of waiting on React.
+      startTransition(() => setComposerHasText(hasText));
     }
   }, []);
   const clearTaskDraft = useCallback((taskId: string) => {
@@ -547,7 +551,10 @@ export default function App() {
     activeTaskIdRef.current = taskId;
     displayedTaskIdRef.current = taskId;
   };
-  const activeTask = tasks.find((task) => task.id === activeTaskId) ?? tasks[0];
+  const activeTask = useMemo(
+    () => tasks.find((task) => task.id === activeTaskId) ?? tasks[0],
+    [tasks, activeTaskId],
+  );
   useEffect(() => {
     if (!window.kcode?.state) {
       setTaskStorageReady(true);
@@ -579,7 +586,7 @@ export default function App() {
       .catch((error) => {
         if (!cancelled) {
           setContextError(
-            `数据库加载失败：${error instanceof Error ? error.message : String(error)}`,
+            `数据库加载失败：${errorMessage(error)}`,
           );
           setTaskStorageReady(true);
         }
@@ -755,8 +762,7 @@ export default function App() {
         window.clearTimeout(bottomSettleTimerRef.current);
       if (turnLayoutFrameRef.current)
         cancelAnimationFrame(turnLayoutFrameRef.current);
-      if (textFlushTimerRef.current)
-        window.clearTimeout(textFlushTimerRef.current);
+      if (textRafRef.current) cancelAnimationFrame(textRafRef.current);
       if (taskTextFlushTimerRef.current)
         window.clearTimeout(taskTextFlushTimerRef.current);
       if (reasoningFlushTimerRef.current)
@@ -1000,7 +1006,7 @@ export default function App() {
         deletions: 0,
         summary: "",
         diff: "",
-        error: error instanceof Error ? error.message : String(error),
+        error: errorMessage(error),
       });
     } finally {
       setGitRefreshing(false);
@@ -1072,7 +1078,7 @@ export default function App() {
             .save("tasks", tasks)
             .catch((error) =>
               setContextError(
-                `数据库保存失败：${error instanceof Error ? error.message : String(error)}`,
+                `数据库保存失败：${errorMessage(error)}`,
               ),
             ),
         2_000,
@@ -1112,28 +1118,27 @@ export default function App() {
     setReasoningEffort(normalizeEffort(value, efforts));
   }
 
+  // Patch a single field on the active task (with updatedAt bump). Centralizes
+  // the find-active-and-map pattern for the simple single-field updates.
+  function patchActiveTask(patch: Partial<TaskRecord>) {
+    if (!activeTaskId) return;
+    setTasks((all) =>
+      all.map((task) =>
+        task.id === activeTaskId
+          ? { ...task, ...patch, updatedAt: Date.now() }
+          : task,
+      ),
+    );
+  }
+
   function selectModel(value: string) {
     setSelected(value);
-    if (activeTaskId)
-      setTasks((all) =>
-        all.map((task) =>
-          task.id === activeTaskId
-            ? { ...task, modelSelection: value, updatedAt: Date.now() }
-            : task,
-        ),
-      );
+    patchActiveTask({ modelSelection: value });
   }
 
   function selectReasoningEffort(value: ReasoningEffort) {
     setReasoningEffort(value);
-    if (activeTaskId)
-      setTasks((all) =>
-        all.map((task) =>
-          task.id === activeTaskId
-            ? { ...task, reasoningEffort: value, updatedAt: Date.now() }
-            : task,
-        ),
-      );
+    patchActiveTask({ reasoningEffort: value });
   }
 
   function updateAutoFollow(value: boolean) {
@@ -1149,11 +1154,6 @@ export default function App() {
   function updateTheme(value: ThemePreference) {
     setTheme(value);
     localStorage.setItem("kcode.theme", value);
-  }
-
-  function updateInterfaceStyle(value: InterfaceStyle) {
-    setInterfaceStyle(value);
-    localStorage.setItem("kcode.interfaceStyle", value);
   }
 
   function updateAccent(value: AccentPreference) {
@@ -1223,10 +1223,10 @@ export default function App() {
     window.addEventListener("pointerup", stop);
   }
 
-  function reorderTask(targetId: string) {
-    if (!draggedTaskId || draggedTaskId === targetId) return;
+  function reorderTask(sourceId: string | undefined, targetId: string) {
+    if (!sourceId || sourceId === targetId) return;
     setTasks((current) => {
-      const from = current.findIndex((task) => task.id === draggedTaskId);
+      const from = current.findIndex((task) => task.id === sourceId);
       const to = current.findIndex((task) => task.id === targetId);
       if (from < 0 || to < 0) return current;
       const next = [...current];
@@ -1236,11 +1236,14 @@ export default function App() {
     });
   }
 
-  function reorderWorkspace(targetPath: string) {
-    if (!draggedWorkspace || draggedWorkspace === targetPath) return;
+  function reorderWorkspace(
+    sourcePath: string | undefined,
+    targetPath: string,
+  ) {
+    if (!sourcePath || sourcePath === targetPath) return;
     setTasks((current) => {
       const paths = [...new Set(current.map((task) => task.workspacePath))];
-      const from = paths.indexOf(draggedWorkspace),
+      const from = paths.indexOf(sourcePath),
         to = paths.indexOf(targetPath);
       if (from < 0 || to < 0) return current;
       paths.splice(to, 0, paths.splice(from, 1)[0]);
@@ -1391,16 +1394,30 @@ export default function App() {
     return () => window.removeEventListener("keydown", handleShortcut);
   }, []);
 
-  function flushPendingText() {
-    if (textFlushTimerRef.current) {
-      window.clearTimeout(textFlushTimerRef.current);
-      textFlushTimerRef.current = undefined;
+  // Consume the buffered text: `drainAll` empties it in one shot (stream end /
+  // error), otherwise each call reveals a small slice per request so the rAF
+  // loop paints steady char-by-char output. The task-mirror gets the same slice
+  // so persisted storage never runs ahead of what's on screen.
+  function flushPendingText(drainAll = false) {
+    if (!pendingTextRef.current.size) return;
+    // Slice a bounded prefix from each request's buffer; keep the remainder.
+    const slices: [string, string][] = [];
+    for (const [requestId, buffered] of pendingTextRef.current) {
+      if (!buffered) continue;
+      // Drain the current backlog in ~1s of frames (min 3 chars/frame) so
+      // fast bursts catch up smoothly while slow streams still type gently.
+      const step = drainAll
+        ? buffered.length
+        : Math.max(3, Math.ceil(buffered.length / 60));
+      const slice = buffered.slice(0, step);
+      const rest = buffered.slice(step);
+      slices.push([requestId, slice]);
+      if (rest) pendingTextRef.current.set(requestId, rest);
+      else pendingTextRef.current.delete(requestId);
     }
-    const pending = [...pendingTextRef.current.entries()];
-    pendingTextRef.current.clear();
-    if (!pending.length) return;
-    const deltaByRequest = new Map(pending);
-    const activeDeltas = pending.filter(([requestId]) => {
+    if (!slices.length) return;
+    const deltaByRequest = new Map(slices);
+    const hasActive = slices.some(([requestId]) => {
       const taskId = requestTasksRef.current.get(requestId);
       return Boolean(
         taskId &&
@@ -1411,26 +1428,38 @@ export default function App() {
         ),
       );
     });
-    if (activeDeltas.length)
+    if (hasActive)
       startTransition(() => {
-        setMessages((all) =>
-          all.map((message) => {
-            if (!message.id.startsWith("assistant:")) return message;
-            const delta = deltaByRequest.get(
-              message.id.slice("assistant:".length),
-            );
-            return delta
-              ? { ...message, content: message.content + delta }
-              : message;
-          }),
-        );
+        setMessages((all) => {
+          // Touch only the streaming message(s) — reverse-scan finds them near
+          // the end fast, and we copy the array once instead of rebuilding.
+          let next = all;
+          for (const [requestId, delta] of deltaByRequest) {
+            const id = `assistant:${requestId}`;
+            let index = -1;
+            for (let i = next.length - 1; i >= 0; i -= 1)
+              if (next[i].id === id) {
+                index = i;
+                break;
+              }
+            if (index < 0) continue;
+            if (next === all) next = all.slice();
+            next[index] = {
+              ...next[index],
+              content: next[index].content + delta,
+            };
+          }
+          return next;
+        });
       });
-    for (const [requestId, delta] of pending)
+    for (const [requestId, delta] of slices)
       pendingTaskTextRef.current.set(
         requestId,
         (pendingTaskTextRef.current.get(requestId) ?? "") + delta,
       );
     scheduleTaskTextFlush();
+    // More buffered text remains → keep the typewriter running next frame.
+    if (!drainAll && pendingTextRef.current.size) scheduleTextFlush();
   }
 
   function flushPendingTaskText() {
@@ -1451,35 +1480,36 @@ export default function App() {
       setTasks((all) =>
         all.map((task) => {
           if (!ownerTaskIds.has(task.id)) return task;
-          return {
-            ...task,
-            messages: task.messages.map((message) => {
-              if (!message.id.startsWith("assistant:")) return message;
-              const delta = deltaByRequest.get(
-                message.id.slice("assistant:".length),
-              );
-              return delta
-                ? { ...message, content: message.content + delta }
-                : message;
-            }),
-            updatedAt: Date.now(),
-          };
+          // Reverse-scan for the streaming message and copy that task's array
+          // once, instead of rebuilding every message on the 1.5s task flush.
+          let msgs = task.messages;
+          for (const [requestId, delta] of deltaByRequest) {
+            const id = `assistant:${requestId}`;
+            let index = -1;
+            for (let i = msgs.length - 1; i >= 0; i -= 1)
+              if (msgs[i].id === id) {
+                index = i;
+                break;
+              }
+            if (index < 0) continue;
+            if (msgs === task.messages) msgs = task.messages.slice();
+            msgs[index] = {
+              ...msgs[index],
+              content: msgs[index].content + delta,
+            };
+          }
+          return { ...task, messages: msgs, updatedAt: Date.now() };
         }),
       );
     });
   }
 
   function scheduleTextFlush() {
-    if (textFlushTimerRef.current) return;
-    let longestResponse = 0;
-    for (const requestId of pendingTextRef.current.keys())
-      longestResponse = Math.max(
-        longestResponse,
-        assistantLengthsRef.current.get(requestId) ?? 0,
-      );
-    const delay =
-      longestResponse > 24_000 ? 280 : longestResponse > 8_000 ? 180 : 100;
-    textFlushTimerRef.current = window.setTimeout(flushPendingText, delay);
+    if (textRafRef.current) return;
+    textRafRef.current = requestAnimationFrame(() => {
+      textRafRef.current = undefined;
+      flushPendingText();
+    });
   }
 
   function scheduleTaskTextFlush() {
@@ -1701,7 +1731,11 @@ export default function App() {
         }
         if (event.type === "error") {
           if (isActive) clearPendingReasoning();
-          flushPendingText();
+          if (textRafRef.current) {
+            cancelAnimationFrame(textRafRef.current);
+            textRafRef.current = undefined;
+          }
+          flushPendingText(true);
           flushPendingTaskText();
           const updateMessages = (all: ChatMessage[]) =>
             all.map((m) =>
@@ -1748,7 +1782,11 @@ export default function App() {
         }
         if (event.type === "done") {
           if (isActive) clearPendingReasoning();
-          flushPendingText();
+          if (textRafRef.current) {
+            cancelAnimationFrame(textRafRef.current);
+            textRafRef.current = undefined;
+          }
+          flushPendingText(true);
           flushPendingTaskText();
           setTasks((all) =>
             all.map((task) => {
@@ -1893,7 +1931,7 @@ export default function App() {
       setPendingFolder(folder);
       setNewTaskName("");
     } catch (error) {
-      setContextError(error instanceof Error ? error.message : String(error));
+      setContextError(errorMessage(error));
     }
   }
 
@@ -2117,7 +2155,7 @@ export default function App() {
         return merged;
       });
     } catch (error) {
-      setContextError(error instanceof Error ? error.message : String(error));
+      setContextError(errorMessage(error));
     }
   }
 
@@ -2165,7 +2203,7 @@ export default function App() {
           : "",
       );
     } catch (error) {
-      setContextError(error instanceof Error ? error.message : String(error));
+      setContextError(errorMessage(error));
     }
   }
 
@@ -2484,7 +2522,7 @@ export default function App() {
     let compactedCount = activeTask?.compactedMessageCount ?? 0;
     let contextNotice = "";
     const attachmentTokens = attachedFiles.reduce(
-      (total, file) => total + Math.ceil(file.content.length / 3),
+      (total, file) => total + estimateTextTokens(file.content),
       0,
     );
     const outputReserve = selectedContextWindow
@@ -2498,7 +2536,7 @@ export default function App() {
       attachmentTokens +
       outputReserve +
       estimateMessageTokens(nextMessages.slice(compactedCount)) +
-      Math.ceil((requestSummary?.length ?? 0) / 3);
+      estimateTextTokens(requestSummary ?? "");
     const requestCalibrationKey = `${target.provider.id}|${target.model.modelId}`;
     // Use the last round's prompt tokens as the observed floor, not the
     // accumulated billing total (usage.input) which grows every round and would
@@ -2760,7 +2798,7 @@ export default function App() {
         contextWindow: selectedContextWindow,
       });
     } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
+      const detail = errorMessage(error);
       const failure = detail
         ? `生成失败：模型请求未能启动。${detail}`
         : "生成失败：模型请求未能启动，请稍后重试或切换模型/供应商。";
@@ -2916,8 +2954,12 @@ export default function App() {
   }
 
   const connected = providers.some((provider) => provider.hasApiKey);
-  const selectedTarget = models.find(
-    (item) => `${item.provider.id}|${item.model.id}` === selected,
+  const selectedTarget = useMemo(
+    () =>
+      models.find(
+        (item) => `${item.provider.id}|${item.model.id}` === selected,
+      ),
+    [models, selected],
   );
   const selectedContextWindow =
     selectedTarget?.model.contextWindow ??
@@ -2931,7 +2973,7 @@ export default function App() {
     () =>
       Math.ceil(
         (AGENT_STATIC_TOKENS +
-          Math.ceil((activeTask?.contextSummary?.length ?? 0) / 3) +
+          estimateTextTokens(activeTask?.contextSummary ?? "") +
           estimateMessageTokens(
             deferredMessages.slice(activeTask?.compactedMessageCount ?? 0),
           )) *
@@ -3073,6 +3115,25 @@ export default function App() {
     void pasteImages(event);
   };
 
+  // Stable-identity wrappers so memoized Sidebar/TopBar skip streaming-tick
+  // re-renders. Identity never changes; the latest closure is always invoked.
+  const onStartNewTask = useEventCallback(() => void startNewTask());
+  const onReorderWorkspace = useEventCallback(
+    (from: string | undefined, to: string) => reorderWorkspace(from, to),
+  );
+  const onReorderTask = useEventCallback(
+    (from: string | undefined, to: string) => reorderTask(from, to),
+  );
+  const onToggleWorkspace = useEventCallback(toggleWorkspace);
+  const onCreateConversation = useEventCallback(
+    (workspacePath: string) => void createConversation(workspacePath),
+  );
+  const onSwitchTask = useEventCallback((task: TaskRecord) => void switchTask(task));
+  const onToggleTaskArchived = useEventCallback(toggleTaskArchived);
+  const onOpenSettings = useEventCallback(openSettings);
+  const onStartSidebarResize = useEventCallback(startSidebarResize);
+  const onUpdateStatusPanel = useEventCallback(updateStatusPanel);
+
   return (
     <div className="window-root">
       {appToast && (
@@ -3108,27 +3169,17 @@ export default function App() {
           showArchived={showArchived}
           setShowArchived={setShowArchived}
           collapsedWorkspaces={collapsedWorkspaces}
-          draggedTaskId={draggedTaskId}
-          taskDropTarget={taskDropTarget}
-          draggedWorkspace={draggedWorkspace}
-          workspaceDropTarget={workspaceDropTarget}
-          setDraggedTaskId={setDraggedTaskId}
-          setTaskDropTarget={setTaskDropTarget}
-          setDraggedWorkspace={setDraggedWorkspace}
-          setWorkspaceDropTarget={setWorkspaceDropTarget}
-          startNewTask={() => void startNewTask()}
-          reorderWorkspace={reorderWorkspace}
-          reorderTask={reorderTask}
-          toggleWorkspace={toggleWorkspace}
-          createConversation={(workspacePath) =>
-            void createConversation(workspacePath)
-          }
-          switchTask={(task) => void switchTask(task)}
-          toggleTaskArchived={toggleTaskArchived}
+          startNewTask={onStartNewTask}
+          reorderWorkspace={onReorderWorkspace}
+          reorderTask={onReorderTask}
+          toggleWorkspace={onToggleWorkspace}
+          createConversation={onCreateConversation}
+          switchTask={onSwitchTask}
+          toggleTaskArchived={onToggleTaskArchived}
           setDeleteTarget={setDeleteTarget}
           setContextError={setContextError}
-          openSettings={openSettings}
-          startSidebarResize={startSidebarResize}
+          openSettings={onOpenSettings}
+          startSidebarResize={onStartSidebarResize}
         />
         <main className="main">
           <TopBar
@@ -3136,7 +3187,7 @@ export default function App() {
             sidebarOpen={sidebarOpen}
             setSidebarOpen={setSidebarOpen}
             statusOpen={statusOpen}
-            updateStatusPanel={updateStatusPanel}
+            updateStatusPanel={onUpdateStatusPanel}
             gitState={gitState}
           />
           <ConversationArea
@@ -3565,13 +3616,16 @@ export default function App() {
           startBrowserResize={startBrowserResize}
         />
         {updateOpen && (
-          <AppUpdateDialog
-            state={appUpdate}
-            onClose={() => setUpdateOpen(false)}
-          />
+          <Suspense fallback={null}>
+            <AppUpdateDialog
+              state={appUpdate}
+              onClose={() => setUpdateOpen(false)}
+            />
+          </Suspense>
         )}
         {settings && (
-          <SettingsPanel
+          <Suspense fallback={null}>
+            <SettingsPanel
             providers={providers}
             setProviders={setProviders}
             initialSection={settingsSection}
@@ -3584,8 +3638,6 @@ export default function App() {
             onStatusPanelChange={updateStatusPanel}
             theme={theme}
             onThemeChange={updateTheme}
-            interfaceStyle={interfaceStyle}
-            onInterfaceStyleChange={updateInterfaceStyle}
             accent={accent}
             onAccentChange={updateAccent}
             permissionMode={permissionMode}
@@ -3593,7 +3645,8 @@ export default function App() {
             permissionPolicy={permissionPolicy}
             onPermissionPolicyChange={updatePermissionPolicy}
             onClose={() => setSettings(false)}
-          />
+            />
+          </Suspense>
         )}
         {pendingFolder && (
           <NewTaskDialog

@@ -3,6 +3,7 @@ import { CheckCircle2, Cpu, Plus, RefreshCw, Trash2, X } from "lucide-react";
 import { inferContextWindow, inferReasoningConfig } from "../../types";
 import type { ModelConfig, ProviderConfig } from "../../types";
 import { uid } from "../../models";
+import { errorMessage } from "../../lib/format";
 
 export function ProviderModal({
   initial,
@@ -54,7 +55,7 @@ export function ProviderModal({
       onSaved(await window.kcode.providers.save(provider, apiKey || undefined));
       onClose();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorMessage(e));
     } finally {
       setBusy(false);
     }
@@ -101,7 +102,7 @@ export function ProviderModal({
       patch({ models });
       setSyncedModelCount(models.length);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorMessage(e));
     } finally {
       setSyncing(false);
     }
@@ -122,7 +123,7 @@ export function ProviderModal({
       onSaved(await window.kcode.providers.remove(initial.id));
       onClose();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorMessage(e));
     } finally {
       setBusy(false);
     }

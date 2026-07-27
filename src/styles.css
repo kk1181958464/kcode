@@ -116,6 +116,7 @@ body {
 }
 .window-controls {
   height: 100%;
+  margin-left: auto;
   display: flex;
   align-items: stretch;
   -webkit-app-region: no-drag;
@@ -186,19 +187,20 @@ select:focus-visible {
 
 .app-shell {
   height: calc(100vh - 32px);
+  position: relative;
   display: grid;
-  grid-template-columns: var(--sidebar-width, 256px) minmax(0, 1fr) 280px;
+  grid-template-columns: var(--sidebar-width, 256px) minmax(0, 1fr);
   background: var(--surface);
   transition: grid-template-columns 0.28s cubic-bezier(0.22, 1, 0.36, 1);
 }
 .app-shell.sidebar-collapsed {
-  grid-template-columns: 0 minmax(0, 1fr) 280px;
+  grid-template-columns: 0 minmax(0, 1fr);
 }
 .app-shell.status-collapsed {
-  grid-template-columns: var(--sidebar-width, 256px) minmax(0, 1fr) 0;
+  grid-template-columns: var(--sidebar-width, 256px) minmax(0, 1fr);
 }
 .app-shell.sidebar-collapsed.status-collapsed {
-  grid-template-columns: 0 minmax(0, 1fr) 0;
+  grid-template-columns: 0 minmax(0, 1fr);
 }
 .app-shell.browser-open {
   grid-template-columns: var(--sidebar-width, 256px) minmax(420px, 1fr) var(
@@ -224,10 +226,12 @@ select:focus-visible {
   overflow: hidden;
   opacity: 0;
   pointer-events: none;
+}
+.sidebar-collapsed .sidebar {
   transform: translateX(-10px);
 }
 .status-collapsed .status-panel {
-  transform: translateX(10px);
+  transform: translateX(16px);
 }
 .sidebar {
   position: relative;
@@ -422,9 +426,15 @@ select:focus-visible {
   gap: 3px;
   padding: 0 4px;
   color: var(--ink);
+  cursor: pointer;
   transition:
     background 0.2s ease,
     transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.workspace-group > header > .workspace-collapse {
+  height: 25px;
+  display: grid;
+  place-items: center;
 }
 .workspace-group > header > svg {
   color: var(--muted);
@@ -643,6 +653,8 @@ select:focus-visible {
   flex-direction: column;
   overflow: hidden;
   background: var(--surface);
+  /* Shift content left so the floating status cards don't cover it */
+  transition: padding-right 0.28s cubic-bezier(0.22, 1, 0.36, 1);
 }
 .topbar {
   border-bottom: 1px solid var(--line);
@@ -2584,12 +2596,26 @@ select:focus-visible {
 }
 
 .status-panel {
-  padding: 0 17px;
-  min-width: 0;
-  min-height: 0;
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 276px;
+  height: calc(100% - 24px);
+  z-index: 10;
+  /* Transparent scrollable wrapper — cards do their own floating */
+  padding: 0 0 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   overflow-y: auto;
   overscroll-behavior: contain;
-  transition: opacity 0.12s ease;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  transition:
+    opacity 0.22s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+    visibility 0.22s;
 }
 .browser-panel {
   position: relative;
@@ -2689,13 +2715,20 @@ select:focus-visible {
   color: var(--success);
 }
 .status-panel > header {
-  height: 64px;
+  padding: 12px 14px;
+  height: auto;
+  min-height: 44px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  border-bottom: 1px solid var(--line);
   font-size: 12px;
   font-weight: 650;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-card);
+  /* No inner border-bottom — header is now its own card */
+  border-bottom: 1px solid var(--line);
 }
 .status-panel > header svg {
   color: var(--success);
@@ -2704,7 +2737,7 @@ select:focus-visible {
   border-radius: 50%;
 }
 .status-panel section {
-  border-bottom: 1px solid var(--line);
+  /* Each section is its own floating card, no shared bottom divider */
 }
 .status-panel p {
   font-size: 11px;
@@ -3148,12 +3181,15 @@ select:focus-visible {
 .settings-layout {
   height: calc(100vh - 94px);
   display: grid;
-  grid-template-columns: 160px minmax(0, 1fr);
+  grid-template-columns: 200px minmax(0, 1fr);
   min-height: 0;
+  overflow: hidden;
 }
 .settings-nav {
+  min-width: 0;
   padding: 14px 10px;
   border-right: 1px solid #dfe2dc;
+  overflow: hidden;
 }
 .settings-nav button {
   width: 100%;
@@ -3509,12 +3545,16 @@ select:focus-visible {
 }
 
 .settings-nav {
-  min-width: 202px;
+  min-width: 0;
 }
 
 @media (max-width: 900px) {
   .settings-nav {
-    min-width: 184px;
+    min-width: 0;
+  }
+
+  .settings-layout {
+    grid-template-columns: 184px minmax(0, 1fr);
   }
 
   .settings-model-list {
@@ -4183,22 +4223,20 @@ select:focus {
 @media (max-width: 1100px) {
   .app-shell {
     grid-template-columns:
-      min(var(--sidebar-width, 220px), 34vw) minmax(0, 1fr)
-      250px;
+      min(var(--sidebar-width, 220px), 34vw) minmax(0, 1fr);
   }
   .app-shell.sidebar-collapsed {
-    grid-template-columns: 0 minmax(0, 1fr) 250px;
+    grid-template-columns: 0 minmax(0, 1fr);
   }
   .app-shell.status-collapsed {
     grid-template-columns:
-      min(var(--sidebar-width, 220px), 34vw) minmax(0, 1fr)
-      0;
+      min(var(--sidebar-width, 220px), 34vw) minmax(0, 1fr);
   }
   .app-shell.sidebar-collapsed.status-collapsed {
-    grid-template-columns: 0 minmax(0, 1fr) 0;
+    grid-template-columns: 0 minmax(0, 1fr);
   }
   .status-panel {
-    padding-inline: 14px;
+    width: 256px;
   }
   .topbar span i,
   .topbar span i + * {
@@ -4765,6 +4803,15 @@ select:focus-visible {
   border-right-color: var(--line);
 }
 
+/* Status panel is now a floating overlay — shift main content left so it
+   doesn't disappear behind the cards. Collapses smoothly when panel hides. */
+.app-shell:not(.status-collapsed) .main {
+  padding-right: 300px;
+}
+.status-collapsed .main {
+  padding-right: 0;
+}
+
 .main,
 .conversation {
   background: var(--surface);
@@ -4773,12 +4820,12 @@ select:focus-visible {
 .topbar {
   height: 58px;
   padding-inline: 16px;
-  background: color-mix(in srgb, var(--surface-raised) 92%, transparent);
+  /* Solid bar (no backdrop-filter): the conversation scrolls under it during
+     streaming auto-follow, and any blur forces a GPU repaint of the blurred
+     region on every scroll frame. An opaque surface repaints far cheaper. */
+  background: var(--surface-raised);
   border-bottom-color: var(--line);
   box-shadow: none;
-  /* Lighter blur radius: the conversation scrolls under the bar during
-     streaming auto-follow, and blur(18px) forces a costly per-frame repaint. */
-  backdrop-filter: blur(10px) saturate(120%);
 }
 
 .topbar h1 {
@@ -4789,8 +4836,9 @@ select:focus-visible {
 }
 
 .status-panel {
-  background: var(--panel);
-  border-left: 1px solid var(--line);
+  /* Transparent floating wrapper — cards handle their own visual styles */
+  background: transparent;
+  border-left: none;
   box-shadow: none;
 }
 
@@ -5589,23 +5637,23 @@ select:focus-visible {
   transform: translateY(-2px);
 }
 
-/* Status rail */
+/* Status rail — transparent wrapper, each card floats independently */
 .status-panel {
-  padding-inline: 12px;
+  padding-inline: 0;
 }
 
 .status-panel > header {
-  min-height: 58px;
+  min-height: auto;
   border-bottom-color: var(--line);
 }
 
 .status-panel section {
-  margin-top: 12px;
+  margin-top: 0;
   padding: 14px;
   border: 1px solid var(--line);
-  border-radius: var(--radius-md);
+  border-radius: 10px;
   background: var(--surface-raised);
-  box-shadow: none;
+  box-shadow: var(--shadow-card);
 }
 
 .status-panel h3 {
@@ -6069,12 +6117,11 @@ button[aria-busy="true"] {
   }
 
   .status-panel:not(.hidden) {
-    position: absolute;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    z-index: 30;
-    width: min(320px, calc(100vw - 72px));
+    top: 8px;
+    right: 8px;
+    bottom: 8px;
+    height: auto;
+    width: min(300px, calc(100vw - 72px));
     box-shadow: var(--shadow-float);
   }
 

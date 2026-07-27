@@ -23,6 +23,11 @@ export const emptyLedger = (): ContextLedger => ({
 const uniqueRecent = (items: string[], limit = 32) =>
   [...new Set(items.filter(Boolean))].slice(-limit);
 
+// Single source of truth for the "chars ≈ tokens" heuristic (chars / 3),
+// reused instead of scattering the `/ 3` literal across call sites.
+export const estimateTextTokens = (text: string) =>
+  Math.ceil((text?.length ?? 0) / 3);
+
 export const estimateMessageTokens = (items: ChatMessage[]) =>
   Math.ceil(
     items.reduce(

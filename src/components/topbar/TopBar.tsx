@@ -1,3 +1,4 @@
+import { memo } from "react";
 import {
   GitBranch,
   PanelLeftClose,
@@ -16,7 +17,7 @@ export interface TopBarProps {
   gitState: GitWorkspaceState;
 }
 
-export function TopBar({
+export const TopBar = memo(function TopBar({
   taskName,
   sidebarOpen,
   setSidebarOpen,
@@ -66,4 +67,4 @@ export function TopBar({
       </div>
     </header>
   );
-}
+});

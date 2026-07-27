@@ -235,14 +235,25 @@ function notifyTask(result: "done" | "error", message?: string) {
     notification.show();
   }
 }
-const checkpointPath = (id: string) =>
-  path.join(app.getPath("userData"), "checkpoints", `${id}.json`);
+// Reject any id that could escape the checkpoints dir. Legit ids are
+// randomUUID() or request ids ([A-Za-z0-9_-]); path separators / dots are not.
+const checkpointPath = (id: string) => {
+  if (!/^[A-Za-z0-9_-]+$/.test(id))
+    throw new Error(`Invalid checkpoint id: ${id}`);
+  return path.join(app.getPath("userData"), "checkpoints", `${id}.json`);
+};
 async function writeCheckpoint(id: string, value: unknown) {
   await mkdir(path.dirname(checkpointPath(id)), { recursive: true });
   await writeFile(checkpointPath(id), JSON.stringify(value), "utf8");
 }
 async function removeCheckpoint(id: string) {
-  await rm(checkpointPath(id), { force: true });
+  let target: string;
+  try {
+    target = checkpointPath(id);
+  } catch {
+    return; // invalid id → no such checkpoint, nothing to remove
+  }
+  await rm(target, { force: true });
 }
 async function listCheckpoints() {
   try {

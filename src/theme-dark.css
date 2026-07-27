@@ -1,0 +1,375 @@
+/* Dark theme — "Deep Tech Blue" professional workspace.
+   Flat layered surfaces, low-saturation dark blues, high-contrast text,
+   3 accent colors (blue / green / red). Light mode uses the base minimal
+   palette in styles.css; this layer applies only to :root[data-theme="dark"]. */
+
+:root[data-theme="dark"] {
+  /* ---- Surfaces: three-column depth ---- */
+  --g-sidebar: #161a23; /* left workspace rail */
+  --g-main: #1e2a38; /* center content */
+  --g-panel: #232a38; /* right task panel */
+  --g-card: #2c3444; /* cards / inputs */
+  --g-card-hover: #333c4e;
+  --g-selected: #273859; /* active sidebar item */
+  --g-code: #0f131a; /* code block */
+
+  /* ---- Lines ---- */
+  --g-line: #384457;
+  --g-line-soft: #2c3444;
+
+  /* ---- Text hierarchy ---- */
+  --g-ink: #f5f7fa; /* L1 headings */
+  --g-text: #c8d5e1; /* body */
+  --g-muted: #8892a0; /* secondary / small */
+
+  /* ---- Accents ---- */
+  --g-blue: #3684fc;
+  --g-blue-hover: #4a93ff;
+  --g-green: #36c986;
+  --g-red: #e25767;
+  --g-cyan: #5cc8d8; /* code syntax accent */
+
+  /* Map onto the app's core design tokens so the palette flows everywhere. */
+  --ink: var(--g-ink);
+  --muted: var(--g-muted);
+  --line: var(--g-line);
+  --line-strong: var(--g-line);
+  --surface: var(--g-main);
+  --surface-raised: var(--g-card);
+  --surface-muted: var(--g-panel);
+  --surface-hover: var(--g-card-hover);
+  --surface-selected: var(--g-selected);
+  --panel: var(--g-sidebar);
+  --sidebar-surface: var(--g-sidebar);
+  --accent: var(--g-blue);
+  --accent-hover: var(--g-blue-hover);
+  --accent-soft: var(--g-selected);
+  --accent-ink: #ffffff;
+  --link: #6fa8ff;
+  --danger: var(--g-red);
+  --danger-hover: #ec6b7a;
+  --success: var(--g-green);
+  --success-hover: #47d494;
+  --code-surface: var(--g-code);
+  --code-toolbar: #161b24;
+  --code-ink: #c8d5e1;
+  --focus-ring: rgb(54 132 252 / 34%);
+  --shadow-soft: 0 1px 2px rgb(0 0 0 / 30%);
+  --shadow-raised: 0 6px 20px rgb(0 0 0 / 40%);
+  --shadow-float: 0 14px 44px rgb(0 0 0 / 55%);
+  --shadow-card: 0 2px 10px rgb(0 0 0 / 35%);
+
+  color: var(--g-text);
+  background: var(--g-main);
+}
+:root[data-theme="dark"] {
+  /* Flat canvas — no aurora, no grid, no blur. */
+  body {
+    background: var(--g-main);
+    background-attachment: initial;
+  }
+
+  body::before,
+  body::after {
+    display: none !important;
+  }
+
+  #root,
+  .window-root {
+    position: relative;
+    z-index: 1;
+    background: var(--g-main);
+  }
+
+  .app-shell,
+  .main,
+  .conversation {
+    background: var(--g-main);
+  }
+
+  /* ---- Three-column surfaces, seamless chrome ---- */
+  .window-titlebar {
+    background: var(--g-sidebar);
+    border-bottom: none;
+    box-shadow: none;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  .sidebar {
+    background: var(--g-sidebar) !important;
+    border-right: 1px solid var(--g-line-soft);
+    box-shadow: none;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  .sidebar-footer {
+    background: transparent;
+    border-top-color: var(--g-line-soft);
+  }
+
+  .topbar {
+    background: var(--g-main);
+    border-bottom: 1px solid var(--g-line-soft);
+    box-shadow: none;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  .status-panel {
+    background: transparent;
+    border: none;
+    box-shadow: none;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  .status-panel > header,
+  .status-panel section {
+    background: var(--g-panel);
+    border: 1px solid var(--g-line-soft);
+    box-shadow:
+      0 8px 24px rgb(0 0 0 / 36%),
+      0 2px 8px rgb(0 0 0 / 24%);
+  }
+  /* ---- Cards & inset controls: flat #2C3444, hairline border ---- */
+  .task-filter,
+  .new-task,
+  .framed,
+  .prompts button,
+  .connect-model,
+  .permission-row,
+  .git-summary,
+  .run-metrics > div,
+  .context-usage,
+  .resume-checkpoint,
+  .file-changes-summary,
+  .agent-activity,
+  .execution-summary-detail,
+  .activity-detail,
+  .turn-preview,
+  .context-file,
+  .message-images button {
+    background: var(--g-card);
+    border-color: var(--g-line);
+    box-shadow: none;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  .status-panel section {
+    border: 1px solid var(--g-line);
+    border-radius: 8px;
+    box-shadow: none;
+  }
+
+  .file-changes-summary > header,
+  .execution-summary-head,
+  .activity-head {
+    background: transparent;
+  }
+
+  .prompts button:hover,
+  .new-task:hover,
+  .permission-row:hover {
+    background: var(--g-card-hover);
+    border-color: var(--g-line);
+    box-shadow: none;
+  }
+
+  /* Search box: flat, borderless until focus. */
+  .task-filter {
+    border-color: transparent;
+  }
+
+  .task-filter:focus-within {
+    border-color: var(--g-blue);
+    box-shadow: 0 0 0 2px var(--focus-ring);
+  }
+  /* ---- Task tree rows ---- */
+  .task-row {
+    border: 1px solid transparent;
+    color: var(--g-muted);
+  }
+
+  .task-row:not(.dragging):hover {
+    background: var(--g-selected);
+    border-color: transparent;
+    box-shadow: none;
+  }
+
+  .task-row.active {
+    background: var(--g-selected);
+    border-color: transparent;
+    color: var(--g-ink);
+    box-shadow: inset 4px 0 0 var(--g-blue);
+  }
+
+  /* ---- Composer: flat card, blue focus ring ---- */
+  .composer-wrap {
+    background: transparent;
+  }
+
+  .composer {
+    overflow: visible;
+    background: var(--g-card);
+    border: 1px solid var(--g-line) !important;
+    border-radius: 10px;
+    box-shadow: var(--shadow-raised);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  .composer::before {
+    display: none;
+  }
+
+  .composer:focus-within {
+    border-color: var(--g-blue) !important;
+    box-shadow: 0 0 0 2px var(--focus-ring), var(--shadow-raised) !important;
+  }
+
+  .composer textarea,
+  .composer-bar {
+    background: transparent;
+  }
+  /* ---- Messages & avatars ---- */
+  .message.user .message-body {
+    background: var(--g-card);
+    border-color: var(--g-line);
+    border-radius: 10px;
+    box-shadow: none;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  .message-avatar,
+  .activity-icon,
+  .file-changes-icon,
+  .execution-summary-icon {
+    background: var(--g-card);
+    border-color: var(--g-line);
+    box-shadow: none;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  .message-avatar.assistant {
+    background: var(--g-blue);
+    border-color: var(--g-blue);
+    color: #ffffff;
+    box-shadow: none;
+  }
+
+  /* ---- Code blocks: near-black, cyan syntax accent ---- */
+  .code-block {
+    background: var(--g-code);
+    border-color: var(--g-line);
+  }
+
+  .code-block pre {
+    background: var(--g-code);
+  }
+
+  /* ---- Progress bars: green fill ---- */
+  .progress i {
+    background: var(--g-green);
+  }
+  /* ---- Floating menus & secondary buttons ---- */
+  .scroll-to-bottom,
+  .model-menu,
+  .effort-menu,
+  .model-provider-submenu,
+  .sync-models,
+  .secondary,
+  .browser-show-tab {
+    background: var(--g-card);
+    border-color: var(--g-line);
+    box-shadow: var(--shadow-raised);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  .model-menu,
+  .effort-menu,
+  .model-provider-submenu {
+    box-shadow: var(--shadow-float);
+  }
+
+  /* ---- Modals & overlays ---- */
+  .modal-backdrop,
+  .settings-layer,
+  .summary-layer,
+  .restore-backdrop,
+  .image-lightbox {
+    background: rgb(0 0 0 / 62%);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  .modal,
+  .settings-panel,
+  .summary-dialog,
+  .delete-dialog,
+  .restore-dialog,
+  .update-dialog {
+    background: var(--g-panel);
+    border: 1px solid var(--g-line);
+    box-shadow: var(--shadow-float);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+  /* ---- Sidebar brand: blue-tinted logo, quieter title ---- */
+  .brand > img {
+    border-radius: 6px;
+    filter: none;
+  }
+
+  .brand strong {
+    color: var(--g-text);
+    font-weight: 600;
+  }
+
+  .brand small {
+    color: var(--g-muted);
+  }
+
+  /* ---- Settings surfaces ---- */
+  .settings-nav,
+  .settings-panel > header,
+  .settings-panel input,
+  .settings-panel select,
+  .settings-row,
+  .provider-card,
+  .provider-model-row,
+  .skill-card {
+    background-color: var(--g-card);
+    border-color: var(--g-line);
+  }
+
+  .settings-nav {
+    background-color: var(--g-sidebar);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  .settings-nav button.active {
+    background: var(--g-selected);
+    box-shadow: inset 3px 0 0 var(--g-blue);
+  }
+
+  /* ---- Browser panel ---- */
+  .browser-panel,
+  .browser-panel > header {
+    background: var(--g-panel);
+    border-color: var(--g-line-soft);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  .browser-address input {
+    background: var(--g-card);
+    border-color: var(--g-line);
+  }
+}

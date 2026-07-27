@@ -9,7 +9,6 @@ export interface TitleBarProps {
 export function TitleBar({ appUpdate, setUpdateOpen }: TitleBarProps) {
   return (
     <header className="window-titlebar" aria-label="窗口标题栏">
-      <span>KCode</span>
       <div className="window-controls">
         <button
           className={`window-update ${["available", "downloading", "downloaded"].includes(appUpdate.status) ? "has-update" : ""}`}

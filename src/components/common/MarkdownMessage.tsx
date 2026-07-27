@@ -1,12 +1,12 @@
 import React, { memo, useMemo } from "react";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Code2, Copy } from "lucide-react";
 import { copyWithToast } from "../../lib/toast";
 import { openExternalUrl } from "./external";
 
-const markdownComponents = {
-  a: ({ children, href, ...props }: any) => (
+const markdownComponents: Components = {
+  a: ({ children, href, ...props }) => (
     <a
       {...props}
       href={href}
@@ -21,7 +21,7 @@ const markdownComponents = {
       {children}
     </a>
   ),
-  pre: ({ children }: any) => {
+  pre: ({ children }) => {
     const code = String(
       (children as { props?: { children?: unknown } })?.props?.children ?? "",
     ).replace(/\n$/, "");

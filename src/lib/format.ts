@@ -1,5 +1,10 @@
 import type { AgentActivity } from "../types";
 
+// Canonical error-to-string: replaces the `e instanceof Error ? ... : String(e)`
+// idiom that was copy-pasted across the codebase.
+export const errorMessage = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
+
 export const formatBytes = (bytes: number) =>
   bytes < 1024 ? `${bytes} B` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
 

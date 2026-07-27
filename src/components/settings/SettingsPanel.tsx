@@ -16,7 +16,6 @@ import {
   Search,
   ShieldCheck,
   SlidersHorizontal,
-  Square,
   Sun,
   Trash2,
   X,
@@ -34,11 +33,11 @@ import type {
 import {
   ACCENT_OPTIONS,
   type AccentPreference,
-  type InterfaceStyle,
   type SettingsSection,
   type ThemePreference,
 } from "../../models";
 import { effortLabels, savedEfforts } from "../../lib/model-utils";
+import { errorMessage } from "../../lib/format";
 import { ProviderModal } from "./ProviderModal";
 
 export function SettingsPanel({
@@ -54,8 +53,6 @@ export function SettingsPanel({
   onStatusPanelChange,
   theme,
   onThemeChange,
-  interfaceStyle,
-  onInterfaceStyleChange,
   accent,
   onAccentChange,
   permissionMode,
@@ -76,8 +73,6 @@ export function SettingsPanel({
   onStatusPanelChange(value: boolean): void;
   theme: ThemePreference;
   onThemeChange(value: ThemePreference): void;
-  interfaceStyle: InterfaceStyle;
-  onInterfaceStyleChange(value: InterfaceStyle): void;
   accent: AccentPreference;
   onAccentChange(value: AccentPreference): void;
   permissionMode: PermissionMode;
@@ -121,7 +116,7 @@ export function SettingsPanel({
       })
       .then(setSkills)
       .catch((error) =>
-        setSkillError(error instanceof Error ? error.message : String(error)),
+        setSkillError(errorMessage(error)),
       )
       .finally(() => setSkillsLoaded(true));
   }, [section]);
@@ -256,7 +251,7 @@ export function SettingsPanel({
     try {
       setSkills(await action());
     } catch (error) {
-      setSkillError(error instanceof Error ? error.message : String(error));
+      setSkillError(errorMessage(error));
     } finally {
       setSkillBusy(undefined);
     }
@@ -394,31 +389,6 @@ export function SettingsPanel({
                   <p>调整当前工作台的默认行为。</p>
                 </div>
                 <div className="settings-group">
-                  <div className="settings-row">
-                    <span>
-                      <strong>界面风格</strong>
-                      <small>科技使用玻璃质感，极简使用纯净平面布局</small>
-                    </span>
-                    <div className="settings-segmented" aria-label="界面风格">
-                      {(
-                        [
-                          ["glass", "科技", Cpu],
-                          ["minimal", "极简", Square],
-                        ] as const
-                      ).map(([value, label, Icon]) => (
-                        <button
-                          key={value}
-                          type="button"
-                          className={interfaceStyle === value ? "active" : ""}
-                          aria-pressed={interfaceStyle === value}
-                          onClick={() => onInterfaceStyleChange(value)}
-                        >
-                          <Icon size={13} />
-                          {label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
                   <div className="settings-row">
                     <span>
                       <strong>外观主题</strong>

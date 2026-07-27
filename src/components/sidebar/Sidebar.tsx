@@ -1,3 +1,4 @@
+import { memo, useState } from "react";
 import {
   Archive,
   ArchiveRestore,
@@ -10,6 +11,7 @@ import {
   Trash2,
 } from "lucide-react";
 import appLogo from "../../../build/icon.png";
+import { errorMessage } from "../../lib/format";
 import type { TaskRecord } from "../../models";
 import type { SettingsSection } from "../../models";
 
@@ -27,17 +29,9 @@ export interface SidebarProps {
   showArchived: boolean;
   setShowArchived(updater: (value: boolean) => boolean): void;
   collapsedWorkspaces: Set<string>;
-  draggedTaskId: string | undefined;
-  taskDropTarget: string | undefined;
-  draggedWorkspace: string | undefined;
-  workspaceDropTarget: string | undefined;
-  setDraggedTaskId(value: string | undefined): void;
-  setTaskDropTarget(value: string | undefined): void;
-  setDraggedWorkspace(value: string | undefined): void;
-  setWorkspaceDropTarget(value: string | undefined): void;
   startNewTask(): void;
-  reorderWorkspace(targetPath: string): void;
-  reorderTask(targetId: string): void;
+  reorderWorkspace(sourcePath: string | undefined, targetPath: string): void;
+  reorderTask(sourceId: string | undefined, targetId: string): void;
   toggleWorkspace(workspacePath: string): void;
   createConversation(workspacePath: string): void;
   switchTask(task: TaskRecord): void;
@@ -51,7 +45,7 @@ export interface SidebarProps {
   openSettings(section: SettingsSection): void;
   startSidebarResize(event: React.PointerEvent): void;
 }
-export function Sidebar({
+export const Sidebar = memo(function Sidebar({
   workspaceGroups,
   activeTask,
   taskQuery,
@@ -59,14 +53,6 @@ export function Sidebar({
   showArchived,
   setShowArchived,
   collapsedWorkspaces,
-  draggedTaskId,
-  taskDropTarget,
-  draggedWorkspace,
-  workspaceDropTarget,
-  setDraggedTaskId,
-  setTaskDropTarget,
-  setDraggedWorkspace,
-  setWorkspaceDropTarget,
   startNewTask,
   reorderWorkspace,
   reorderTask,
@@ -79,6 +65,12 @@ export function Sidebar({
   openSettings,
   startSidebarResize,
 }: SidebarProps) {
+  // Drag-and-drop is purely Sidebar-internal UI state — kept here rather than
+  // drilled from App (8 fewer props) so it never triggers App re-renders.
+  const [draggedTaskId, setDraggedTaskId] = useState<string>();
+  const [taskDropTarget, setTaskDropTarget] = useState<string>();
+  const [draggedWorkspace, setDraggedWorkspace] = useState<string>();
+  const [workspaceDropTarget, setWorkspaceDropTarget] = useState<string>();
   return (
     <aside className="sidebar">
       <div className="brand">
@@ -132,7 +124,7 @@ export function Sidebar({
             onDrop={(event) => {
               if (!draggedWorkspace) return;
               event.preventDefault();
-              reorderWorkspace(group.workspacePath);
+              reorderWorkspace(draggedWorkspace, group.workspacePath);
               setDraggedWorkspace(undefined);
               setWorkspaceDropTarget(undefined);
             }}
@@ -143,6 +135,8 @@ export function Sidebar({
           >
             <header
               title={group.workspacePath}
+              className="workspace-header"
+              onClick={() => toggleWorkspace(group.workspacePath)}
               onContextMenu={(event) => {
                 event.preventDefault();
                 event.stopPropagation();
@@ -150,15 +144,19 @@ export function Sidebar({
                   .showFolderMenu(group.workspacePath)
                   .catch((error: unknown) =>
                     setContextError(
-                      `无法打开文件夹菜单：${error instanceof Error ? error.message : String(error)}`,
+                      `无法打开文件夹菜单：${errorMessage(error)}`,
                     ),
                   );
               }}
             >
-              <span className="workspace-grip" title="拖动工作区排序">
+              <span
+                className="workspace-grip"
+                title="拖动工作区排序"
+                onClick={(event) => event.stopPropagation()}
+              >
                 <GripVertical size={13} />
               </span>
-              <button
+              <span
                 className="workspace-collapse"
                 title={
                   collapsedWorkspaces.has(group.workspacePath)
@@ -166,35 +164,33 @@ export function Sidebar({
                     : "折叠对话"
                 }
                 aria-expanded={!collapsedWorkspaces.has(group.workspacePath)}
-                onClick={() => toggleWorkspace(group.workspacePath)}
               >
                 <ChevronDown size={13} />
-              </button>
+              </span>
               <FolderOpen size={15} />
-              <button
-                className="workspace-name"
-                onClick={() => toggleWorkspace(group.workspacePath)}
-              >
-                {group.name}
-              </button>
+              <span className="workspace-name">{group.name}</span>
               <small>{group.conversations.length}</small>
               <button
                 title={`在 ${group.name} 新建对话`}
-                onClick={() => void createConversation(group.workspacePath)}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  void createConversation(group.workspacePath);
+                }}
               >
                 <Plus size={14} />
               </button>
               <button
                 className="workspace-delete"
                 title={`删除 ${group.name} 的全部对话记录`}
-                onClick={() =>
+                onClick={(event) => {
+                  event.stopPropagation();
                   setDeleteTarget({
                     kind: "workspace",
                     path: group.workspacePath,
                     name: group.name,
                     count: group.conversations.length,
-                  })
-                }
+                  });
+                }}
               >
                 <Trash2 size={13} />
               </button>
@@ -225,7 +221,7 @@ export function Sidebar({
                   onDrop={(event) => {
                     event.preventDefault();
                     event.stopPropagation();
-                    reorderTask(task.id);
+                    reorderTask(draggedTaskId, task.id);
                     setDraggedTaskId(undefined);
                     setTaskDropTarget(undefined);
                   }}
@@ -286,4 +282,4 @@ export function Sidebar({
       />
     </aside>
   );
-}
+});
