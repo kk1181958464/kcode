@@ -34,8 +34,8 @@ export interface SidebarProps {
   reorderTask(sourceId: string | undefined, targetId: string): void;
   toggleWorkspace(workspacePath: string): void;
   createConversation(workspacePath: string): void;
-  switchTask(task: TaskRecord): void;
-  toggleTaskArchived(task: TaskRecord): void;
+  switchTask(taskId: string): void;
+  toggleTaskArchived(taskId: string): void;
   setDeleteTarget(
     target:
       | { kind: "workspace"; path: string; name: string; count: number }
@@ -236,7 +236,7 @@ export const Sidebar = memo(function Sidebar({
                   </span>
                   <button
                     className="task-main"
-                    onClick={() => void switchTask(task)}
+                    onClick={() => void switchTask(task.id)}
                   >
                     <span>{task.name}</span>
                   </button>
@@ -246,7 +246,7 @@ export const Sidebar = memo(function Sidebar({
                   <button
                     className="task-archive"
                     title={task.archived ? "移出归档" : "归档对话"}
-                    onClick={() => toggleTaskArchived(task)}
+                    onClick={() => toggleTaskArchived(task.id)}
                   >
                     {task.archived ? (
                       <ArchiveRestore size={13} />
@@ -282,4 +282,45 @@ export const Sidebar = memo(function Sidebar({
       />
     </aside>
   );
-});
+}, sidebarPropsEqual);
+
+function sidebarPropsEqual(previous: SidebarProps, next: SidebarProps) {
+  if (
+    previous.activeTask?.id !== next.activeTask?.id ||
+    previous.taskQuery !== next.taskQuery ||
+    previous.showArchived !== next.showArchived ||
+    previous.workspaceGroups.length !== next.workspaceGroups.length ||
+    previous.collapsedWorkspaces.size !== next.collapsedWorkspaces.size
+  )
+    return false;
+
+  for (const path of previous.collapsedWorkspaces)
+    if (!next.collapsedWorkspaces.has(path)) return false;
+
+  for (let groupIndex = 0; groupIndex < previous.workspaceGroups.length; groupIndex += 1) {
+    const previousGroup = previous.workspaceGroups[groupIndex];
+    const nextGroup = next.workspaceGroups[groupIndex];
+    if (
+      previousGroup.workspacePath !== nextGroup.workspacePath ||
+      previousGroup.name !== nextGroup.name ||
+      previousGroup.conversations.length !== nextGroup.conversations.length
+    )
+      return false;
+
+    for (let taskIndex = 0; taskIndex < previousGroup.conversations.length; taskIndex += 1) {
+      const previousTask = previousGroup.conversations[taskIndex];
+      const nextTask = nextGroup.conversations[taskIndex];
+      if (
+        previousTask.id !== nextTask.id ||
+        previousTask.name !== nextTask.name ||
+        previousTask.workspacePath !== nextTask.workspacePath ||
+        previousTask.archived !== nextTask.archived ||
+        previousTask.runningId !== nextTask.runningId ||
+        previousTask.runStatus !== nextTask.runStatus
+      )
+        return false;
+    }
+  }
+
+  return true;
+}

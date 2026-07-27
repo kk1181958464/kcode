@@ -218,16 +218,9 @@ export default function App() {
   );
   const composerRef = useRef<ComposerTextareaHandle>(null);
   const composerValueRef = useRef(input);
-  const composerHasTextRef = useRef(Boolean(input.trim()));
-  const [composerHasText, setComposerHasText] = useState(
-    composerHasTextRef.current,
-  );
   function setInput(value: string) {
     composerValueRef.current = value;
     composerRef.current?.replaceValue(value);
-    const hasText = Boolean(value.trim());
-    composerHasTextRef.current = hasText;
-    setComposerHasText(hasText);
     setInputState(value);
   }
   const [settings, setSettings] = useState(false);
@@ -480,14 +473,6 @@ export default function App() {
         JSON.stringify(initialDrafts.current),
       );
     }, 1_200);
-    const hasText = Boolean(value.trim());
-    if (hasText !== composerHasTextRef.current) {
-      composerHasTextRef.current = hasText;
-      // Off the keystroke critical path: this toggles the send button and
-      // re-renders the whole App. As a transition it stays interruptible, so
-      // the native keystroke paints immediately instead of waiting on React.
-      startTransition(() => setComposerHasText(hasText));
-    }
   }, []);
   const clearTaskDraft = useCallback((taskId: string) => {
     if (draftSaveTimerRef.current) {
@@ -503,9 +488,6 @@ export default function App() {
   useEffect(() => {
     composerValueRef.current = input;
     composerRef.current?.replaceValue(input);
-    const hasText = Boolean(input.trim());
-    composerHasTextRef.current = hasText;
-    setComposerHasText(hasText);
   }, [input]);
   const contextByMessageRef = useRef(new Map<string, ContextFile[]>());
   const sendRef = useRef<((override?: string) => Promise<void>) | undefined>(
@@ -979,10 +961,9 @@ export default function App() {
           .includes(query)
       )
         continue;
-      groups.set(task.workspacePath, [
-        ...(groups.get(task.workspacePath) ?? []),
-        task,
-      ]);
+      const conversations = groups.get(task.workspacePath);
+      if (conversations) conversations.push(task);
+      else groups.set(task.workspacePath, [task]);
     }
     return [...groups.entries()].map(([workspacePath, conversations]) => ({
       workspacePath,
@@ -3128,8 +3109,14 @@ export default function App() {
   const onCreateConversation = useEventCallback(
     (workspacePath: string) => void createConversation(workspacePath),
   );
-  const onSwitchTask = useEventCallback((task: TaskRecord) => void switchTask(task));
-  const onToggleTaskArchived = useEventCallback(toggleTaskArchived);
+  const onSwitchTask = useEventCallback((taskId: string) => {
+    const task = tasksRef.current.find((item) => item.id === taskId);
+    if (task) void switchTask(task);
+  });
+  const onToggleTaskArchived = useEventCallback((taskId: string) => {
+    const task = tasksRef.current.find((item) => item.id === taskId);
+    if (task) toggleTaskArchived(task);
+  });
   const onOpenSettings = useEventCallback(openSettings);
   const onStartSidebarResize = useEventCallback(startSidebarResize);
   const onUpdateStatusPanel = useEventCallback(updateStatusPanel);
@@ -3551,7 +3538,6 @@ export default function App() {
                     className="send"
                     onClick={() => (runningId ? queueMessage() : void send())}
                     disabled={
-                      (!composerHasText && !attachedImages.length) ||
                       !selected ||
                       summaryBusy
                     }
@@ -3570,7 +3556,7 @@ export default function App() {
             </div>
           </div>
         </main>
-        {!browserState.open && (
+        {!browserState.open && !settings && (
           <StatusPanel
             runStatus={runStatus}
             taskComplete={taskComplete}
