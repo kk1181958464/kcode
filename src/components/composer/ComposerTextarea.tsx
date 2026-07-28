@@ -7,6 +7,7 @@ import React, {
 } from "react";
 
 export type ComposerTextareaHandle = {
+  getValue(): string;
   replaceValue(value: string): void;
 };
 
@@ -14,17 +15,15 @@ type ComposerTextareaProps = {
   value: string;
   disabled: boolean;
   placeholder: string;
-  onChange(value: string): void;
-  onBlur(): void;
+  onBlur(value: string): void;
   onPaste(event: React.ClipboardEvent<HTMLTextAreaElement>): void;
   onSubmit(): void;
 };
 
 // Uncontrolled on purpose: a controlled textarea re-renders React on every
-// keystroke, which (a) contends with streaming re-renders on the main thread
-// and (b) fights the IME during Chinese composition — both surface as typing
-// lag. Here the DOM owns the text; the parent is notified via onChange and can
-// push values in imperatively via replaceValue (draft load, clear-after-send).
+// keystroke, which (a) contends with streaming work on the main thread and (b)
+// fights the IME during Chinese composition. Here the DOM exclusively owns the
+// text while focused; React reads it only at submit/blur/task-switch boundaries.
 export const ComposerTextarea = memo(
   forwardRef<ComposerTextareaHandle, ComposerTextareaProps>(
     (
@@ -32,7 +31,6 @@ export const ComposerTextarea = memo(
         value: initialValue,
         disabled,
         placeholder,
-        onChange,
         onBlur,
         onPaste,
         onSubmit,
@@ -44,6 +42,7 @@ export const ComposerTextarea = memo(
       useImperativeHandle(
         ref,
         () => ({
+          getValue: () => innerRef.current?.value ?? "",
           replaceValue: (next) => {
             const node = innerRef.current;
             if (node && node.value !== next) node.value = next;
@@ -63,18 +62,21 @@ export const ComposerTextarea = memo(
         <textarea
           ref={innerRef}
           aria-label="任务输入"
+          autoCapitalize="off"
+          autoCorrect="off"
           disabled={disabled}
           defaultValue={initialValue}
-          onBlur={onBlur}
-          onChange={(event) => onChange(event.target.value)}
+          onBlur={(event) => onBlur(event.currentTarget.value)}
           onPaste={onPaste}
           onKeyDown={(event) => {
+            if (event.nativeEvent.isComposing || event.keyCode === 229) return;
             if (event.key === "Enter" && !event.shiftKey) {
               event.preventDefault();
               onSubmit();
             }
           }}
           placeholder={placeholder}
+          spellCheck={false}
         />
       );
     },

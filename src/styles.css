@@ -381,10 +381,123 @@ select:focus-visible {
   overflow-y: auto;
   overflow-x: hidden;
   overscroll-behavior: contain;
-  scrollbar-gutter: stable;
-  padding: 0 4px 12px 0;
-  contain: layout paint;
+  padding: 0;
   touch-action: pan-y;
+}
+.workspace-tree-footer {
+  height: 12px;
+  pointer-events: none;
+}
+.workspace-flat-row,
+.task-flat-row {
+  height: 34px;
+  min-height: 34px;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+.workspace-flat-row {
+  padding-right: 4px;
+}
+.workspace-flat-row.dragging,
+.task-flat-row.dragging {
+  opacity: 0.42;
+}
+.workspace-flat-row.drop-target,
+.task-flat-row.drop-target {
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+.workspace-header {
+  height: 34px;
+  display: grid;
+  grid-template-columns: 14px 22px 18px minmax(0, 1fr) auto 27px 27px;
+  align-items: center;
+  gap: 3px;
+  padding: 0 4px;
+  line-height: 1;
+  color: var(--ink);
+  cursor: pointer;
+}
+.workspace-header > svg {
+  display: block;
+  color: var(--muted);
+}
+.workspace-header > small {
+  display: inline-flex;
+  align-items: center;
+  color: #858b84;
+  font-size: 9px;
+}
+.workspace-header > button {
+  width: 25px;
+  height: 25px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  opacity: 0;
+  pointer-events: none;
+}
+.workspace-flat-row:hover .workspace-grip,
+.workspace-flat-row.dragging .workspace-grip,
+.workspace-flat-row:hover .workspace-header > button,
+.workspace-header > button:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+.workspace-header > button:hover {
+  background: var(--surface-muted);
+  color: var(--ink);
+}
+.workspace-header > .workspace-delete:hover {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.workspace-header > .workspace-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 3px;
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 650;
+}
+.workspace-collapse.collapsed svg {
+  transform: rotate(-90deg);
+}
+.task-flat-row {
+  margin: 0 4px 0 20px;
+  padding: 3px 5px 3px 2px;
+}
+.task-flat-row .task-main {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+}
+.task-flat-row .task-delete,
+.task-flat-row .task-archive {
+  width: 25px;
+  height: 25px;
+  flex: 0 0 25px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  opacity: 0;
+  pointer-events: none;
+}
+.task-flat-row:hover .task-delete,
+.task-flat-row:hover .task-archive,
+.task-flat-row .task-delete:focus-visible,
+.task-flat-row .task-archive:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
 }
 .task-filter {
   margin: 0 3px 8px;
@@ -418,12 +531,8 @@ select:focus-visible {
   background: var(--surface-muted);
   color: var(--success);
 }
-.workspace-group + .workspace-group {
-  margin-top: 9px;
-}
 .workspace-group {
-  contain: layout paint;
-  margin-bottom: 9px;
+  margin: 0;
 }
 .workspace-group > header {
   display: grid;

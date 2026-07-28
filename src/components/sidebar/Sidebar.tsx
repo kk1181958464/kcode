@@ -1,4 +1,4 @@
-import { memo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 import { Virtuoso } from "react-virtuoso";
 import {
   Archive,
@@ -13,7 +13,19 @@ import {
 } from "lucide-react";
 import appLogo from "../../../build/icon.png";
 import { errorMessage } from "../../lib/format";
-import type { SettingsSection, SidebarWorkspaceGroup } from "../../models";
+import type {
+  SettingsSection,
+  SidebarTask,
+  SidebarWorkspaceGroup,
+} from "../../models";
+
+type SidebarRow =
+  | { kind: "workspace"; group: SidebarWorkspaceGroup }
+  | { kind: "task"; task: SidebarTask };
+
+const virtuosoComponents = {
+  Footer: () => <div className="workspace-tree-footer" aria-hidden="true" />,
+};
 
 export interface SidebarProps {
   workspaceGroups: SidebarWorkspaceGroup[];
@@ -39,6 +51,7 @@ export interface SidebarProps {
   openSettings(section: SettingsSection): void;
   startSidebarResize(event: React.PointerEvent): void;
 }
+
 export const Sidebar = memo(function Sidebar({
   workspaceGroups,
   activeTaskId,
@@ -59,12 +72,30 @@ export const Sidebar = memo(function Sidebar({
   openSettings,
   startSidebarResize,
 }: SidebarProps) {
-  // Drag-and-drop is purely Sidebar-internal UI state — kept here rather than
-  // drilled from App (8 fewer props) so it never triggers App re-renders.
   const [draggedTaskId, setDraggedTaskId] = useState<string>();
   const [taskDropTarget, setTaskDropTarget] = useState<string>();
   const [draggedWorkspace, setDraggedWorkspace] = useState<string>();
   const [workspaceDropTarget, setWorkspaceDropTarget] = useState<string>();
+  const rows = useMemo<SidebarRow[]>(() => {
+    const next: SidebarRow[] = [];
+    for (const group of workspaceGroups) {
+      next.push({ kind: "workspace", group });
+      if (!collapsedWorkspaces.has(group.workspacePath))
+        for (const task of group.conversations)
+          next.push({ kind: "task", task });
+    }
+    return next;
+  }, [collapsedWorkspaces, workspaceGroups]);
+
+  const finishTaskDrag = () => {
+    setDraggedTaskId(undefined);
+    setTaskDropTarget(undefined);
+  };
+  const finishWorkspaceDrag = () => {
+    setDraggedWorkspace(undefined);
+    setWorkspaceDropTarget(undefined);
+  };
+
   return (
     <aside className="sidebar">
       <div className="brand">
@@ -100,191 +131,183 @@ export const Sidebar = memo(function Sidebar({
       </div>
       <Virtuoso
         className="workspace-tree"
-        data={workspaceGroups}
-        increaseViewportBy={240}
-        itemContent={(_, group) => (
-          <section
-            className={`workspace-group ${draggedWorkspace === group.workspacePath ? "dragging" : ""} ${workspaceDropTarget === group.workspacePath && draggedWorkspace !== group.workspacePath ? "drop-target" : ""}`}
-            key={group.workspacePath}
-            draggable
-            onDragStart={(event) => {
-              if ((event.target as HTMLElement).closest(".task-row")) return;
-              setDraggedWorkspace(group.workspacePath);
-              event.dataTransfer.effectAllowed = "move";
-              event.dataTransfer.setData("text/plain", group.workspacePath);
-            }}
-            onDragOver={(event) => {
-              if (!draggedWorkspace) return;
-              event.preventDefault();
-              setWorkspaceDropTarget(group.workspacePath);
-            }}
-            onDrop={(event) => {
-              if (!draggedWorkspace) return;
-              event.preventDefault();
-              reorderWorkspace(draggedWorkspace, group.workspacePath);
-              setDraggedWorkspace(undefined);
-              setWorkspaceDropTarget(undefined);
-            }}
-            onDragEnd={() => {
-              setDraggedWorkspace(undefined);
-              setWorkspaceDropTarget(undefined);
-            }}
-          >
-            <header
-              title={group.workspacePath}
-              className="workspace-header"
-              onClick={() => toggleWorkspace(group.workspacePath)}
-              onContextMenu={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                void window.kcode?.workspace
-                  .showFolderMenu(group.workspacePath)
-                  .catch((error: unknown) =>
-                    setContextError(
-                      `无法打开文件夹菜单：${errorMessage(error)}`,
-                    ),
-                  );
+        data={rows}
+        fixedItemHeight={34}
+        increaseViewportBy={170}
+        components={virtuosoComponents}
+        computeItemKey={(_, row) =>
+          row.kind === "workspace"
+            ? `workspace:${row.group.workspacePath}`
+            : `task:${row.task.id}`
+        }
+        itemContent={(_, row) =>
+          row.kind === "workspace" ? (
+            <div
+              className={`workspace-flat-row ${draggedWorkspace === row.group.workspacePath ? "dragging" : ""} ${workspaceDropTarget === row.group.workspacePath && draggedWorkspace !== row.group.workspacePath ? "drop-target" : ""}`}
+              draggable
+              onDragStart={(event) => {
+                setDraggedWorkspace(row.group.workspacePath);
+                event.dataTransfer.effectAllowed = "move";
+                event.dataTransfer.setData(
+                  "text/plain",
+                  row.group.workspacePath,
+                );
               }}
+              onDragOver={(event) => {
+                if (!draggedWorkspace) return;
+                event.preventDefault();
+                setWorkspaceDropTarget(row.group.workspacePath);
+              }}
+              onDrop={(event) => {
+                if (!draggedWorkspace) return;
+                event.preventDefault();
+                reorderWorkspace(draggedWorkspace, row.group.workspacePath);
+                finishWorkspaceDrag();
+              }}
+              onDragEnd={finishWorkspaceDrag}
             >
-              <span
-                className="workspace-grip"
-                title="拖动工作区排序"
-                onClick={(event) => event.stopPropagation()}
-              >
-                <GripVertical size={13} />
-              </span>
-              <span
-                className="workspace-collapse"
-                title={
-                  collapsedWorkspaces.has(group.workspacePath)
-                    ? "展开对话"
-                    : "折叠对话"
-                }
-                aria-expanded={!collapsedWorkspaces.has(group.workspacePath)}
-              >
-                <ChevronDown size={13} />
-              </span>
-              <FolderOpen size={15} />
-              <span className="workspace-name">{group.name}</span>
-              <small>{group.conversations.length}</small>
-              <button
-                title={`在 ${group.name} 新建对话`}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  void createConversation(group.workspacePath);
+              <header
+                title={row.group.workspacePath}
+                className="workspace-header"
+                onClick={() => toggleWorkspace(row.group.workspacePath)}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  void window.kcode?.workspace
+                    .showFolderMenu(row.group.workspacePath)
+                    .catch((error: unknown) =>
+                      setContextError(
+                        `无法打开文件夹菜单：${errorMessage(error)}`,
+                      ),
+                    );
                 }}
               >
-                <Plus size={14} />
-              </button>
+                <span
+                  className="workspace-grip"
+                  title="拖动工作区排序"
+                  onClick={(event) => event.stopPropagation()}
+                >
+                  <GripVertical size={13} />
+                </span>
+                <span
+                  className={`workspace-collapse ${collapsedWorkspaces.has(row.group.workspacePath) ? "collapsed" : ""}`}
+                  title={
+                    collapsedWorkspaces.has(row.group.workspacePath)
+                      ? "展开对话"
+                      : "折叠对话"
+                  }
+                  aria-expanded={
+                    !collapsedWorkspaces.has(row.group.workspacePath)
+                  }
+                >
+                  <ChevronDown size={13} />
+                </span>
+                <FolderOpen size={15} />
+                <span className="workspace-name">{row.group.name}</span>
+                <small>{row.group.conversations.length}</small>
+                <button
+                  title={`在 ${row.group.name} 新建对话`}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void createConversation(row.group.workspacePath);
+                  }}
+                >
+                  <Plus size={14} />
+                </button>
+                <button
+                  className="workspace-delete"
+                  title={`删除 ${row.group.name} 的全部对话记录`}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setDeleteTarget({
+                      kind: "workspace",
+                      path: row.group.workspacePath,
+                      name: row.group.name,
+                      count: row.group.conversations.length,
+                    });
+                  }}
+                >
+                  <Trash2 size={13} />
+                </button>
+              </header>
+            </div>
+          ) : (
+            <div
+              draggable
+              role="button"
+              tabIndex={0}
+              className={`task-row task-flat-row ${row.task.id === activeTaskId ? "active" : ""} ${draggedTaskId === row.task.id ? "dragging" : ""} ${taskDropTarget === row.task.id && draggedTaskId !== row.task.id ? "drop-target" : ""}`}
+              title={`${row.task.name}\n${row.task.workspacePath}`}
+              onClick={(event) => {
+                if (
+                  draggedTaskId ||
+                  (event.target as HTMLElement).closest("button, .task-grip")
+                )
+                  return;
+                void switchTask(row.task.id);
+              }}
+              onKeyDown={(event) => {
+                if (event.target !== event.currentTarget) return;
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  void switchTask(row.task.id);
+                }
+              }}
+              onDragStart={(event) => {
+                event.stopPropagation();
+                setDraggedTaskId(row.task.id);
+                event.dataTransfer.effectAllowed = "move";
+                event.dataTransfer.setData("text/plain", row.task.id);
+              }}
+              onDragOver={(event) => {
+                if (!draggedTaskId) return;
+                event.preventDefault();
+                event.stopPropagation();
+                setTaskDropTarget(row.task.id);
+              }}
+              onDrop={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                reorderTask(draggedTaskId, row.task.id);
+                finishTaskDrag();
+              }}
+              onDragEnd={finishTaskDrag}
+            >
+              <span className="task-grip" title="拖动排序">
+                <GripVertical size={13} />
+              </span>
+              <div className="task-main">
+                <span>{row.task.name}</span>
+              </div>
+              {(row.task.runningId || row.task.runStatus === "running") && (
+                <small className="task-running">运行中</small>
+              )}
               <button
-                className="workspace-delete"
-                title={`删除 ${group.name} 的全部对话记录`}
+                className="task-archive"
+                title={row.task.archived ? "移出归档" : "归档对话"}
                 onClick={(event) => {
                   event.stopPropagation();
-                  setDeleteTarget({
-                    kind: "workspace",
-                    path: group.workspacePath,
-                    name: group.name,
-                    count: group.conversations.length,
-                  });
+                  toggleTaskArchived(row.task.id);
+                }}
+              >
+                {row.task.archived ? (
+                  <ArchiveRestore size={13} />
+                ) : (
+                  <Archive size={13} />
+                )}
+              </button>
+              <button
+                className="task-delete"
+                title={`删除对话 ${row.task.name}`}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setDeleteTarget({ kind: "task", taskId: row.task.id });
                 }}
               >
                 <Trash2 size={13} />
               </button>
-            </header>
-            <div
-              className={`tasks ${collapsedWorkspaces.has(group.workspacePath) ? "collapsed" : ""}`}
-              aria-hidden={collapsedWorkspaces.has(group.workspacePath)}
-            >
-              {group.conversations.map((task) => (
-                <div
-                  key={task.id}
-                  draggable
-                  role="button"
-                  tabIndex={0}
-                  className={`task-row ${task.id === activeTaskId ? "active" : ""} ${draggedTaskId === task.id ? "dragging" : ""} ${taskDropTarget === task.id && draggedTaskId !== task.id ? "drop-target" : ""}`}
-                  title={`${task.name}\n${task.workspacePath}`}
-                  onClick={(event) => {
-                    if (draggedTaskId) return;
-                    if (
-                      (event.target as HTMLElement).closest(
-                        "button, .task-grip",
-                      )
-                    )
-                      return;
-                    void switchTask(task.id);
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.target !== event.currentTarget) return;
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      void switchTask(task.id);
-                    }
-                  }}
-                  onDragStart={(event) => {
-                    event.stopPropagation();
-                    setDraggedTaskId(task.id);
-                    event.dataTransfer.effectAllowed = "move";
-                    event.dataTransfer.setData("text/plain", task.id);
-                  }}
-                  onDragOver={(event) => {
-                    if (!draggedTaskId) return;
-                    event.preventDefault();
-                    event.stopPropagation();
-                    event.dataTransfer.dropEffect = "move";
-                    setTaskDropTarget(task.id);
-                  }}
-                  onDrop={(event) => {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    reorderTask(draggedTaskId, task.id);
-                    setDraggedTaskId(undefined);
-                    setTaskDropTarget(undefined);
-                  }}
-                  onDragEnd={(event) => {
-                    event.stopPropagation();
-                    setDraggedTaskId(undefined);
-                    setTaskDropTarget(undefined);
-                  }}
-                >
-                  <span className="task-grip" title="拖动排序">
-                    <GripVertical size={13} />
-                  </span>
-                  <div className="task-main">
-                    <span>{task.name}</span>
-                  </div>
-                  {(task.runningId || task.runStatus === "running") && (
-                    <small className="task-running">运行中</small>
-                  )}
-                  <button
-                    className="task-archive"
-                    title={task.archived ? "移出归档" : "归档对话"}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      toggleTaskArchived(task.id);
-                    }}
-                  >
-                    {task.archived ? (
-                      <ArchiveRestore size={13} />
-                    ) : (
-                      <Archive size={13} />
-                    )}
-                  </button>
-                  <button
-                    className="task-delete"
-                    title={`删除对话 ${task.name}`}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      setDeleteTarget({ kind: "task", taskId: task.id });
-                    }}
-                  >
-                    <Trash2 size={13} />
-                  </button>
-                </div>
-              ))}
             </div>
-          </section>
-        )}
+          )
+        }
       />
       <div className="sidebar-footer">
         <button onClick={() => openSettings("general")}>
@@ -306,6 +329,14 @@ export const Sidebar = memo(function Sidebar({
 function sidebarPropsEqual(previous: SidebarProps, next: SidebarProps) {
   if (previous === next) return true;
   if (
+    previous.workspaceGroups === next.workspaceGroups &&
+    previous.collapsedWorkspaces === next.collapsedWorkspaces &&
+    previous.activeTaskId === next.activeTaskId &&
+    previous.taskQuery === next.taskQuery &&
+    previous.showArchived === next.showArchived
+  )
+    return true;
+  if (
     previous.activeTaskId !== next.activeTaskId ||
     previous.taskQuery !== next.taskQuery ||
     previous.showArchived !== next.showArchived ||
@@ -313,43 +344,38 @@ function sidebarPropsEqual(previous: SidebarProps, next: SidebarProps) {
     previous.collapsedWorkspaces.size !== next.collapsedWorkspaces.size
   )
     return false;
-
   for (const path of previous.collapsedWorkspaces)
     if (!next.collapsedWorkspaces.has(path)) return false;
-
   for (
     let groupIndex = 0;
     groupIndex < previous.workspaceGroups.length;
     groupIndex += 1
   ) {
-    const previousGroup = previous.workspaceGroups[groupIndex];
-    const nextGroup = next.workspaceGroups[groupIndex];
-    if (previousGroup === nextGroup) continue;
+    const before = previous.workspaceGroups[groupIndex];
+    const after = next.workspaceGroups[groupIndex];
+    if (before === after) continue;
     if (
-      previousGroup.workspacePath !== nextGroup.workspacePath ||
-      previousGroup.name !== nextGroup.name ||
-      previousGroup.conversations.length !== nextGroup.conversations.length
+      before.workspacePath !== after.workspacePath ||
+      before.name !== after.name ||
+      before.conversations.length !== after.conversations.length
     )
       return false;
-
     for (
       let taskIndex = 0;
-      taskIndex < previousGroup.conversations.length;
+      taskIndex < before.conversations.length;
       taskIndex += 1
     ) {
-      const previousTask = previousGroup.conversations[taskIndex];
-      const nextTask = nextGroup.conversations[taskIndex];
+      const left = before.conversations[taskIndex];
+      const right = after.conversations[taskIndex];
       if (
-        previousTask.id !== nextTask.id ||
-        previousTask.name !== nextTask.name ||
-        previousTask.workspacePath !== nextTask.workspacePath ||
-        previousTask.archived !== nextTask.archived ||
-        previousTask.runningId !== nextTask.runningId ||
-        previousTask.runStatus !== nextTask.runStatus
+        left.id !== right.id ||
+        left.name !== right.name ||
+        left.archived !== right.archived ||
+        left.runningId !== right.runningId ||
+        left.runStatus !== right.runStatus
       )
         return false;
     }
   }
-
   return true;
 }

@@ -2,9 +2,9 @@ import React, {
   memo,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useState,
-  useSyncExternalStore,
 } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -601,11 +601,13 @@ function AgentWorkingState({
   startedAt,
   hasTrailingText,
   reasoning,
+  reasoningNode,
 }: {
   activities: AgentActivity[];
   startedAt: number;
   hasTrailingText: boolean;
   reasoning?: string;
+  reasoningNode?: React.ReactNode;
 }) {
   const [elapsedMs, setElapsedMs] = useState(() => Date.now() - startedAt);
   useEffect(() => {
@@ -653,9 +655,10 @@ function AgentWorkingState({
       <div className="agent-working-track">
         <i />
       </div>
-      {reasoning && !active && (
+      {(reasoning || reasoningNode) && !active && (
         <div className="agent-working-reasoning" aria-live="polite">
           {reasoning}
+          {reasoningNode}
         </div>
       )}
       {recent.length > 0 && (
@@ -693,6 +696,8 @@ const AssistantTimeline = memo(function AssistantTimeline({
   workspacePath,
   onActivityChange,
   reasoning,
+  streamingTail,
+  streamingReasoning,
 }: {
   message: ChatMessage;
   activities: AgentActivity[];
@@ -701,6 +706,8 @@ const AssistantTimeline = memo(function AssistantTimeline({
   workspacePath: string;
   onActivityChange(activity: AgentActivity): void;
   reasoning?: string;
+  streamingTail?: React.ReactNode;
+  streamingReasoning?: React.ReactNode;
 }) {
   const renderText = (text: string) =>
     text ? (
@@ -726,12 +733,14 @@ const AssistantTimeline = memo(function AssistantTimeline({
     return (
       <>
         {renderText(message.content)}
+        {streamingTail}
         {running && (
           <AgentWorkingState
             activities={activities}
             startedAt={message.createdAt}
             hasTrailingText={Boolean(message.content)}
             reasoning={reasoning}
+            reasoningNode={streamingReasoning}
           />
         )}
       </>
@@ -758,16 +767,77 @@ const AssistantTimeline = memo(function AssistantTimeline({
         );
       })}
       {renderText(message.content.slice(cursor))}
+      {streamingTail}
       {running && (
         <AgentWorkingState
           activities={activities}
           startedAt={message.createdAt}
           hasTrailingText={hasTrailingText}
           reasoning={reasoning}
+          reasoningNode={streamingReasoning}
         />
       )}
     </div>
   );
+});
+
+const StreamingTextLeaf = memo(function StreamingTextLeaf({
+  requestId,
+  offset,
+}: {
+  requestId: string;
+  offset: number;
+}) {
+  const nodeRef = React.useRef<HTMLDivElement>(null);
+  const renderedLengthRef = React.useRef(0);
+  useLayoutEffect(() => {
+    const update = () => {
+      const node = nodeRef.current;
+      if (!node) return;
+      const next = getStreamingText(requestId).slice(offset);
+      const renderedLength = renderedLengthRef.current;
+      if (next.length < renderedLength) {
+        node.textContent = next;
+      } else if (next.length > renderedLength) {
+        node.append(document.createTextNode(next.slice(renderedLength)));
+      }
+      renderedLengthRef.current = next.length;
+    };
+    renderedLengthRef.current = 0;
+    if (nodeRef.current) nodeRef.current.textContent = "";
+    update();
+    return subscribeStreamingText(requestId, update);
+  }, [offset, requestId]);
+  return <div ref={nodeRef} className="streaming-message-text" />;
+});
+
+const StreamingReasoningLeaf = memo(function StreamingReasoningLeaf({
+  requestId,
+}: {
+  requestId: string;
+}) {
+  const nodeRef = React.useRef<HTMLSpanElement>(null);
+  const renderedLengthRef = React.useRef(0);
+  useLayoutEffect(() => {
+    const key = streamingReasoningKey(requestId);
+    const update = () => {
+      const node = nodeRef.current;
+      if (!node) return;
+      const next = getStreamingText(key);
+      const renderedLength = renderedLengthRef.current;
+      if (next.length < renderedLength) {
+        node.textContent = next;
+      } else if (next.length > renderedLength) {
+        node.append(document.createTextNode(next.slice(renderedLength)));
+      }
+      renderedLengthRef.current = next.length;
+    };
+    renderedLengthRef.current = 0;
+    if (nodeRef.current) nodeRef.current.textContent = "";
+    update();
+    return subscribeStreamingText(key, update);
+  }, [requestId]);
+  return <span ref={nodeRef} />;
 });
 
 const StreamingAssistantTimeline = memo(function StreamingAssistantTimeline({
@@ -787,32 +857,16 @@ const StreamingAssistantTimeline = memo(function StreamingAssistantTimeline({
   onActivityChange(activity: AgentActivity): void;
   reasoning?: string;
 }) {
-  const subscribe = useCallback(
-    (listener: () => void) => subscribeStreamingText(requestId, listener),
-    [requestId],
-  );
-  const getSnapshot = useCallback(() => getStreamingText(requestId), [requestId]);
-  const streamedText = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
-  const reasoningKey = streamingReasoningKey(requestId);
-  const subscribeReasoning = useCallback(
-    (listener: () => void) => subscribeStreamingText(reasoningKey, listener),
-    [reasoningKey],
-  );
-  const getReasoningSnapshot = useCallback(
-    () => getStreamingText(reasoningKey),
-    [reasoningKey],
-  );
-  const streamedReasoning = useSyncExternalStore(
-    subscribeReasoning,
-    getReasoningSnapshot,
-    getReasoningSnapshot,
-  );
+  // Capture the already-streamed prefix only when React has another structural
+  // reason to render (tool activity, request state). New text is written into a
+  // dedicated leaf node so streaming never schedules React work for the timeline.
+  const streamedPrefix = running ? getStreamingText(requestId) : "";
   const displayMessage = useMemo(
     () =>
-      running && streamedText
-        ? { ...message, content: message.content + streamedText }
+      running && streamedPrefix
+        ? { ...message, content: message.content + streamedPrefix }
         : message,
-    [message, running, streamedText],
+    [message, running, streamedPrefix],
   );
 
   return (
@@ -823,7 +877,18 @@ const StreamingAssistantTimeline = memo(function StreamingAssistantTimeline({
       requestId={running ? requestId : undefined}
       workspacePath={workspacePath}
       onActivityChange={onActivityChange}
-      reasoning={streamedReasoning || reasoning}
+      reasoning={reasoning}
+      streamingReasoning={
+        running ? <StreamingReasoningLeaf requestId={requestId} /> : undefined
+      }
+      streamingTail={
+        running ? (
+          <StreamingTextLeaf
+            requestId={requestId}
+            offset={streamedPrefix.length}
+          />
+        ) : undefined
+      }
     />
   );
 });

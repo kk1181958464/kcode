@@ -131,11 +131,13 @@ export async function readStreamChunk(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   signal: AbortSignal,
   idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS,
+  onProgress?: (message: string) => void,
 ) {
   if (signal.aborted) throw abortReason(signal);
   return new Promise<ReadableStreamReadResult<Uint8Array>>(
     (resolve, reject) => {
       let settled = false;
+      const startedAt = Date.now();
       const finish = (
         callback: typeof resolve | typeof reject,
         value: ReadableStreamReadResult<Uint8Array> | unknown,
@@ -143,6 +145,7 @@ export async function readStreamChunk(
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        clearInterval(progress);
         signal.removeEventListener("abort", abort);
         callback(value as never);
       };
@@ -159,6 +162,10 @@ export async function readStreamChunk(
           ),
         );
       }, idleTimeoutMs);
+      const progress = setInterval(() => {
+        const seconds = Math.round((Date.now() - startedAt) / 1_000);
+        onProgress?.(`模型响应流仍在等待新数据，已等待 ${seconds} 秒…`);
+      }, WAIT_PROGRESS_INTERVAL_MS);
       signal.addEventListener("abort", abort, { once: true });
       reader.read().then(
         (result) => finish(resolve, result),

@@ -238,6 +238,11 @@ export default function App() {
   );
   const composerRef = useRef<ComposerTextareaHandle>(null);
   const composerValueRef = useRef(input);
+  function readComposerValue() {
+    const value = composerRef.current?.getValue() ?? composerValueRef.current;
+    composerValueRef.current = value;
+    return value;
+  }
   function setInput(value: string) {
     composerValueRef.current = value;
     composerRef.current?.replaceValue(value);
@@ -480,7 +485,7 @@ export default function App() {
       composerPasteRef.current(event),
     [],
   );
-  const handleComposerChange = useCallback((value: string) => {
+  const updateTaskDraft = useCallback((value: string) => {
     composerValueRef.current = value;
     const taskId = displayedTaskIdRef.current;
     if (taskId) {
@@ -488,24 +493,33 @@ export default function App() {
       else delete initialDrafts.current[taskId];
     }
   }, []);
-  const persistTaskDrafts = useCallback(() => {
+  const writeTaskDrafts = useCallback(() => {
     localStorage.setItem(
       "kcode.taskDrafts",
       JSON.stringify(initialDrafts.current),
     );
   }, []);
+  const persistTaskDrafts = useCallback((value?: string) => {
+    const latestValue =
+      typeof value === "string"
+        ? value
+        : (composerRef.current?.getValue() ?? composerValueRef.current);
+    updateTaskDraft(latestValue);
+    writeTaskDrafts();
+  }, [updateTaskDraft, writeTaskDrafts]);
   const clearTaskDraft = useCallback((taskId: string) => {
     delete initialDrafts.current[taskId];
-    persistTaskDrafts();
-  }, [persistTaskDrafts]);
+    writeTaskDrafts();
+  }, [writeTaskDrafts]);
   useEffect(() => {
     const persistWhenHidden = () => {
       if (document.visibilityState === "hidden") persistTaskDrafts();
     };
-    window.addEventListener("blur", persistTaskDrafts);
+    const persistOnWindowBlur = () => persistTaskDrafts();
+    window.addEventListener("blur", persistOnWindowBlur);
     document.addEventListener("visibilitychange", persistWhenHidden);
     return () => {
-      window.removeEventListener("blur", persistTaskDrafts);
+      window.removeEventListener("blur", persistOnWindowBlur);
       document.removeEventListener("visibilitychange", persistWhenHidden);
     };
   }, [persistTaskDrafts]);
@@ -1983,7 +1997,7 @@ export default function App() {
 
   async function switchTask(task: TaskRecord) {
     if (task.id === activeTaskId) return;
-    persistTaskDrafts();
+    persistTaskDrafts(readComposerValue());
     if (activeTaskId)
       attachmentDraftsRef.current.set(activeTaskId, {
         files: attachedFiles,
@@ -2414,7 +2428,7 @@ export default function App() {
   }
 
   function queueMessage() {
-    const text = composerValueRef.current.trim();
+    const text = readComposerValue().trim();
     if ((!text && !attachedImages.length) || !activeTask || summaryBusy) return;
     const user: QueuedChatMessage = {
       id: uid(),
@@ -2449,7 +2463,7 @@ export default function App() {
   }
 
   async function send(override?: string, queuedMessageId?: string) {
-    let text = (override ?? composerValueRef.current).trim();
+    let text = (override ?? readComposerValue()).trim();
     const target = models.find(
       (x) => `${x.provider.id}|${x.model.id}` === selected,
     );
@@ -3373,7 +3387,6 @@ export default function App() {
                 ref={composerRef}
                 disabled={summaryBusy}
                 value={input}
-                onChange={handleComposerChange}
                 onBlur={persistTaskDrafts}
                 onPaste={handleComposerPaste}
                 onSubmit={handleComposerSubmit}

@@ -31,6 +31,7 @@ import {
 import { isCasualGreeting } from "../src/intent";
 import { resolvePermissionDecision } from "../src/permissions";
 import { AgentStreamAssembler } from "./agent-stream";
+import { RetryTextReconciler } from "./stream-recovery";
 import {
   createConversationIsolation,
   historyFingerprint,
@@ -2530,31 +2531,41 @@ async function* sseJson(
   response: Response,
   signal: AbortSignal,
   idleTimeoutMs?: number,
+  onProgress?: (message: string) => void,
 ): AsyncGenerator<any> {
   if (!response.body) throw new Error("模型没有返回响应流");
   const reader = response.body.getReader(),
     decoder = new TextDecoder();
   let buffer = "";
+  const eventsFromBlock = (block: string) => {
+    const events: any[] = [];
+    for (const line of block.split(/\r?\n/)) {
+      if (!line.startsWith("data:")) continue;
+      const data = line.slice(5).trim();
+      if (data === "[DONE]") events.push({ type: "__sse_done" });
+      else if (data) events.push(JSON.parse(data));
+    }
+    return events;
+  };
   while (true) {
     const { done, value } = await readStreamChunk(
       reader,
       signal,
       idleTimeoutMs,
+      onProgress,
     );
     buffer += decoder.decode(value, { stream: !done });
     const blocks = buffer.split(/\r?\n\r?\n/);
     buffer = blocks.pop() ?? "";
     for (const block of blocks)
-      for (const line of block.split(/\r?\n/)) {
-        if (!line.startsWith("data:")) continue;
-        const data = line.slice(5).trim();
-        if (data === "[DONE]") {
-          yield { type: "__sse_done" };
-          continue;
-        }
-        if (data) yield JSON.parse(data);
-      }
-    if (done) break;
+      for (const event of eventsFromBlock(block)) yield event;
+    if (done) {
+      // Some relays close immediately after the final data line without the
+      // blank SSE delimiter. Do not discard that completion event.
+      if (buffer.trim())
+        for (const event of eventsFromBlock(buffer)) yield event;
+      break;
+    }
   }
 }
 
@@ -2572,7 +2583,12 @@ async function parseStreamedTurn(
       onText,
       onReasoning,
     );
-    for await (const event of sseJson(response, signal, idleTimeoutMs))
+    for await (const event of sseJson(
+      response,
+      signal,
+      idleTimeoutMs,
+      onReasoning,
+    ))
       assembler.consume(event);
     assembler.assertStreamComplete();
     const assembled = assembler.finish();
@@ -2760,8 +2776,8 @@ async function* streamModelTurn(
   let wake: (() => void) | undefined,
     done = false,
     turn: Turn | undefined,
-    failure: unknown,
-    emittedText = false;
+    failure: unknown;
+  const reconciler = new RetryTextReconciler();
   const enqueue = (event: TurnStreamEvent) => {
     queue.push(event);
     wake?.();
@@ -2769,8 +2785,11 @@ async function* streamModelTurn(
   };
   const pushText = (delta: string) => {
     if (!delta) return;
-    emittedText = true;
-    enqueue({ type: "text", delta });
+    const reconciled = reconciler.push(delta);
+    if (reconciled.reset) enqueue({ type: "text_reset" });
+    if (reconciled.delta) {
+      enqueue({ type: "text", delta: reconciled.delta });
+    }
   };
   const pushReasoning = (delta: string) => {
     if (delta) enqueue({ type: "reasoning", delta });
@@ -2789,6 +2808,7 @@ async function* streamModelTurn(
   // to replay. Up to two backoff retries before giving up.
   const run = async () => {
     for (let attempt = 1; ; attempt += 1) {
+      reconciler.beginAttempt();
       try {
         turn = await modelTurn(
           root,
@@ -2805,13 +2825,8 @@ async function* streamModelTurn(
       } catch (error) {
         if (signal.aborted || attempt >= 3 || !isRetryableStreamError(error))
           throw error;
-        // If the answer had already started streaming when the upstream broke,
-        // discard the partial text (via a reset event the UI honors) before
-        // retrying, so the re-run streams a fresh, non-duplicated answer.
-        if (emittedText) {
-          enqueue({ type: "text_reset" });
-          emittedText = false;
-        }
+        // Keep already visible text. The next attempt is reconciled against
+        // that prefix, so replayed output is suppressed without a visual reset.
         const delay =
           2_000 * 2 ** (attempt - 1) + Math.floor(Math.random() * 750);
         pushReasoning(
@@ -3185,6 +3200,7 @@ async function modelTurn(
       firstByteTimeoutMs,
       retries: 1,
       retryDelayMs: 2_000,
+      onProgress: onReasoning,
     },
   );
   writeLog("info", "model.response", {
