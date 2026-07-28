@@ -1,5 +1,30 @@
-import { useEffect, useRef, useState, type RefObject } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+  type RefObject,
+} from "react";
 import { ChevronDown, ChevronUp, Search, X } from "lucide-react";
+
+const POSITION_KEY = "kcode.conversationSearchPosition";
+const POSITION_MARGIN = 8;
+
+interface SearchPosition {
+  x: number;
+  y: number;
+}
+
+function storedPosition(): SearchPosition | undefined {
+  try {
+    const value = JSON.parse(localStorage.getItem(POSITION_KEY) || "null");
+    if (Number.isFinite(value?.x) && Number.isFinite(value?.y)) return value;
+  } catch {
+    // Ignore malformed positions from older builds.
+  }
+  return undefined;
+}
 
 interface HighlightValue {}
 
@@ -71,6 +96,15 @@ export function ConversationSearch({
   onRevealAll(): void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const searchRef = useRef<HTMLDivElement>(null);
+  const dragRef = useRef<
+    | {
+        pointerId: number;
+        offsetX: number;
+        offsetY: number;
+      }
+    | undefined
+  >(undefined);
   const rangesRef = useRef<Range[]>([]);
   const currentRef = useRef(0);
   const observerRef = useRef<MutationObserver | undefined>(undefined);
@@ -78,6 +112,100 @@ export function ConversationSearch({
   const queryRef = useRef("");
   const [query, setQuery] = useState("");
   const [result, setResult] = useState({ current: 0, total: 0 });
+  const [position, setPosition] = useState<SearchPosition | undefined>(
+    storedPosition,
+  );
+  const [dragging, setDragging] = useState(false);
+
+  const clampPosition = (candidate: SearchPosition) => {
+    const element = searchRef.current;
+    const parent = element?.offsetParent as HTMLElement | null;
+    if (!element || !parent) return candidate;
+    return {
+      x: Math.max(
+        POSITION_MARGIN,
+        Math.min(
+          candidate.x,
+          parent.clientWidth - element.offsetWidth - POSITION_MARGIN,
+        ),
+      ),
+      y: Math.max(
+        POSITION_MARGIN,
+        Math.min(
+          candidate.y,
+          parent.clientHeight - element.offsetHeight - POSITION_MARGIN,
+        ),
+      ),
+    };
+  };
+
+  const beginDrag = (event: ReactPointerEvent<HTMLSpanElement>) => {
+    const element = searchRef.current;
+    const parent = element?.offsetParent as HTMLElement | null;
+    if (!element || !parent) return;
+    event.preventDefault();
+    const elementRect = element.getBoundingClientRect();
+    const parentRect = parent.getBoundingClientRect();
+    const current = {
+      x: elementRect.left - parentRect.left,
+      y: elementRect.top - parentRect.top,
+    };
+    dragRef.current = {
+      pointerId: event.pointerId,
+      offsetX: event.clientX - elementRect.left,
+      offsetY: event.clientY - elementRect.top,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setDragging(true);
+    setPosition(current);
+  };
+
+  const moveDrag = (event: ReactPointerEvent<HTMLSpanElement>) => {
+    const drag = dragRef.current;
+    const element = searchRef.current;
+    const parent = element?.offsetParent as HTMLElement | null;
+    if (!drag || drag.pointerId !== event.pointerId || !parent) return;
+    const parentRect = parent.getBoundingClientRect();
+    setPosition(
+      clampPosition({
+        x: event.clientX - parentRect.left - drag.offsetX,
+        y: event.clientY - parentRect.top - drag.offsetY,
+      }),
+    );
+  };
+
+  const endDrag = (event: ReactPointerEvent<HTMLSpanElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    dragRef.current = undefined;
+    setDragging(false);
+    event.currentTarget.releasePointerCapture(event.pointerId);
+    setPosition((current) => {
+      if (!current) return current;
+      const next = clampPosition(current);
+      localStorage.setItem(POSITION_KEY, JSON.stringify(next));
+      return next;
+    });
+  };
+
+  useLayoutEffect(() => {
+    if (!open || !position) return;
+    const element = searchRef.current;
+    const parent = element?.offsetParent as HTMLElement | null;
+    if (!element || !parent) return;
+    const keepVisible = () =>
+      setPosition((current) => {
+        if (!current) return current;
+        const next = clampPosition(current);
+        localStorage.setItem(POSITION_KEY, JSON.stringify(next));
+        return next;
+      });
+    keepVisible();
+    const observer = new ResizeObserver(keepVisible);
+    observer.observe(parent);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [open]);
 
   const showCurrent = (nextIndex: number) => {
     const api = highlightApi();
@@ -177,8 +305,26 @@ export function ConversationSearch({
 
   if (!open) return null;
   return (
-    <div className="conversation-search" role="search">
-      <Search size={15} />
+    <div
+      ref={searchRef}
+      className={`conversation-search ${dragging ? "dragging" : ""}`}
+      role="search"
+      style={
+        position
+          ? { left: position.x, top: position.y, right: "auto" }
+          : undefined
+      }
+    >
+      <span
+        className="conversation-search-drag"
+        title="拖动搜索框"
+        onPointerDown={beginDrag}
+        onPointerMove={moveDrag}
+        onPointerUp={endDrag}
+        onPointerCancel={endDrag}
+      >
+        <Search size={15} />
+      </span>
       <input
         ref={inputRef}
         value={query}

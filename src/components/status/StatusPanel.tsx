@@ -5,22 +5,19 @@ import {
   ChevronDown,
   CircleAlert,
   Clock3,
-  FileCode2,
   GitCompareArrows,
-  LockOpen,
   Minimize2,
   Paperclip,
   RefreshCw,
   RotateCcw,
-  ShieldCheck,
   X,
 } from "lucide-react";
+import { useEffect, useState } from "react";
 import type { TaskRunStatus } from "../../task-status";
 import type {
   AgentCheckpoint,
   GitWorkspaceState,
   ModelConfig,
-  PermissionMode,
   ReasoningEffort,
 } from "../../types";
 import type { ProviderConfig } from "../../types";
@@ -77,7 +74,6 @@ export interface StatusPanelProps {
   ): void;
   rebuildActiveSummary(): Promise<void>;
   restoreFullContext(): void;
-  permissionMode: PermissionMode;
 }
 
 export function StatusPanel({
@@ -115,8 +111,19 @@ export function StatusPanel({
   restoreSummarySnapshot,
   rebuildActiveSummary,
   restoreFullContext,
-  permissionMode,
 }: StatusPanelProps) {
+  const [liveDurationMs, setLiveDurationMs] = useState(durationMs);
+  useEffect(() => {
+    if (!runningId || !activeTask?.startedAt) {
+      setLiveDurationMs(durationMs);
+      return;
+    }
+    const update = () => setLiveDurationMs(Date.now() - activeTask.startedAt!);
+    update();
+    const timer = window.setInterval(update, 1_000);
+    return () => window.clearInterval(timer);
+  }, [activeTask?.startedAt, durationMs, runningId]);
+
   return (
     <aside className="status-panel">
       <header>
@@ -237,7 +244,7 @@ export function StatusPanel({
           <p>{gitState.error || "当前工作区未初始化 Git"}</p>
         )}
       </section>
-      {(runStatus !== "idle" || durationMs > 0 || messages.length > 0) && (
+      {(runStatus !== "idle" || liveDurationMs > 0 || messages.length > 0) && (
         <section>
           <span className="eyebrow">本轮用量</span>
           <div className="run-metrics">
@@ -245,7 +252,7 @@ export function StatusPanel({
               <Clock3 size={14} />
               <span>
                 <small>耗时</small>
-                <strong>{formatDuration(durationMs)}</strong>
+                <strong>{formatDuration(liveDurationMs)}</strong>
               </span>
             </div>
             <div>
@@ -344,34 +351,6 @@ export function StatusPanel({
           </>
         </section>
       )}
-      <section className="permission-section">
-        <span className="eyebrow">操作权限</span>
-        <div className="permission-row">
-          {permissionMode === "full-access" ? (
-            <LockOpen size={16} />
-          ) : permissionMode === "read-only" ? (
-            <FileCode2 size={16} />
-          ) : (
-            <ShieldCheck size={16} />
-          )}
-          <span>
-            <strong>
-              {permissionMode === "confirm"
-                ? "变更前确认"
-                : permissionMode === "read-only"
-                  ? "只读模式"
-                  : "完全访问"}
-            </strong>
-            <small>
-              {permissionMode === "confirm"
-                ? "写入文件和运行命令前询问"
-                : permissionMode === "read-only"
-                  ? "仅允许读取和分析工作区"
-                  : "可直接写入文件和运行命令"}
-            </small>
-          </span>
-        </div>
-      </section>
       {summaryOpen && activeTask?.contextSummary && (
         <div
           className="summary-layer"

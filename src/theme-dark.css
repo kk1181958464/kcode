@@ -280,6 +280,7 @@
   .scroll-to-bottom,
   .model-menu,
   .effort-menu,
+  .permission-menu,
   .model-provider-submenu,
   .sync-models,
   .secondary,
@@ -293,6 +294,7 @@
 
   .model-menu,
   .effort-menu,
+  .permission-menu,
   .model-provider-submenu {
     box-shadow: var(--shadow-float);
   }

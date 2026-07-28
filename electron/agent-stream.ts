@@ -3,6 +3,7 @@ import type { AgentToolName, Protocol } from "../src/types";
 
 export type AssembledTurn = {
   text: string;
+  reasoningContent: string;
   calls: { id: string; name: AgentToolName; input: Record<string, unknown> }[];
   rawCalls: unknown[];
   usage: { input: number; output: number; cached: number };
@@ -14,6 +15,7 @@ type PendingCall = { id: string; name: string; args: string; raw?: any };
 
 export class AgentStreamAssembler {
   private text = "";
+  private reasoningContent = "";
   private usage = { input: 0, output: 0, cached: 0 };
   private calls = new Map<number, PendingCall>();
   private responseItems: any[] = [];
@@ -216,6 +218,9 @@ export class AgentStreamAssembler {
           message: {
             role: "assistant",
             content: this.text || null,
+            ...(this.reasoningContent
+              ? { reasoning_content: this.reasoningContent }
+              : {}),
             tool_calls: [...this.calls.values()].map((call) => ({
               id: call.id,
               type: "function",
@@ -241,6 +246,7 @@ export class AgentStreamAssembler {
         .filter(Boolean);
     return {
       text: this.text,
+      reasoningContent: this.reasoningContent,
       calls,
       rawCalls,
       usage: this.usage,
@@ -252,10 +258,11 @@ export class AgentStreamAssembler {
     this.text += delta;
     this.onText?.(delta);
   }
-  // Reasoning/thinking deltas are surfaced live for the working indicator but
-  // never accumulated into the turn text — they are not part of the answer.
+  // Reasoning is separate from answer text, but OpenAI-compatible thinking
+  // models require it to be passed back with the assistant tool-call message.
   private addReasoning(delta?: string) {
     if (!delta) return;
+    this.reasoningContent += delta;
     this.onReasoning?.(delta);
   }
 }

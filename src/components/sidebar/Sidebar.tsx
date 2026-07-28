@@ -1,4 +1,5 @@
 import { memo, useState } from "react";
+import { Virtuoso } from "react-virtuoso";
 import {
   Archive,
   ArchiveRestore,
@@ -12,18 +13,11 @@ import {
 } from "lucide-react";
 import appLogo from "../../../build/icon.png";
 import { errorMessage } from "../../lib/format";
-import type { TaskRecord } from "../../models";
-import type { SettingsSection } from "../../models";
-
-interface WorkspaceGroup {
-  workspacePath: string;
-  name: string;
-  conversations: TaskRecord[];
-}
+import type { SettingsSection, SidebarWorkspaceGroup } from "../../models";
 
 export interface SidebarProps {
-  workspaceGroups: WorkspaceGroup[];
-  activeTask: TaskRecord | undefined;
+  workspaceGroups: SidebarWorkspaceGroup[];
+  activeTaskId?: string;
   taskQuery: string;
   setTaskQuery(value: string): void;
   showArchived: boolean;
@@ -39,7 +33,7 @@ export interface SidebarProps {
   setDeleteTarget(
     target:
       | { kind: "workspace"; path: string; name: string; count: number }
-      | { kind: "task"; task: TaskRecord },
+      | { kind: "task"; taskId: string },
   ): void;
   setContextError(message: string): void;
   openSettings(section: SettingsSection): void;
@@ -47,7 +41,7 @@ export interface SidebarProps {
 }
 export const Sidebar = memo(function Sidebar({
   workspaceGroups,
-  activeTask,
+  activeTaskId,
   taskQuery,
   setTaskQuery,
   showArchived,
@@ -104,8 +98,11 @@ export const Sidebar = memo(function Sidebar({
           {showArchived ? <ArchiveRestore size={13} /> : <Archive size={13} />}
         </button>
       </div>
-      <div className="workspace-tree">
-        {workspaceGroups.map((group) => (
+      <Virtuoso
+        className="workspace-tree"
+        data={workspaceGroups}
+        increaseViewportBy={240}
+        itemContent={(_, group) => (
           <section
             className={`workspace-group ${draggedWorkspace === group.workspacePath ? "dragging" : ""} ${workspaceDropTarget === group.workspacePath && draggedWorkspace !== group.workspacePath ? "drop-target" : ""}`}
             key={group.workspacePath}
@@ -205,7 +202,7 @@ export const Sidebar = memo(function Sidebar({
                   draggable
                   role="button"
                   tabIndex={0}
-                  className={`task-row ${task.id === activeTask?.id ? "active" : ""} ${draggedTaskId === task.id ? "dragging" : ""} ${taskDropTarget === task.id && draggedTaskId !== task.id ? "drop-target" : ""}`}
+                  className={`task-row ${task.id === activeTaskId ? "active" : ""} ${draggedTaskId === task.id ? "dragging" : ""} ${taskDropTarget === task.id && draggedTaskId !== task.id ? "drop-target" : ""}`}
                   title={`${task.name}\n${task.workspacePath}`}
                   onClick={(event) => {
                     if (draggedTaskId) return;
@@ -278,7 +275,7 @@ export const Sidebar = memo(function Sidebar({
                     title={`删除对话 ${task.name}`}
                     onClick={(event) => {
                       event.stopPropagation();
-                      setDeleteTarget({ kind: "task", task });
+                      setDeleteTarget({ kind: "task", taskId: task.id });
                     }}
                   >
                     <Trash2 size={13} />
@@ -287,8 +284,8 @@ export const Sidebar = memo(function Sidebar({
               ))}
             </div>
           </section>
-        ))}
-      </div>
+        )}
+      />
       <div className="sidebar-footer">
         <button onClick={() => openSettings("general")}>
           <Settings size={17} />
@@ -309,7 +306,7 @@ export const Sidebar = memo(function Sidebar({
 function sidebarPropsEqual(previous: SidebarProps, next: SidebarProps) {
   if (previous === next) return true;
   if (
-    previous.activeTask?.id !== next.activeTask?.id ||
+    previous.activeTaskId !== next.activeTaskId ||
     previous.taskQuery !== next.taskQuery ||
     previous.showArchived !== next.showArchived ||
     previous.workspaceGroups.length !== next.workspaceGroups.length ||

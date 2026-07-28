@@ -61,7 +61,13 @@ test("assembles Grok-compatible tool calls and reasoning", () => {
     ],
   });
   assert.equal(reasoning, "inspect first");
-  assert.deepEqual(a.finish().calls[0], {
+  const turn = a.finish();
+  assert.equal(turn.reasoningContent, "inspect first");
+  assert.equal(
+    (turn.rawCalls[0] as any).message.reasoning_content,
+    "inspect first",
+  );
+  assert.deepEqual(turn.calls[0], {
     id: "grok-call",
     name: "read_file",
     input: { path: "README.md" },

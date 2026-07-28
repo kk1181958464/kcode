@@ -1,4 +1,11 @@
-import React, { memo, useCallback, useEffect, useMemo, useState } from "react";
+import React, {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { createPortal } from "react-dom";
 import {
   Bot,
@@ -27,6 +34,11 @@ import { copyWithToast } from "../../lib/toast";
 import { MarkdownMessage } from "../common/MarkdownMessage";
 import { DiffView } from "../common/DiffView";
 import { LinkifiedText } from "../common/LinkifiedText";
+import {
+  getStreamingText,
+  streamingReasoningKey,
+  subscribeStreamingText,
+} from "../../streaming-text-store";
 
 function MessageItem({
   message,
@@ -217,7 +229,7 @@ function ActivityItem({
     }
     const update = () => setElapsedMs(Date.now() - activity.startedAt);
     update();
-    const timer = window.setInterval(update, 500);
+    const timer = window.setInterval(update, 1_000);
     return () => window.clearInterval(timer);
   }, [activity.status, activity.startedAt, activity.completedAt]);
   async function restore(event?: React.MouseEvent, force = false) {
@@ -690,6 +702,14 @@ const AssistantTimeline = memo(function AssistantTimeline({
   onActivityChange(activity: AgentActivity): void;
   reasoning?: string;
 }) {
+  const renderText = (text: string) =>
+    text ? (
+      running ? (
+        <div className="streaming-message-text">{text}</div>
+      ) : (
+        <MarkdownMessage content={text} />
+      )
+    ) : null;
   const grouped = new Map<number, AgentActivity[]>();
   for (const activity of activities) {
     const offset = Math.max(
@@ -705,7 +725,7 @@ const AssistantTimeline = memo(function AssistantTimeline({
   if (!groups.length)
     return (
       <>
-        {message.content && <MarkdownMessage content={message.content} />}
+        {renderText(message.content)}
         {running && (
           <AgentWorkingState
             activities={activities}
@@ -726,7 +746,7 @@ const AssistantTimeline = memo(function AssistantTimeline({
         cursor = offset;
         return (
           <div className="assistant-timeline-group" key={`${offset}:${index}`}>
-            {text && <MarkdownMessage content={text} />}
+            {renderText(text)}
             <ExecutionSummary
               activities={group}
               running={running && index === groups.length - 1}
@@ -737,9 +757,7 @@ const AssistantTimeline = memo(function AssistantTimeline({
           </div>
         );
       })}
-      {message.content.slice(cursor) && (
-        <MarkdownMessage content={message.content.slice(cursor)} />
-      )}
+      {renderText(message.content.slice(cursor))}
       {running && (
         <AgentWorkingState
           activities={activities}
@@ -749,6 +767,64 @@ const AssistantTimeline = memo(function AssistantTimeline({
         />
       )}
     </div>
+  );
+});
+
+const StreamingAssistantTimeline = memo(function StreamingAssistantTimeline({
+  message,
+  activities,
+  running,
+  requestId,
+  workspacePath,
+  onActivityChange,
+  reasoning,
+}: {
+  message: ChatMessage;
+  activities: AgentActivity[];
+  running: boolean;
+  requestId: string;
+  workspacePath: string;
+  onActivityChange(activity: AgentActivity): void;
+  reasoning?: string;
+}) {
+  const subscribe = useCallback(
+    (listener: () => void) => subscribeStreamingText(requestId, listener),
+    [requestId],
+  );
+  const getSnapshot = useCallback(() => getStreamingText(requestId), [requestId]);
+  const streamedText = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+  const reasoningKey = streamingReasoningKey(requestId);
+  const subscribeReasoning = useCallback(
+    (listener: () => void) => subscribeStreamingText(reasoningKey, listener),
+    [reasoningKey],
+  );
+  const getReasoningSnapshot = useCallback(
+    () => getStreamingText(reasoningKey),
+    [reasoningKey],
+  );
+  const streamedReasoning = useSyncExternalStore(
+    subscribeReasoning,
+    getReasoningSnapshot,
+    getReasoningSnapshot,
+  );
+  const displayMessage = useMemo(
+    () =>
+      running && streamedText
+        ? { ...message, content: message.content + streamedText }
+        : message,
+    [message, running, streamedText],
+  );
+
+  return (
+    <AssistantTimeline
+      message={displayMessage}
+      activities={activities}
+      running={running}
+      requestId={running ? requestId : undefined}
+      workspacePath={workspacePath}
+      onActivityChange={onActivityChange}
+      reasoning={streamedReasoning || reasoning}
+    />
   );
 });
 
@@ -881,11 +957,11 @@ const ConversationMessage = memo(
           onRetry={() => retryContent && onRetry(retryContent)}
           assistantBody={
             requestId ? (
-              <AssistantTimeline
+              <StreamingAssistantTimeline
                 message={message}
                 activities={activities}
                 running={running}
-                requestId={running ? requestId : undefined}
+                requestId={requestId}
                 workspacePath={workspacePath}
                 onActivityChange={onActivityChange}
                 reasoning={reasoning}
@@ -923,6 +999,7 @@ export const ConversationHistory = memo(
   function ConversationHistoryInner({
     messages,
     hasOlderMessages,
+    hasNewerMessages,
     activitiesByRequest,
     runningId,
     workspacePath,
@@ -936,6 +1013,7 @@ export const ConversationHistory = memo(
   }: {
     messages: ChatMessage[];
     hasOlderMessages: boolean;
+    hasNewerMessages: boolean;
     activitiesByRequest: Map<string, AgentActivity[]>;
     runningId?: string;
     workspacePath: string;
@@ -983,6 +1061,12 @@ export const ConversationHistory = memo(
             />
           );
         })}
+        {hasNewerMessages && (
+          <div className="conversation-history-loader newer" aria-hidden="true">
+            <span />
+            向下滚动加载较新对话
+          </div>
+        )}
         <div ref={endRef} />
       </div>
     );
@@ -992,6 +1076,7 @@ export const ConversationHistory = memo(
     if (prev.runningId !== next.runningId) return false;
     if (prev.reasoning !== next.reasoning) return false;
     if (prev.hasOlderMessages !== next.hasOlderMessages) return false;
+    if (prev.hasNewerMessages !== next.hasNewerMessages) return false;
     if (prev.retryContent !== next.retryContent) return false;
     if (prev.workspacePath !== next.workspacePath) return false;
     const prevLast = prev.messages[prev.messages.length - 1];

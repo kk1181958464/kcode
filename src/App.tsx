@@ -86,10 +86,18 @@ import {
   type ConversationScrollState,
   type QueuedChatMessage,
   type SettingsSection,
+  type SidebarTask,
   type TaskDrafts,
   type TaskRecord,
   type ThemePreference,
 } from "./models";
+import {
+  appendConversationWindow,
+  latestConversationWindow,
+  prependConversationWindow,
+  windowContainingTurn,
+  type ConversationWindow,
+} from "./conversation-window";
 import {
   normalizeStoredTask,
   storedActiveTask,
@@ -125,6 +133,7 @@ import {
   ComposerTextarea,
   type ComposerTextareaHandle,
 } from "./components/composer/ComposerTextarea";
+import { PermissionPicker } from "./components/composer/PermissionPicker";
 const AppUpdateDialog = lazy(() =>
   import("./components/dialogs/AppUpdateDialog").then((m) => ({
     default: m.AppUpdateDialog,
@@ -140,6 +149,12 @@ import {
   STREAM_PACING_INTERVAL_MS,
   takeStreamPacedSlice,
 } from "./stream-pacing";
+import {
+  appendStreamingText,
+  consumeStreamingText,
+  resetStreamingText,
+  streamingReasoningKey,
+} from "./streaming-text-store";
 import { registerAppToastHandler, type AppToast } from "./lib/toast";
 import { useEventCallback } from "./lib/use-event-callback";
 import {
@@ -230,7 +245,9 @@ export default function App() {
   }
   const [settings, setSettings] = useState(false);
   const [conversationSearchOpen, setConversationSearchOpen] = useState(false);
-  const searchPreviousTurnStartRef = useRef<number | undefined>(undefined);
+  const searchPreviousTurnWindowRef = useRef<ConversationWindow | undefined>(
+    undefined,
+  );
   const [theme, setTheme] = useState<ThemePreference>(() => {
     const saved = localStorage.getItem("kcode.theme");
     return saved === "light" || saved === "dark" ? saved : "system";
@@ -384,7 +401,6 @@ export default function App() {
   const [browserAddress, setBrowserAddress] = useState("");
   // Latest reasoning/thinking snippet for the active turn, shown live under the
   // working spinner. Cleared once visible text or a tool activity takes over.
-  const [agentReasoning, setAgentReasoning] = useState("");
   const [browserWidthDrag, setBrowserWidthDrag] = useState<number>();
   useEffect(() => window.kcode?.browser?.onState(setBrowserState), []);
   useEffect(
@@ -426,9 +442,7 @@ export default function App() {
   const pendingTextSinceRef = useRef(new Map<string, number>());
   // Keep streaming responsive without asking React and layout to work at 60fps.
   const textFlushTimerRef = useRef<number | undefined>(undefined);
-  const pendingTaskTextRef = useRef(new Map<string, string>());
-  const taskTextFlushTimerRef = useRef<number | undefined>(undefined);
-  const pendingReasoningRef = useRef("");
+  const pendingReasoningRef = useRef(new Map<string, string>());
   const reasoningFlushTimerRef = useRef<number | undefined>(undefined);
   const activeTaskIdRef = useRef(activeTaskId);
   const displayedTaskIdRef = useRef(activeTaskId);
@@ -441,6 +455,9 @@ export default function App() {
   const scrollFrameRef = useRef<number | undefined>(undefined);
   const scrollStateByTaskRef = useRef(
     new Map<string, ConversationScrollState>(),
+  );
+  const conversationWindowByTaskRef = useRef(
+    new Map<string, ConversationWindow>(),
   );
   const pendingScrollRestoreRef = useRef<
     { taskId: string; state: ConversationScrollState } | undefined
@@ -516,12 +533,15 @@ export default function App() {
   const turnPositionsRef = useRef<{ id: string; top: number }[]>([]);
   const activeConversationTurnRef = useRef<string | undefined>(undefined);
   const pendingTurnTargetRef = useRef<string | undefined>(undefined);
-  const prependScrollHeightRef = useRef<number | undefined>(undefined);
+  const windowScrollAnchorRef = useRef<
+    { turnId: string; viewportOffset: number } | undefined
+  >(undefined);
   const loadingOlderTurnsRef = useRef(false);
   const pagedTaskRef = useRef<string | undefined>(undefined);
   const gitRefreshActivityRef = useRef<string | undefined>(undefined);
   const [conversationPageSize, setConversationPageSize] = useState(18);
-  const [visibleTurnStart, setVisibleTurnStart] = useState(0);
+  const [visibleTurnWindow, setVisibleTurnWindow] =
+    useState<ConversationWindow>({ start: 0, end: 0 });
   const [turnRailOverflow, setTurnRailOverflow] = useState({
     up: false,
     down: false,
@@ -594,32 +614,57 @@ export default function App() {
   const conversationTurns = useMemo(
     () =>
       messages
-        .filter((message) => message.role === "user")
-        .map((message) => ({
-          id: message.id,
-          question: message.content,
-          answer: "点击跳转到此轮对话",
-        })),
+        .map((message, messageIndex) =>
+          message.role === "user"
+            ? {
+                id: message.id,
+                question: message.content,
+                answer: "点击跳转到此轮对话",
+                messageIndex,
+              }
+            : undefined,
+        )
+        .filter(
+          (
+            turn,
+          ): turn is {
+            id: string;
+            question: string;
+            answer: string;
+            messageIndex: number;
+          } => Boolean(turn),
+        ),
     [activeTaskId, messages.length],
   );
   const visibleMessages = useMemo(() => {
-    const firstTurn = conversationTurns[visibleTurnStart];
+    if (conversationSearchOpen) return messages;
+    const firstTurn = conversationTurns[visibleTurnWindow.start];
     if (!firstTurn) return messages;
-    const firstMessage = messages.findIndex(
-      (message) => message.id === firstTurn.id,
+    const endTurn = conversationTurns[visibleTurnWindow.end];
+    return messages.slice(
+      firstTurn.messageIndex,
+      endTurn?.messageIndex ?? messages.length,
     );
-    return firstMessage > 0 ? messages.slice(firstMessage) : messages;
-  }, [conversationTurns, messages, visibleTurnStart]);
-  const hasOlderMessages = visibleTurnStart > 0;
+  }, [conversationSearchOpen, conversationTurns, messages, visibleTurnWindow]);
+  const hasOlderMessages =
+    !conversationSearchOpen && visibleTurnWindow.start > 0;
+  const hasNewerMessages =
+    !conversationSearchOpen && visibleTurnWindow.end < conversationTurns.length;
   const activitiesByRequest = useMemo(() => {
+    const visibleRequests = new Set(
+      visibleMessages
+        .filter((message) => message.id.startsWith("assistant:"))
+        .map((message) => message.id.slice("assistant:".length)),
+    );
     const grouped = new Map<string, AgentActivity[]>();
     for (const activity of activities) {
+      if (!visibleRequests.has(activity.requestId)) continue;
       const group = grouped.get(activity.requestId);
       if (group) group.push(activity);
       else grouped.set(activity.requestId, [activity]);
     }
     return grouped;
-  }, [activities]);
+  }, [activities, visibleMessages]);
   const handleActivityChange = useCallback((next: AgentActivity) => {
     setActivities((all) =>
       all.map((item) => (item.id === next.id ? next : item)),
@@ -628,18 +673,21 @@ export default function App() {
   useLayoutEffect(() => {
     if (!activeTaskId || pagedTaskRef.current === activeTaskId) return;
     pagedTaskRef.current = activeTaskId;
-    setVisibleTurnStart(
-      Math.max(0, conversationTurns.length - conversationPageSize),
+    setVisibleTurnWindow(
+      latestConversationWindow(conversationTurns.length, conversationPageSize),
     );
     pendingTurnTargetRef.current = undefined;
-    prependScrollHeightRef.current = undefined;
+    windowScrollAnchorRef.current = undefined;
     loadingOlderTurnsRef.current = false;
   }, [activeTaskId, conversationPageSize, conversationTurns.length]);
   useEffect(() => {
     const rail = turnRailRef.current;
     if (!rail || typeof ResizeObserver === "undefined") return;
     const update = () => {
-      const nextSize = Math.max(4, Math.floor((rail.clientHeight - 24) / 28));
+      const nextSize = Math.max(
+        4,
+        Math.min(12, Math.floor((rail.clientHeight - 24) / 28)),
+      );
       setConversationPageSize((current) =>
         current === nextSize ? current : nextSize,
       );
@@ -650,21 +698,28 @@ export default function App() {
     return () => observer.disconnect();
   }, [activeTaskId, conversationTurns.length > 1]);
   useEffect(() => {
-    const minimum = Math.max(
-      0,
-      conversationTurns.length - conversationPageSize,
-    );
-    if (autoFollowRef.current && visibleTurnStart !== minimum)
-      setVisibleTurnStart(minimum);
+    if (autoFollowRef.current)
+      setVisibleTurnWindow((current) => {
+        const latest = latestConversationWindow(
+          conversationTurns.length,
+          conversationPageSize,
+        );
+        return current.start === latest.start && current.end === latest.end
+          ? current
+          : latest;
+      });
   }, [conversationPageSize, conversationTurns.length]);
   useLayoutEffect(() => {
     const conversation = conversationRef.current;
-    const previousHeight = prependScrollHeightRef.current;
-    if (conversation && previousHeight !== undefined) {
-      conversation.scrollTop += conversation.scrollHeight - previousHeight;
-      prependScrollHeightRef.current = undefined;
-      loadingOlderTurnsRef.current = false;
+    const anchor = windowScrollAnchorRef.current;
+    if (conversation && anchor) {
+      const element = turnRefs.current.get(anchor.turnId);
+      if (element)
+        conversation.scrollTop +=
+          element.getBoundingClientRect().top - anchor.viewportOffset;
+      windowScrollAnchorRef.current = undefined;
     }
+    loadingOlderTurnsRef.current = false;
     const targetId = pendingTurnTargetRef.current;
     const target = targetId ? turnRefs.current.get(targetId) : undefined;
     if (conversation && targetId && target) {
@@ -673,7 +728,7 @@ export default function App() {
       pendingTurnTargetRef.current = undefined;
     }
     refreshTurnPositions();
-  }, [visibleTurnStart]);
+  }, [visibleTurnWindow]);
 
   const updateTurnRailOverflow = useCallback(() => {
     const rail = turnRailRef.current;
@@ -753,8 +808,6 @@ export default function App() {
         cancelAnimationFrame(turnLayoutFrameRef.current);
       if (textFlushTimerRef.current)
         window.clearTimeout(textFlushTimerRef.current);
-      if (taskTextFlushTimerRef.current)
-        window.clearTimeout(taskTextFlushTimerRef.current);
       if (reasoningFlushTimerRef.current)
         window.clearTimeout(reasoningFlushTimerRef.current);
       persistTaskDrafts();
@@ -817,25 +870,55 @@ export default function App() {
     });
   }
 
+  function preserveWindowAnchor(turnIndex: number) {
+    const turn = conversationTurns[turnIndex];
+    const element = turn ? turnRefs.current.get(turn.id) : undefined;
+    if (!turn || !element) return;
+    windowScrollAnchorRef.current = {
+      turnId: turn.id,
+      viewportOffset: element.getBoundingClientRect().top,
+    };
+  }
+
   function handleConversationScroll(container: HTMLElement) {
     scrollTargetRef.current = container;
     // Programmatic bottom alignment also emits scroll events. Do not treat the
     // transient intermediate position as the user scrolling away from bottom.
     if (programmaticScrollRef.current) return;
     if (
+      !conversationSearchOpen &&
       container.scrollTop <= 48 &&
-      visibleTurnStart > 0 &&
+      visibleTurnWindow.start > 0 &&
       !loadingOlderTurnsRef.current
     ) {
       loadingOlderTurnsRef.current = true;
-      prependScrollHeightRef.current = container.scrollHeight;
-      setVisibleTurnStart((current) =>
-        Math.max(0, current - conversationPageSize),
+      preserveWindowAnchor(visibleTurnWindow.start);
+      setVisibleTurnWindow((current) =>
+        prependConversationWindow(current, conversationPageSize),
       );
       return;
     }
     const distanceFromBottom =
       container.scrollHeight - container.scrollTop - container.clientHeight;
+    if (
+      !conversationSearchOpen &&
+      distanceFromBottom <= 48 &&
+      hasNewerMessages &&
+      !loadingOlderTurnsRef.current
+    ) {
+      loadingOlderTurnsRef.current = true;
+      preserveWindowAnchor(
+        Math.max(visibleTurnWindow.start, visibleTurnWindow.end - 1),
+      );
+      setVisibleTurnWindow((current) =>
+        appendConversationWindow(
+          current,
+          conversationTurns.length,
+          conversationPageSize,
+        ),
+      );
+      return;
+    }
     // Take user scroll intent synchronously so a streaming resize cannot pull
     // the conversation back to the bottom before the rAF bookkeeping runs.
     if (distanceFromBottom >= 72 && autoFollowRef.current) {
@@ -871,11 +954,15 @@ export default function App() {
   function scrollToLatest(behavior: ScrollBehavior = "auto") {
     const conversation = conversationRef.current;
     if (!conversation) return;
-    const latestStart = Math.max(
-      0,
-      conversationTurns.length - conversationPageSize,
+    const latest = latestConversationWindow(
+      conversationTurns.length,
+      conversationPageSize,
     );
-    if (visibleTurnStart !== latestStart) setVisibleTurnStart(latestStart);
+    if (
+      visibleTurnWindow.start !== latest.start ||
+      visibleTurnWindow.end !== latest.end
+    )
+      setVisibleTurnWindow(latest);
     autoFollowRef.current = true;
     programmaticScrollRef.current = true;
     setShowScrollToBottom(false);
@@ -938,10 +1025,11 @@ export default function App() {
     setShowScrollToBottom(true);
     if (!element) {
       pendingTurnTargetRef.current = turnId;
-      setVisibleTurnStart(
-        Math.max(
-          0,
-          Math.min(index, conversationTurns.length - conversationPageSize),
+      setVisibleTurnWindow(
+        windowContainingTurn(
+          index,
+          conversationTurns.length,
+          conversationPageSize,
         ),
       );
       return;
@@ -953,7 +1041,7 @@ export default function App() {
     setActiveConversationTurn(turnId);
   }
   const workspaceGroups = useMemo(() => {
-    const groups = new Map<string, TaskRecord[]>();
+    const groups = new Map<string, SidebarTask[]>();
     const query = taskQuery.trim().toLocaleLowerCase();
     for (const task of tasks) {
       if (Boolean(task.archived) !== showArchived) continue;
@@ -964,9 +1052,17 @@ export default function App() {
           .includes(query)
       )
         continue;
+      const sidebarTask = {
+        id: task.id,
+        name: task.name,
+        workspacePath: task.workspacePath,
+        archived: task.archived,
+        runningId: task.runningId,
+        runStatus: task.runStatus,
+      };
       const conversations = groups.get(task.workspacePath);
-      if (conversations) conversations.push(task);
-      else groups.set(task.workspacePath, [task]);
+      if (conversations) conversations.push(sidebarTask);
+      else groups.set(task.workspacePath, [sidebarTask]);
     }
     return [...groups.entries()].map(([workspacePath, conversations]) => ({
       workspacePath,
@@ -1359,15 +1455,6 @@ export default function App() {
     return () => document.removeEventListener("mousedown", closeMenus);
   }, []);
   useEffect(() => {
-    if (!runningId) return;
-    const update = () =>
-      requestStartedRef.current &&
-      setDurationMs(Date.now() - requestStartedRef.current);
-    update();
-    const timer = window.setInterval(update, 1_000);
-    return () => window.clearInterval(timer);
-  }, [runningId]);
-  useEffect(() => {
     const handleShortcut = (event: KeyboardEvent) => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "n") {
         event.preventDefault();
@@ -1388,20 +1475,18 @@ export default function App() {
 
   useEffect(() => {
     setConversationSearchOpen(false);
-    searchPreviousTurnStartRef.current = undefined;
+    searchPreviousTurnWindowRef.current = undefined;
   }, [activeTaskId]);
 
   const revealAllConversationMessages = useCallback(() => {
-    if (visibleTurnStart === 0) return;
-    searchPreviousTurnStartRef.current = visibleTurnStart;
-    setVisibleTurnStart(0);
-  }, [visibleTurnStart]);
+    searchPreviousTurnWindowRef.current = visibleTurnWindow;
+  }, [visibleTurnWindow]);
 
   const closeConversationSearch = useCallback(() => {
     setConversationSearchOpen(false);
-    const previous = searchPreviousTurnStartRef.current;
-    searchPreviousTurnStartRef.current = undefined;
-    if (previous !== undefined) setVisibleTurnStart(previous);
+    const previous = searchPreviousTurnWindowRef.current;
+    searchPreviousTurnWindowRef.current = undefined;
+    if (previous) setVisibleTurnWindow(previous);
   }, []);
 
   // Decouple uneven upstream chunks from the visual cadence. Normal output is
@@ -1430,91 +1515,9 @@ export default function App() {
       if (!drainAll && pendingTextRef.current.size) scheduleTextFlush();
       return;
     }
-    const deltaByRequest = new Map(slices);
-    const hasActive = slices.some(([requestId]) => {
-      const taskId = requestTasksRef.current.get(requestId);
-      return Boolean(
-        taskId &&
-        isTaskViewCurrent(
-          activeTaskIdRef.current,
-          displayedTaskIdRef.current,
-          taskId,
-        ),
-      );
-    });
-    if (hasActive)
-      startTransition(() => {
-        setMessages((all) => {
-          // Touch only the streaming message(s) — reverse-scan finds them near
-          // the end fast, and we copy the array once instead of rebuilding.
-          let next = all;
-          for (const [requestId, delta] of deltaByRequest) {
-            const id = `assistant:${requestId}`;
-            let index = -1;
-            for (let i = next.length - 1; i >= 0; i -= 1)
-              if (next[i].id === id) {
-                index = i;
-                break;
-              }
-            if (index < 0) continue;
-            if (next === all) next = all.slice();
-            next[index] = {
-              ...next[index],
-              content: next[index].content + delta,
-            };
-          }
-          return next;
-        });
-      });
     for (const [requestId, delta] of slices)
-      pendingTaskTextRef.current.set(
-        requestId,
-        (pendingTaskTextRef.current.get(requestId) ?? "") + delta,
-      );
-    scheduleTaskTextFlush();
+      appendStreamingText(requestId, delta);
     if (!drainAll && pendingTextRef.current.size) scheduleTextFlush();
-  }
-
-  function flushPendingTaskText() {
-    if (taskTextFlushTimerRef.current) {
-      window.clearTimeout(taskTextFlushTimerRef.current);
-      taskTextFlushTimerRef.current = undefined;
-    }
-    const pending = [...pendingTaskTextRef.current.entries()];
-    pendingTaskTextRef.current.clear();
-    if (!pending.length) return;
-    const deltaByRequest = new Map(pending);
-    const ownerTaskIds = new Set(
-      pending
-        .map(([requestId]) => requestTasksRef.current.get(requestId))
-        .filter((taskId): taskId is string => Boolean(taskId)),
-    );
-    startTransition(() => {
-      setTasks((all) =>
-        all.map((task) => {
-          if (!ownerTaskIds.has(task.id)) return task;
-          // Reverse-scan for the streaming message and copy that task's array
-          // once, instead of rebuilding every message on the 1.5s task flush.
-          let msgs = task.messages;
-          for (const [requestId, delta] of deltaByRequest) {
-            const id = `assistant:${requestId}`;
-            let index = -1;
-            for (let i = msgs.length - 1; i >= 0; i -= 1)
-              if (msgs[i].id === id) {
-                index = i;
-                break;
-              }
-            if (index < 0) continue;
-            if (msgs === task.messages) msgs = task.messages.slice();
-            msgs[index] = {
-              ...msgs[index],
-              content: msgs[index].content + delta,
-            };
-          }
-          return { ...task, messages: msgs, updatedAt: Date.now() };
-        }),
-      );
-    });
   }
 
   function scheduleTextFlush() {
@@ -1525,35 +1528,30 @@ export default function App() {
     }, STREAM_PACING_INTERVAL_MS);
   }
 
-  function scheduleTaskTextFlush() {
-    if (taskTextFlushTimerRef.current) return;
-    taskTextFlushTimerRef.current = window.setTimeout(
-      flushPendingTaskText,
-      1_500,
-    );
-  }
 
-  function clearPendingReasoning() {
-    pendingReasoningRef.current = "";
+  function clearPendingReasoning(requestId = currentRequest.current) {
+    if (requestId) {
+      pendingReasoningRef.current.delete(requestId);
+      resetStreamingText(streamingReasoningKey(requestId));
+    } else {
+      for (const id of pendingReasoningRef.current.keys())
+        resetStreamingText(streamingReasoningKey(id));
+      pendingReasoningRef.current.clear();
+    }
     if (reasoningFlushTimerRef.current) {
       window.clearTimeout(reasoningFlushTimerRef.current);
       reasoningFlushTimerRef.current = undefined;
     }
-    setAgentReasoning("");
   }
 
   function scheduleReasoningFlush() {
     if (reasoningFlushTimerRef.current) return;
     reasoningFlushTimerRef.current = window.setTimeout(() => {
       reasoningFlushTimerRef.current = undefined;
-      const next = pendingReasoningRef.current;
-      pendingReasoningRef.current = "";
-      if (!next) return;
-      startTransition(() => {
-        setAgentReasoning((current) =>
-          (current + next).replace(/\s+/g, " ").slice(-200),
-        );
-      });
+      const pending = [...pendingReasoningRef.current.entries()];
+      pendingReasoningRef.current.clear();
+      for (const [requestId, delta] of pending)
+        appendStreamingText(streamingReasoningKey(requestId), delta);
     }, 100);
   }
 
@@ -1567,7 +1565,12 @@ export default function App() {
           displayedTaskIdRef.current,
           taskId,
         );
-        if (event.type !== "done" && event.type !== "error")
+        if (
+          event.type !== "done" &&
+          event.type !== "error" &&
+          event.type !== "text" &&
+          event.type !== "reasoning"
+        )
           setTasks((all) => {
             const index = all.findIndex((task) => task.id === taskId);
             const task = all[index];
@@ -1638,7 +1641,10 @@ export default function App() {
               activity.status === "running" || activity.status === "waiting",
           );
           if (isActive && !hasRunningActivity) {
-            pendingReasoningRef.current += event.delta;
+            pendingReasoningRef.current.set(
+              id,
+              (pendingReasoningRef.current.get(id) ?? "") + event.delta,
+            );
             scheduleReasoningFlush();
           }
           return;
@@ -1649,38 +1655,12 @@ export default function App() {
           // committed, so the retry renders a clean, non-duplicated answer.
           pendingTextRef.current.delete(id);
           pendingTextSinceRef.current.delete(id);
-          pendingTaskTextRef.current.delete(id);
+          resetStreamingText(id);
           assistantLengthsRef.current.set(id, 0);
-          const taskId = requestTasksRef.current.get(id);
-          startTransition(() => {
-            if (isActive)
-              setMessages((all) =>
-                all.map((message) =>
-                  message.id === `assistant:${id}`
-                    ? { ...message, content: "" }
-                    : message,
-                ),
-              );
-            if (taskId)
-              setTasks((all) =>
-                all.map((task) =>
-                  task.id === taskId
-                    ? {
-                        ...task,
-                        messages: task.messages.map((message) =>
-                          message.id === `assistant:${id}`
-                            ? { ...message, content: "" }
-                            : message,
-                        ),
-                      }
-                    : task,
-                ),
-              );
-          });
           return;
         }
         if (event.type === "text") {
-          if (isActive) clearPendingReasoning();
+          if (isActive) clearPendingReasoning(id);
           assistantLengthsRef.current.set(
             id,
             (assistantLengthsRef.current.get(id) ?? 0) + event.delta.length,
@@ -1743,17 +1723,25 @@ export default function App() {
           }
         }
         if (event.type === "error") {
-          if (isActive) clearPendingReasoning();
+          if (isActive) clearPendingReasoning(id);
           if (textFlushTimerRef.current) {
             window.clearTimeout(textFlushTimerRef.current);
             textFlushTimerRef.current = undefined;
           }
           flushPendingText(true);
-          flushPendingTaskText();
-          const updateMessages = (all: ChatMessage[]) =>
-            all.map((m) =>
-              m.id === `assistant:${id}` ? { ...m, error: event.message } : m,
+          const finalText = consumeStreamingText(id);
+          const commitFinalText = (all: ChatMessage[]) =>
+            all.map((message) =>
+              message.id === `assistant:${id}`
+                ? {
+                    ...message,
+                    content: message.content + finalText,
+                    error: event.message,
+                  }
+                : message,
             );
+          const updateMessages = (all: ChatMessage[]) =>
+            commitFinalText(all);
           setTasks((all) =>
             all.map((task) =>
               task.id === taskId
@@ -1794,21 +1782,29 @@ export default function App() {
           assistantLengthsRef.current.delete(id);
         }
         if (event.type === "done") {
-          if (isActive) clearPendingReasoning();
+          if (isActive) clearPendingReasoning(id);
           if (textFlushTimerRef.current) {
             window.clearTimeout(textFlushTimerRef.current);
             textFlushTimerRef.current = undefined;
           }
           flushPendingText(true);
-          flushPendingTaskText();
+          const finalText = consumeStreamingText(id);
+          const commitFinalText = (all: ChatMessage[]) =>
+            all.map((message) =>
+              message.id === `assistant:${id}`
+                ? { ...message, content: message.content + finalText }
+                : message,
+            );
+          if (isActive) setMessages(commitFinalText);
           setTasks((all) =>
             all.map((task) => {
               if (task.id !== taskId) return task;
-              const assistantIndex = task.messages.findIndex(
+              const committedMessages = commitFinalText(task.messages);
+              const assistantIndex = committedMessages.findIndex(
                 (message) => message.id === `assistant:${id}`,
               );
-              const assistant = task.messages[assistantIndex];
-              const user = [...task.messages.slice(0, assistantIndex)]
+              const assistant = committedMessages[assistantIndex];
+              const user = [...committedMessages.slice(0, assistantIndex)]
                 .reverse()
                 .find(
                   (message) =>
@@ -1820,6 +1816,7 @@ export default function App() {
                   imageSemantics[image.id] = assistant.content.slice(0, 4_000);
               return {
                 ...task,
+                messages: committedMessages,
                 ...finishTaskRequest(task.runningId, id, "completed"),
                 usageResolved: true,
                 imageSemantics,
@@ -1976,7 +1973,7 @@ export default function App() {
     setUsedContextCount(0);
     currentRequest.current = undefined;
     setRunningId(undefined);
-    setAgentReasoning("");
+    clearPendingReasoning();
     requestStartedRef.current = undefined;
     contextByMessageRef.current.clear();
     autoFollowRef.current = true;
@@ -1992,6 +1989,11 @@ export default function App() {
         files: attachedFiles,
         images: attachedImages,
       });
+    if (displayedTaskIdRef.current)
+      conversationWindowByTaskRef.current.set(
+        displayedTaskIdRef.current,
+        visibleTurnWindow,
+      );
     const conversation = conversationRef.current;
     if (conversation && displayedTaskIdRef.current) {
       // When follow mode is active, the container may be between layout
@@ -2013,6 +2015,16 @@ export default function App() {
       atBottom: true,
     };
     pendingScrollRestoreRef.current = { taskId: task.id, state: targetScroll };
+    const targetTurnCount = task.messages.reduce(
+      (count, message) => count + (message.role === "user" ? 1 : 0),
+      0,
+    );
+    pagedTaskRef.current = task.id;
+    const targetWindow = targetScroll.atBottom
+      ? latestConversationWindow(targetTurnCount, conversationPageSize)
+      : (conversationWindowByTaskRef.current.get(task.id) ??
+        latestConversationWindow(targetTurnCount, conversationPageSize));
+    setVisibleTurnWindow(targetWindow);
     claimTaskView(task.id);
     currentRequest.current = task.runningId;
     setRunningId(task.runningId);
@@ -2862,6 +2874,28 @@ export default function App() {
     if (runningId) {
       const requestId = runningId;
       if (window.kcode) await window.kcode.chat.cancel(requestId);
+      if (textFlushTimerRef.current) {
+        window.clearTimeout(textFlushTimerRef.current);
+        textFlushTimerRef.current = undefined;
+      }
+      flushPendingText(true);
+      const partialText = consumeStreamingText(requestId);
+      if (partialText) {
+        const commitPartialText = (all: ChatMessage[]) =>
+          all.map((message) =>
+            message.id === `assistant:${requestId}`
+              ? { ...message, content: message.content + partialText }
+              : message,
+          );
+        setMessages(commitPartialText);
+        setTasks((all) =>
+          all.map((task) =>
+            task.id === activeTask?.id
+              ? { ...task, messages: commitPartialText(task.messages) }
+              : task,
+          ),
+        );
+      }
       if (previewTimerRef.current)
         window.clearInterval(previewTimerRef.current);
       previewTimerRef.current = undefined;
@@ -2869,7 +2903,7 @@ export default function App() {
         setDurationMs(Date.now() - requestStartedRef.current);
       currentRequest.current = undefined;
       setRunningId(undefined);
-      setAgentReasoning("");
+      clearPendingReasoning(requestId);
       const stopActivities = (all: AgentActivity[]) =>
         all.map((activity) =>
           activity.requestId === requestId &&
@@ -3153,6 +3187,17 @@ export default function App() {
   const onOpenSettings = useEventCallback(openSettings);
   const onStartSidebarResize = useEventCallback(startSidebarResize);
   const onUpdateStatusPanel = useEventCallback(updateStatusPanel);
+  const onSetSidebarDeleteTarget = useEventCallback(
+    (
+      target:
+        | { kind: "workspace"; path: string; name: string; count: number }
+        | { kind: "task"; taskId: string },
+    ) => {
+      if (target.kind === "workspace") return setDeleteTarget(target);
+      const task = tasksRef.current.find((item) => item.id === target.taskId);
+      if (task) setDeleteTarget({ kind: "task", task });
+    },
+  );
 
   return (
     <div className="window-root">
@@ -3183,7 +3228,7 @@ export default function App() {
       >
         <Sidebar
           workspaceGroups={workspaceGroups}
-          activeTask={activeTask}
+          activeTaskId={activeTask?.id}
           taskQuery={taskQuery}
           setTaskQuery={setTaskQuery}
           showArchived={showArchived}
@@ -3196,7 +3241,7 @@ export default function App() {
           createConversation={onCreateConversation}
           switchTask={onSwitchTask}
           toggleTaskArchived={onToggleTaskArchived}
-          setDeleteTarget={setDeleteTarget}
+          setDeleteTarget={onSetSidebarDeleteTarget}
           setContextError={setContextError}
           openSettings={onOpenSettings}
           startSidebarResize={onStartSidebarResize}
@@ -3229,6 +3274,7 @@ export default function App() {
             scrollToTurn={scrollToTurn}
             messages={visibleMessages}
             hasOlderMessages={hasOlderMessages}
+            hasNewerMessages={hasNewerMessages}
             models={models}
             writeInput={setInput}
             openSettings={openSettings}
@@ -3241,7 +3287,7 @@ export default function App() {
             handleActivityChange={handleActivityChange}
             registerTurn={registerTurn}
             endRef={endRef}
-            agentReasoning={agentReasoning}
+            agentReasoning=""
           />
           <div className="composer-wrap">
             {showScrollToBottom && (
@@ -3562,6 +3608,11 @@ export default function App() {
                       </div>
                     )}
                   </div>
+                  <PermissionPicker
+                    mode={permissionMode}
+                    disabled={summaryBusy}
+                    onChange={updatePermissionMode}
+                  />
                 </div>
                 <div className="composer-right">
                   {(usage.input > 0 || usage.output > 0) && (
@@ -3632,7 +3683,6 @@ export default function App() {
             restoreSummarySnapshot={restoreSummarySnapshot}
             rebuildActiveSummary={rebuildActiveSummary}
             restoreFullContext={restoreFullContext}
-            permissionMode={permissionMode}
           />
         )}
         <BrowserPanel

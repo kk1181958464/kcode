@@ -70,6 +70,17 @@ export type TaskRecord = {
   archived?: boolean;
 };
 
+export type SidebarTask = Pick<
+  TaskRecord,
+  "id" | "name" | "workspacePath" | "archived" | "runningId" | "runStatus"
+>;
+
+export type SidebarWorkspaceGroup = {
+  workspacePath: string;
+  name: string;
+  conversations: SidebarTask[];
+};
+
 export type ConversationScrollState = { top: number; atBottom: boolean };
 
 export function storedTaskDrafts(): TaskDrafts {

@@ -209,6 +209,7 @@ type StructuredToolResult = {
 };
 type Turn = {
   text: string;
+  reasoningContent?: string;
   calls: ToolCall[];
   rawCalls: unknown[];
   usage: { input: number; output: number; cached: number };
@@ -219,6 +220,7 @@ type HistoryItem =
       kind: "message";
       role: "user" | "assistant";
       content: string;
+      reasoningContent?: string;
       images?: ModelRequest["messages"][number]["images"];
     }
   | { kind: "calls"; calls: ToolCall[]; rawCalls: unknown[] }
@@ -2917,7 +2919,13 @@ async function modelTurn(
           : item.content;
         // Some OpenAI-compatible gateways reject empty assistant messages.
         if (item.role === "assistant" && !content) continue;
-        messages.push({ role: item.role, content });
+        messages.push({
+          role: item.role,
+          content,
+          ...(item.role === "assistant" && item.reasoningContent
+            ? { reasoning_content: item.reasoningContent }
+            : {}),
+        });
       }
       else if (item.kind === "calls") {
         const raw = item.rawCalls[0] as Record<string, unknown> | undefined;
@@ -3248,6 +3256,7 @@ async function modelTurn(
     }));
     return {
       text: message.content || "",
+      reasoningContent: message.reasoning_content || message.reasoning || "",
       calls: validCalls(calls),
       rawCalls: [
         {
@@ -3454,7 +3463,12 @@ export async function* runAgent(
       );
     if (claimsBrowserAction && unverifiedBrowserClaims < 2) {
       unverifiedBrowserClaims += 1;
-      history.push({ kind: "message", role: "assistant", content: turn.text });
+      history.push({
+        kind: "message",
+        role: "assistant",
+        content: turn.text,
+        reasoningContent: turn.reasoningContent,
+      });
       history.push({
         kind: "message",
         role: "user",
@@ -3471,7 +3485,12 @@ export async function* runAgent(
     if (!turn.calls.length && missingGitEvidence.length) {
       if (unverifiedGitClaims < 2) {
         unverifiedGitClaims += 1;
-        history.push({ kind: "message", role: "assistant", content: turn.text });
+        history.push({
+          kind: "message",
+          role: "assistant",
+          content: turn.text,
+          reasoningContent: turn.reasoningContent,
+        });
         history.push({
           kind: "message",
           role: "user",
@@ -3496,7 +3515,12 @@ export async function* runAgent(
     if (!turn.calls.length && missingCodingEvidence.length) {
       if (unverifiedCodingClaims < 2) {
         unverifiedCodingClaims += 1;
-        history.push({ kind: "message", role: "assistant", content: turn.text });
+        history.push({
+          kind: "message",
+          role: "assistant",
+          content: turn.text,
+          reasoningContent: turn.reasoningContent,
+        });
         history.push({
           kind: "message",
           role: "user",
@@ -3523,6 +3547,7 @@ export async function* runAgent(
             kind: "message",
             role: "assistant",
             content: turn.text,
+            reasoningContent: turn.reasoningContent,
           });
         for (const message of lateInstructions)
           history.push({
@@ -3540,10 +3565,20 @@ export async function* runAgent(
       }
     }
     if (turn.text && (bufferModelText || !streamedText)) {
-      history.push({ kind: "message", role: "assistant", content: turn.text });
+      history.push({
+        kind: "message",
+        role: "assistant",
+        content: turn.text,
+        reasoningContent: turn.reasoningContent,
+      });
       yield { type: "text", delta: turn.text };
     } else if (turn.text)
-      history.push({ kind: "message", role: "assistant", content: turn.text });
+      history.push({
+        kind: "message",
+        role: "assistant",
+        content: turn.text,
+        reasoningContent: turn.reasoningContent,
+      });
     if (!turn.calls.length) {
       // A round with no tool call normally means the model is done. But two
       // cases masquerade as "done" while the task is unfinished: (1) the

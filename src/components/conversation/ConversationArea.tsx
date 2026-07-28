@@ -33,6 +33,7 @@ export interface ConversationAreaProps {
   scrollToTurn(id: string, index: number): void;
   messages: ChatMessage[];
   hasOlderMessages?: boolean;
+  hasNewerMessages?: boolean;
   models: ModelEntry[];
   writeInput(value: string): void;
   openSettings(section: string): void;
@@ -61,6 +62,7 @@ export function ConversationArea({
   scrollToTurn,
   messages,
   hasOlderMessages = false,
+  hasNewerMessages = false,
   models,
   writeInput,
   openSettings,
@@ -175,6 +177,7 @@ export function ConversationArea({
         <ConversationHistory
           messages={messages}
           hasOlderMessages={hasOlderMessages}
+          hasNewerMessages={hasNewerMessages}
           activitiesByRequest={activitiesByRequest}
           runningId={runningId}
           workspacePath={activeTaskWorkspacePath}
