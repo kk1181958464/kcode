@@ -1,5 +1,7 @@
 import { memo, useEffect, useState, type RefObject } from "react";
+import { createPortal } from "react-dom";
 import { Bot, ChevronDown, Settings } from "lucide-react";
+import type { ConversationTurn } from "../../conversation-window";
 import type {
   AgentActivity,
   ChatMessage,
@@ -9,16 +11,15 @@ import type {
 } from "../../types";
 import { ConversationHistory } from "./ConversationView";
 
-interface ConversationTurn {
-  id: string;
-  question: string;
-  answer: string;
-}
-
 interface ModelEntry {
   provider: ProviderConfig;
   model: ModelConfig;
 }
+
+type TurnPreviewState = ConversationTurn & {
+  left: number;
+  top: number;
+};
 
 export interface ConversationAreaProps {
   conversationRef: RefObject<HTMLElement | null>;
@@ -81,6 +82,27 @@ export const ConversationArea = memo(function ConversationArea({
   agentReasoning,
 }: ConversationAreaProps) {
   const [railWindow, setRailWindow] = useState({ start: 0, end: 80 });
+  const [turnPreview, setTurnPreview] = useState<TurnPreviewState>();
+  const showTurnPreview = (
+    turn: ConversationTurn,
+    button: HTMLButtonElement,
+  ) => {
+    const rect = button.getBoundingClientRect();
+    const previewWidth = Math.min(320, Math.max(180, window.innerWidth - 24));
+    setTurnPreview({
+      ...turn,
+      left: Math.max(
+        12,
+        Math.min(rect.left + 34, window.innerWidth - previewWidth - 12),
+      ),
+      top: Math.max(
+        52,
+        Math.min(rect.top + rect.height / 2, window.innerHeight - 52),
+      ),
+    });
+  };
+  const hideTurnPreview = (turnId: string) =>
+    setTurnPreview((current) => (current?.id === turnId ? undefined : current));
   const updateRailWindow = () => {
     const rail = turnRailRef.current;
     if (!rail) return;
@@ -101,6 +123,19 @@ export const ConversationArea = memo(function ConversationArea({
     const frame = requestAnimationFrame(updateRailWindow);
     return () => cancelAnimationFrame(frame);
   }, [conversationTurns.length]);
+  useEffect(() => {
+    setTurnPreview((current) => {
+      if (!current) return current;
+      const updated = conversationTurns.find((turn) => turn.id === current.id);
+      if (!updated) return undefined;
+      if (
+        updated.question === current.question &&
+        updated.answer === current.answer
+      )
+        return current;
+      return { ...current, ...updated };
+    });
+  }, [conversationTurns]);
   const visibleTurns = conversationTurns.slice(
     railWindow.start,
     railWindow.end,
@@ -120,6 +155,7 @@ export const ConversationArea = memo(function ConversationArea({
           className="turn-rail"
           aria-label="对话记录导航"
           onScroll={() => {
+            setTurnPreview(undefined);
             updateTurnRailOverflow();
             updateRailWindow();
           }}
@@ -149,26 +185,31 @@ export const ConversationArea = memo(function ConversationArea({
           {visibleTurns.map((turn, offset) => {
             const index = railWindow.start + offset;
             return (
-            <button
-              key={turn.id}
-              ref={(element) => {
-                if (element) {
-                  turnButtonRefs.current.set(turn.id, element);
-                  element.classList.toggle(
-                    "active",
-                    activeConversationTurnRef.current === turn.id,
-                  );
-                } else turnButtonRefs.current.delete(turn.id);
-              }}
-              onClick={() => scrollToTurn(turn.id, index)}
-              aria-label={`跳转到：${turn.question.slice(0, 40)}`}
-            >
-              <span className="turn-tick" />
-              <span className="turn-preview">
-                <strong>{turn.question}</strong>
-                <small>{turn.answer}</small>
-              </span>
-            </button>
+              <button
+                key={turn.id}
+                ref={(element) => {
+                  if (element) {
+                    turnButtonRefs.current.set(turn.id, element);
+                    element.classList.toggle(
+                      "active",
+                      activeConversationTurnRef.current === turn.id,
+                    );
+                  } else turnButtonRefs.current.delete(turn.id);
+                }}
+                onMouseEnter={(event) =>
+                  showTurnPreview(turn, event.currentTarget)
+                }
+                onMouseLeave={() => hideTurnPreview(turn.id)}
+                onFocus={(event) => showTurnPreview(turn, event.currentTarget)}
+                onBlur={() => hideTurnPreview(turn.id)}
+                onClick={() => {
+                  setTurnPreview(undefined);
+                  scrollToTurn(turn.id, index);
+                }}
+                aria-label={`跳转到：${turn.question.slice(0, 40)}`}
+              >
+                <span className="turn-tick" />
+              </button>
             );
           })}
           {railWindow.end < conversationTurns.length && (
@@ -183,6 +224,18 @@ export const ConversationArea = memo(function ConversationArea({
           )}
         </nav>
       )}
+      {turnPreview &&
+        createPortal(
+          <span
+            className="turn-preview"
+            role="tooltip"
+            style={{ left: turnPreview.left, top: turnPreview.top }}
+          >
+            <strong>{turnPreview.question}</strong>
+            <small>{turnPreview.answer || "此轮正在等待回复"}</small>
+          </span>,
+          document.body,
+        )}
       {messages.length === 0 ? (
         <div className="welcome">
           <div className="welcome-context">

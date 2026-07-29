@@ -502,7 +502,7 @@ export function SettingsPanel({
                   <div className="settings-row">
                     <span>
                       <strong>任务状态栏</strong>
-                      <small>在工作台右侧显示目标和用量</small>
+                      <small>在工作台右侧显示执行、改动与上下文详情</small>
                     </span>
                     <button
                       className={`setting-switch ${statusPanelEnabled ? "on" : ""}`}

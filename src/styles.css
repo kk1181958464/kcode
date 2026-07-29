@@ -994,11 +994,10 @@ select:focus-visible {
   background: #2f3731;
 }
 .turn-preview {
-  position: absolute;
-  top: 50%;
-  left: 34px;
-  width: 320px;
-  display: none;
+  position: fixed;
+  z-index: 80;
+  width: min(320px, calc(100vw - 24px));
+  display: grid;
   gap: 5px;
   padding: 11px 12px;
   transform: translateY(-50%);
@@ -1007,10 +1006,8 @@ select:focus-visible {
   background: var(--surface-raised);
   box-shadow: 0 10px 32px rgba(17, 24, 28, 0.08);
   text-align: left;
-}
-.turn-rail > button:hover .turn-preview,
-.turn-rail > button:focus-visible .turn-preview {
-  display: grid;
+  pointer-events: none;
+  animation: turn-preview-in 0.12s ease-out;
 }
 .turn-preview strong,
 .turn-preview small {
@@ -1029,6 +1026,12 @@ select:focus-visible {
   color: var(--muted);
   font-size: 10px;
   line-height: 1.5;
+}
+@keyframes turn-preview-in {
+  from {
+    opacity: 0;
+    transform: translate(-3px, -50%);
+  }
 }
 .welcome {
   height: 100%;
@@ -8214,6 +8217,464 @@ button[aria-busy="true"] {
 
 @media (prefers-reduced-motion: reduce) {
   .execution-summary.is-active > .execution-summary-head::before {
+    animation: none;
+  }
+}
+
+/* Right task rail: live work first, then concrete changes and verification. */
+.status-panel {
+  gap: 9px;
+  scrollbar-gutter: stable;
+}
+
+.status-panel section {
+  padding: 13px 14px;
+  border-radius: 8px;
+}
+
+.status-section-heading {
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.status-section-heading > span {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+}
+
+.status-section-heading > span > svg {
+  flex: 0 0 auto;
+}
+
+.status-section-heading strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.status-section-heading > time,
+.status-section-heading > small {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.status-section-heading > button {
+  width: 24px;
+  height: 24px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  margin: -5px -5px 0 0;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent !important;
+  color: var(--muted);
+}
+
+.status-section-heading > button:hover {
+  background: var(--surface-hover) !important;
+  color: var(--ink);
+}
+
+.status-run-overview {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+}
+
+.status-run-overview::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 -42%;
+  z-index: -1;
+  width: 42%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--accent) 11%, transparent),
+    transparent
+  );
+  opacity: 0;
+  pointer-events: none;
+}
+
+.status-run-overview.is-running::before {
+  animation: status-rail-sweep 2.4s ease-in-out infinite;
+}
+
+.status-run-overview.is-running .status-section-heading > span {
+  color: var(--accent);
+}
+
+.status-run-overview.has-failures:not(.is-running)
+  .status-section-heading
+  > span {
+  color: var(--danger);
+}
+
+.status-run-overview > code {
+  max-width: 100%;
+  display: block;
+  margin-top: 8px;
+  overflow: hidden;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 9.5px;
+  line-height: 1.5;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-live-detail {
+  margin-top: 7px !important;
+  line-height: 1.45 !important;
+}
+
+.status-run-stats {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px 0;
+  margin-top: 9px;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.status-run-stats > span {
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
+}
+
+.status-run-stats > span + span::before {
+  content: "·";
+  margin: 0 6px;
+  color: color-mix(in srgb, var(--muted) 55%, transparent);
+}
+
+.status-run-stats b {
+  color: var(--ink);
+  font-weight: 650;
+}
+
+.status-run-stats .status-failure-count {
+  color: var(--danger);
+}
+
+.status-change-total {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 11px;
+}
+
+.status-change-total > span {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.status-change-total > span > strong {
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.status-change-total > span > small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-change-total > b,
+.status-file-row > small {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 9.5px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.status-change-total > b > i,
+.status-file-row b {
+  color: var(--success);
+  font-style: normal;
+}
+
+.status-change-total > b > em,
+.status-file-row i {
+  color: var(--danger);
+  font-style: normal;
+}
+
+.status-file-list {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+}
+
+.status-file-list > small {
+  display: block;
+  margin-bottom: 3px;
+  color: var(--muted);
+  font-size: 8.5px;
+}
+
+.status-file-row {
+  min-width: 0;
+  min-height: 27px;
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+}
+
+.status-file-row > span {
+  overflow: hidden;
+  color: var(--ink);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 9.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-file-list > p {
+  margin-top: 3px;
+  text-align: right;
+}
+
+.status-changes-section .git-diff-toggle {
+  min-height: 29px;
+  margin-top: 8px;
+  border-color: var(--line);
+  background: transparent !important;
+}
+
+.status-changes-section .git-diff-toggle:hover {
+  background: var(--surface-hover) !important;
+}
+
+.status-result-list {
+  margin-top: 7px;
+}
+
+.status-result-row {
+  min-width: 0;
+  min-height: 40px;
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 65%, transparent);
+}
+
+.status-result-row:last-child {
+  border-bottom: 0;
+}
+
+.status-result-row > svg {
+  color: var(--success);
+}
+
+.status-result-row.failed > svg {
+  color: var(--danger);
+}
+
+.status-result-row.active > svg {
+  color: var(--accent);
+}
+
+.status-result-row > span {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.status-result-row strong,
+.status-result-row code {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-result-row strong {
+  color: var(--ink);
+  font-size: 9.5px;
+  font-weight: 600;
+}
+
+.status-result-row code {
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 8.5px;
+}
+
+.status-result-row > small {
+  color: var(--muted);
+  font-size: 8.5px;
+  white-space: nowrap;
+}
+
+.status-result-row.failed > small {
+  color: var(--danger);
+}
+
+.status-recovery-section .resume-checkpoint {
+  margin-top: 9px;
+  background: transparent;
+}
+
+.status-usage-section .run-metrics {
+  grid-template-columns: repeat(auto-fit, minmax(68px, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.status-usage-section .run-metrics > div {
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.status-usage-section .run-metrics > div > svg {
+  flex: 0 0 auto;
+  color: var(--muted);
+}
+
+.status-usage-section .run-metrics strong {
+  overflow: hidden;
+  font-size: 10.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-usage-section .token-split {
+  flex-wrap: wrap;
+  gap: 4px 7px;
+  margin-top: 10px;
+  line-height: 1.4;
+}
+
+.status-usage-section .context-usage {
+  margin-top: 12px;
+  padding: 0;
+  border: 0;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.context-budget-meta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 3px 8px;
+}
+
+.context-budget-meta > small {
+  text-align: left;
+}
+
+.context-budget-meta > small:last-child {
+  margin-left: auto;
+  color: var(--warning);
+}
+
+.status-usage-section .compact-context-button {
+  border-color: var(--line);
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.status-usage-section .compact-context-button:hover:not(:disabled) {
+  background: var(--surface-hover) !important;
+}
+
+.status-model-line {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: auto;
+  padding: 5px 7px 1px;
+  color: var(--muted);
+}
+
+.status-model-line > svg {
+  flex: 0 0 auto;
+}
+
+.status-model-line > span {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  overflow: hidden;
+  font-size: 9px;
+}
+
+.status-model-line strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-weight: 550;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-model-line small {
+  flex: 0 0 auto;
+  color: color-mix(in srgb, var(--muted) 72%, transparent);
+  font-size: 8.5px;
+}
+
+.status-model-line small::before {
+  content: "·";
+  margin-right: 5px;
+}
+
+@keyframes status-rail-sweep {
+  0% {
+    opacity: 0;
+    transform: translateX(0);
+  }
+  20%,
+  75% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(340%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .status-run-overview.is-running::before {
     animation: none;
   }
 }

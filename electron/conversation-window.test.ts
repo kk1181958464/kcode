@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   appendConversationWindow,
+  conversationTurnPreviews,
   latestConversationWindow,
   prependConversationWindow,
   windowContainingTurn,
@@ -27,4 +28,38 @@ test("conversation window stays bounded while paging backward and forward", () =
 test("conversation window can reveal a selected turn without mounting all turns", () => {
   assert.deepEqual(windowContainingTurn(15, 80, 12), { start: 15, end: 39 });
   assert.deepEqual(windowContainingTurn(78, 80, 12), { start: 68, end: 80 });
+});
+
+test("builds concise hover previews from each turn's assistant reply", () => {
+  const turns = conversationTurnPreviews([
+    { id: "u1", role: "user", content: "检查   项目结构", createdAt: 1 },
+    {
+      id: "a1",
+      role: "assistant",
+      content: "已经检查项目。\n发现两个入口文件。",
+      createdAt: 2,
+    },
+    {
+      id: "u2",
+      role: "user",
+      content: "继续处理",
+      createdAt: 3,
+      queued: true,
+    },
+  ]);
+
+  assert.deepEqual(turns, [
+    {
+      id: "u1",
+      question: "检查 项目结构",
+      answer: "已经检查项目。 发现两个入口文件。",
+      messageIndex: 0,
+    },
+    {
+      id: "u2",
+      question: "继续处理",
+      answer: "消息已排队，等待上一轮完成",
+      messageIndex: 2,
+    },
+  ]);
 });

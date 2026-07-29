@@ -99,6 +99,7 @@ import {
 } from "./sidebar-projection";
 import {
   appendConversationWindow,
+  conversationTurnPreviews,
   latestConversationWindow,
   prependConversationWindow,
   windowContainingTurn,
@@ -119,14 +120,12 @@ import {
   savedEfforts,
 } from "./lib/model-utils";
 import {
-  activityFocus,
-  activityTarget,
   clipWorkingText,
   errorMessage,
   formatBytes,
   formatDuration,
-  workingPhase,
 } from "./lib/format";
+import { latestRequestActivities } from "./status-summary";
 // Heavy, behind-a-click panels — lazy so they stay off the first-paint bundle.
 const SettingsPanel = lazy(() =>
   import("./components/settings/SettingsPanel").then((m) => ({
@@ -724,29 +723,8 @@ export default function App() {
     activeTask && summarizingTasks.has(activeTask.id),
   );
   const conversationTurns = useMemo(
-    () =>
-      messages
-        .map((message, messageIndex) =>
-          message.role === "user"
-            ? {
-                id: message.id,
-                question: message.content,
-                answer: "点击跳转到此轮对话",
-                messageIndex,
-              }
-            : undefined,
-        )
-        .filter(
-          (
-            turn,
-          ): turn is {
-            id: string;
-            question: string;
-            answer: string;
-            messageIndex: number;
-          } => Boolean(turn),
-        ),
-    [activeTaskId, messages.length],
+    () => conversationTurnPreviews(messages),
+    [activeTaskId, messages.length, runningId],
   );
   const visibleMessages = useMemo(() => {
     // Keep the conversation window bounded while tokens are still arriving.
@@ -3319,7 +3297,6 @@ export default function App() {
     );
   }
 
-  const connected = providers.some((provider) => provider.hasApiKey);
   const selectedTarget = useMemo(
     () =>
       models.find(
@@ -3387,46 +3364,11 @@ export default function App() {
   const runStatus: TaskRunStatus = runningId
     ? "running"
     : (activeTask?.runStatus ?? "idle");
-  const taskComplete = runStatus === "completed";
-  const runStatusTitle: Record<TaskRunStatus, string> = {
-    idle: "准备开发环境",
-    running: "Agent 正在执行",
-    completed: "本轮任务已完成",
-    failed: "本轮任务失败",
-    cancelled: "本轮任务已停止",
-    paused: "上次任务已中断",
-  };
-  const latestActivities = useMemo(
+  const statusActivities = useMemo(
     () =>
-      activeTask
-        ? activities.filter(
-            (activity) =>
-              !activeTask.runningId ||
-              activity.requestId === activeTask.runningId,
-          )
-        : [],
-    [activeTask?.runningId, activities],
+      latestRequestActivities(activities, activeTask?.runningId ?? runningId),
+    [activeTask?.runningId, activities, runningId],
   );
-  const livePhase =
-    runStatus === "running"
-      ? workingPhase(
-          latestActivities,
-          Date.now() -
-            (activeTask?.startedAt ?? requestStartedRef.current ?? Date.now()),
-        ).phase
-      : "";
-  const runStatusDescription: Record<TaskRunStatus, string> = {
-    idle: connected
-      ? "模型通道已连接，可以开始执行任务。"
-      : "应用骨架已就绪，下一步配置一个模型通道。",
-    running: livePhase
-      ? `${livePhase}。请保持当前任务打开。`
-      : "正在生成响应，请保持当前任务打开。",
-    completed: "模型已返回结果，可以继续追加修改要求。",
-    failed: "本轮执行遇到错误，请查看对话中的失败原因后重试。",
-    cancelled: "本轮执行已停止，可以调整要求后重新发送。",
-    paused: "应用上次退出时任务仍在运行，可以从检查点恢复。",
-  };
   function handleModelMenuKeyDown(event: React.KeyboardEvent) {
     if (!modelMenuOpen) {
       if (["ArrowDown", "ArrowUp", "Enter", " "].includes(event.key)) {
@@ -3967,12 +3909,7 @@ export default function App() {
         {!browserState.open && !settings && (
           <StatusPanel
             runStatus={runStatus}
-            taskComplete={taskComplete}
-            runStatusTitle={runStatusTitle}
-            runStatusDescription={runStatusDescription}
-            connected={connected}
-            providers={providers}
-            models={models}
+            activities={statusActivities}
             selectedTarget={selectedTarget}
             effortLabels={effortLabels}
             reasoningEffort={reasoningEffort}

@@ -1,4 +1,49 @@
+import type { ChatMessage } from "./types";
+
 export type ConversationWindow = { start: number; end: number };
+
+export type ConversationTurn = {
+  id: string;
+  question: string;
+  answer: string;
+  messageIndex: number;
+};
+
+function previewText(text: string, maxLength: number) {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, maxLength - 1)}…`;
+}
+
+export function conversationTurnPreviews(
+  messages: readonly ChatMessage[],
+): ConversationTurn[] {
+  const turns: ConversationTurn[] = [];
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index];
+    if (message.role !== "user") continue;
+    let assistant: ChatMessage | undefined;
+    for (let next = index + 1; next < messages.length; next += 1) {
+      if (messages[next].role === "user") break;
+      if (messages[next].role === "assistant") {
+        assistant = messages[next];
+        break;
+      }
+    }
+    const queued = Boolean(
+      (message as ChatMessage & { queued?: boolean }).queued,
+    );
+    turns.push({
+      id: message.id,
+      question: previewText(message.content, 120),
+      answer:
+        previewText(assistant?.content || assistant?.error || "", 220) ||
+        (queued ? "消息已排队，等待上一轮完成" : "此轮正在等待回复"),
+      messageIndex: index,
+    });
+  }
+  return turns;
+}
 
 export function latestConversationWindow(
   turnCount: number,
