@@ -29,7 +29,10 @@ import {
   type ReasoningEffort,
 } from "../src/types";
 import { isCasualGreeting } from "../src/intent";
-import { resolvePermissionDecision } from "../src/permissions";
+import {
+  permissionCategoryForCommand,
+  resolvePermissionDecision,
+} from "../src/permissions";
 import { AgentStreamAssembler } from "./agent-stream";
 import { RetryTextReconciler } from "./stream-recovery";
 import {
@@ -3005,7 +3008,8 @@ async function modelTurn(
   protocolOverride?: Protocol,
   runtime?: ModelTurnRuntime,
 ): Promise<Turn> {
-  const provider = runtime?.provider ?? (await getProviderWithKey(request.providerId));
+  const provider =
+    runtime?.provider ?? (await getProviderWithKey(request.providerId));
   if (!provider.enabled) throw new Error("当前供应商已停用");
   if (!provider.models.some((model) => model.modelId === request.modelId))
     throw new Error("模型不属于当前供应商或已被移除");
@@ -3996,15 +4000,9 @@ export async function* runAgent(
                         call.name === "stop_process"
                       ? "longRunningProcesses"
                       : call.name === "run_command"
-                        ? /\bgit\s+(push|commit)\b/i.test(
+                        ? permissionCategoryForCommand(
                             String(call.input.command ?? ""),
                           )
-                          ? "gitPublish"
-                          : /\b(curl|wget|invoke-webrequest|npm\s+(install|view)|git\s+(fetch|pull|clone))\b/i.test(
-                                String(call.input.command ?? ""),
-                              )
-                            ? "network"
-                            : "runCommands"
                         : new Set<AgentToolName>([
                               "apply_patch",
                               "write_file",

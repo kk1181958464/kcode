@@ -6,7 +6,8 @@ import {
   LockOpen,
   ShieldCheck,
 } from "lucide-react";
-import type { PermissionMode } from "../../types";
+import type { PermissionMode, PermissionPolicy } from "../../types";
+import { isPermissionPolicyCustomized } from "../../permissions";
 
 const permissionOptions: Array<{
   mode: PermissionMode;
@@ -44,16 +45,20 @@ function PermissionIcon({
 
 export function PermissionPicker({
   mode,
+  policy,
   disabled,
   onChange,
 }: {
   mode: PermissionMode;
+  policy: PermissionPolicy;
   disabled?: boolean;
   onChange(mode: PermissionMode): void;
 }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const current = permissionOptions.find((option) => option.mode === mode)!;
+  const customized = isPermissionPolicyCustomized(mode, policy);
+  const triggerLabel = customized ? "自定义权限" : current.label;
 
   useEffect(() => {
     if (!open) return;
@@ -79,11 +84,11 @@ export function PermissionPicker({
         aria-haspopup="menu"
         aria-expanded={open}
         disabled={disabled}
-        title={`操作权限：${current.label}`}
+        title={`操作权限：${triggerLabel}`}
         onClick={() => setOpen((value) => !value)}
       >
-        <PermissionIcon mode={mode} />
-        <span>{current.label}</span>
+        <PermissionIcon mode={customized ? "confirm" : mode} />
+        <span>{triggerLabel}</span>
         <ChevronDown size={13} />
       </button>
       {open && (
@@ -93,8 +98,8 @@ export function PermissionPicker({
             <button
               type="button"
               role="menuitemradio"
-              aria-checked={mode === option.mode}
-              className={mode === option.mode ? "active" : ""}
+              aria-checked={!customized && mode === option.mode}
+              className={!customized && mode === option.mode ? "active" : ""}
               key={option.mode}
               onClick={() => {
                 onChange(option.mode);
@@ -106,7 +111,7 @@ export function PermissionPicker({
                 <strong>{option.label}</strong>
                 <small>{option.description}</small>
               </span>
-              {mode === option.mode && <Check size={14} />}
+              {!customized && mode === option.mode && <Check size={14} />}
             </button>
           ))}
         </div>

@@ -102,6 +102,10 @@ import {
   MAX_CONTEXT_TOTAL_BYTES,
   isSupportedContextFile,
 } from "../src/attachments";
+import {
+  isLegacyDevelopmentShortcut,
+  windowsAppUserModelId,
+} from "./windows-app-id";
 
 const controllers = new Map<string, AbortController>();
 // Turn raw upstream/proxy error codes into a readable message for the user.
@@ -136,7 +140,7 @@ function friendlyModelError(raw: string): string {
   return text;
 }
 installProcessLogging();
-const appUserModelId = "com.kcode.desktop";
+const appUserModelId = windowsAppUserModelId(app.isPackaged);
 app.setName("KCode");
 if (process.platform === "win32") app.setAppUserModelId(appUserModelId);
 let mainWindow: BrowserWindow | undefined;
@@ -164,6 +168,35 @@ const icoPath = () =>
   ).find(existsSync);
 const windowIcon = () =>
   process.platform === "win32" ? icoPath() || iconPath() : iconPath();
+function configureWindowsTaskbar(win: BrowserWindow, icon?: string) {
+  if (process.platform !== "win32") return;
+  if (icon) win.setIcon(icon);
+  const taskbarIcon = icoPath() || iconPath();
+  win.setAppDetails({
+    appId: appUserModelId,
+    ...(taskbarIcon ? { appIconPath: taskbarIcon, appIconIndex: 0 } : {}),
+  });
+}
+async function removeLegacyDevelopmentShortcut() {
+  if (process.platform !== "win32" || !app.isPackaged) return;
+  const shortcutPath = path.join(
+    app.getPath("appData"),
+    "Microsoft",
+    "Windows",
+    "Start Menu",
+    "Programs",
+    "Electron.lnk",
+  );
+  if (!existsSync(shortcutPath)) return;
+  try {
+    const shortcut = shell.readShortcutLink(shortcutPath);
+    if (!isLegacyDevelopmentShortcut(shortcut)) return;
+    await rm(shortcutPath, { force: true });
+    writeLog("info", "windows.legacy-shortcut.removed", { shortcutPath });
+  } catch (error) {
+    writeLog("warn", "windows.legacy-shortcut.remove-failed", error);
+  }
+}
 const appIcon = (size = 32) => {
   const file = iconPath();
   const image = file
@@ -295,6 +328,7 @@ async function listCheckpoints() {
   }
 }
 function createWindow() {
+  const icon = windowIcon();
   const win = new BrowserWindow({
     width: 1420,
     height: 900,
@@ -303,13 +337,14 @@ function createWindow() {
     frame: false,
     autoHideMenuBar: true,
     backgroundColor: "#f6f7f9",
-    icon: windowIcon(),
+    icon,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
     },
   });
+  configureWindowsTaskbar(win, icon);
   mainWindow = win;
   setBrowserHost(win, {
     onState: (state) => {
@@ -359,7 +394,8 @@ function createWindow() {
   return win;
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  await removeLegacyDevelopmentShortcut();
   const bundledSkillsRoot = app.isPackaged
     ? path.join(process.resourcesPath, "skills")
     : path.join(app.getAppPath(), "skills");

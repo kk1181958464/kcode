@@ -4085,6 +4085,7 @@ export default function App() {
                   </div>
                   <PermissionPicker
                     mode={permissionMode}
+                    policy={permissionPolicy}
                     disabled={summaryBusy}
                     onChange={updatePermissionMode}
                   />

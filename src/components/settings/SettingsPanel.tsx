@@ -38,6 +38,7 @@ import {
 } from "../../models";
 import { effortLabels, savedEfforts } from "../../lib/model-utils";
 import { errorMessage } from "../../lib/format";
+import { isPermissionPolicyCustomized } from "../../permissions";
 import { ProviderModal } from "./ProviderModal";
 
 export function SettingsPanel({
@@ -123,9 +124,7 @@ export function SettingsPanel({
         return window.kcode.skills.list(true);
       })
       .then(setSkills)
-      .catch((error) =>
-        setSkillError(errorMessage(error)),
-      )
+      .catch((error) => setSkillError(errorMessage(error)))
       .finally(() => setSkillsLoaded(true));
   }, [section]);
   useEffect(() => {
@@ -285,6 +284,10 @@ export function SettingsPanel({
         .includes(query)
     );
   });
+  const customizedPermissions = isPermissionPolicyCustomized(
+    permissionMode,
+    permissionPolicy,
+  );
   return (
     <div
       className="settings-layer"
@@ -584,36 +587,6 @@ export function SettingsPanel({
                       打开日志目录
                     </button>
                   </div>
-                </div>
-                <div className="permission-detail-list">
-                  {(
-                    [
-                      ["workspaceWrite", "工作区文件修改"],
-                      ["deletePaths", "删除文件"],
-                      ["runCommands", "运行命令"],
-                      ["longRunningProcesses", "长期进程"],
-                      ["network", "网络访问"],
-                      ["gitPublish", "Git 提交与推送"],
-                    ] as [keyof PermissionPolicy, string][]
-                  ).map(([key, label]) => (
-                    <label key={key}>
-                      <span>{label}</span>
-                      <select
-                        value={permissionPolicy[key]}
-                        onChange={(event) =>
-                          onPermissionPolicyChange({
-                            ...permissionPolicy,
-                            [key]: event.target
-                              .value as PermissionPolicy[typeof key],
-                          })
-                        }
-                      >
-                        <option value="allow">允许</option>
-                        <option value="confirm">每次确认</option>
-                        <option value="deny">禁止</option>
-                      </select>
-                    </label>
-                  ))}
                 </div>
               </section>
             )}
@@ -1059,7 +1032,11 @@ export function SettingsPanel({
               <section className="settings-section">
                 <div className="settings-section-header">
                   <h3>权限</h3>
-                  <p>设置 Agent 对当前工作区的默认操作边界。</p>
+                  <p>
+                    {customizedPermissions
+                      ? "正在使用下方详细规则。"
+                      : "设置 Agent 对当前工作区的默认操作边界。"}
+                  </p>
                 </div>
                 <div
                   className="permission-options"
@@ -1068,8 +1045,14 @@ export function SettingsPanel({
                 >
                   <button
                     role="radio"
-                    aria-checked={permissionMode === "confirm"}
-                    className={permissionMode === "confirm" ? "active" : ""}
+                    aria-checked={
+                      !customizedPermissions && permissionMode === "confirm"
+                    }
+                    className={
+                      !customizedPermissions && permissionMode === "confirm"
+                        ? "active"
+                        : ""
+                    }
                     onClick={() => onPermissionModeChange("confirm")}
                   >
                     <span className="permission-option-icon">
@@ -1079,7 +1062,9 @@ export function SettingsPanel({
                       <strong>变更前确认</strong>
                       <small>写入文件或运行命令前请求确认</small>
                     </span>
-                    {permissionMode === "confirm" && <Check size={15} />}
+                    {!customizedPermissions && permissionMode === "confirm" && (
+                      <Check size={15} />
+                    )}
                   </button>
                   <button
                     role="radio"
@@ -1098,9 +1083,13 @@ export function SettingsPanel({
                   </button>
                   <button
                     role="radio"
-                    aria-checked={permissionMode === "full-access"}
+                    aria-checked={
+                      !customizedPermissions && permissionMode === "full-access"
+                    }
                     className={
-                      permissionMode === "full-access" ? "active danger" : ""
+                      !customizedPermissions && permissionMode === "full-access"
+                        ? "active danger"
+                        : ""
                     }
                     onClick={() => onPermissionModeChange("full-access")}
                   >
@@ -1109,10 +1098,42 @@ export function SettingsPanel({
                     </span>
                     <span>
                       <strong>完全访问</strong>
-                      <small>允许直接写入文件和运行命令，无需逐次确认</small>
+                      <small>默认直接执行，可在详细规则中设置例外</small>
                     </span>
-                    {permissionMode === "full-access" && <Check size={15} />}
+                    {!customizedPermissions &&
+                      permissionMode === "full-access" && <Check size={15} />}
                   </button>
+                </div>
+                <div className="permission-detail-list">
+                  {(
+                    [
+                      ["workspaceWrite", "工作区文件修改"],
+                      ["deletePaths", "删除文件"],
+                      ["runCommands", "运行命令"],
+                      ["longRunningProcesses", "长期进程"],
+                      ["network", "网络访问"],
+                      ["gitPublish", "Git 提交与推送"],
+                    ] as [keyof PermissionPolicy, string][]
+                  ).map(([key, label]) => (
+                    <label key={key}>
+                      <span>{label}</span>
+                      <select
+                        value={permissionPolicy[key]}
+                        disabled={permissionMode === "read-only"}
+                        onChange={(event) =>
+                          onPermissionPolicyChange({
+                            ...permissionPolicy,
+                            [key]: event.target
+                              .value as PermissionPolicy[typeof key],
+                          })
+                        }
+                      >
+                        <option value="allow">允许</option>
+                        <option value="confirm">每次确认</option>
+                        <option value="deny">禁止</option>
+                      </select>
+                    </label>
+                  ))}
                 </div>
               </section>
             )}
