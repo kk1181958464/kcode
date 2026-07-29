@@ -447,6 +447,7 @@ export type KCodeApi = {
   context: {
     pickFiles(defaultDirectory?: string): Promise<ContextFile[]>;
     pickDirectory(defaultDirectory?: string): Promise<string | null>;
+    filePath(file: File): string;
   };
   workspace: {
     pickFolder(): Promise<WorkspaceFolder | null>;

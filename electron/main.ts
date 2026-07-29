@@ -95,6 +95,13 @@ import { createSkillStore, type ListedSkill } from "./skill-store";
 import { clearAgentSkillCache, configureAgentSkills } from "./agent-skills";
 import { networkFetch } from "./network";
 import { existingDirectory } from "./dialog-path";
+import {
+  CONTEXT_FILE_DIALOG_EXTENSIONS,
+  MAX_CONTEXT_FILES,
+  MAX_CONTEXT_FILE_BYTES,
+  MAX_CONTEXT_TOTAL_BYTES,
+  isSupportedContextFile,
+} from "../src/attachments";
 
 const controllers = new Map<string, AbortController>();
 // Turn raw upstream/proxy error codes into a readable message for the user.
@@ -287,33 +294,6 @@ async function listCheckpoints() {
     return [];
   }
 }
-const contextExtensions = new Set([
-  ".txt",
-  ".md",
-  ".json",
-  ".js",
-  ".jsx",
-  ".ts",
-  ".tsx",
-  ".css",
-  ".html",
-  ".py",
-  ".java",
-  ".go",
-  ".rs",
-  ".c",
-  ".cpp",
-  ".h",
-  ".hpp",
-  ".yml",
-  ".yaml",
-  ".toml",
-  ".xml",
-  ".sql",
-  ".sh",
-  ".ps1",
-]);
-
 function createWindow() {
   const win = new BrowserWindow({
     width: 1420,
@@ -685,33 +665,9 @@ app.whenReady().then(() => {
         filters: [
           {
             name: "文本和代码",
-            extensions: [
-              "txt",
-              "md",
-              "json",
-              "js",
-              "jsx",
-              "ts",
-              "tsx",
-              "css",
-              "html",
-              "py",
-              "java",
-              "go",
-              "rs",
-              "c",
-              "cpp",
-              "h",
-              "hpp",
-              "yml",
-              "yaml",
-              "toml",
-              "xml",
-              "sql",
-              "sh",
-              "ps1",
-            ],
+            extensions: CONTEXT_FILE_DIALOG_EXTENSIONS,
           },
+          { name: "所有文件", extensions: ["*"] },
         ],
       };
       const owner = BrowserWindow.fromWebContents(event.sender);
@@ -719,27 +675,27 @@ app.whenReady().then(() => {
         throw new Error("无法确认文件选择窗口");
       const result = await dialog.showOpenDialog(owner, options);
       if (result.canceled) return [];
-      if (result.filePaths.length > 8)
-        throw new Error("一次最多添加 8 个上下文文件");
+      if (result.filePaths.length > MAX_CONTEXT_FILES)
+        throw new Error(`一次最多添加 ${MAX_CONTEXT_FILES} 个上下文文件`);
       const selectedPaths = result.filePaths;
       const fileStats = await Promise.all(
         selectedPaths.map((filePath) => stat(filePath)),
       );
       if (
         fileStats.reduce((total, info) => total + info.size, 0) >
-        2 * 1024 * 1024
+        MAX_CONTEXT_TOTAL_BYTES
       )
         throw new Error("上下文文件总大小不能超过 2 MB");
       const files = await Promise.all(
         selectedPaths.map(async (filePath, index) => {
-          if (!contextExtensions.has(path.extname(filePath).toLowerCase()))
+          if (!isSupportedContextFile(filePath))
             throw new Error(
               `${path.basename(filePath)} 不是支持的文本或代码文件`,
             );
           const info = fileStats[index];
           if (!info.isFile())
             throw new Error(`${path.basename(filePath)} 不是普通文件`);
-          if (info.size > 512 * 1024)
+          if (info.size > MAX_CONTEXT_FILE_BYTES)
             throw new Error(
               `${path.basename(filePath)} 超过 512 KB，无法作为上下文添加`,
             );

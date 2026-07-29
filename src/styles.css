@@ -7732,6 +7732,42 @@ button[aria-busy="true"] {
   box-shadow: 0 10px 30px rgb(24 24 27 / 9%) !important;
 }
 
+.composer.drag-active {
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 3px var(--focus-ring) !important;
+}
+
+.composer-drop-zone {
+  position: absolute;
+  inset: 6px;
+  z-index: 12;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  border: 1px dashed color-mix(in srgb, var(--accent) 68%, var(--line));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface-raised) 93%, var(--accent));
+  color: var(--accent);
+  pointer-events: none;
+}
+
+.composer-drop-zone > span {
+  display: grid;
+  gap: 1px;
+}
+
+.composer-drop-zone strong {
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.composer-drop-zone small {
+  color: var(--muted);
+  font-size: 9px;
+}
+
 .composer textarea {
   min-height: 74px;
   padding: 14px 16px 9px;

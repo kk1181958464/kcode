@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type { AgentEvent, KCodeApi } from "../src/types";
 
 const api: KCodeApi = {
@@ -77,6 +77,7 @@ const api: KCodeApi = {
       ipcRenderer.invoke("context:pick-files", defaultDirectory),
     pickDirectory: (defaultDirectory) =>
       ipcRenderer.invoke("context:pick-directory", defaultDirectory),
+    filePath: (file) => webUtils.getPathForFile(file),
   },
   workspace: {
     pickFolder: () => ipcRenderer.invoke("workspace:pick-folder"),

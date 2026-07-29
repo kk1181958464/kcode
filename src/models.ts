@@ -35,6 +35,7 @@ export type TaskRecord = {
   activities: AgentActivity[];
   modelSelection?: string;
   reasoningEffort?: ReasoningEffort;
+  contextDirectory?: string;
   runningId?: string;
   runStatus?: TaskRunStatus;
   startedAt?: number;
