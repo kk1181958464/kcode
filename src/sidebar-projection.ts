@@ -7,6 +7,10 @@ export type SidebarProjection = {
   workspaceGroups: SidebarWorkspaceGroup[];
 };
 
+export function sidebarTaskRenderKey(task: SidebarTask) {
+  return `task:${task.id}:${task.runningId ?? task.runStatus ?? "idle"}`;
+}
+
 function sidebarFieldsMatch(task: TaskRecord, snapshot: SidebarTask) {
   return (
     task.id === snapshot.id &&

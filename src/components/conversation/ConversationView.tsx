@@ -29,7 +29,12 @@ import type {
   ImageAttachment,
 } from "../../types";
 import { EMPTY_ACTIVITIES, type QueuedChatMessage } from "../../models";
-import { activityFocus, formatDuration, workingPhase } from "../../lib/format";
+import {
+  activityFocus,
+  activityTarget,
+  formatDuration,
+  workingPhase,
+} from "../../lib/format";
 import { copyWithToast } from "../../lib/toast";
 import { MarkdownMessage } from "../common/MarkdownMessage";
 import { DiffView } from "../common/DiffView";
@@ -630,9 +635,32 @@ function collectFileChangeStats(activities: AgentActivity[]) {
   };
 }
 
-function formatFileStatLine(files: number, additions: number, deletions: number) {
-  if (!files) return "";
-  return `修改 ${files} 个文件 · +${additions} -${deletions}`;
+function activeExecutionCopy(activity: AgentActivity) {
+  const target =
+    activity.command || activity.path || activityTarget(activity) || "";
+  switch (activity.tool) {
+    case "run_command":
+      return { label: "正在运行命令", target };
+    case "ssh_run":
+      return { label: "正在运行远程命令", target };
+    case "mysql_query":
+    case "sqlserver_query":
+    case "mongodb_execute":
+      return { label: "正在执行查询", target };
+    case "apply_patch":
+      return { label: "正在应用修改", target };
+    case "write_file":
+    case "ssh_write_file":
+      return { label: "正在写入文件", target };
+    case "move_path":
+      return { label: "正在移动文件", target };
+    case "delete_path":
+      return { label: "正在删除文件", target };
+    case "diagnostics":
+      return { label: "正在检查诊断", target };
+    default:
+      return { label: `正在${activity.title}`, target };
+  }
 }
 
 const ExecutionSummary = memo(
@@ -653,52 +681,62 @@ const ExecutionSummary = memo(
     const [visibleActivityCount, setVisibleActivityCount] = useState(
       ACTIVITY_INITIAL_RENDER_LIMIT,
     );
-    const fileStats = useMemo(() => collectFileChangeStats(activities), [
-      activities,
-    ]);
-    const previewFiles = fileStats.entries.slice(0, 3);
+    const fileStats = useMemo(
+      () => collectFileChangeStats(activities),
+      [activities],
+    );
+    const previewFiles = fileStats.entries.slice(0, FILE_INITIAL_RENDER_LIMIT);
     // Recomputing these passes on every streaming flush is wasted work; the
     // result only changes when the activity set changes.
-    const { summary, waiting } = useMemo(() => {
-      const commands = activities.filter((activity) =>
-        commandTools.includes(activity.tool),
-      ).length;
-      const agents = activities.filter(
-        (activity) => activity.tool === "spawn_agent",
-      ).length;
-      const failures = activities.filter(
-        (activity) => activity.status === "failed",
-      ).length;
-      const isWaiting = activities.some(
-        (activity) => activity.status === "waiting",
-      );
-      const inProgress = activities.some(
-        (activity) =>
-          activity.status === "running" || activity.status === "waiting",
-      );
+    const executionStats = useMemo(() => {
+      let commands = 0;
+      let agents = 0;
+      let completed = 0;
+      let failures = 0;
+      let active: AgentActivity | undefined;
+      for (const activity of activities) {
+        if (commandTools.includes(activity.tool)) commands += 1;
+        if (activity.tool === "spawn_agent") agents += 1;
+        if (activity.status === "success" || activity.status === "completed")
+          completed += 1;
+        if (activity.status === "failed" || activity.status === "denied")
+          failures += 1;
+        if (activity.status === "running" || activity.status === "waiting")
+          active = activity;
+      }
       return {
-        waiting: isWaiting,
-        summary: [
-          commands ? `运行了 ${commands} 个命令` : "",
-          agents ? `启动了 ${agents} 个子 Agent` : "",
-          formatFileStatLine(
-            fileStats.files,
-            fileStats.additions,
-            fileStats.deletions,
-          ),
-          !commands && !agents && !fileStats.files
-            ? `执行了 ${activities.length} 个步骤`
-            : "",
-          failures ? `${failures} 项失败` : "",
-          running ? (inProgress ? "正在执行" : "正在继续") : "",
-        ]
-          .filter(Boolean)
-          .join(" · "),
+        commands,
+        agents,
+        completed,
+        failures,
+        active,
+        last: activities.at(-1),
+        waiting: active?.status === "waiting",
       };
-    }, [activities, fileStats, running]);
+    }, [activities]);
+    const activeRunning =
+      running && executionStats.active?.status === "running";
+    let headline = "执行完成";
+    let focus = "";
+    if (executionStats.waiting && executionStats.active) {
+      headline = "等待确认";
+      focus = activityFocus(executionStats.active);
+    } else if (activeRunning && executionStats.active) {
+      const copy = activeExecutionCopy(executionStats.active);
+      headline = copy.label;
+      focus = copy.target;
+    } else if (running && executionStats.last) {
+      headline =
+        executionStats.last.status === "failed"
+          ? "步骤失败，正在调整"
+          : "已完成当前步骤";
+      focus = activityFocus(executionStats.last);
+    } else if (executionStats.failures) {
+      headline = "执行完成，存在失败项";
+    }
     useEffect(() => {
-      if (waiting) setExpanded(true);
-    }, [waiting]);
+      if (executionStats.waiting) setExpanded(true);
+    }, [executionStats.waiting]);
     useEffect(() => {
       if (!expanded) setVisibleActivityCount(ACTIVITY_INITIAL_RENDER_LIMIT);
     }, [expanded]);
@@ -710,7 +748,7 @@ const ExecutionSummary = memo(
     const visibleActivities = activities.slice(hiddenActivityCount);
     return (
       <section
-        className={`execution-summary ${fileStats.files ? "has-file-stats" : ""}`}
+        className={`execution-summary ${fileStats.files ? "has-file-stats" : ""} ${executionStats.failures ? "has-failures" : ""} ${activeRunning ? "is-active" : ""} ${executionStats.waiting ? "is-waiting" : ""}`}
       >
         <button
           className="execution-summary-head"
@@ -718,28 +756,55 @@ const ExecutionSummary = memo(
           aria-expanded={expanded}
         >
           <span className="execution-summary-icon">
-            {running ? <i className="live-dot" /> : <Terminal size={15} />}
+            {executionStats.active &&
+            fileTools.includes(executionStats.active.tool) ? (
+              <FileCode2 size={15} />
+            ) : executionStats.active &&
+              subagentTools.includes(executionStats.active.tool) ? (
+              <Bot size={15} />
+            ) : (
+              <Terminal size={15} />
+            )}
           </span>
-          <strong>{summary}</strong>
+          <span className="execution-summary-copy">
+            <strong aria-live="polite">
+              <span>{headline}</span>
+              {focus && <code title={focus}>{focus}</code>}
+            </strong>
+            <small className="execution-summary-statline">
+              {executionStats.commands > 0 && (
+                <span>{executionStats.commands} 个命令</span>
+              )}
+              {executionStats.agents > 0 && (
+                <span>{executionStats.agents} 个子 Agent</span>
+              )}
+              {fileStats.files > 0 && <span>{fileStats.files} 个文件</span>}
+              {fileStats.files > 0 && (
+                <span className="execution-summary-diff">
+                  <b>+{fileStats.additions}</b>
+                  <i>-{fileStats.deletions}</i>
+                </span>
+              )}
+              {!executionStats.commands &&
+                !executionStats.agents &&
+                !fileStats.files && <span>{activities.length} 个步骤</span>}
+              {executionStats.failures > 0 && (
+                <span className="execution-summary-failures">
+                  {executionStats.failures} 项失败
+                </span>
+              )}
+            </small>
+          </span>
           <ChevronDown size={14} />
         </button>
-        {!expanded && previewFiles.length > 0 && (
-          <div className="execution-summary-files" aria-label="本轮文件改动">
-            {previewFiles.map(([file, stats]) => (
-              <span key={file} title={file}>
-                <FileCode2 size={11} />
-                <em>{file}</em>
-                <b>+{stats.additions}</b>
-                <i>-{stats.deletions}</i>
-              </span>
-            ))}
-            {fileStats.files > previewFiles.length && (
-              <small>还有 {fileStats.files - previewFiles.length} 个文件</small>
-            )}
-          </div>
-        )}
         {expanded && (
           <div className="execution-summary-detail">
+            <div className="execution-summary-detail-head">
+              <strong>执行明细</strong>
+              <small>
+                {activities.length} 个步骤 · {executionStats.completed} 已完成
+              </small>
+            </div>
             {hiddenActivityCount > 0 && (
               <button
                 type="button"
@@ -768,6 +833,36 @@ const ExecutionSummary = memo(
                 onActivityChange={onActivityChange}
               />
             ))}
+            {previewFiles.length > 0 && (
+              <div
+                className="execution-summary-file-breakdown"
+                aria-label="本轮文件改动"
+              >
+                <header>
+                  <strong>文件改动</strong>
+                  <small>
+                    {fileStats.files} 个文件 · +{fileStats.additions} -
+                    {fileStats.deletions}
+                  </small>
+                </header>
+                {previewFiles.map(([file, stats]) => (
+                  <div key={file} title={file}>
+                    <FileCode2 size={12} />
+                    <code>{file}</code>
+                    <span>
+                      <b>+{stats.additions}</b>
+                      <i>-{stats.deletions}</i>
+                    </span>
+                  </div>
+                ))}
+                {fileStats.files > previewFiles.length && (
+                  <footer>
+                    还有 {fileStats.files - previewFiles.length}{" "}
+                    个文件，可在本轮 “文件改动”中查看
+                  </footer>
+                )}
+              </div>
+            )}
           </div>
         )}
       </section>
@@ -816,6 +911,10 @@ function AgentWorkingState({
       (activity) =>
         activity.status === "running" || activity.status === "waiting",
     );
+  // The active execution summary already shows the current tool and command.
+  // Keep this lower status row for planning gaps so the two indicators do not
+  // repeat the same information while a tool is running.
+  if (active) return null;
   // Pure Q&A (no tools at all): once the answer text starts streaming, drop the
   // "planning" spinner — there is no next step coming. During a multi-step run
   // (activities present) keep spinning through the gaps between tools so it does
@@ -1248,10 +1347,12 @@ const FileChangesSummary = memo(function FileChangesSummary({
   const [visibleFileCount, setVisibleFileCount] = useState(
     FILE_INITIAL_RENDER_LIMIT,
   );
-  const { grouped, entries: fileEntries, additions, deletions } = useMemo(
-    () => collectFileChangeStats(activities),
-    [activities],
-  );
+  const {
+    grouped,
+    entries: fileEntries,
+    additions,
+    deletions,
+  } = useMemo(() => collectFileChangeStats(activities), [activities]);
   if (!grouped.size) return null;
   const visibleFileEntries = fileEntries.slice(0, visibleFileCount);
   const hiddenFileCount = Math.max(0, fileEntries.length - visibleFileCount);

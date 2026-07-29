@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { initialTask } from "../src/models";
-import { projectSidebarWorkspaceGroups } from "../src/sidebar-projection";
+import {
+  projectSidebarWorkspaceGroups,
+  sidebarTaskRenderKey,
+} from "../src/sidebar-projection";
 
 function task(id: string, name: string, workspacePath: string) {
   return {
@@ -52,6 +55,34 @@ test("publishes a new projection for sidebar-visible status changes", () => {
 
   assert.notEqual(next, first);
   assert.equal(next.workspaceGroups[0].conversations[0].runStatus, "running");
+});
+
+test("changes the virtual row key when a queued request replaces the prior run", () => {
+  const base = task("task-a", "对话 A", "D:\\project\\alpha");
+  const firstRun = {
+    ...base,
+    runningId: "request-1",
+    runStatus: "running" as const,
+  };
+  const finished = {
+    ...base,
+    runningId: undefined,
+    runStatus: "completed" as const,
+  };
+  const secondRun = {
+    ...base,
+    runningId: "request-2",
+    runStatus: "running" as const,
+  };
+
+  assert.notEqual(
+    sidebarTaskRenderKey(firstRun),
+    sidebarTaskRenderKey(finished),
+  );
+  assert.notEqual(
+    sidebarTaskRenderKey(finished),
+    sidebarTaskRenderKey(secondRun),
+  );
 });
 
 test("filters cached sidebar metadata without rebuilding task records", () => {

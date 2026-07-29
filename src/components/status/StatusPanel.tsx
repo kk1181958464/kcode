@@ -24,6 +24,7 @@ import type { ProviderConfig } from "../../types";
 import type { TaskRecord } from "../../models";
 import { formatDuration } from "../../lib/format";
 import { DiffView } from "../common/DiffView";
+import { CONTEXT_AUTO_COMPACT_RATIO } from "../../context";
 
 interface UsageInfo {
   input: number;
@@ -66,7 +67,7 @@ export interface StatusPanelProps {
   selectedContextWindow?: number;
   contextTokens: number;
   calibrationFactor: number;
-  compactActiveConversation(): void;
+  compactActiveConversation(): void | Promise<void>;
   summaryOpen: boolean;
   setSummaryOpen(value: boolean): void;
   restoreSummarySnapshot(
@@ -123,6 +124,10 @@ export function StatusPanel({
     const timer = window.setInterval(update, 1_000);
     return () => window.clearInterval(timer);
   }, [activeTask?.startedAt, durationMs, runningId]);
+  const contextPercent = selectedContextWindow
+    ? Math.min(100, Math.round((contextTokens / selectedContextWindow) * 100))
+    : 0;
+  const autoCompactPercent = Math.round(CONTEXT_AUTO_COMPACT_RATIO * 100);
 
   return (
     <aside className="status-panel">
@@ -295,25 +300,26 @@ export function StatusPanel({
             {selectedContextWindow ? (
               <div className="context-usage">
                 <div>
-                  <span>上下文预算</span>
-                  <strong>
-                    {Math.min(
-                      100,
-                      Math.round((contextTokens / selectedContextWindow) * 100),
-                    )}
-                    %
-                  </strong>
+                  <span>当前上下文</span>
+                  <strong>{contextPercent}%</strong>
                 </div>
                 <div className="context-usage-bar">
                   <i
                     style={{
-                      width: `${Math.min(100, (contextTokens / selectedContextWindow) * 100)}%`,
+                      width: `${contextPercent}%`,
                     }}
+                  />
+                  <b
+                    style={{
+                      left: `${autoCompactPercent}%`,
+                    }}
+                    title={`${autoCompactPercent}% 自动压缩线`}
                   />
                 </div>
                 <small>
                   {contextTokens.toLocaleString()} /{" "}
-                  {selectedContextWindow.toLocaleString()} Token
+                  {selectedContextWindow.toLocaleString()} Token ·{" "}
+                  {autoCompactPercent}% 自动压缩
                 </small>
               </div>
             ) : (
@@ -333,8 +339,8 @@ export function StatusPanel({
             <button
               className="compact-context-button"
               type="button"
-              disabled={Boolean(runningId)}
-              onClick={compactActiveConversation}
+              disabled={Boolean(runningId) || summaryBusy}
+              onClick={() => void compactActiveConversation()}
               title="按 Token 预算压缩较早消息并保留关键状态"
             >
               <Minimize2 size={13} />

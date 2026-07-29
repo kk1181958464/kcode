@@ -3,6 +3,19 @@ import type { AgentActivity, ChatMessage } from "./types";
 export type TaskRunStatus =
   "idle" | "running" | "completed" | "failed" | "cancelled" | "paused";
 
+export function nextQueuedMessageId(task: {
+  runningId?: string;
+  runStatus?: TaskRunStatus;
+  messages: ChatMessage[];
+}) {
+  if (task.runningId || task.runStatus === "running") return undefined;
+  return task.messages.find(
+    (message) =>
+      message.role === "user" &&
+      Boolean((message as ChatMessage & { queued?: boolean }).queued),
+  )?.id;
+}
+
 export function finishTaskRequest(
   currentRequestId: string | undefined,
   finishedRequestId: string,
@@ -56,7 +69,8 @@ export function recoverOrphanedFailure(
   status: TaskRunStatus,
   createdAt: number,
 ) {
-  const latest = messages.at(-1) as (ChatMessage & { queued?: boolean }) | undefined;
+  const latest = messages.at(-1) as
+    (ChatMessage & { queued?: boolean }) | undefined;
   if (status !== "failed" || latest?.role !== "user" || latest.queued)
     return messages;
   return [
@@ -66,7 +80,8 @@ export function recoverOrphanedFailure(
       role: "assistant" as const,
       content: "",
       createdAt,
-      error: "生成失败：上一次模型请求在启动阶段中断，未返回内容。请重试或切换模型/供应商。",
+      error:
+        "生成失败：上一次模型请求在启动阶段中断，未返回内容。请重试或切换模型/供应商。",
     },
   ];
 }

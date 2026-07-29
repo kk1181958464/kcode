@@ -71,6 +71,9 @@ import appLogo from "../build/icon.png";
 import { inferContextWindow, inferReasoningConfig } from "./types";
 import {
   AGENT_STATIC_TOKENS,
+  CONTEXT_AUTO_COMPACT_RATIO,
+  CONTEXT_COMPACT_WARNING_RATIO,
+  CONTEXT_FORCE_COMPACT_RATIO,
   compactConversation,
   estimateMessageTokens,
   estimateTextTokens,
@@ -171,6 +174,7 @@ import { useEventCallback } from "./lib/use-event-callback";
 import {
   finishTaskRequest,
   isTaskViewCurrent,
+  nextQueuedMessageId,
   recoverOrphanedFailure,
   recoverInterruptedActivities,
   recoverTaskRunStatus,
@@ -195,6 +199,36 @@ import type {
   ReasoningMode,
   SkillStoreItem,
 } from "./types";
+
+function estimateRequestContextTokens({
+  messages,
+  compactedMessageCount,
+  contextSummary,
+  attachmentTokens,
+  outputReserve,
+  calibrationFactor,
+}: {
+  messages: ChatMessage[];
+  compactedMessageCount: number;
+  contextSummary?: string;
+  attachmentTokens: number;
+  outputReserve: number;
+  calibrationFactor: number;
+}) {
+  return Math.ceil(
+    (AGENT_STATIC_TOKENS +
+      attachmentTokens +
+      outputReserve +
+      estimateMessageTokens(messages.slice(compactedMessageCount)) +
+      estimateTextTokens(contextSummary ?? "")) *
+      calibrationFactor,
+  );
+}
+
+function formatContextPercent(tokens: number, contextWindow?: number) {
+  if (!contextWindow) return "未配置";
+  return `${Math.min(100, Math.round((tokens / contextWindow) * 100))}%`;
+}
 
 export default function App() {
   const initialDrafts = useRef<TaskDrafts>(storedTaskDrafts());
@@ -525,19 +559,19 @@ export default function App() {
   }, []);
   const persistTaskDrafts = useCallback(
     (value?: string) => {
-    const latestValue =
-      typeof value === "string"
-        ? value
-        : (composerRef.current?.getValue() ?? composerValueRef.current);
-    updateTaskDraft(latestValue);
-    writeTaskDrafts();
+      const latestValue =
+        typeof value === "string"
+          ? value
+          : (composerRef.current?.getValue() ?? composerValueRef.current);
+      updateTaskDraft(latestValue);
+      writeTaskDrafts();
     },
     [updateTaskDraft, writeTaskDrafts],
   );
   const clearTaskDraft = useCallback(
     (taskId: string) => {
-    delete initialDrafts.current[taskId];
-    writeTaskDrafts();
+      delete initialDrafts.current[taskId];
+      writeTaskDrafts();
     },
     [writeTaskDrafts],
   );
@@ -562,7 +596,7 @@ export default function App() {
     undefined,
   );
   const queuedSendRef = useRef<
-    ((messageId: string) => Promise<void>) | undefined
+    ((taskId: string, messageId: string) => Promise<void>) | undefined
   >(undefined);
   const startingQueuedRef = useRef(new Set<string>());
   const modelPickerRef = useRef<HTMLDivElement>(null);
@@ -659,7 +693,9 @@ export default function App() {
           await Promise.all(
             initial.map((task) => window.kcode.state.saveTask(task.id, task)),
           );
-          await window.kcode.state.saveTaskOrder(initial.map((task) => task.id));
+          await window.kcode.state.saveTaskOrder(
+            initial.map((task) => task.id),
+          );
           persistedTaskRefsRef.current = new Map(
             initial.map((task) => [task.id, task]),
           );
@@ -723,7 +759,13 @@ export default function App() {
       firstTurn.messageIndex,
       endTurn?.messageIndex ?? messages.length,
     );
-  }, [conversationSearchOpen, conversationTurns, messages, runningId, visibleTurnWindow]);
+  }, [
+    conversationSearchOpen,
+    conversationTurns,
+    messages,
+    runningId,
+    visibleTurnWindow,
+  ]);
   const hasOlderMessages =
     !conversationSearchOpen && visibleTurnWindow.start > 0;
   const hasNewerMessages =
@@ -862,27 +904,27 @@ export default function App() {
         )
           return;
         if (bottomLayoutFrameRef.current) return;
-      bottomLayoutFrameRef.current = requestAnimationFrame(() => {
-        bottomLayoutFrameRef.current = undefined;
-        const current = conversationRef.current;
-        if (
-          !current ||
-          current !== conversation ||
-          (!autoFollowRef.current &&
-            !pendingScrollRestoreRef.current?.state.atBottom)
-        )
-          return;
+        bottomLayoutFrameRef.current = requestAnimationFrame(() => {
+          bottomLayoutFrameRef.current = undefined;
+          const current = conversationRef.current;
+          if (
+            !current ||
+            current !== conversation ||
+            (!autoFollowRef.current &&
+              !pendingScrollRestoreRef.current?.state.atBottom)
+          )
+            return;
           // Keep bottom following while the user is at the bottom, but do not
           // update React state or mark the scroll as programmatic here. This
           // path runs during streaming and must stay out of the input hot path.
-        current.scrollTop = current.scrollHeight;
-        const taskId = displayedTaskIdRef.current;
-        if (taskId)
-          scrollStateByTaskRef.current.set(taskId, {
-            top: current.scrollHeight,
-            atBottom: true,
-          });
-      });
+          current.scrollTop = current.scrollHeight;
+          const taskId = displayedTaskIdRef.current;
+          if (taskId)
+            scrollStateByTaskRef.current.set(taskId, {
+              top: current.scrollHeight,
+              atBottom: true,
+            });
+        });
       }, delay);
     };
     const observer = new ResizeObserver(() => {
@@ -1227,19 +1269,6 @@ export default function App() {
   useEffect(() => {
     tasksRef.current = tasks;
   }, [tasks]);
-
-  useEffect(() => {
-    if (!activeTask || runningId || summaryBusy) return;
-    const queued = activeTask.messages.find(
-      (message) =>
-        message.role === "user" && (message as QueuedChatMessage).queued,
-    );
-    if (!queued || startingQueuedRef.current.has(activeTask.id)) return;
-    startingQueuedRef.current.add(activeTask.id);
-    void queuedSendRef.current?.(queued.id).finally(() => {
-      startingQueuedRef.current.delete(activeTask.id);
-    });
-  }, [activeTask, runningId, summaryBusy]);
 
   useEffect(() => {
     if (!activeTaskId && tasks[0]) {
@@ -2144,10 +2173,7 @@ export default function App() {
   }
 
   async function ensureTaskLoaded(task: TaskRecord) {
-    if (
-      hydratedTaskIdsRef.current.has(task.id) ||
-      !window.kcode?.state
-    )
+    if (hydratedTaskIdsRef.current.has(task.id) || !window.kcode?.state)
       return task;
     const stored = await window.kcode.state.loadTask(task.id);
     if (!stored) throw new Error(`找不到任务记录：${task.name}`);
@@ -2435,7 +2461,7 @@ export default function App() {
     }
   }
 
-  function compactActiveConversation() {
+  async function compactActiveConversation() {
     if (!activeTask) return;
     if (!selectedContextWindow) {
       setContextError("请先为当前模型配置上下文窗口");
@@ -2450,21 +2476,45 @@ export default function App() {
       setContextError("当前对话较短，保留最近一轮后暂无可压缩内容");
       return;
     }
+    const beforeTokens = localContextTokens;
+    setSummarizingTasks((current) => new Set(current).add(activeTask.id));
+    let finalCompacted = compacted;
+    try {
+      finalCompacted = await improveSummaryWithModel(activeTask, compacted);
+    } finally {
+      setSummarizingTasks((current) => {
+        const next = new Set(current);
+        next.delete(activeTask.id);
+        return next;
+      });
+    }
     setTasks((all) =>
       all.map((task) =>
         task.id === activeTask.id
           ? {
               ...task,
-              ...compacted,
+              ...finalCompacted,
               summarySnapshots: summarySnapshot(task),
-              summaryMeta: { modelGenerated: false, durationMs: 0 },
+              summaryMeta:
+                "summaryMeta" in finalCompacted
+                  ? (finalCompacted.summaryMeta as TaskRecord["summaryMeta"])
+                  : { modelGenerated: false, durationMs: 0 },
               updatedAt: Date.now(),
             }
           : task,
       ),
     );
+    const afterTokens = estimateRequestContextTokens({
+      messages,
+      compactedMessageCount:
+        finalCompacted.compactedMessageCount ?? compacted.compactedMessageCount,
+      contextSummary: finalCompacted.contextSummary,
+      attachmentTokens: 0,
+      outputReserve: 0,
+      calibrationFactor,
+    });
     flashContextToast(
-      `已按 Token 预算压缩 ${compacted.compactedMessageCount} 条较早消息，最近对话和关键状态继续保留`,
+      `已压缩 ${finalCompacted.compactedMessageCount} 条较早消息：${formatContextPercent(beforeTokens, selectedContextWindow)} → ${formatContextPercent(afterTokens, selectedContextWindow)}，最近对话和关键状态继续保留`,
     );
   }
 
@@ -2650,42 +2700,59 @@ export default function App() {
     flashContextToast("消息已排队，将在当前回复完成后发送");
   }
 
-  async function send(override?: string, queuedMessageId?: string) {
-    let text = (override ?? readComposerValue()).trim();
+  async function send(
+    override?: string,
+    queuedMessageId?: string,
+    queuedTaskId?: string,
+  ) {
+    const requestTask = queuedTaskId
+      ? tasksRef.current.find((task) => task.id === queuedTaskId)
+      : activeTask;
+    const taskId = requestTask?.id ?? "";
+    const taskIsCurrent = () =>
+      isTaskViewCurrent(
+        activeTaskIdRef.current,
+        displayedTaskIdRef.current,
+        taskId,
+      );
+    const taskMessages = requestTask
+      ? taskIsCurrent()
+        ? messages
+        : requestTask.messages
+      : [];
+    const taskSelection = requestTask?.modelSelection || selected;
+    const taskSummaryBusy = Boolean(
+      requestTask && summarizingTasks.has(requestTask.id),
+    );
+    let text = queuedMessageId ? "" : (override ?? readComposerValue()).trim();
     const target = models.find(
-      (x) => `${x.provider.id}|${x.model.id}` === selected,
+      (x) => `${x.provider.id}|${x.model.id}` === taskSelection,
     );
     if (
       (!text && !attachedImages.length && !queuedMessageId) ||
       !target ||
-      !activeTask ||
-      (runningId && !queuedMessageId) ||
-      summaryBusy
+      !requestTask ||
+      requestTask.runningId ||
+      requestTask.runStatus === "running" ||
+      taskSummaryBusy
     )
       return;
-    const taskId = activeTask.id;
-    if (
-      !isTaskViewCurrent(
-        activeTaskIdRef.current,
-        displayedTaskIdRef.current,
-        taskId,
-      )
-    ) {
+    if (!queuedMessageId && !taskIsCurrent()) {
       setContextError("任务切换尚未完成，请重新发送");
       return;
     }
-    if (activeTask?.name === "新对话") {
+    if (requestTask.name === "新对话") {
       const title = text.replace(/\s+/g, " ").slice(0, 28) || "新对话";
       setTasks((all) =>
         all.map((task) =>
-          task.id === activeTask.id
+          task.id === taskId
             ? { ...task, name: title, updatedAt: Date.now() }
             : task,
         ),
       );
     }
     const queuedIndex = queuedMessageId
-      ? messages.findIndex(
+      ? taskMessages.findIndex(
           (message) =>
             message.id === queuedMessageId &&
             (message as QueuedChatMessage).queued,
@@ -2694,12 +2761,12 @@ export default function App() {
     if (queuedMessageId && queuedIndex < 0) return;
     const queuedMessage =
       queuedIndex >= 0
-        ? (messages[queuedIndex] as QueuedChatMessage)
+        ? (taskMessages[queuedIndex] as QueuedChatMessage)
         : undefined;
     if (queuedMessage) text = queuedMessage.content;
     const retrying = override !== undefined && !queuedMessage;
     const sourceMessages =
-      queuedIndex >= 0 ? messages.slice(0, queuedIndex + 1) : messages;
+      queuedIndex >= 0 ? taskMessages.slice(0, queuedIndex + 1) : taskMessages;
     const latestAssistant = [...sourceMessages]
       .reverse()
       .find((message) => message.role === "assistant");
@@ -2739,97 +2806,131 @@ export default function App() {
         ? cleanMessages
         : [...cleanMessages, user];
     const visibleMessages = queuedMessage
-      ? messages.map((message) => (message.id === user.id ? user : message))
+      ? taskMessages.map((message) => (message.id === user.id ? user : message))
       : retrying
-        ? messages
-        : [...messages, user];
+        ? taskMessages
+        : [...taskMessages, user];
+    const requestFiles = queuedMessage
+      ? (contextByMessageRef.current.get(user.id) ?? [])
+      : attachedFiles;
     if (!retrying && !queuedMessage)
-      contextByMessageRef.current.set(user.id, attachedFiles);
-    let requestSummary = activeTask?.contextSummary;
-    let requestLedger = activeTask?.contextLedger;
-    let compactedCount = activeTask?.compactedMessageCount ?? 0;
+      contextByMessageRef.current.set(user.id, requestFiles);
+    const requestContextWindow =
+      target.model.contextWindow ?? inferContextWindow(target.model.modelId);
+    const requestEfforts = reasoningEffortsForModel(target.model);
+    const requestReasoningEffort = normalizeEffort(
+      requestTask.reasoningEffort ?? defaultReasoningEffort,
+      requestEfforts,
+    );
+    const requestTaskWithSelection = requestTask.modelSelection
+      ? requestTask
+      : { ...requestTask, modelSelection: taskSelection };
+    let requestSummary = requestTask.contextSummary;
+    let requestLedger = requestTask.contextLedger;
+    let compactedCount = requestTask.compactedMessageCount ?? 0;
     let contextNotice = "";
-    const attachmentTokens = attachedFiles.reduce(
+    const attachmentTokens = requestFiles.reduce(
       (total, file) => total + estimateTextTokens(file.content),
       0,
     );
-    const outputReserve = selectedContextWindow
+    const outputReserve = requestContextWindow
       ? Math.max(
           8_000,
-          Math.floor(selectedContextWindow * (supportsReasoning ? 0.18 : 0.12)),
+          Math.floor(
+            requestContextWindow *
+              (requestEfforts.some((effort) => effort !== "auto")
+                ? 0.18
+                : 0.12),
+          ),
         )
       : 8_000;
-    const rawEstimatedTokens =
-      AGENT_STATIC_TOKENS +
-      attachmentTokens +
-      outputReserve +
-      estimateMessageTokens(nextMessages.slice(compactedCount)) +
-      estimateTextTokens(requestSummary ?? "");
     const requestCalibrationKey = `${target.provider.id}|${target.model.modelId}`;
+    const requestCalibrationFactor =
+      tokenCalibration[requestCalibrationKey] ?? 1;
+    let rawEstimatedTokens = estimateRequestContextTokens({
+      messages: nextMessages,
+      compactedMessageCount: compactedCount,
+      contextSummary: requestSummary,
+      attachmentTokens,
+      outputReserve,
+      calibrationFactor: 1,
+    });
     // Use the last round's prompt tokens as the observed floor, not the
     // accumulated billing total (usage.input) which grows every round and would
     // otherwise inflate the estimate and trigger premature compaction.
     const estimatedTokens = Math.max(
-      usage.promptTokens ?? 0,
-      Math.ceil(
-        rawEstimatedTokens * (tokenCalibration[requestCalibrationKey] ?? 1),
-      ),
+      requestTask.usage?.promptTokens ?? 0,
+      Math.ceil(rawEstimatedTokens * requestCalibrationFactor),
     );
-    const contextRatio = selectedContextWindow
-      ? estimatedTokens / selectedContextWindow
+    const contextRatio = requestContextWindow
+      ? estimatedTokens / requestContextWindow
       : 0;
-    if (contextRatio >= 0.85 && contextRatio < 0.92)
-      contextNotice = "上下文已达到 85%，系统将在 92% 时自动压缩";
-    if (selectedContextWindow && contextRatio >= 0.92 && activeTask) {
+    if (
+      contextRatio >= CONTEXT_COMPACT_WARNING_RATIO &&
+      contextRatio < CONTEXT_AUTO_COMPACT_RATIO
+    )
+      contextNotice = `预计下一次请求将占用 ${formatContextPercent(estimatedTokens, requestContextWindow)}，达到 ${Math.round(CONTEXT_AUTO_COMPACT_RATIO * 100)}% 时自动压缩`;
+    if (
+      requestContextWindow &&
+      contextRatio >= CONTEXT_AUTO_COMPACT_RATIO &&
+      requestTask
+    ) {
       let compacted = compactConversation(
-        { ...activeTask, messages: nextMessages },
-        selectedContextWindow,
+        { ...requestTask, messages: nextMessages },
+        requestContextWindow,
       );
-      if (contextRatio >= 0.99 && !compacted)
+      if (contextRatio >= CONTEXT_FORCE_COMPACT_RATIO && !compacted)
         compacted = compactConversation(
-          { ...activeTask, messages: nextMessages },
-          selectedContextWindow,
+          { ...requestTask, messages: nextMessages },
+          requestContextWindow,
           true,
         );
       if (compacted) {
-        requestSummary = compacted.contextSummary;
-        requestLedger = compacted.contextLedger;
-        compactedCount = compacted.compactedMessageCount ?? compactedCount;
+        setSummarizingTasks((current) => new Set(current).add(taskId));
+        let finalCompacted = compacted;
+        try {
+          finalCompacted = await improveSummaryWithModel(
+            requestTaskWithSelection,
+            compacted,
+          );
+        } finally {
+          setSummarizingTasks((current) => {
+            const next = new Set(current);
+            next.delete(taskId);
+            return next;
+          });
+        }
+        requestSummary = finalCompacted.contextSummary;
+        requestLedger = finalCompacted.contextLedger;
+        compactedCount = finalCompacted.compactedMessageCount ?? compactedCount;
+        rawEstimatedTokens = estimateRequestContextTokens({
+          messages: nextMessages,
+          compactedMessageCount: compactedCount,
+          contextSummary: requestSummary,
+          attachmentTokens,
+          outputReserve,
+          calibrationFactor: 1,
+        });
+        const afterEstimatedTokens = Math.ceil(
+          rawEstimatedTokens * requestCalibrationFactor,
+        );
         setTasks((all) =>
           all.map((task) =>
-            task.id === activeTask.id
+            task.id === taskId
               ? {
                   ...task,
-                  ...compacted,
+                  ...finalCompacted,
                   summarySnapshots: summarySnapshot(task),
-                  summaryMeta: { modelGenerated: false, durationMs: 0 },
+                  summaryMeta:
+                    "summaryMeta" in finalCompacted
+                      ? (finalCompacted.summaryMeta as TaskRecord["summaryMeta"])
+                      : { modelGenerated: false, durationMs: 0 },
                   updatedAt: Date.now(),
                 }
               : task,
           ),
         );
-        contextNotice = `上下文达到 ${Math.round(contextRatio * 100)}%，已自动压缩 ${compactedCount} 条较早消息`;
-        const localVersion = compacted.compactedMessageCount;
-        void improveSummaryWithModel(activeTask, compacted).then((improved) => {
-          if (improved === compacted) return;
-          setTasks((all) =>
-            all.map((task) =>
-              task.id === activeTask.id &&
-              task.compactedMessageCount === localVersion
-                ? {
-                    ...task,
-                    contextSummary: improved.contextSummary,
-                    contextLedger: improved.contextLedger,
-                    summaryMeta:
-                      "summaryMeta" in improved
-                        ? (improved.summaryMeta as TaskRecord["summaryMeta"])
-                        : task.summaryMeta,
-                    updatedAt: Date.now(),
-                  }
-                : task,
-            ),
-          );
-        });
+        contextNotice = `上下文 ${formatContextPercent(estimatedTokens, requestContextWindow)} → ${formatContextPercent(afterEstimatedTokens, requestContextWindow)}，已自动压缩 ${compactedCount} 条较早消息`;
       }
     }
     const requestMessages = nextMessages.slice(compactedCount);
@@ -2863,61 +2964,59 @@ export default function App() {
       JSON.stringify(history),
     ).byteLength;
     if (payloadBytes > 24 * 1024 * 1024) {
-      setContextError(
-        `请求内容 ${(payloadBytes / 1024 / 1024).toFixed(1)} MB，超过 24 MB 限制；请压缩上下文或减少图片/附件`,
-      );
+      if (taskIsCurrent())
+        setContextError(
+          `请求内容 ${(payloadBytes / 1024 / 1024).toFixed(1)} MB，超过 24 MB 限制；请压缩上下文或减少图片/附件`,
+        );
       return;
     }
-    autoFollowRef.current = true;
-    scrollAfterSendRef.current = true;
-    setShowScrollToBottom(false);
     const requestStartedAt = Date.now();
-    requestStartedRef.current = requestStartedAt;
-    setUsedContextCount(contextByMessageRef.current.get(user.id)?.length ?? 0);
-    if (activeTask?.id)
+    if (taskIsCurrent()) {
+      autoFollowRef.current = true;
+      scrollAfterSendRef.current = true;
+      setShowScrollToBottom(false);
+      requestStartedRef.current = requestStartedAt;
+      setUsedContextCount(requestFiles.length);
+      if (!queuedMessage) {
+        clearTaskDraft(taskId);
+        setAttachedFiles([]);
+        setAttachedImages([]);
+        attachmentDraftsRef.current.delete(taskId);
+      }
+      if (contextNotice) flashContextToast(contextNotice);
+      setMessages(visibleMessages);
+      if (!queuedMessage) setInput("");
+      setUsage({ input: 0, output: 0, cached: 0 });
+      setUsageResolved(false);
+      setDurationMs(0);
+    }
+    setTasks((all) =>
+      all.map((task) =>
+        task.id === taskId
+          ? { ...task, usedContextCount: requestFiles.length }
+          : task,
+      ),
+    );
+    if (!window.kcode) {
+      if (!taskIsCurrent()) return;
+      const id = `preview:${uid()}`;
+      const response = `我已经检查了当前项目${requestFiles.length ? `和 **${requestFiles.length} 个上下文文件**` : ""}。当前使用${effortLabels[requestReasoningEffort]}推理强度，下一步建议优先完成：\n\n1. 接入工作区文件读取与代码搜索\n2. 建立工具调用的权限确认流程\n3. 在任务右侧展示实时执行进度\n\n\`\`\`ts\nconst result = await agent.run({\n  workspace: \"D:/project/kcode\",\n  model: \"${target.model.modelId}\",\n});\n\`\`\`\n\n> 当前模型通道正常，桌面端可以继续接入 Agent 工具循环。`;
+      const chunks = response.match(/[\s\S]{1,12}/g) ?? [response];
+      currentRequest.current = id;
+      setRunningId(id);
       setTasks((all) =>
         all.map((task) =>
-          task.id === activeTask.id
+          task.id === taskId
             ? {
                 ...task,
-                usedContextCount:
-                  contextByMessageRef.current.get(user.id)?.length ?? 0,
+                runningId: id,
+                runStatus: "running",
+                startedAt: requestStartedAt,
+                updatedAt: Date.now(),
               }
             : task,
         ),
       );
-    if (!queuedMessage) {
-      clearTaskDraft(activeTask.id);
-      setAttachedFiles([]);
-      setAttachedImages([]);
-      attachmentDraftsRef.current.delete(activeTask.id);
-    }
-    if (contextNotice) flashContextToast(contextNotice);
-    setMessages(visibleMessages);
-    if (!queuedMessage) setInput("");
-    setUsage({ input: 0, output: 0, cached: 0 });
-    setUsageResolved(false);
-    setDurationMs(0);
-    if (!window.kcode) {
-      const id = `preview:${uid()}`;
-      const response = `我已经检查了当前项目${contextByMessageRef.current.get(user.id)?.length ? `和 **${contextByMessageRef.current.get(user.id)?.length} 个上下文文件**` : ""}。当前使用${effortLabels[reasoningEffort]}推理强度，下一步建议优先完成：\n\n1. 接入工作区文件读取与代码搜索\n2. 建立工具调用的权限确认流程\n3. 在任务右侧展示实时执行进度\n\n\`\`\`ts\nconst result = await agent.run({\n  workspace: \"D:/project/kcode\",\n  model: \"${target.model.modelId}\",\n});\n\`\`\`\n\n> 当前模型通道正常，桌面端可以继续接入 Agent 工具循环。`;
-      const chunks = response.match(/[\s\S]{1,12}/g) ?? [response];
-      currentRequest.current = id;
-      setRunningId(id);
-      if (activeTask?.id)
-        setTasks((all) =>
-          all.map((task) =>
-            task.id === activeTask.id
-              ? {
-                  ...task,
-                  runningId: id,
-                  runStatus: "running",
-                  startedAt: requestStartedRef.current,
-                  updatedAt: Date.now(),
-                }
-              : task,
-          ),
-        );
       setMessages([
         ...visibleMessages,
         {
@@ -2945,19 +3044,18 @@ export default function App() {
           previewTimerRef.current = undefined;
           currentRequest.current = undefined;
           setRunningId(undefined);
-          if (activeTask?.id)
-            setTasks((all) =>
-              all.map((task) =>
-                task.id === activeTask.id
-                  ? {
-                      ...task,
-                      runningId: undefined,
-                      runStatus: "completed",
-                      updatedAt: Date.now(),
-                    }
-                  : task,
-              ),
-            );
+          setTasks((all) =>
+            all.map((task) =>
+              task.id === taskId
+                ? {
+                    ...task,
+                    runningId: undefined,
+                    runStatus: "completed",
+                    updatedAt: Date.now(),
+                  }
+                : task,
+            ),
+          );
           setUsage({ input: 312, output: 168, cached: 0 });
           setUsageResolved(true);
           if (requestStartedRef.current)
@@ -3019,11 +3117,11 @@ export default function App() {
         providerId: target.provider.id,
         modelId: target.model.modelId,
         messages: history,
-        reasoningEffort,
+        reasoningEffort: requestReasoningEffort,
         permissionMode,
         permissionPolicy,
-        workspacePath: activeTask.workspacePath,
-        contextWindow: selectedContextWindow,
+        workspacePath: requestTask.workspacePath,
+        contextWindow: requestContextWindow,
       });
     } catch (error) {
       const detail = errorMessage(error);
@@ -3037,13 +3135,13 @@ export default function App() {
             : message,
         );
       const elapsed = Date.now() - requestStartedAt;
-      if (stillActive) {
+      if (taskIsCurrent()) {
         setMessages(markFailed);
         currentRequest.current = undefined;
         setRunningId(undefined);
+        setDurationMs(elapsed);
+        setUsageResolved(true);
       }
-      setDurationMs(elapsed);
-      setUsageResolved(true);
       setTasks((all) =>
         all.map((task) =>
           task.id === taskId
@@ -3063,15 +3161,32 @@ export default function App() {
       );
       requestTasksRef.current.delete(id);
       assistantLengthsRef.current.delete(id);
-      scrollAfterSendRef.current = true;
+      if (taskIsCurrent()) scrollAfterSendRef.current = true;
       return;
     }
   }
 
   sendRef.current = send;
-  queuedSendRef.current = async (messageId: string) => {
-    await send(undefined, messageId);
+  queuedSendRef.current = async (taskId: string, messageId: string) => {
+    await send(undefined, messageId, taskId);
   };
+  useEffect(() => {
+    const startQueued = queuedSendRef.current;
+    if (!startQueued || !models.length) return;
+    for (const task of tasks) {
+      const messageId = nextQueuedMessageId(task);
+      if (
+        !messageId ||
+        summarizingTasks.has(task.id) ||
+        startingQueuedRef.current.has(task.id)
+      )
+        continue;
+      startingQueuedRef.current.add(task.id);
+      void startQueued(task.id, messageId).finally(() => {
+        startingQueuedRef.current.delete(task.id);
+      });
+    }
+  }, [models, summarizingTasks, tasks]);
   async function cancel() {
     if (runningId) {
       const requestId = runningId;
@@ -3904,25 +4019,25 @@ export default function App() {
         {settings && (
           <Suspense fallback={null}>
             <SettingsPanel
-            providers={providers}
-            setProviders={setProviders}
-            initialSection={settingsSection}
-            reasoningEfforts={efforts}
-            defaultReasoningEffort={defaultReasoningEffort}
-            onDefaultReasoningEffortChange={updateDefaultReasoningEffort}
-            autoFollowEnabled={autoFollowEnabled}
-            onAutoFollowChange={updateAutoFollow}
-            statusPanelEnabled={statusOpen}
-            onStatusPanelChange={updateStatusPanel}
-            theme={theme}
-            onThemeChange={updateTheme}
-            accent={accent}
-            onAccentChange={updateAccent}
-            permissionMode={permissionMode}
-            onPermissionModeChange={updatePermissionMode}
-            permissionPolicy={permissionPolicy}
-            onPermissionPolicyChange={updatePermissionPolicy}
-            onClose={() => setSettings(false)}
+              providers={providers}
+              setProviders={setProviders}
+              initialSection={settingsSection}
+              reasoningEfforts={efforts}
+              defaultReasoningEffort={defaultReasoningEffort}
+              onDefaultReasoningEffortChange={updateDefaultReasoningEffort}
+              autoFollowEnabled={autoFollowEnabled}
+              onAutoFollowChange={updateAutoFollow}
+              statusPanelEnabled={statusOpen}
+              onStatusPanelChange={updateStatusPanel}
+              theme={theme}
+              onThemeChange={updateTheme}
+              accent={accent}
+              onAccentChange={updateAccent}
+              permissionMode={permissionMode}
+              onPermissionModeChange={updatePermissionMode}
+              permissionPolicy={permissionPolicy}
+              onPermissionPolicyChange={updatePermissionPolicy}
+              onClose={() => setSettings(false)}
             />
           </Suspense>
         )}

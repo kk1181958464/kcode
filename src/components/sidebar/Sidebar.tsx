@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import appLogo from "../../../build/icon.png";
 import { errorMessage } from "../../lib/format";
+import { sidebarTaskRenderKey } from "../../sidebar-projection";
 import type {
   SettingsSection,
   SidebarTask,
@@ -30,7 +31,7 @@ const virtuosoComponents = {
 function sidebarRowKey(_: number, row: SidebarRow) {
   return row.kind === "workspace"
     ? `workspace:${row.group.workspacePath}`
-    : `task:${row.task.id}`;
+    : sidebarTaskRenderKey(row.task);
 }
 
 export interface SidebarProps {

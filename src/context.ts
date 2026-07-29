@@ -11,6 +11,9 @@ export type CompactableContext = {
 };
 
 export const AGENT_STATIC_TOKENS = 5_000;
+export const CONTEXT_COMPACT_WARNING_RATIO = 0.85;
+export const CONTEXT_AUTO_COMPACT_RATIO = 0.92;
+export const CONTEXT_FORCE_COMPACT_RATIO = 0.99;
 export const emptyLedger = (): ContextLedger => ({
   goals: [],
   decisions: [],
@@ -22,6 +25,13 @@ export const emptyLedger = (): ContextLedger => ({
 });
 const uniqueRecent = (items: string[], limit = 32) =>
   [...new Set(items.filter(Boolean))].slice(-limit);
+const summaryTokenLimit = (contextWindow: number) =>
+  Math.max(3_000, Math.min(16_000, Math.floor(contextWindow * 0.1)));
+const trimSummary = (text: string, contextWindow: number) => {
+  const limit = summaryTokenLimit(contextWindow) * 3;
+  if (text.length <= limit) return text;
+  return `[较早的压缩摘要前部已省略]\n${text.slice(-limit)}`;
+};
 
 // Single source of truth for the "chars ≈ tokens" heuristic (chars / 3),
 // reused instead of scattering the `/ 3` literal across call sites.
@@ -49,7 +59,10 @@ export function compactConversation(
   force = false,
 ) {
   const alreadyCompacted = task.compactedMessageCount ?? 0;
-  const recentBudget = Math.max(4_000, Math.floor(contextWindow * 0.3));
+  const recentBudget = Math.max(
+    6_000,
+    Math.min(48_000, Math.floor(contextWindow * 0.22)),
+  );
   let recentTokens = 0;
   let compactUntil = task.messages.length;
   for (
@@ -75,7 +88,9 @@ export function compactConversation(
   if (compactUntil <= alreadyCompacted) return undefined;
 
   const older = task.messages.slice(alreadyCompacted, compactUntil);
-  const previous = task.contextSummary ? `${task.contextSummary}\n\n` : "";
+  const previous = task.contextSummary?.trim()
+    ? `## 既有压缩摘要\n${trimSummary(task.contextSummary.trim(), contextWindow)}`
+    : "";
   const goals: string[] = [],
     decisions: string[] = [],
     results: string[] = [],
@@ -94,7 +109,7 @@ export function compactConversation(
     const imageNote = message.images?.length
       ? ` [图片语义：${semantics || `${message.images.length} 张图片，尚无描述`}]`
       : "";
-    const line = `- ${role}: ${text.slice(0, 700)}${text.length > 700 ? "…" : ""}${imageNote}`;
+    const line = `- ${role}: ${text.slice(0, 520)}${text.length > 520 ? "…" : ""}${imageNote}`;
     if (/失败|错误|报错|异常|error|failed/i.test(text)) errors.push(line);
     else if (/完成|通过|已修改|已添加|已修复|构建|测试/i.test(text))
       results.push(line);
@@ -165,21 +180,31 @@ export function compactConversation(
       16,
     ),
   };
+  const sectionGoals = uniqueRecent(goals, 24);
+  const sectionDecisions = uniqueRecent(decisions, 20);
+  const sectionResults = uniqueRecent([...results, ...activityLines], 36);
+  const sectionErrors = uniqueRecent(errors, 20);
+  const sectionPending = uniqueRecent(pending, 18);
   const sections = [
+    previous,
     nextLedger.connections.length
       ? `## 已建立的连接（会话仍可用，无需重新询问凭据）\n${nextLedger.connections.map((item) => `- ${item}`).join("\n")}`
       : "",
-    goals.length ? `## 目标与需求\n${goals.join("\n")}` : "",
-    decisions.length ? `## 关键决定\n${decisions.join("\n")}` : "",
-    [...results, ...activityLines].length
-      ? `## 文件、工具与验证\n${[...results, ...activityLines].join("\n")}`
+    sectionGoals.length ? `## 目标与需求\n${sectionGoals.join("\n")}` : "",
+    sectionDecisions.length
+      ? `## 关键决定\n${sectionDecisions.join("\n")}`
       : "",
-    errors.length ? `## 错误与限制\n${errors.join("\n")}` : "",
-    pending.length ? `## 其他上下文与待办\n${pending.join("\n")}` : "",
+    sectionResults.length
+      ? `## 文件、工具与验证\n${sectionResults.join("\n")}`
+      : "",
+    sectionErrors.length ? `## 错误与限制\n${sectionErrors.join("\n")}` : "",
+    sectionPending.length
+      ? `## 其他上下文与待办\n${sectionPending.join("\n")}`
+      : "",
   ]
     .filter(Boolean)
     .join("\n\n");
-  const contextSummary = `${previous}${sections}`.slice(-40_000);
+  const contextSummary = trimSummary(sections, contextWindow);
   if (
     !contextSummary.trim() ||
     (!nextLedger.goals.length &&

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   finishTaskRequest,
   isTaskViewCurrent,
+  nextQueuedMessageId,
   recoverOrphanedFailure,
   recoverInterruptedActivities,
   recoverTaskRunStatus,
@@ -105,4 +106,29 @@ test("a finished request cannot clear a newer queued request", () => {
     runningId: undefined,
     runStatus: "failed",
   });
+});
+
+test("finds queued work for an inactive task after its current request finishes", () => {
+  const queuedUser = {
+    id: "queued-2",
+    role: "user" as const,
+    content: "continue",
+    createdAt: 2,
+    queued: true,
+  };
+  assert.equal(
+    nextQueuedMessageId({
+      runningId: "request-1",
+      runStatus: "running",
+      messages: [queuedUser],
+    }),
+    undefined,
+  );
+  assert.equal(
+    nextQueuedMessageId({
+      runStatus: "completed",
+      messages: [queuedUser],
+    }),
+    "queued-2",
+  );
 });
