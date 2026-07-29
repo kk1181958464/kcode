@@ -9,13 +9,11 @@ import React, {
 import { createPortal } from "react-dom";
 import {
   Bot,
-  Check,
+  BrainCircuit,
   ChevronDown,
   CircleAlert,
-  Clock3,
   Copy,
   FileCode2,
-  RefreshCw,
   RotateCcw,
   Terminal,
   UserRound,
@@ -716,6 +714,7 @@ const ExecutionSummary = memo(
     }, [activities]);
     const activeRunning =
       running && executionStats.active?.status === "running";
+    const executionInProgress = running && !executionStats.waiting;
     let headline = "执行完成";
     let focus = "";
     if (executionStats.waiting && executionStats.active) {
@@ -729,8 +728,7 @@ const ExecutionSummary = memo(
       headline =
         executionStats.last.status === "failed"
           ? "步骤失败，正在调整"
-          : "已完成当前步骤";
-      focus = activityFocus(executionStats.last);
+          : "正在规划下一步";
     } else if (executionStats.failures) {
       headline = "执行完成，存在失败项";
     }
@@ -748,7 +746,7 @@ const ExecutionSummary = memo(
     const visibleActivities = activities.slice(hiddenActivityCount);
     return (
       <section
-        className={`execution-summary ${fileStats.files ? "has-file-stats" : ""} ${executionStats.failures ? "has-failures" : ""} ${activeRunning ? "is-active" : ""} ${executionStats.waiting ? "is-waiting" : ""}`}
+        className={`execution-summary ${fileStats.files ? "has-file-stats" : ""} ${executionStats.failures ? "has-failures" : ""} ${executionInProgress ? "is-active" : ""} ${executionStats.waiting ? "is-waiting" : ""}`}
       >
         <button
           className="execution-summary-head"
@@ -756,8 +754,10 @@ const ExecutionSummary = memo(
           aria-expanded={expanded}
         >
           <span className="execution-summary-icon">
-            {executionStats.active &&
-            fileTools.includes(executionStats.active.tool) ? (
+            {executionInProgress && !executionStats.active ? (
+              <BrainCircuit size={15} />
+            ) : executionStats.active &&
+              fileTools.includes(executionStats.active.tool) ? (
               <FileCode2 size={15} />
             ) : executionStats.active &&
               subagentTools.includes(executionStats.active.tool) ? (
@@ -899,56 +899,36 @@ function AgentWorkingState({
   progressNode?: React.ReactNode;
 }) {
   const [elapsedMs, setElapsedMs] = useState(() => Date.now() - startedAt);
+  const visible = activities.length === 0 && !hasTrailingText;
   useEffect(() => {
+    if (!visible) return;
     const update = () => setElapsedMs(Date.now() - startedAt);
     update();
     const timer = window.setInterval(update, 500);
     return () => window.clearInterval(timer);
-  }, [startedAt]);
-  const active = [...activities]
-    .reverse()
-    .find(
-      (activity) =>
-        activity.status === "running" || activity.status === "waiting",
-    );
-  // The active execution summary already shows the current tool and command.
-  // Keep this lower status row for planning gaps so the two indicators do not
-  // repeat the same information while a tool is running.
-  if (active) return null;
-  // Pure Q&A (no tools at all): once the answer text starts streaming, drop the
-  // "planning" spinner — there is no next step coming. During a multi-step run
-  // (activities present) keep spinning through the gaps between tools so it does
-  // not flicker off every time the model emits interstitial text.
-  if (!active && hasTrailingText && !activities.length) return null;
-  const completed = activities.filter(
-    (activity) => activity.status === "success",
-  ).length;
-  const failures = activities.filter(
-    (activity) => activity.status === "failed",
-  ).length;
+  }, [startedAt, visible]);
+  // Once a tool exists, the execution summary owns the whole run, including
+  // planning gaps between tools. A second spinner below it would duplicate the
+  // completed step and make the request look like two independent processes.
+  // Pure Q&A also drops this planning state as soon as answer text appears.
+  if (!visible) return null;
   const { phase, detail } = workingPhase(activities, elapsedMs);
-  const recent = activities.slice(-3);
   return (
     <div className="agent-working">
       <div className="agent-working-head">
         <span className="agent-working-mark">
-          <RefreshCw className="spinning" size={13} />
+          <BrainCircuit size={13} />
         </span>
         <span>
           <strong aria-live="polite">{phase}</strong>
-          <small>
-            {detail}
-            {" · "}
-            {completed ? `${completed} 步完成` : "准备执行"}
-            {failures ? ` · ${failures} 步失败` : ""}
-          </small>
+          <small>{detail}</small>
         </span>
         <time>{formatDuration(elapsedMs)}</time>
       </div>
       <div className="agent-working-track">
         <i />
       </div>
-      {(reasoning || reasoningNode || progressNode) && !active && (
+      {(reasoning || reasoningNode || progressNode) && (
         <div
           className="agent-working-reasoning"
           aria-live="polite"
@@ -957,29 +937,6 @@ function AgentWorkingState({
           {reasoning}
           {reasoningNode}
           {progressNode}
-        </div>
-      )}
-      {recent.length > 0 && (
-        <div className="agent-working-recent">
-          {recent.map((activity) => (
-            <span
-              key={activity.id}
-              className={activity.status}
-              title={activityFocus(activity)}
-            >
-              {activity.status === "running" ? (
-                <RefreshCw className="spinning" size={11} />
-              ) : activity.status === "failed" ||
-                activity.status === "denied" ? (
-                <CircleAlert size={11} />
-              ) : activity.status === "waiting" ? (
-                <Clock3 size={11} />
-              ) : (
-                <Check size={11} />
-              )}
-              {activityFocus(activity)}
-            </span>
-          ))}
         </div>
       )}
     </div>
