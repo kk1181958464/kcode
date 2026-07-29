@@ -1,4 +1,4 @@
-import React, { memo, useMemo } from "react";
+import React, { memo, useMemo, useState } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Code2, Copy } from "lucide-react";
@@ -91,17 +91,39 @@ const MarkdownBlock = memo(function MarkdownBlock({
   );
 });
 
+const MAX_INITIAL_BLOCKS = 120;
+const INITIAL_TAIL_BLOCKS = 24;
+
 export const MarkdownMessage = memo(function MarkdownMessage({
   content,
 }: {
   content: string;
 }) {
   const blocks = useMemo(() => splitMarkdownBlocks(content), [content]);
+  const [expanded, setExpanded] = useState(false);
+  const hiddenCount = Math.max(0, blocks.length - MAX_INITIAL_BLOCKS);
+  const visibleBlocks =
+    expanded || hiddenCount === 0
+      ? blocks
+      : [
+          ...blocks.slice(0, MAX_INITIAL_BLOCKS - INITIAL_TAIL_BLOCKS),
+          `> 省略了 ${hiddenCount} 个较早内容块，点击下方按钮展开。`,
+          ...blocks.slice(-INITIAL_TAIL_BLOCKS),
+        ];
   return (
     <>
-      {blocks.map((block, index) => (
+      {visibleBlocks.map((block, index) => (
         <MarkdownBlock key={index} content={block} />
       ))}
+      {hiddenCount > 0 && (
+        <button
+          type="button"
+          className="markdown-expand"
+          onClick={() => setExpanded((value) => !value)}
+        >
+          {expanded ? "收起较早内容" : `展开全部 ${hiddenCount} 个内容块`}
+        </button>
+      )}
     </>
   );
 });

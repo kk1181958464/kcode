@@ -24,6 +24,11 @@ const api: KCodeApi = {
     save: (key, value) => ipcRenderer.invoke("state:save", key, value),
     stats: () => ipcRenderer.invoke("state:stats"),
     compact: () => ipcRenderer.invoke("state:compact"),
+    taskHeaders: () => ipcRenderer.invoke("state:task-headers"),
+    loadTask: (id) => ipcRenderer.invoke("state:load-task", id),
+    saveTask: (id, value) => ipcRenderer.invoke("state:save-task", id, value),
+    saveTaskOrder: (ids) => ipcRenderer.invoke("state:save-task-order", ids),
+    deleteTask: (id) => ipcRenderer.invoke("state:delete-task", id),
   },
   window: {
     minimize: () => ipcRenderer.invoke("window:minimize"),
@@ -72,7 +77,8 @@ const api: KCodeApi = {
   },
   workspace: {
     pickFolder: () => ipcRenderer.invoke("workspace:pick-folder"),
-    gitState: (path) => ipcRenderer.invoke("workspace:git-state", path),
+    gitState: (path, includeDiff) =>
+      ipcRenderer.invoke("workspace:git-state", path, includeDiff),
     showFolderMenu: (path) =>
       ipcRenderer.invoke("workspace:show-folder-menu", path),
   },

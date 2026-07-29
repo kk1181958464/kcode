@@ -1206,6 +1206,10 @@ select:focus-visible {
 .conversation-turn-item {
   contain: layout style;
 }
+.turn-rail-spacer {
+  width: 40px;
+  pointer-events: none;
+}
 .conversation-turn-item.complete {
   content-visibility: auto;
   contain: layout style paint;
@@ -1250,6 +1254,64 @@ select:focus-visible {
   white-space: nowrap;
   font-size: 11px;
   font-weight: 500;
+}
+.execution-summary.has-file-stats .execution-summary-head {
+  color: var(--ink);
+}
+.execution-summary-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 2px 0 4px 25px;
+  padding-right: 22px;
+}
+.execution-summary-files > span {
+  max-width: min(100%, 280px);
+  min-height: 22px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 6px;
+  border: 1px solid #e1e5dd;
+  border-radius: 5px;
+  background: var(--surface-raised);
+  color: var(--muted);
+  font-size: 10px;
+}
+.execution-summary-files svg {
+  flex: 0 0 auto;
+  color: #526057;
+}
+.execution-summary-files em {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-style: normal;
+  font-family:
+    ui-monospace,
+    SFMono-Regular,
+    Consolas,
+    monospace;
+}
+.execution-summary-files b,
+.execution-summary-files i {
+  flex: 0 0 auto;
+  font-weight: 600;
+  font-style: normal;
+}
+.execution-summary-files b {
+  color: #287749;
+}
+.execution-summary-files i {
+  color: var(--danger);
+}
+.execution-summary-files > small {
+  min-height: 22px;
+  display: inline-flex;
+  align-items: center;
+  color: var(--muted);
+  font-size: 10px;
 }
 .execution-summary-head > svg {
   color: var(--muted);
@@ -1427,8 +1489,17 @@ select:focus-visible {
 }
 .changed-file-row small {
   display: flex;
+  align-items: center;
   gap: 5px;
   font-size: 10px;
+}
+.changed-file-row small em {
+  color: var(--muted);
+  font-style: normal;
+  white-space: nowrap;
+}
+.changed-file-row:not(.no-diff):hover small em {
+  color: var(--ink);
 }
 .agent-activity.failed {
   border-color: var(--danger-soft);
@@ -2061,6 +2132,12 @@ select:focus-visible {
 }
 .markdown-block + .markdown-block {
   margin-top: 11px;
+}
+.markdown-expand {
+  display: block;
+  margin: 12px 0;
+  color: var(--muted);
+  font-size: 11px;
 }
 .message-body p {
   margin: 0 0 11px;
@@ -7269,3 +7346,385 @@ button[aria-busy="true"] {
 }
 .accent-swatch svg { opacity: 0; transition: opacity var(--motion-fast) ease; }
 .accent-swatch.active svg { opacity: 1; }
+
+/* ========================================================================== */
+/* KCODE UI — layout pass                                                     */
+/* A tighter workstation layout: calmer rails, clearer hierarchy, and a       */
+/* composer/status rhythm that holds up during long coding sessions.          */
+/* ========================================================================== */
+
+.window-titlebar {
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+
+.app-shell {
+  background: var(--panel);
+}
+
+.sidebar {
+  padding: 12px 10px 10px !important;
+  border-right-color: var(--line-strong);
+  background: color-mix(in srgb, var(--panel) 92%, var(--surface)) !important;
+}
+
+.brand {
+  height: 42px;
+  padding-inline: 8px;
+  margin-bottom: 8px;
+}
+
+.brand > img {
+  width: 28px;
+  height: 28px;
+  flex-basis: 28px;
+  filter: none;
+}
+
+.brand strong {
+  font-size: 14px !important;
+}
+
+.brand small {
+  font-size: 10px;
+}
+
+.new-task {
+  height: 36px;
+  margin-bottom: 14px;
+  padding: 0 8px !important;
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--line)) !important;
+  border-radius: var(--radius-md) !important;
+  background: color-mix(in srgb, var(--accent-soft) 78%, var(--surface)) !important;
+}
+
+.new-task:hover {
+  border-color: color-mix(in srgb, var(--accent) 36%, var(--line)) !important;
+  background: var(--accent-soft) !important;
+  box-shadow: none;
+}
+
+.new-task-icon {
+  width: 24px !important;
+  height: 24px !important;
+  flex-basis: 24px !important;
+  border-radius: var(--radius-sm) !important;
+}
+
+.workspace-label,
+.task-label {
+  padding-inline: 8px !important;
+  margin-bottom: 8px !important;
+}
+
+.task-filter {
+  height: 34px;
+  margin-inline: 2px;
+  margin-bottom: 10px;
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+}
+
+.workspace-tree {
+  padding-bottom: 8px;
+}
+
+.workspace-flat-row,
+.task-flat-row {
+  height: 34px;
+  min-height: 34px;
+}
+
+.workspace-header {
+  height: 32px;
+  margin: 1px 2px;
+  padding-inline: 4px;
+  border-radius: var(--radius-sm);
+}
+
+.workspace-header:hover {
+  background: var(--surface-hover);
+}
+
+.task-flat-row {
+  margin-left: 18px;
+  margin-right: 2px;
+  padding: 2px 3px 2px 0;
+}
+
+.task-row {
+  min-height: 30px;
+  gap: 7px;
+  padding: 3px 6px 3px 2px;
+  border-left-width: 3px;
+  border-radius: var(--radius-sm);
+}
+
+.task-row:not(.active):not(.dragging):hover {
+  background: var(--surface-hover);
+}
+
+.task-row.active {
+  background: color-mix(in srgb, var(--accent-soft) 88%, var(--surface)) !important;
+  border-left-color: var(--accent) !important;
+}
+
+.task-row.active .task-main span {
+  color: var(--accent) !important;
+}
+
+.sidebar-footer {
+  margin-top: 8px;
+  padding-top: 8px;
+}
+
+.main {
+  background: var(--surface);
+}
+
+.topbar {
+  height: 56px;
+  padding-inline: 18px 14px;
+  background: color-mix(in srgb, var(--surface-raised) 92%, var(--panel));
+}
+
+.topbar-left,
+.top-actions {
+  gap: 9px;
+}
+
+.topbar h1 {
+  margin-bottom: 4px;
+}
+
+.topbar span {
+  gap: 6px;
+}
+
+.message-list {
+  width: min(100%, 920px);
+  max-width: 920px;
+  padding: 32px 30px 118px 58px;
+}
+
+.welcome {
+  justify-content: flex-start;
+  padding: min(15vh, 118px) 40px 78px;
+}
+
+.welcome-context {
+  margin-bottom: 16px;
+}
+
+.logo-large {
+  width: 50px;
+  height: 50px;
+  margin-bottom: 18px;
+  border-radius: var(--radius-md);
+}
+
+.welcome h2 {
+  font-size: 24px;
+  font-weight: 700;
+}
+
+.welcome p {
+  max-width: 520px;
+  line-height: 1.7;
+}
+
+.prompts {
+  width: min(520px, 100%);
+  gap: 10px;
+  margin-top: 24px;
+}
+
+.prompts button {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+}
+
+.composer-wrap {
+  padding: 10px clamp(18px, 3vw, 28px) 14px;
+  border-top: 1px solid color-mix(in srgb, var(--line) 42%, transparent);
+  background: linear-gradient(to top, var(--surface) 84%, transparent);
+}
+
+.composer {
+  width: min(100%, 900px);
+  border-radius: 12px !important;
+  box-shadow: 0 8px 28px rgb(24 24 27 / 7%) !important;
+}
+
+.composer textarea {
+  min-height: 74px;
+  padding: 14px 16px 9px;
+}
+
+.composer-bar {
+  min-height: 46px;
+  padding: 7px 8px 8px 10px;
+  border-radius: 0 0 12px 12px;
+  background: color-mix(in srgb, var(--surface-raised) 92%, var(--panel));
+}
+
+.context-button,
+.model-trigger,
+.effort-trigger,
+.permission-trigger {
+  border-radius: var(--radius-sm);
+}
+
+.send {
+  width: 34px;
+  height: 34px;
+}
+
+.scroll-to-bottom {
+  top: -18px;
+  border-color: var(--line-strong);
+}
+
+.status-panel {
+  top: 14px;
+  right: 14px;
+  width: 280px;
+  height: calc(100% - 28px);
+  gap: 10px;
+  padding-bottom: 14px;
+}
+
+.status-panel > header,
+.status-panel section {
+  border-radius: var(--radius-md);
+  box-shadow: 0 1px 2px rgb(24 24 27 / 5%);
+}
+
+.status-panel > header {
+  min-height: 42px;
+  padding: 11px 13px;
+}
+
+.status-panel section {
+  padding: 13px;
+}
+
+.status-panel h3 {
+  margin-bottom: 9px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.status-panel p {
+  margin-block: 0;
+}
+
+.status-panel dl {
+  margin-top: 8px;
+}
+
+.status-panel dl div {
+  min-height: 28px;
+}
+
+@media (max-width: 1100px) {
+  .status-panel {
+    width: 260px;
+  }
+
+  .message-list {
+    padding-right: 24px;
+  }
+}
+
+@media (max-width: 860px) {
+  .app-shell:not(.browser-open) {
+    grid-template-columns: min(var(--sidebar-width, 232px), 34vw) minmax(0, 1fr);
+  }
+
+  .sidebar {
+    display: flex;
+  }
+
+  .pane-toggle {
+    display: grid;
+  }
+
+  .status-panel,
+  .status-toggle {
+    display: none;
+  }
+
+  .message-list,
+  .composer {
+    max-width: none;
+  }
+
+  .composer-wrap {
+    padding-inline: 16px;
+  }
+
+  .welcome {
+    padding-top: 72px;
+  }
+}
+
+@media (max-width: 620px) {
+  body {
+    min-height: 560px;
+  }
+
+  .app-shell:not(.browser-open),
+  .app-shell.sidebar-collapsed:not(.browser-open),
+  .app-shell.status-collapsed:not(.browser-open),
+  .app-shell.sidebar-collapsed.status-collapsed:not(.browser-open) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .sidebar,
+  .pane-toggle {
+    display: none;
+  }
+
+  .compact-settings {
+    display: grid;
+  }
+
+  .topbar {
+    height: 52px;
+    padding-inline: 10px;
+  }
+
+  .message-list {
+    padding: 22px 12px 104px 46px;
+  }
+
+  .welcome {
+    padding: 48px 18px 72px;
+  }
+
+  .welcome h2 {
+    font-size: 22px;
+  }
+
+  .prompts {
+    grid-template-columns: 1fr;
+  }
+
+  .composer-wrap {
+    padding: 8px 10px 10px;
+  }
+
+  .composer textarea {
+    min-height: 64px;
+    padding: 12px 13px 8px;
+  }
+
+  .composer-bar {
+    min-height: 44px;
+  }
+}

@@ -54,7 +54,7 @@ export interface StatusPanelProps {
   summaryBusy: boolean;
   resumeCheckpoint(checkpoint: AgentCheckpoint): Promise<void>;
   gitRefreshing: boolean;
-  refreshGitState(): Promise<void>;
+  refreshGitState(includeDiff?: boolean): Promise<void>;
   gitState: GitWorkspaceState;
   gitDiffOpen: boolean;
   setGitDiffOpen(updater: (value: boolean) => boolean): void;
@@ -227,7 +227,13 @@ export function StatusPanel({
             {gitState.files > 0 && (
               <button
                 className="git-diff-toggle"
-                onClick={() => setGitDiffOpen((value) => !value)}
+                onClick={() =>
+                  setGitDiffOpen((value) => {
+                    const next = !value;
+                    if (next) void refreshGitState(true);
+                    return next;
+                  })
+                }
               >
                 {gitDiffOpen ? "收起差异" : "查看差异"}
                 <ChevronDown size={13} />

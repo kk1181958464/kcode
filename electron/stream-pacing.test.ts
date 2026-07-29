@@ -31,7 +31,8 @@ test("stream pacing accelerates gradually when the backlog grows", () => {
   assert.equal(takeStreamPacedSlice("字".repeat(65)).slice.length, 4);
   assert.equal(takeStreamPacedSlice("字".repeat(161)).slice.length, 8);
   assert.equal(takeStreamPacedSlice("字".repeat(513)).slice.length, 24);
-  assert.equal(takeStreamPacedSlice("字".repeat(2_049)).slice.length, 64);
+  assert.equal(takeStreamPacedSlice("字".repeat(2_049)).slice.length, 129);
+  assert.equal(takeStreamPacedSlice("字".repeat(100_000)).slice.length, 8_192);
 });
 
 test("stream pacing drains all text on completion", () => {
@@ -75,6 +76,7 @@ test("incremental pacing buffer accelerates and drains a backlog", () => {
 test("incremental pacing buffer catches up after a large input pause", () => {
   const buffer = new StreamPacingBuffer();
   buffer.append("字".repeat(3_000));
-  assert.equal(buffer.take().length, 64);
-  assert.equal(buffer.length, 2_936);
+  const slice = buffer.take();
+  assert.ok(slice.length >= 128 && slice.length <= 512);
+  assert.equal(buffer.length, 3_000 - slice.length);
 });

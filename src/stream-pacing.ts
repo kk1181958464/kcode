@@ -1,16 +1,28 @@
 const splitAtCodePoint = (text: string, count: number) => {
   if (count <= 0) return ["", text] as const;
-  const points = Array.from(text);
-  if (points.length <= count) return [text, ""] as const;
-  return [
-    points.slice(0, count).join(""),
-    points.slice(count).join(""),
-  ] as const;
+  let points = 0;
+  let codeUnits = 0;
+  for (const point of text) {
+    if (points >= count) break;
+    points += 1;
+    codeUnits += point.length;
+  }
+  return codeUnits >= text.length
+    ? ([text, ""] as const)
+    : ([text.slice(0, codeUnits), text.slice(codeUnits)] as const);
+};
+
+const codePointLength = (text: string) => {
+  let length = 0;
+  for (const _point of text) length += 1;
+  return length;
 };
 
 const releaseBudget = (length: number) =>
-  length > 2_048
-    ? 64
+  length > 8_192
+    ? Math.min(8_192, Math.max(512, Math.ceil(length / 10)))
+    : length > 2_048
+      ? Math.min(512, Math.max(64, Math.ceil(length / 16)))
     : length > 512
       ? 24
       : length > 160
@@ -25,35 +37,58 @@ const releaseBudget = (length: number) =>
  * so a large upstream backlog does not get re-scanned every 50 ms.
  */
 export class StreamPacingBuffer {
-  private points: string[] = [];
-  private offset = 0;
+  private chunks: { text: string; points: number }[] = [];
+  private head = 0;
+  private bufferedPoints = 0;
 
   get length() {
-    return this.points.length - this.offset;
+    return this.bufferedPoints;
   }
 
   append(text: string) {
-    for (const point of text) this.points.push(point);
+    if (!text) return;
+    const points = codePointLength(text);
+    const last = this.chunks.at(-1);
+    if (last && last.text.length + text.length <= 4_096) {
+      last.text += text;
+      last.points += points;
+    } else this.chunks.push({ text, points });
+    this.bufferedPoints += points;
   }
 
   take(drainAll = false, releaseSingleton = false) {
     const length = this.length;
     if (!length || (!drainAll && length < 2 && !releaseSingleton)) return "";
     const budget = drainAll ? length : releaseBudget(length);
-    const end = Math.min(this.points.length, this.offset + budget);
-    const slice = this.points.slice(this.offset, end).join("");
-    this.offset = end;
+    let remaining = budget;
+    const output: string[] = [];
+    while (remaining > 0 && this.head < this.chunks.length) {
+      const chunk = this.chunks[this.head];
+      if (chunk.points <= remaining) {
+        output.push(chunk.text);
+        remaining -= chunk.points;
+        this.bufferedPoints -= chunk.points;
+        this.head += 1;
+      } else {
+        const [slice, rest] = splitAtCodePoint(chunk.text, remaining);
+        output.push(slice);
+        chunk.text = rest;
+        chunk.points -= remaining;
+        this.bufferedPoints -= remaining;
+        remaining = 0;
+      }
+    }
     this.compact();
-    return slice;
+    return output.join("");
   }
 
   private compact() {
-    if (this.offset === this.points.length) {
-      this.points = [];
-      this.offset = 0;
-    } else if (this.offset >= 1_024 && this.offset * 2 >= this.points.length) {
-      this.points = this.points.slice(this.offset);
-      this.offset = 0;
+    if (this.head === this.chunks.length) {
+      this.chunks = [];
+      this.head = 0;
+    } else if (this.head >= 64 && this.head * 2 >= this.chunks.length) {
+      this.chunks = this.chunks.slice(this.head);
+      this.head = 0;
     }
   }
 }
@@ -66,7 +101,7 @@ export function takeStreamPacedSlice(
   if (!buffered) return { slice: "", remaining: "" };
   if (drainAll) return { slice: buffered, remaining: "" };
 
-  const length = Array.from(buffered).length;
+  const length = codePointLength(buffered);
   if (length < 2 && !releaseSingleton)
     return { slice: "", remaining: buffered };
   // Stable two-character ticks look smooth for normal Chinese output. Increase

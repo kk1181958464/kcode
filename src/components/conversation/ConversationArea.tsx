@@ -1,4 +1,4 @@
-import type { RefObject } from "react";
+import { memo, useEffect, useState, type RefObject } from "react";
 import { Bot, ChevronDown, Settings } from "lucide-react";
 import type {
   AgentActivity,
@@ -49,7 +49,10 @@ export interface ConversationAreaProps {
   agentReasoning: string;
 }
 
-export function ConversationArea({
+const TURN_RAIL_ITEM_HEIGHT = 28;
+const TURN_RAIL_OVERSCAN = 12;
+
+export const ConversationArea = memo(function ConversationArea({
   conversationRef,
   handleConversationScroll,
   interruptBottomSettle,
@@ -77,6 +80,31 @@ export function ConversationArea({
   endRef,
   agentReasoning,
 }: ConversationAreaProps) {
+  const [railWindow, setRailWindow] = useState({ start: 0, end: 80 });
+  const updateRailWindow = () => {
+    const rail = turnRailRef.current;
+    if (!rail) return;
+    const start = Math.max(
+      0,
+      Math.floor(rail.scrollTop / TURN_RAIL_ITEM_HEIGHT) - TURN_RAIL_OVERSCAN,
+    );
+    const visible = Math.ceil(rail.clientHeight / TURN_RAIL_ITEM_HEIGHT);
+    const end = Math.min(
+      conversationTurns.length,
+      start + visible + TURN_RAIL_OVERSCAN * 2,
+    );
+    setRailWindow((current) =>
+      current.start === start && current.end === end ? current : { start, end },
+    );
+  };
+  useEffect(() => {
+    const frame = requestAnimationFrame(updateRailWindow);
+    return () => cancelAnimationFrame(frame);
+  }, [conversationTurns.length]);
+  const visibleTurns = conversationTurns.slice(
+    railWindow.start,
+    railWindow.end,
+  );
   return (
     <section
       ref={conversationRef}
@@ -91,7 +119,10 @@ export function ConversationArea({
           ref={turnRailRef}
           className="turn-rail"
           aria-label="对话记录导航"
-          onScroll={updateTurnRailOverflow}
+          onScroll={() => {
+            updateTurnRailOverflow();
+            updateRailWindow();
+          }}
           style={
             {
               "--turn-count": conversationTurns.length,
@@ -109,7 +140,15 @@ export function ConversationArea({
             <ChevronDown size={12} />
           </span>
           <div className="turn-rail-line" />
-          {conversationTurns.map((turn, index) => (
+          {railWindow.start > 0 && (
+            <div
+              className="turn-rail-spacer"
+              style={{ height: railWindow.start * TURN_RAIL_ITEM_HEIGHT }}
+            />
+          )}
+          {visibleTurns.map((turn, offset) => {
+            const index = railWindow.start + offset;
+            return (
             <button
               key={turn.id}
               ref={(element) => {
@@ -130,7 +169,18 @@ export function ConversationArea({
                 <small>{turn.answer}</small>
               </span>
             </button>
-          ))}
+            );
+          })}
+          {railWindow.end < conversationTurns.length && (
+            <div
+              className="turn-rail-spacer"
+              style={{
+                height:
+                  (conversationTurns.length - railWindow.end) *
+                  TURN_RAIL_ITEM_HEIGHT,
+              }}
+            />
+          )}
         </nav>
       )}
       {messages.length === 0 ? (
@@ -192,4 +242,4 @@ export function ConversationArea({
       )}
     </section>
   );
-}
+});

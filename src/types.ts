@@ -348,7 +348,14 @@ export type ModelEvent =
   | { type: "done" };
 
 export type AgentEvent =
-  ModelEvent | { type: "activity"; activity: AgentActivity };
+  | ModelEvent
+  | { type: "activity"; activity: AgentActivity }
+  | {
+      type: "activity_output";
+      activityId: string;
+      mode: "append" | "replace";
+      value: string;
+    };
 
 export type AppUpdateState = {
   status:
@@ -390,6 +397,11 @@ export type KCodeApi = {
     save(key: string, value: unknown): Promise<void>;
     stats(): Promise<{ tasks: number; bytes: number; path: string }>;
     compact(): Promise<{ tasks: number; bytes: number; path: string }>;
+    taskHeaders(): Promise<unknown[]>;
+    loadTask(id: string): Promise<unknown | null>;
+    saveTask(id: string, value: unknown): Promise<void>;
+    saveTaskOrder(ids: string[]): Promise<void>;
+    deleteTask(id: string): Promise<void>;
   };
   window: {
     minimize(): Promise<void>;
@@ -437,7 +449,7 @@ export type KCodeApi = {
   };
   workspace: {
     pickFolder(): Promise<WorkspaceFolder | null>;
-    gitState(path: string): Promise<GitWorkspaceState>;
+    gitState(path: string, includeDiff?: boolean): Promise<GitWorkspaceState>;
     showFolderMenu(path: string): Promise<void>;
   };
   browser: {

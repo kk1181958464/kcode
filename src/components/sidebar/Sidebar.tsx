@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Virtuoso } from "react-virtuoso";
 import {
   Archive,
@@ -26,6 +26,12 @@ type SidebarRow =
 const virtuosoComponents = {
   Footer: () => <div className="workspace-tree-footer" aria-hidden="true" />,
 };
+
+function sidebarRowKey(_: number, row: SidebarRow) {
+  return row.kind === "workspace"
+    ? `workspace:${row.group.workspacePath}`
+    : `task:${row.task.id}`;
+}
 
 export interface SidebarProps {
   workspaceGroups: SidebarWorkspaceGroup[];
@@ -76,7 +82,7 @@ export const Sidebar = memo(function Sidebar({
   const [taskDropTarget, setTaskDropTarget] = useState<string>();
   const [draggedWorkspace, setDraggedWorkspace] = useState<string>();
   const [workspaceDropTarget, setWorkspaceDropTarget] = useState<string>();
-  const [scrolling, setScrolling] = useState(false);
+  const workspaceTreeRef = useRef<HTMLElement | null>(null);
   const draggedTaskIdRef = useRef<string | undefined>(undefined);
   const draggedWorkspaceRef = useRef<string | undefined>(undefined);
   const pendingTaskDropTargetRef = useRef<string | undefined>(undefined);
@@ -93,6 +99,16 @@ export const Sidebar = memo(function Sidebar({
     }
     return next;
   }, [collapsedWorkspaces, workspaceGroups]);
+  const setWorkspaceTreeRef = useCallback(
+    (element: HTMLElement | Window | null) => {
+      workspaceTreeRef.current =
+        element instanceof HTMLElement ? element : null;
+    },
+    [],
+  );
+  const handleListScrolling = useCallback((isScrolling: boolean) => {
+    workspaceTreeRef.current?.classList.toggle("scrolling", isScrolling);
+  }, []);
 
   const scheduleTaskDropTarget = (taskId: string) => {
     if (pendingTaskDropTargetRef.current === taskId) return;
@@ -112,7 +128,7 @@ export const Sidebar = memo(function Sidebar({
       setWorkspaceDropTarget(pendingWorkspaceDropTargetRef.current);
     });
   };
-  const finishTaskDrag = () => {
+  const finishTaskDrag = useCallback(() => {
     draggedTaskIdRef.current = undefined;
     pendingTaskDropTargetRef.current = undefined;
     if (taskDropFrameRef.current !== undefined) {
@@ -121,8 +137,8 @@ export const Sidebar = memo(function Sidebar({
     }
     setDraggedTaskId(undefined);
     setTaskDropTarget(undefined);
-  };
-  const finishWorkspaceDrag = () => {
+  }, []);
+  const finishWorkspaceDrag = useCallback(() => {
     draggedWorkspaceRef.current = undefined;
     pendingWorkspaceDropTargetRef.current = undefined;
     if (workspaceDropFrameRef.current !== undefined) {
@@ -131,16 +147,33 @@ export const Sidebar = memo(function Sidebar({
     }
     setDraggedWorkspace(undefined);
     setWorkspaceDropTarget(undefined);
-  };
-  useEffect(
-    () => () => {
+  }, []);
+  useEffect(() => {
+    const finishAllDrags = () => {
+      finishTaskDrag();
+      finishWorkspaceDrag();
+    };
+    const finishHiddenDrag = () => {
+      if (document.hidden) finishAllDrags();
+    };
+
+    window.addEventListener("dragend", finishAllDrags);
+    window.addEventListener("drop", finishAllDrags);
+    window.addEventListener("blur", finishAllDrags);
+    document.addEventListener("visibilitychange", finishHiddenDrag);
+
+    return () => {
+      window.removeEventListener("dragend", finishAllDrags);
+      window.removeEventListener("drop", finishAllDrags);
+      window.removeEventListener("blur", finishAllDrags);
+      document.removeEventListener("visibilitychange", finishHiddenDrag);
       if (taskDropFrameRef.current !== undefined)
         cancelAnimationFrame(taskDropFrameRef.current);
       if (workspaceDropFrameRef.current !== undefined)
         cancelAnimationFrame(workspaceDropFrameRef.current);
-    },
-    [],
-  );
+      workspaceTreeRef.current?.classList.remove("scrolling");
+    };
+  }, [finishTaskDrag, finishWorkspaceDrag]);
 
   return (
     <aside className="sidebar">
@@ -176,17 +209,15 @@ export const Sidebar = memo(function Sidebar({
         </button>
       </div>
       <Virtuoso
-        className={`workspace-tree ${scrolling ? "scrolling" : ""}`}
+        className="workspace-tree"
         data={rows}
         fixedItemHeight={34}
-        increaseViewportBy={170}
-        isScrolling={setScrolling}
+        increaseViewportBy={560}
+        overscan={340}
+        isScrolling={handleListScrolling}
+        scrollerRef={setWorkspaceTreeRef}
         components={virtuosoComponents}
-        computeItemKey={(_, row) =>
-          row.kind === "workspace"
-            ? `workspace:${row.group.workspacePath}`
-            : `task:${row.task.id}`
-        }
+        computeItemKey={sidebarRowKey}
         itemContent={(_, row) =>
           row.kind === "workspace" ? (
             <div

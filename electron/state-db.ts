@@ -21,13 +21,55 @@ function db() {
       CREATE TABLE IF NOT EXISTS tasks (
         id TEXT PRIMARY KEY,
         value TEXT NOT NULL,
+        header TEXT NOT NULL DEFAULT '{}',
         position INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       );
     `);
+    ensureTaskHeaderColumn(database);
     migrateLegacyTasks(database);
+    backfillTaskHeaders(database);
   }
   return database;
+}
+
+function ensureTaskHeaderColumn(connection: DatabaseSync) {
+  const columns = connection.prepare("PRAGMA table_info(tasks)").all() as {
+    name: string;
+  }[];
+  if (!columns.some((column) => column.name === "header"))
+    connection.exec("ALTER TABLE tasks ADD COLUMN header TEXT NOT NULL DEFAULT '{}'");
+}
+
+function taskHeader(task: unknown) {
+  if (!task || typeof task !== "object") return task;
+  const {
+    messages: _messages,
+    activities: _activities,
+    contextSummary: _contextSummary,
+    contextLedger: _contextLedger,
+    summarySnapshots: _summarySnapshots,
+    imageSemantics: _imageSemantics,
+    ...header
+  } = task as Record<string, unknown>;
+  return header;
+}
+
+function backfillTaskHeaders(connection: DatabaseSync) {
+  const rows = connection
+    .prepare("SELECT id,value FROM tasks WHERE header = '{}' OR header = ''")
+    .all() as { id: string; value: string }[];
+  if (!rows.length) return;
+  const update = connection.prepare("UPDATE tasks SET header = ? WHERE id = ?");
+  connection.exec("BEGIN IMMEDIATE");
+  try {
+    for (const row of rows)
+      update.run(JSON.stringify(taskHeader(JSON.parse(row.value))), row.id);
+    connection.exec("COMMIT");
+  } catch (error) {
+    connection.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 function migrateLegacyTasks(connection: DatabaseSync) {
@@ -51,7 +93,7 @@ function migrateLegacyTasks(connection: DatabaseSync) {
 
 function saveTasks(connection: DatabaseSync, value: unknown[]) {
   const upsert = connection.prepare(
-    "INSERT INTO tasks(id,value,position,updated_at) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value, position=excluded.position, updated_at=excluded.updated_at",
+    "INSERT INTO tasks(id,value,header,position,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value, header=excluded.header, position=excluded.position, updated_at=excluded.updated_at",
   );
   const ids = new Set<string>();
   connection.exec("BEGIN IMMEDIATE");
@@ -65,7 +107,13 @@ function saveTasks(connection: DatabaseSync, value: unknown[]) {
         throw new Error("任务数据缺少有效 ID");
       const id = (task as any).id as string;
       ids.add(id);
-      upsert.run(id, JSON.stringify(task), position, Date.now());
+      upsert.run(
+        id,
+        JSON.stringify(task),
+        JSON.stringify(taskHeader(task)),
+        position,
+        Date.now(),
+      );
     });
     const existing = connection.prepare("SELECT id FROM tasks").all() as {
       id: string;
@@ -77,6 +125,70 @@ function saveTasks(connection: DatabaseSync, value: unknown[]) {
     connection.exec("ROLLBACK");
     throw error;
   }
+}
+
+export function listTaskHeaders() {
+  const rows = db()
+    .prepare("SELECT header FROM tasks ORDER BY position")
+    .all() as { header: string }[];
+  return rows.map((row) => JSON.parse(row.header));
+}
+
+export function loadTask(id: string): unknown | null {
+  const row = db().prepare("SELECT value FROM tasks WHERE id = ?").get(id) as
+    | { value: string }
+    | undefined;
+  return row?.value ? JSON.parse(row.value) : null;
+}
+
+export function saveTask(id: string, value: unknown) {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    (value as Record<string, unknown>).id !== id
+  )
+    throw new Error("任务数据与任务 ID 不匹配");
+  const connection = db();
+  const current = connection
+    .prepare("SELECT position FROM tasks WHERE id = ?")
+    .get(id) as { position: number } | undefined;
+  const position =
+    current?.position ??
+    Number(
+      (
+        connection.prepare("SELECT COALESCE(MAX(position), -1) + 1 AS next FROM tasks").get() as {
+          next: number;
+        }
+      ).next,
+    );
+  connection
+    .prepare(
+      "INSERT INTO tasks(id,value,header,position,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value, header=excluded.header, updated_at=excluded.updated_at",
+    )
+    .run(
+      id,
+      JSON.stringify(value),
+      JSON.stringify(taskHeader(value)),
+      position,
+      Date.now(),
+    );
+}
+
+export function saveTaskOrder(ids: string[]) {
+  const connection = db();
+  const update = connection.prepare("UPDATE tasks SET position = ? WHERE id = ?");
+  connection.exec("BEGIN IMMEDIATE");
+  try {
+    ids.forEach((id, position) => update.run(position, id));
+    connection.exec("COMMIT");
+  } catch (error) {
+    connection.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+export function deleteTask(id: string) {
+  db().prepare("DELETE FROM tasks WHERE id = ?").run(id);
 }
 
 export function loadState(key: string): unknown | null {

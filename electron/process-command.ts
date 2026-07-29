@@ -2,7 +2,7 @@
 
 const FORCE_RESOLVE_AFTER_KILL_MS = 4_000;
 const HEARTBEAT_INTERVAL_MS = 5_000;
-const OUTPUT_PROGRESS_INTERVAL_MS = 100;
+const OUTPUT_PROGRESS_INTERVAL_MS = 250;
 
 export function terminateChildProcess(
   child: ChildProcessWithoutNullStreams | { pid?: number; kill: (signal?: NodeJS.Signals) => boolean },

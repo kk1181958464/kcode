@@ -10,6 +10,7 @@ import { ChevronDown, ChevronUp, Search, X } from "lucide-react";
 
 const POSITION_KEY = "kcode.conversationSearchPosition";
 const POSITION_MARGIN = 8;
+const MAX_HIGHLIGHT_RANGES = 2_000;
 
 interface SearchPosition {
   x: number;
@@ -77,6 +78,7 @@ function findRanges(root: HTMLElement, query: string) {
       range.setStart(node, index);
       range.setEnd(node, index + query.length);
       ranges.push(range);
+      if (ranges.length >= MAX_HIGHLIGHT_RANGES) return ranges;
       from = index + Math.max(1, query.length);
     }
     node = walker.nextNode();
@@ -89,11 +91,13 @@ export function ConversationSearch({
   containerRef,
   onClose,
   onRevealAll,
+  live = false,
 }: {
   open: boolean;
   containerRef: RefObject<HTMLElement | null>;
   onClose(): void;
   onRevealAll(): void;
+  live?: boolean;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const searchRef = useRef<HTMLDivElement>(null);
@@ -277,6 +281,11 @@ export function ConversationSearch({
       window.removeEventListener("keydown", refocus);
       return;
     }
+    if (live) return () => {
+      style.remove();
+      window.removeEventListener("keydown", refocus);
+      clearHighlights();
+    };
     observerRef.current = new MutationObserver(() => {
       if (timerRef.current) window.clearTimeout(timerRef.current);
       timerRef.current = window.setTimeout(refresh, 160);
@@ -293,7 +302,7 @@ export function ConversationSearch({
       style.remove();
       clearHighlights();
     };
-  }, [open]);
+  }, [open, live]);
 
   useEffect(() => {
     if (!open) return;

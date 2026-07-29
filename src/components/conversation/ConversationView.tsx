@@ -41,6 +41,16 @@ import {
   streamingReasoningKey,
   subscribeStreamingText,
 } from "../../streaming-text-store";
+import {
+  boundedStreamingReasoning,
+  groupActivitiesByContentOffset,
+  STREAMING_REASONING_DOM_CHAR_LIMIT,
+} from "../../conversation-rendering";
+import {
+  getActivityOutput,
+  getActivityOutputTail,
+  subscribeActivityOutput,
+} from "../../activity-output-store";
 
 const ACTIVITY_INITIAL_RENDER_LIMIT = 32;
 const ACTIVITY_RENDER_PAGE_SIZE = 48;
@@ -50,6 +60,7 @@ const ACTIVITY_DETAIL_RENDER_LIMIT = 24_000;
 const ACTIVITY_DETAIL_HEAD_CHARS = 4_000;
 const STREAMING_DOM_CHAR_LIMIT = 96_000;
 const STREAMING_DOM_TRIM_TARGET = 80_000;
+const ACTIVITY_LIVE_OUTPUT_LIMIT = 24_000;
 
 function renderedActivityDetail(detail: string) {
   if (detail.length <= ACTIVITY_DETAIL_RENDER_LIMIT)
@@ -230,7 +241,37 @@ function MessageItem({
   );
 }
 
-function ActivityItem({
+const StreamingActivityOutputLeaf = memo(function StreamingActivityOutputLeaf({
+  activityId,
+}: {
+  activityId: string;
+}) {
+  const nodeRef = React.useRef<HTMLPreElement>(null);
+  useLayoutEffect(() => {
+    const replace = (value: string) => {
+      if (nodeRef.current)
+        nodeRef.current.textContent =
+          value.length > ACTIVITY_LIVE_OUTPUT_LIMIT
+            ? value.slice(-ACTIVITY_LIVE_OUTPUT_LIMIT)
+            : value;
+    };
+    replace(getActivityOutputTail(activityId, ACTIVITY_LIVE_OUTPUT_LIMIT));
+    return subscribeActivityOutput(activityId, (change) => {
+      if (change.type === "reset") replace("");
+      else if (change.type === "replace") replace(change.value);
+      else {
+        const node = nodeRef.current;
+        if (!node) return;
+        node.textContent = `${node.textContent ?? ""}${change.value}`.slice(
+          -ACTIVITY_LIVE_OUTPUT_LIMIT,
+        );
+      }
+    });
+  }, [activityId]);
+  return <pre ref={nodeRef} className="activity-live-output" />;
+});
+
+const ActivityItem = memo(function ActivityItem({
   activity,
   requestId,
   workspacePath,
@@ -241,7 +282,9 @@ function ActivityItem({
   workspacePath: string;
   onActivityChange(activity: AgentActivity): void;
 }) {
-  const [expanded, setExpanded] = useState(activity.status === "waiting");
+  const [expanded, setExpanded] = useState(
+    activity.status === "waiting" || activity.status === "running",
+  );
   const [undoing, setUndoing] = useState(false);
   const [restoreConflict, setRestoreConflict] = useState(false);
   const [elapsedMs, setElapsedMs] = useState(() =>
@@ -260,7 +303,9 @@ function ActivityItem({
     rawReadableFailure.length > 2_000
       ? `... ${rawReadableFailure.slice(-2_000)}`
       : rawReadableFailure;
-  const renderedDetail = detail ? renderedActivityDetail(detail) : undefined;
+  const renderedDetail =
+    expanded && detail ? renderedActivityDetail(detail) : undefined;
+  const liveOutput = activity.status === "running" && !detail;
   useEffect(() => {
     if (activity.status === "failed") setExpanded(true);
     // Keep long-running commands expanded so heartbeats/live output stay visible.
@@ -430,7 +475,7 @@ function ActivityItem({
               </span>
             </div>
           )}
-          {detail && (
+          {(detail || liveOutput) && (
             <div className="activity-output-toolbar">
               {(activity.errorSummary ||
                 activity.status === "running" ||
@@ -445,7 +490,7 @@ function ActivityItem({
                 title="复制输出"
                 onClick={(event) => {
                   event.stopPropagation();
-                  void copyWithToast(detail);
+                  void copyWithToast(detail || getActivityOutput(activity.id));
                 }}
               >
                 <Copy size={12} />
@@ -468,6 +513,9 @@ function ActivityItem({
                 <LinkifiedText text={renderedDetail.text} />
               </pre>
             ))}
+          {liveOutput && (
+            <StreamingActivityOutputLeaf activityId={activity.id} />
+          )}
         </div>
       )}
       {restoreConflict && (
@@ -505,7 +553,7 @@ function ActivityItem({
       )}
     </article>
   );
-}
+});
 
 const subagentTools: AgentToolName[] = [
   "spawn_agent",
@@ -545,6 +593,48 @@ function activityFileChanges(activity: AgentActivity) {
   ];
 }
 
+type FileChangeStats = {
+  additions: number;
+  deletions: number;
+  diffs: string[];
+};
+
+function collectFileChangeStats(activities: AgentActivity[]) {
+  const grouped = new Map<string, FileChangeStats>();
+  for (const activity of activities) {
+    if (
+      !fileTools.includes(activity.tool) ||
+      activity.status !== "success" ||
+      activity.undone
+    )
+      continue;
+    for (const change of activityFileChanges(activity)) {
+      const current = grouped.get(change.path) ?? {
+        additions: 0,
+        deletions: 0,
+        diffs: [],
+      };
+      current.additions += change.additions;
+      current.deletions += change.deletions;
+      if (change.diff) current.diffs.push(change.diff);
+      grouped.set(change.path, current);
+    }
+  }
+  const entries = [...grouped.entries()];
+  return {
+    grouped,
+    entries,
+    files: grouped.size,
+    additions: entries.reduce((sum, [, item]) => sum + item.additions, 0),
+    deletions: entries.reduce((sum, [, item]) => sum + item.deletions, 0),
+  };
+}
+
+function formatFileStatLine(files: number, additions: number, deletions: number) {
+  if (!files) return "";
+  return `修改 ${files} 个文件 · +${additions} -${deletions}`;
+}
+
 const ExecutionSummary = memo(
   function ExecutionSummary({
     activities,
@@ -563,7 +653,11 @@ const ExecutionSummary = memo(
     const [visibleActivityCount, setVisibleActivityCount] = useState(
       ACTIVITY_INITIAL_RENDER_LIMIT,
     );
-    // Recomputing these six passes on every streaming flush is wasted work; the
+    const fileStats = useMemo(() => collectFileChangeStats(activities), [
+      activities,
+    ]);
+    const previewFiles = fileStats.entries.slice(0, 3);
+    // Recomputing these passes on every streaming flush is wasted work; the
     // result only changes when the activity set changes.
     const { summary, waiting } = useMemo(() => {
       const commands = activities.filter((activity) =>
@@ -572,12 +666,6 @@ const ExecutionSummary = memo(
       const agents = activities.filter(
         (activity) => activity.tool === "spawn_agent",
       ).length;
-      const files = new Set(
-        activities
-          .filter((activity) => fileTools.includes(activity.tool))
-          .flatMap(activityFileChanges)
-          .map((change) => change.path),
-      ).size;
       const failures = activities.filter(
         (activity) => activity.status === "failed",
       ).length;
@@ -593,8 +681,12 @@ const ExecutionSummary = memo(
         summary: [
           commands ? `运行了 ${commands} 个命令` : "",
           agents ? `启动了 ${agents} 个子 Agent` : "",
-          files ? `编辑了 ${files} 个文件` : "",
-          !commands && !agents && !files
+          formatFileStatLine(
+            fileStats.files,
+            fileStats.additions,
+            fileStats.deletions,
+          ),
+          !commands && !agents && !fileStats.files
             ? `执行了 ${activities.length} 个步骤`
             : "",
           failures ? `${failures} 项失败` : "",
@@ -603,7 +695,7 @@ const ExecutionSummary = memo(
           .filter(Boolean)
           .join(" · "),
       };
-    }, [activities, running]);
+    }, [activities, fileStats, running]);
     useEffect(() => {
       if (waiting) setExpanded(true);
     }, [waiting]);
@@ -617,7 +709,9 @@ const ExecutionSummary = memo(
     );
     const visibleActivities = activities.slice(hiddenActivityCount);
     return (
-      <section className="execution-summary">
+      <section
+        className={`execution-summary ${fileStats.files ? "has-file-stats" : ""}`}
+      >
         <button
           className="execution-summary-head"
           onClick={() => setExpanded((value) => !value)}
@@ -629,6 +723,21 @@ const ExecutionSummary = memo(
           <strong>{summary}</strong>
           <ChevronDown size={14} />
         </button>
+        {!expanded && previewFiles.length > 0 && (
+          <div className="execution-summary-files" aria-label="本轮文件改动">
+            {previewFiles.map(([file, stats]) => (
+              <span key={file} title={file}>
+                <FileCode2 size={11} />
+                <em>{file}</em>
+                <b>+{stats.additions}</b>
+                <i>-{stats.deletions}</i>
+              </span>
+            ))}
+            {fileStats.files > previewFiles.length && (
+              <small>还有 {fileStats.files - previewFiles.length} 个文件</small>
+            )}
+          </div>
+        )}
         {expanded && (
           <div className="execution-summary-detail">
             {hiddenActivityCount > 0 && (
@@ -809,18 +918,10 @@ const AssistantTimeline = memo(function AssistantTimeline({
         <MarkdownMessage content={text} />
       )
     ) : null;
-  const grouped = new Map<number, AgentActivity[]>();
-  for (const activity of activities) {
-    const offset = Math.max(
-      0,
-      Math.min(
-        message.content.length,
-        activity.contentOffset ?? message.content.length,
-      ),
-    );
-    grouped.set(offset, [...(grouped.get(offset) ?? []), activity]);
-  }
-  const groups = [...grouped.entries()].sort(([a], [b]) => a - b);
+  const groups = groupActivitiesByContentOffset(
+    activities,
+    message.content.length,
+  );
   if (!groups.length)
     return (
       <>
@@ -971,23 +1072,40 @@ const StreamingReasoningLeaf = memo(function StreamingReasoningLeaf({
       }
       return textNodeRef.current;
     };
-    const textNode = ensureTextNode();
-    const initial = getStreamingText(key);
-    if (textNode) textNode.data = initial;
-    if (nodeRef.current) nodeRef.current.hidden = !initial;
-    return subscribeStreamingText(key, (change) => {
+    const replaceText = (value: string, alreadyTruncated = false) => {
       const target = ensureTextNode();
-      if (!target) return;
-      if (change.type === "reset") {
-        target.data = "";
-        if (nodeRef.current) nodeRef.current.hidden = true;
-      } else if (change.type === "replace") {
-        target.data = change.value;
-        if (nodeRef.current) nodeRef.current.hidden = !change.value;
-      } else {
-        target.appendData(change.delta);
-        if (nodeRef.current && change.delta) nodeRef.current.hidden = false;
+      const node = nodeRef.current;
+      if (!target || !node) return;
+      const bounded = boundedStreamingReasoning(value);
+      target.data = bounded.text;
+      node.hidden = !bounded.text;
+      if (bounded.truncated || alreadyTruncated)
+        node.dataset.truncated = "true";
+      else delete node.dataset.truncated;
+    };
+    const appendText = (delta: string) => {
+      const target = ensureTextNode();
+      const node = nodeRef.current;
+      if (!target || !node || !delta) return;
+      target.appendData(delta);
+      if (target.length > STREAMING_REASONING_DOM_CHAR_LIMIT) {
+        const bounded = boundedStreamingReasoning(target.data);
+        target.data = bounded.text;
+        node.dataset.truncated = "true";
       }
+      node.hidden = false;
+    };
+    const initial = getStreamingTextTail(
+      key,
+      STREAMING_REASONING_DOM_CHAR_LIMIT,
+    );
+    replaceText(initial.text, initial.totalLength > initial.text.length);
+    return subscribeStreamingText(key, (change) => {
+      if (change.type === "reset") {
+        replaceText("");
+      } else if (change.type === "replace") {
+        replaceText(change.value);
+      } else appendText(change.delta);
     });
   }, [requestId]);
   return <span ref={nodeRef} className="streaming-status-leaf" hidden />;
@@ -1130,39 +1248,11 @@ const FileChangesSummary = memo(function FileChangesSummary({
   const [visibleFileCount, setVisibleFileCount] = useState(
     FILE_INITIAL_RENDER_LIMIT,
   );
-  const changed = activities.filter(
-    (activity) =>
-      fileTools.includes(activity.tool) &&
-      activity.status === "success" &&
-      activity.path &&
-      !activity.undone,
+  const { grouped, entries: fileEntries, additions, deletions } = useMemo(
+    () => collectFileChangeStats(activities),
+    [activities],
   );
-  const grouped = new Map<
-    string,
-    { additions: number; deletions: number; diffs: string[] }
-  >();
-  for (const activity of changed)
-    for (const change of activityFileChanges(activity)) {
-      const current = grouped.get(change.path) ?? {
-        additions: 0,
-        deletions: 0,
-        diffs: [],
-      };
-      current.additions += change.additions;
-      current.deletions += change.deletions;
-      if (change.diff) current.diffs.push(change.diff);
-      grouped.set(change.path, current);
-    }
   if (!grouped.size) return null;
-  const additions = [...grouped.values()].reduce(
-    (sum, item) => sum + item.additions,
-    0,
-  );
-  const deletions = [...grouped.values()].reduce(
-    (sum, item) => sum + item.deletions,
-    0,
-  );
-  const fileEntries = [...grouped.entries()];
   const visibleFileEntries = fileEntries.slice(0, visibleFileCount);
   const hiddenFileCount = Math.max(0, fileEntries.length - visibleFileCount);
   return (
@@ -1174,7 +1264,7 @@ const FileChangesSummary = memo(function FileChangesSummary({
         <span>
           <strong>已编辑 {grouped.size} 个文件</strong>
           <small>
-            <b>+{additions}</b> <i>-{deletions}</i>
+            共 <b>+{additions}</b> <i>-{deletions}</i>
           </small>
         </span>
       </header>
@@ -1202,6 +1292,7 @@ const FileChangesSummary = memo(function FileChangesSummary({
                 <span title={file}>{file}</span>
                 <small>
                   <b>+{stats.additions}</b> <i>-{stats.deletions}</i>
+                  <em>{hasDiff ? "查看改动" : "无差异详情"}</em>
                 </small>
               </button>
               {open && hasDiff && (

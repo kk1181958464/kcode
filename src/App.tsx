@@ -161,6 +161,11 @@ import {
   streamingProgressKey,
   streamingReasoningKey,
 } from "./streaming-text-store";
+import {
+  appendActivityOutput,
+  replaceActivityOutput,
+  resetActivityOutput,
+} from "./activity-output-store";
 import { registerAppToastHandler, type AppToast } from "./lib/toast";
 import { useEventCallback } from "./lib/use-event-callback";
 import {
@@ -412,7 +417,6 @@ export default function App() {
   const [browserAddress, setBrowserAddress] = useState("");
   // Latest reasoning/thinking snippet for the active turn, shown live under the
   // working spinner. Cleared once visible text or a tool activity takes over.
-  const [browserWidthDrag, setBrowserWidthDrag] = useState<number>();
   useEffect(() => window.kcode?.browser?.onState(setBrowserState), []);
   useEffect(
     () => setBrowserAddress(browserState.url || ""),
@@ -458,6 +462,10 @@ export default function App() {
   const activeTaskIdRef = useRef(activeTaskId);
   const displayedTaskIdRef = useRef(activeTaskId);
   const tasksRef = useRef(tasks);
+  const hydratedTaskIdsRef = useRef(new Set(tasks.map((task) => task.id)));
+  const persistedTaskRefsRef = useRef(new Map<string, TaskRecord>());
+  const persistedTaskOrderRef = useRef("");
+  const taskSwitchSequenceRef = useRef(0);
   const sidebarProjectionRef = useRef<SidebarProjection | undefined>(undefined);
   const previewTimerRef = useRef<number | undefined>(undefined);
   const followFrameRef = useRef<number | undefined>(undefined);
@@ -466,6 +474,7 @@ export default function App() {
   const lastBottomFollowAtRef = useRef(0);
   const bottomSettleTimerRef = useRef<number | undefined>(undefined);
   const bottomSettleDeadlineRef = useRef(0);
+  const pendingLatestScrollRef = useRef<ScrollBehavior | undefined>(undefined);
   const scrollFrameRef = useRef<number | undefined>(undefined);
   const scrollStateByTaskRef = useRef(
     new Map<string, ConversationScrollState>(),
@@ -480,6 +489,7 @@ export default function App() {
   const programmaticScrollRef = useRef(false);
   const turnLayoutFrameRef = useRef<number | undefined>(undefined);
   const scrollTargetRef = useRef<HTMLElement | null>(null);
+  const appShellRef = useRef<HTMLDivElement | null>(null);
   const requestStartedRef = useRef<number | undefined>(undefined);
   const composerSubmitRef = useRef<() => void>(() => undefined);
   const composerPasteRef = useRef<
@@ -605,15 +615,36 @@ export default function App() {
     }
     let cancelled = false;
     void window.kcode.state
-      .load("tasks")
-      .then(async (stored) => {
+      .taskHeaders()
+      .then(async (storedHeaders) => {
         if (cancelled) return;
-        if (Array.isArray(stored)) {
-          const loaded = (stored as TaskRecord[]).map(normalizeStoredTask);
-          const selectedTask =
-            loaded.find(
+        if (Array.isArray(storedHeaders) && storedHeaders.length) {
+          const headers = (storedHeaders as TaskRecord[]).map((task) =>
+            normalizeStoredTask({ ...task, messages: [], activities: [] }),
+          );
+          const selectedHeader =
+            headers.find(
               (task) => task.id === localStorage.getItem("kcode.activeTaskId"),
-            ) ?? loaded[0];
+            ) ?? headers[0];
+          const storedTask = selectedHeader
+            ? await window.kcode.state.loadTask(selectedHeader.id)
+            : null;
+          if (cancelled) return;
+          const selectedTask = storedTask
+            ? normalizeStoredTask(storedTask as TaskRecord)
+            : selectedHeader;
+          const loaded = headers.map((task) =>
+            task.id === selectedTask?.id ? selectedTask : task,
+          );
+          hydratedTaskIdsRef.current = new Set(
+            selectedTask ? [selectedTask.id] : [],
+          );
+          persistedTaskRefsRef.current = new Map(
+            selectedTask ? [[selectedTask.id, selectedTask]] : [],
+          );
+          persistedTaskOrderRef.current = JSON.stringify(
+            loaded.map((task) => task.id),
+          );
           claimTaskView(selectedTask?.id ?? "");
           setTasks(loaded);
           setActiveTaskId(selectedTask?.id ?? "");
@@ -622,7 +653,20 @@ export default function App() {
           setInput(initialDrafts.current[selectedTask?.id ?? ""] ?? "");
           setRunningId(undefined);
           currentRequest.current = undefined;
-        } else await window.kcode.state.save("tasks", tasksRef.current);
+        } else {
+          const initial = tasksRef.current;
+          hydratedTaskIdsRef.current = new Set(initial.map((task) => task.id));
+          await Promise.all(
+            initial.map((task) => window.kcode.state.saveTask(task.id, task)),
+          );
+          await window.kcode.state.saveTaskOrder(initial.map((task) => task.id));
+          persistedTaskRefsRef.current = new Map(
+            initial.map((task) => [task.id, task]),
+          );
+          persistedTaskOrderRef.current = JSON.stringify(
+            initial.map((task) => task.id),
+          );
+        }
         localStorage.removeItem("kcode.tasks");
         setTaskStorageReady(true);
       })
@@ -669,7 +713,9 @@ export default function App() {
     [activeTaskId, messages.length],
   );
   const visibleMessages = useMemo(() => {
-    if (conversationSearchOpen) return messages;
+    // Keep the conversation window bounded while tokens are still arriving.
+    // A full-history DOM search during streaming can monopolize the renderer.
+    if (conversationSearchOpen && !runningId) return messages;
     const firstTurn = conversationTurns[visibleTurnWindow.start];
     if (!firstTurn) return messages;
     const endTurn = conversationTurns[visibleTurnWindow.end];
@@ -677,7 +723,7 @@ export default function App() {
       firstTurn.messageIndex,
       endTurn?.messageIndex ?? messages.length,
     );
-  }, [conversationSearchOpen, conversationTurns, messages, visibleTurnWindow]);
+  }, [conversationSearchOpen, conversationTurns, messages, runningId, visibleTurnWindow]);
   const hasOlderMessages =
     !conversationSearchOpen && visibleTurnWindow.start > 0;
   const hasNewerMessages =
@@ -760,7 +806,21 @@ export default function App() {
       pendingTurnTargetRef.current = undefined;
     }
     refreshTurnPositions();
-  }, [visibleTurnWindow]);
+    const pendingLatestScroll = pendingLatestScrollRef.current;
+    if (conversation && pendingLatestScroll) {
+      const latest = latestConversationWindow(
+        conversationTurns.length,
+        conversationPageSize,
+      );
+      if (
+        visibleTurnWindow.start === latest.start &&
+        visibleTurnWindow.end === latest.end
+      ) {
+        pendingLatestScrollRef.current = undefined;
+        requestAnimationFrame(() => scrollToLatest(pendingLatestScroll));
+      }
+    }
+  }, [conversationPageSize, conversationTurns.length, visibleTurnWindow]);
 
   const updateTurnRailOverflow = useCallback(() => {
     const rail = turnRailRef.current;
@@ -850,6 +910,7 @@ export default function App() {
         cancelAnimationFrame(bottomLayoutFrameRef.current);
       if (bottomSettleTimerRef.current)
         window.clearTimeout(bottomSettleTimerRef.current);
+      pendingLatestScrollRef.current = undefined;
       if (turnLayoutFrameRef.current)
         cancelAnimationFrame(turnLayoutFrameRef.current);
       if (textFlushTimerRef.current)
@@ -871,6 +932,12 @@ export default function App() {
     if (id) {
       const button = turnButtonRefs.current.get(id);
       button?.classList.add("active");
+      if (!button) {
+        const index = conversationTurns.findIndex((turn) => turn.id === id);
+        const rail = turnRailRef.current;
+        if (index >= 0 && rail)
+          rail.scrollTop = Math.max(0, index * 28 - rail.clientHeight / 2);
+      }
       const rail = button?.parentElement;
       if (button && rail) {
         const top = button.offsetTop;
@@ -994,11 +1061,13 @@ export default function App() {
       conversationTurns.length,
       conversationPageSize,
     );
-    if (
-      visibleTurnWindow.start !== latest.start ||
-      visibleTurnWindow.end !== latest.end
-    )
+    const alreadyShowingLatest =
+      visibleTurnWindow.start === latest.start &&
+      visibleTurnWindow.end === latest.end;
+    if (!alreadyShowingLatest) {
+      pendingLatestScrollRef.current = behavior;
       setVisibleTurnWindow(latest);
+    }
     autoFollowRef.current = true;
     programmaticScrollRef.current = true;
     setShowScrollToBottom(false);
@@ -1048,6 +1117,7 @@ export default function App() {
       bottomSettleTimerRef.current = undefined;
     }
     bottomSettleDeadlineRef.current = 0;
+    pendingLatestScrollRef.current = undefined;
     programmaticScrollRef.current = false;
     if (autoFollowRef.current) {
       autoFollowRef.current = false;
@@ -1095,12 +1165,15 @@ export default function App() {
     return projection.workspaceGroups;
   }, [tasks, taskQuery, showArchived]);
 
-  async function refreshGitState() {
+  async function refreshGitState(includeDiff = gitDiffOpen) {
     if (!window.kcode?.workspace.gitState || !activeTask?.workspacePath) return;
     setGitRefreshing(true);
     try {
       setGitState(
-        await window.kcode.workspace.gitState(activeTask.workspacePath),
+        await window.kcode.workspace.gitState(
+          activeTask.workspacePath,
+          includeDiff,
+        ),
       );
     } catch (error) {
       setGitState({
@@ -1117,7 +1190,7 @@ export default function App() {
     }
   }
   useEffect(() => {
-    void refreshGitState();
+    void refreshGitState(false);
     setGitDiffOpen(false);
   }, [activeTaskId]);
   useEffect(() => {
@@ -1175,24 +1248,41 @@ export default function App() {
     }
   }, [activeTaskId, tasks]);
   useEffect(() => {
-    if (taskStorageReady && window.kcode?.state) {
-      const timer = window.setTimeout(
-        () =>
-          void window.kcode.state
-            .save("tasks", tasks)
-            .catch((error) =>
-              setContextError(`数据库保存失败：${errorMessage(error)}`),
-            ),
-        2_000,
-      );
-      if (activeTaskId)
-        localStorage.setItem("kcode.activeTaskId", activeTaskId);
-      return () => window.clearTimeout(timer);
-    }
-    if (!window.kcode?.state)
-      localStorage.setItem("kcode.tasks", JSON.stringify(tasks));
     if (activeTaskId) localStorage.setItem("kcode.activeTaskId", activeTaskId);
-  }, [tasks, activeTaskId, taskStorageReady]);
+  }, [activeTaskId]);
+  useEffect(() => {
+    if (!taskStorageReady) return;
+    if (!window.kcode?.state) {
+      localStorage.setItem("kcode.tasks", JSON.stringify(tasks));
+      return;
+    }
+    const order = JSON.stringify(tasks.map((task) => task.id));
+    const dirty = tasks.filter(
+      (task) =>
+        hydratedTaskIdsRef.current.has(task.id) &&
+        persistedTaskRefsRef.current.get(task.id) !== task,
+    );
+    const orderChanged = persistedTaskOrderRef.current !== order;
+    if (!dirty.length && !orderChanged) return;
+    const timer = window.setTimeout(() => {
+      void Promise.all([
+        ...dirty.map((task) => window.kcode.state.saveTask(task.id, task)),
+        ...(orderChanged
+          ? [window.kcode.state.saveTaskOrder(tasks.map((task) => task.id))]
+          : []),
+      ])
+        .then(() => {
+          dirty.forEach((task) =>
+            persistedTaskRefsRef.current.set(task.id, task),
+          );
+          if (orderChanged) persistedTaskOrderRef.current = order;
+        })
+        .catch((error) =>
+          setContextError(`数据库保存失败：${errorMessage(error)}`),
+        );
+    }, 2_000);
+    return () => window.clearTimeout(timer);
+  }, [tasks, taskStorageReady]);
   useEffect(() => {
     const ownerTaskId = displayedTaskIdRef.current;
     if (!ownerTaskId || ownerTaskId !== activeTaskId || runningId) return;
@@ -1280,10 +1370,13 @@ export default function App() {
     const startX = event.clientX;
     const startWidth = sidebarWidth;
     document.body.classList.add("resizing-sidebar");
-    const move = (moveEvent: PointerEvent) =>
-      setSidebarWidth(
-        Math.min(420, Math.max(210, startWidth + moveEvent.clientX - startX)),
+    const move = (moveEvent: PointerEvent) => {
+      const width = Math.min(
+        420,
+        Math.max(210, startWidth + moveEvent.clientX - startX),
       );
+      appShellRef.current?.style.setProperty("--sidebar-width", `${width}px`);
+    };
     const stop = (upEvent: PointerEvent) => {
       const width = Math.min(
         420,
@@ -1307,15 +1400,21 @@ export default function App() {
     const widthAt = (clientX: number) =>
       Math.min(900, Math.max(360, startWidth + startX - clientX));
     document.body.classList.add("resizing-browser");
+    let frame: number | undefined;
+    let pendingWidth = startWidth;
     const move = (moveEvent: PointerEvent) => {
       const width = widthAt(moveEvent.clientX);
-      setBrowserWidthDrag(width);
-      // Push to the native view too so the web content tracks the drag live.
-      void window.kcode?.browser?.setWidth(width);
+      pendingWidth = width;
+      appShellRef.current?.style.setProperty("--browser-width", `${width}px`);
+      if (frame !== undefined) return;
+      frame = requestAnimationFrame(() => {
+        frame = undefined;
+        void window.kcode?.browser?.setWidth(pendingWidth);
+      });
     };
     const stop = (upEvent: PointerEvent) => {
       const width = widthAt(upEvent.clientX);
-      setBrowserWidthDrag(undefined);
+      if (frame !== undefined) cancelAnimationFrame(frame);
       void window.kcode?.browser?.setWidth(width);
       document.body.classList.remove("resizing-browser");
       window.removeEventListener("pointermove", move);
@@ -1373,7 +1472,13 @@ export default function App() {
     const removed = tasks.filter(
       (task) => task.workspacePath === workspacePath,
     );
-    removed.forEach((task) => attachmentDraftsRef.current.delete(task.id));
+    removed.forEach((task) => {
+      attachmentDraftsRef.current.delete(task.id);
+      hydratedTaskIdsRef.current.delete(task.id);
+      persistedTaskRefsRef.current.delete(task.id);
+      scrollStateByTaskRef.current.delete(task.id);
+      conversationWindowByTaskRef.current.delete(task.id);
+    });
     if (window.kcode) {
       await Promise.all(
         removed.map((task) => window.kcode.chat.cancelSummary(task.id)),
@@ -1388,6 +1493,9 @@ export default function App() {
       );
       await window.kcode.chat.cleanup(requestIds, activityIds);
       requestIds.forEach((id) => requestTasksRef.current.delete(id));
+      await Promise.all(
+        removed.map((task) => window.kcode.state.deleteTask(task.id)),
+      );
     }
     const nextTasks = tasks.filter(
       (task) => task.workspacePath !== workspacePath,
@@ -1396,18 +1504,21 @@ export default function App() {
     if (activeTask?.workspacePath === workspacePath) {
       const next = nextTasks[0];
       if (next) {
-        const attachmentDraft = attachmentDraftsRef.current.get(next.id);
-        claimTaskView(next.id);
-        setActiveTaskId(next.id);
-        setMessages(next.messages);
-        setActivities(next.activities);
-        setRunningId(next.runningId);
-        currentRequest.current = next.runningId;
-        requestStartedRef.current = next.startedAt;
+        const loadedNext = await ensureTaskLoaded(next);
+        const attachmentDraft = attachmentDraftsRef.current.get(loadedNext.id);
+        claimTaskView(loadedNext.id);
+        setActiveTaskId(loadedNext.id);
+        setMessages(loadedNext.messages);
+        setActivities(loadedNext.activities);
+        setRunningId(loadedNext.runningId);
+        currentRequest.current = loadedNext.runningId;
+        requestStartedRef.current = loadedNext.startedAt;
         setAttachedFiles(attachmentDraft?.files ?? []);
         setAttachedImages(attachmentDraft?.images ?? []);
-        setSelected(next.modelSelection || selected);
-        setReasoningEffort(next.reasoningEffort || defaultReasoningEffort);
+        setSelected(loadedNext.modelSelection || selected);
+        setReasoningEffort(
+          loadedNext.reasoningEffort || defaultReasoningEffort,
+        );
       } else {
         claimTaskView("");
         setActiveTaskId("");
@@ -1593,6 +1704,12 @@ export default function App() {
           displayedTaskIdRef.current,
           taskId,
         );
+        if (event.type === "activity_output") {
+          if (event.mode === "append")
+            appendActivityOutput(event.activityId, event.value);
+          else replaceActivityOutput(event.activityId, event.value);
+          return;
+        }
         if (
           event.type !== "done" &&
           event.type !== "error" &&
@@ -1617,6 +1734,7 @@ export default function App() {
             return next;
           });
         if (event.type === "activity") {
+          resetActivityOutput(event.activity.id);
           clearStreamingProgress(id);
           if (isActive) clearPendingReasoning();
           const task = tasksRef.current.find((item) => item.id === taskId);
@@ -1699,6 +1817,10 @@ export default function App() {
             id,
             (assistantLengthsRef.current.get(id) ?? 0) + event.delta.length,
           );
+          if (!isActive) {
+            appendStreamingText(id, event.delta);
+            return;
+          }
           let pending = pendingTextRef.current.get(id);
           if (!pending) {
             pending = new StreamPacingBuffer();
@@ -1998,6 +2120,7 @@ export default function App() {
       modelSelection: selected,
       reasoningEffort,
     };
+    hydratedTaskIdsRef.current.add(task.id);
     setTasks((all) => [task, ...all]);
     claimTaskView(task.id);
     setActiveTaskId(task.id);
@@ -2020,8 +2143,33 @@ export default function App() {
     setNewTaskName("");
   }
 
+  async function ensureTaskLoaded(task: TaskRecord) {
+    if (
+      hydratedTaskIdsRef.current.has(task.id) ||
+      !window.kcode?.state
+    )
+      return task;
+    const stored = await window.kcode.state.loadTask(task.id);
+    if (!stored) throw new Error(`找不到任务记录：${task.name}`);
+    const loaded = normalizeStoredTask(stored as TaskRecord);
+    hydratedTaskIdsRef.current.add(task.id);
+    persistedTaskRefsRef.current.set(task.id, loaded);
+    setTasks((current) =>
+      current.map((item) => (item.id === loaded.id ? loaded : item)),
+    );
+    return loaded;
+  }
+
   async function switchTask(task: TaskRecord) {
     if (task.id === activeTaskId) return;
+    const switchSequence = ++taskSwitchSequenceRef.current;
+    try {
+      task = await ensureTaskLoaded(task);
+    } catch (error) {
+      setContextError(`任务加载失败：${errorMessage(error)}`);
+      return;
+    }
+    if (switchSequence !== taskSwitchSequenceRef.current) return;
     persistTaskDrafts(readComposerValue());
     if (activeTaskId)
       attachmentDraftsRef.current.set(activeTaskId, {
@@ -2099,6 +2247,7 @@ export default function App() {
       modelSelection: selected,
       reasoningEffort,
     };
+    hydratedTaskIdsRef.current.add(task.id);
     setTasks((all) => {
       const workspaceIndex = all.findIndex(
         (item) => item.workspacePath === workspacePath,
@@ -2129,6 +2278,10 @@ export default function App() {
   async function removeTask(task: TaskRecord) {
     delete initialDrafts.current[task.id];
     attachmentDraftsRef.current.delete(task.id);
+    hydratedTaskIdsRef.current.delete(task.id);
+    persistedTaskRefsRef.current.delete(task.id);
+    scrollStateByTaskRef.current.delete(task.id);
+    conversationWindowByTaskRef.current.delete(task.id);
     localStorage.setItem(
       "kcode.taskDrafts",
       JSON.stringify(initialDrafts.current),
@@ -2143,23 +2296,27 @@ export default function App() {
         task.activities.map((activity) => activity.id),
       );
       requestIds.forEach((id) => requestTasksRef.current.delete(id));
+      await window.kcode.state.deleteTask(task.id);
     }
     const nextTasks = tasks.filter((item) => item.id !== task.id);
     setTasks(nextTasks);
     if (task.id === activeTaskId) {
       const next = nextTasks[0];
       if (next) {
-        const attachmentDraft = attachmentDraftsRef.current.get(next.id);
-        claimTaskView(next.id);
-        setActiveTaskId(next.id);
-        setMessages(next.messages);
-        setActivities(next.activities);
-        setInput(initialDrafts.current[next.id] ?? "");
-        setRunningId(next.runningId);
-        currentRequest.current = next.runningId;
-        requestStartedRef.current = next.startedAt;
-        setSelected(next.modelSelection || selected);
-        setReasoningEffort(next.reasoningEffort || defaultReasoningEffort);
+        const loadedNext = await ensureTaskLoaded(next);
+        const attachmentDraft = attachmentDraftsRef.current.get(loadedNext.id);
+        claimTaskView(loadedNext.id);
+        setActiveTaskId(loadedNext.id);
+        setMessages(loadedNext.messages);
+        setActivities(loadedNext.activities);
+        setInput(initialDrafts.current[loadedNext.id] ?? "");
+        setRunningId(loadedNext.runningId);
+        currentRequest.current = loadedNext.runningId;
+        requestStartedRef.current = loadedNext.startedAt;
+        setSelected(loadedNext.modelSelection || selected);
+        setReasoningEffort(
+          loadedNext.reasoningEffort || defaultReasoningEffort,
+        );
         setAttachedFiles(attachmentDraft?.files ?? []);
         setAttachedImages(attachmentDraft?.images ?? []);
       } else {
@@ -2180,7 +2337,13 @@ export default function App() {
     }
   }
 
-  function toggleTaskArchived(task: TaskRecord) {
+  async function toggleTaskArchived(task: TaskRecord) {
+    try {
+      task = await ensureTaskLoaded(task);
+    } catch (error) {
+      setContextError(`任务加载失败：${errorMessage(error)}`);
+      return;
+    }
     const archived = !task.archived;
     setTasks((current) =>
       current.map((item) =>
@@ -3222,7 +3385,7 @@ export default function App() {
   });
   const onToggleTaskArchived = useEventCallback((taskId: string) => {
     const task = tasksRef.current.find((item) => item.id === taskId);
-    if (task) toggleTaskArchived(task);
+    if (task) void toggleTaskArchived(task);
   });
   const onOpenSettings = useEventCallback(openSettings);
   const onStartSidebarResize = useEventCallback(startSidebarResize);
@@ -3258,11 +3421,12 @@ export default function App() {
       )}
       <TitleBar appUpdate={appUpdate} setUpdateOpen={setUpdateOpen} />
       <div
+        ref={appShellRef}
         className={`app-shell ${sidebarOpen ? "" : "sidebar-collapsed"} ${statusOpen ? "" : "status-collapsed"} ${browserState.open ? "browser-open" : ""}`}
         style={
           {
             "--sidebar-width": `${sidebarWidth}px`,
-            "--browser-width": `${browserWidthDrag ?? browserState.width ?? 520}px`,
+            "--browser-width": `${browserState.width ?? 520}px`,
           } as React.CSSProperties
         }
       >
@@ -3297,6 +3461,7 @@ export default function App() {
           />
           <ConversationSearch
             open={conversationSearchOpen}
+            live={Boolean(runningId)}
             containerRef={conversationRef}
             onClose={closeConversationSearch}
             onRevealAll={revealAllConversationMessages}

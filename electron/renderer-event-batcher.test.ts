@@ -27,3 +27,37 @@ test("flushes streamed text before a structural event", () => {
   assert.deepEqual(sent, [{ type: "text", delta: "完成" }, { type: "done" }]);
   batcher.close();
 });
+
+test("coalesces activity output without delaying structural activity events", () => {
+  const sent: AgentEvent[] = [];
+  const batcher = new RendererEventBatcher((event) => sent.push(event));
+  batcher.push({
+    type: "activity_output",
+    activityId: "activity-1",
+    mode: "append",
+    value: "hello",
+  });
+  batcher.push({
+    type: "activity_output",
+    activityId: "activity-1",
+    mode: "append",
+    value: " world",
+  });
+  batcher.push({
+    type: "activity_output",
+    activityId: "activity-1",
+    mode: "replace",
+    value: "latest",
+  });
+  batcher.push({ type: "done" });
+  assert.deepEqual(sent, [
+    {
+      type: "activity_output",
+      activityId: "activity-1",
+      mode: "replace",
+      value: "latest",
+    },
+    { type: "done" },
+  ]);
+  batcher.close();
+});

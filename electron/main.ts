@@ -29,6 +29,7 @@ import type {
   ProviderConfig,
 } from "../src/types";
 import { RendererEventBatcher } from "./renderer-event-batcher";
+import { LatestWriteQueue } from "./latest-write-queue";
 import {
   cancelContextSummary,
   discoverModels,
@@ -56,7 +57,12 @@ import { listProviders, removeProvider, saveProvider } from "./store";
 import {
   closeStateDatabase,
   compactStateDatabase,
+  deleteTask,
+  listTaskHeaders,
+  loadTask,
   loadState,
+  saveTask,
+  saveTaskOrder,
   saveState,
   stateStorageStats,
 } from "./state-db";
@@ -245,6 +251,18 @@ async function writeCheckpoint(id: string, value: unknown) {
   await mkdir(path.dirname(checkpointPath(id)), { recursive: true });
   await writeFile(checkpointPath(id), JSON.stringify(value), "utf8");
 }
+
+function compactCheckpointEvent(item: AgentEvent) {
+  if (item.type !== "activity") return item;
+  return {
+    ...item,
+    activity: {
+      ...item.activity,
+      output: item.activity.output?.slice(-12_000),
+      diff: item.activity.diff?.slice(-12_000),
+    },
+  };
+}
 async function removeCheckpoint(id: string) {
   let target: string;
   try {
@@ -410,6 +428,19 @@ app.whenReady().then(() => {
   );
   ipcMain.handle("state:stats", () => stateStorageStats());
   ipcMain.handle("state:compact", () => compactStateDatabase());
+  ipcMain.handle("state:task-headers", () => listTaskHeaders());
+  ipcMain.handle("state:load-task", (_e, id: string) =>
+    loadTask(idSchema.parse(id)),
+  );
+  ipcMain.handle("state:save-task", (_e, id: string, value: unknown) =>
+    saveTask(idSchema.parse(id), value),
+  );
+  ipcMain.handle("state:save-task-order", (_e, ids: string[]) =>
+    saveTaskOrder(ids.map((id) => idSchema.parse(id))),
+  );
+  ipcMain.handle("state:delete-task", (_e, id: string) =>
+    deleteTask(idSchema.parse(id)),
+  );
   ipcMain.on("log:renderer-error", (_e, detail) =>
     writeLog("error", "renderer.error", detail),
   );
@@ -577,7 +608,7 @@ app.whenReady().then(() => {
   );
   ipcMain.handle(
     "workspace:git-state",
-    async (_event, workspacePath: string) => {
+    async (_event, workspacePath: string, includeDiff = false) => {
       const root = path.resolve(workspacePathSchema.parse(workspacePath));
       const info = await stat(root);
       if (!info.isDirectory()) throw new Error("工作区不是有效目录");
@@ -623,7 +654,9 @@ app.whenReady().then(() => {
         additions += Number(add) || 0;
         deletions += Number(del) || 0;
       }
-      const diff = await git(["diff", "--no-ext-diff", "HEAD"]);
+      const diff = includeDiff
+        ? await git(["diff", "--no-ext-diff", "HEAD"])
+        : { code: 0, output: "" };
       return {
         available: true,
         branch: branch.output.trim() || "HEAD",
@@ -747,7 +780,9 @@ app.whenReady().then(() => {
       await checkpointReady;
       const events: unknown[] = [];
       let checkpointStatus: "running" | "paused" | "done" = "running";
-      let checkpointWrite = Promise.resolve();
+      const checkpointWriter = new LatestWriteQueue((snapshot: unknown) =>
+        writeCheckpoint(id, snapshot),
+      );
       let lastCheckpointAt = 0;
       let terminalEventSent = false;
       const queueCheckpoint = (force = false) => {
@@ -762,16 +797,16 @@ app.whenReady().then(() => {
           events: [...events],
           subagents: subagentCheckpoints(id),
         };
-        checkpointWrite = checkpointWrite.then(() =>
-          writeCheckpoint(id, snapshot),
-        );
+        checkpointWriter.enqueue(snapshot);
       };
       try {
         for await (const item of runAgent(id, request, controller.signal)) {
           if (item.type === "done" || item.type === "error")
             terminalEventSent = true;
-          events.push(item);
-          if (events.length > 100) events.shift();
+          if (item.type !== "activity_output") {
+            events.push(compactCheckpointEvent(item));
+            if (events.length > 100) events.shift();
+          }
           checkpointStatus =
             item.type === "done"
               ? "done"
@@ -781,11 +816,11 @@ app.whenReady().then(() => {
           queueCheckpoint(
             item.type === "done" ||
               item.type === "error" ||
-              item.type === "activity",
+              (item.type === "activity" && item.activity.status !== "running"),
           );
           rendererEvents.push(item);
           if (item.type === "done") {
-            await checkpointWrite;
+            await checkpointWriter.waitForIdle();
             await removeCheckpoint(id);
             notifyTask("done");
           }
@@ -795,7 +830,7 @@ app.whenReady().then(() => {
           const message =
             "Agent 运行已意外结束，但没有返回完成或错误状态。任务已安全暂停，请重试。";
           const item = { type: "error" as const, message };
-          events.push(item);
+          events.push(compactCheckpointEvent(item));
           if (events.length > 100) events.shift();
           checkpointStatus = "paused";
           terminalEventSent = true;
@@ -826,7 +861,7 @@ app.whenReady().then(() => {
           } as const;
           terminalEventSent = true;
           checkpointStatus = "paused";
-          events.push(item);
+          events.push(compactCheckpointEvent(item));
           if (events.length > 100) events.shift();
           queueCheckpoint(true);
           rendererEvents.push(item);
@@ -838,7 +873,7 @@ app.whenReady().then(() => {
         if (checkpointStatus !== "done") {
           checkpointStatus = "paused";
           queueCheckpoint(true);
-          await checkpointWrite;
+          await checkpointWriter.waitForIdle();
         }
         releaseSubagentRecords(id);
         removeSubagentEventSink();

@@ -208,6 +208,10 @@ type Turn = {
   usage: { input: number; output: number; cached: number };
   finishReason?: string;
 };
+type ModelTurnRuntime = {
+  provider: Awaited<ReturnType<typeof getProviderWithKey>>;
+  activeSkills: string;
+};
 type HistoryItem =
   | {
       kind: "message";
@@ -2910,6 +2914,7 @@ async function* streamModelTurn(
   signal: AbortSignal,
   toolsEnabled: boolean,
   requireToolCall: boolean,
+  runtime: ModelTurnRuntime,
 ): AsyncGenerator<TurnStreamEvent> {
   const queue = new AsyncQueue<TurnStreamEvent>();
   let turn: Turn | undefined;
@@ -2958,6 +2963,8 @@ async function* streamModelTurn(
           pushText,
           pushReasoning,
           pushProgress,
+          undefined,
+          runtime,
         );
         return;
       } catch (error) {
@@ -2996,8 +3003,9 @@ async function modelTurn(
   onReasoning?: (delta: string) => void,
   onProgress?: (message: string) => void,
   protocolOverride?: Protocol,
+  runtime?: ModelTurnRuntime,
 ): Promise<Turn> {
-  const provider = await getProviderWithKey(request.providerId);
+  const provider = runtime?.provider ?? (await getProviderWithKey(request.providerId));
   if (!provider.enabled) throw new Error("当前供应商已停用");
   if (!provider.models.some((model) => model.modelId === request.modelId))
     throw new Error("模型不属于当前供应商或已被移除");
@@ -3030,7 +3038,9 @@ async function modelTurn(
   const latestUserRequest =
     [...request.messages].reverse().find((message) => message.role === "user")
       ?.content ?? "";
-  const activeSkills = await loadActiveSkillInstructions(latestUserRequest);
+  const activeSkills =
+    runtime?.activeSkills ??
+    (await loadActiveSkillInstructions(latestUserRequest));
   const system = `${isolation.boundary}\nYou are a coding agent working in ${root}. Use the provided native tools to inspect and modify the project. Each run_command invocation uses a fresh PowerShell process, so environment variable changes do not persist to later commands; combine dependent setup and execution in one command. Prefer apply_patch for precise edits and write_file for new or complete files. Never invoke apply_patch, file deletion, file moves, or directory operations through run_command when a native tool exists. File tool paths accept absolute paths, including other drives (for example D:\\B on Windows); use them to read or write files the user explicitly points to outside ${root}, and resolve relative paths against ${root}. When you mention a file in your reply, always write its full workspace-relative path (for example src/views/Gooddetail.vue, not just Gooddetail.vue) so the user can tell exactly which file it is. Use web_search for current or externally verifiable information and fetch_url to inspect primary sources; preserve source URLs in the final answer. For interactive or authenticated sites use browser_open, browser_snapshot, browser_click, and browser_type. Credentials explicitly supplied by the user may be entered directly with browser_type. Browser recording is opt-in: call browser_record_start only after an explicit user request such as 开始录制, and call browser_record_stop when the user asks to stop or generate Python. Never record ordinary browsing by default. For independent work that can run concurrently, use spawn_agent with self-contained, non-overlapping tasks, then wait_agent before giving a final answer. Use list_agents, message_agent, and stop_agent to coordinate them. Subagents inherit this task's model, workspace, reasoning, and permissions. For remote servers, call ssh_connect with credentials explicitly supplied by the user, then use ssh_run and the SSH SFTP tools. Use ssh_upload_file to send a local file to the server and ssh_download_file to fetch a remote file to a local path; these transfer binary content directly, unlike ssh_write_file which only writes inline UTF-8 text. SSH exec sessions are non-interactive and may not load shell profiles; when a remote command depends on profile-defined PATH values, invoke the appropriate login shell explicitly. SSH host keys are not verified. Credentials supplied by the user may appear in commands, tool activity details, subagent tasks, and conversation text. For databases, use mysql_connect for direct MySQL access or mysql_connect_via_ssh for an SSH tunnel, then mysql_query; use ? placeholders and values for user-provided data when practical. Public direct MySQL connections use TLS by default and you must not retry with ssl=false unless the user explicitly approves. If CAPTCHA, SMS, passkey, or two-factor verification appears, pause and ask the user to complete it in the visible browser. Do not claim an action succeeded until its tool result confirms it. Before finishing, compare every action requested by the user with successful tool results. A file task is complete only after a mutating tool produced an actual change; a validation is complete only after it really ran successfully after the latest change; a background service is started only after process_output confirms it is running. If no change was needed or an action could not be completed, state that explicitly instead of saying it was done.${activeSkills ? `\n\n${activeSkills}` : ""}${request.recoveryContext ? `\n\n<recovery_context>${request.recoveryContext}</recovery_context>\nThis task resumed after an interruption. Verify prior side effects before repeating them, and recreate any interrupted subagent work that is still needed.` : ""}`;
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -3313,12 +3323,13 @@ async function modelTurn(
   // bound for regular models while progress events make either wait observable.
   const firstByteTimeoutMs =
     reasoning.reasoningMode !== "none" ? 300_000 : 90_000;
+  const serializedBody = JSON.stringify(body);
   const response = await fetchWithRetry(
     url,
     {
       method: "POST",
       headers,
-      body: JSON.stringify(body),
+      body: serializedBody,
     },
     {
       signal,
@@ -3336,7 +3347,7 @@ async function modelTurn(
     modelId: request.modelId,
     protocol,
     status: response.status,
-    requestBytes: Buffer.byteLength(JSON.stringify(body), "utf8"),
+    requestBytes: Buffer.byteLength(serializedBody, "utf8"),
     toolCount: runtimeTools.length,
     historyHash: historyFingerprint(history),
     upstreamRequestId:
@@ -3388,6 +3399,7 @@ async function modelTurn(
       onReasoning,
       onProgress,
       "openai-chat",
+      runtime,
     );
   }
   if (!response.ok)
@@ -3533,6 +3545,13 @@ export async function* runAgent(
   const requestedCodingOps = requestedCodingOperations(history);
   const requestedBrowserOps = requestedBrowserOperations(history);
   const toolsEnabled = !isCasualGreeting(request.messages.at(-1));
+  const latestUserRequest =
+    [...request.messages].reverse().find((message) => message.role === "user")
+      ?.content ?? "";
+  const modelRuntime: ModelTurnRuntime = {
+    provider: await getProviderWithKey(request.providerId),
+    activeSkills: await loadActiveSkillInstructions(latestUserRequest),
+  };
   const usage = { input: 0, output: 0, cached: 0 };
   let lastPromptTokens = 0;
   let round = 0,
@@ -3600,6 +3619,7 @@ export async function* runAgent(
         requestedCodingOps,
         successfulCodingEvidence(evidenceHistory),
       ),
+      modelRuntime,
     )) {
       if (event.type === "complete") turn = event.turn;
       else if (event.type === "reasoning")
@@ -4067,14 +4087,32 @@ export async function* runAgent(
           ),
         );
         let result: ToolResult;
+        let lastProgressOutput = "";
         while (true) {
           const step = await execution.next();
           if (step.done) {
             result = step.value;
             break;
           }
-          activity.output = step.value;
-          yield { type: "activity", activity: { ...activity } };
+          const nextOutput = step.value;
+          if (nextOutput !== lastProgressOutput) {
+            if (nextOutput.startsWith(lastProgressOutput))
+              yield {
+                type: "activity_output",
+                activityId: activity.id,
+                mode: "append",
+                value: nextOutput.slice(lastProgressOutput.length),
+              };
+            else
+              yield {
+                type: "activity_output",
+                activityId: activity.id,
+                mode: "replace",
+                value: nextOutput,
+              };
+            lastProgressOutput = nextOutput;
+          }
+          activity.output = nextOutput;
         }
         finishMutationClaim?.(true);
         const childActivities = result.childActivities;
