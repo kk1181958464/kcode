@@ -3757,6 +3757,39 @@ select:focus-visible {
   color: var(--muted);
   font-size: 10px;
 }
+.context-directory-setting > span {
+  max-width: min(58%, 460px);
+}
+.context-directory-setting > span > small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings-row-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.settings-directory-clear {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+}
+.settings-directory-clear:hover {
+  border-color: color-mix(in srgb, var(--danger) 35%, var(--line));
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.settings-directory-error {
+  color: var(--danger) !important;
+}
 .settings-segmented {
   flex: 0 0 auto;
   display: flex;
@@ -4786,6 +4819,12 @@ select:focus {
     flex-direction: column;
     gap: 11px;
     padding: 13px 0;
+  }
+  .context-directory-setting > span {
+    max-width: 100%;
+  }
+  .settings-row-actions {
+    align-self: stretch;
   }
   .settings-section-header.with-action {
     align-items: stretch;

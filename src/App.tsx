@@ -398,6 +398,9 @@ export default function App() {
   );
   const [attachedFiles, setAttachedFiles] = useState<ContextFile[]>([]);
   const [attachedImages, setAttachedImages] = useState<ImageAttachment[]>([]);
+  const [contextDirectory, setContextDirectory] = useState(
+    () => localStorage.getItem("kcode.contextDirectory") || "",
+  );
   const [contextError, setContextError] = useState("");
   // A transient notice (compaction done, summary restored) that flashes above the
   // composer and auto-dismisses, unlike contextError which stays until closed.
@@ -1348,6 +1351,23 @@ export default function App() {
   function updateStatusPanel(value: boolean) {
     setStatusOpen(value);
     localStorage.setItem("kcode.statusPanel", String(value));
+  }
+
+  async function pickContextDirectory() {
+    if (!window.kcode?.context.pickDirectory) return null;
+    const directory = await window.kcode.context.pickDirectory(
+      contextDirectory || undefined,
+    );
+    if (directory) {
+      setContextDirectory(directory);
+      localStorage.setItem("kcode.contextDirectory", directory);
+    }
+    return directory;
+  }
+
+  function clearContextDirectory() {
+    setContextDirectory("");
+    localStorage.removeItem("kcode.contextDirectory");
   }
 
   function updateTheme(value: ThemePreference) {
@@ -2366,7 +2386,7 @@ export default function App() {
     setContextError("");
     try {
       const files = window.kcode
-        ? await window.kcode.context.pickFiles()
+        ? await window.kcode.context.pickFiles(contextDirectory || undefined)
         : [
             {
               id: uid(),
@@ -3653,7 +3673,11 @@ export default function App() {
                     className="context-button"
                     onClick={() => void pickContextFiles()}
                     disabled={Boolean(runningId) || summaryBusy}
-                    title="添加文本或代码文件"
+                    title={
+                      contextDirectory
+                        ? `添加文本或代码文件 · ${contextDirectory}`
+                        : "添加文本或代码文件"
+                    }
                   >
                     <Paperclip size={15} />
                     <span>上下文</span>
@@ -3966,6 +3990,9 @@ export default function App() {
               onAutoFollowChange={updateAutoFollow}
               statusPanelEnabled={statusOpen}
               onStatusPanelChange={updateStatusPanel}
+              contextDirectory={contextDirectory}
+              onPickContextDirectory={pickContextDirectory}
+              onClearContextDirectory={clearContextDirectory}
               theme={theme}
               onThemeChange={updateTheme}
               accent={accent}

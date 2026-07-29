@@ -94,6 +94,7 @@ import { initializeAppUpdater, scheduleUpdateChecks } from "./app-updater";
 import { createSkillStore, type ListedSkill } from "./skill-store";
 import { clearAgentSkillCache, configureAgentSkills } from "./agent-skills";
 import { networkFetch } from "./network";
+import { existingDirectory } from "./dialog-path";
 
 const controllers = new Map<string, AbortController>();
 // Turn raw upstream/proxy error codes into a readable message for the user.
@@ -673,9 +674,11 @@ app.whenReady().then(() => {
   );
   ipcMain.handle(
     "context:pick-files",
-    async (event): Promise<ContextFile[]> => {
+    async (event, rawDefaultDirectory?: string): Promise<ContextFile[]> => {
+      const defaultPath = await existingDirectory(rawDefaultDirectory);
       const options = {
         title: "添加上下文文件",
+        ...(defaultPath ? { defaultPath } : {}),
         properties: ["openFile", "multiSelections"] as (
           "openFile" | "multiSelections"
         )[],
@@ -753,6 +756,22 @@ app.whenReady().then(() => {
         }),
       );
       return files;
+    },
+  );
+  ipcMain.handle(
+    "context:pick-directory",
+    async (event, rawDefaultDirectory?: string) => {
+      const owner = BrowserWindow.fromWebContents(event.sender);
+      if (!owner || owner.isDestroyed())
+        throw new Error("无法确认文件夹选择窗口");
+      const defaultPath = await existingDirectory(rawDefaultDirectory);
+      const result = await dialog.showOpenDialog(owner, {
+        title: "设置上下文文件目录",
+        ...(defaultPath ? { defaultPath } : {}),
+        properties: ["openDirectory", "createDirectory"],
+      });
+      if (result.canceled || !result.filePaths[0]) return null;
+      return path.resolve(result.filePaths[0]);
     },
   );
   ipcMain.handle("chat:start", (event, rawRequest: ModelRequest) => {

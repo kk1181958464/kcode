@@ -445,7 +445,8 @@ export type KCodeApi = {
     removeCheckpoint(id: string): Promise<void>;
   };
   context: {
-    pickFiles(): Promise<ContextFile[]>;
+    pickFiles(defaultDirectory?: string): Promise<ContextFile[]>;
+    pickDirectory(defaultDirectory?: string): Promise<string | null>;
   };
   workspace: {
     pickFolder(): Promise<WorkspaceFolder | null>;

@@ -73,7 +73,10 @@ const api: KCodeApi = {
     },
   },
   context: {
-    pickFiles: () => ipcRenderer.invoke("context:pick-files"),
+    pickFiles: (defaultDirectory) =>
+      ipcRenderer.invoke("context:pick-files", defaultDirectory),
+    pickDirectory: (defaultDirectory) =>
+      ipcRenderer.invoke("context:pick-directory", defaultDirectory),
   },
   workspace: {
     pickFolder: () => ipcRenderer.invoke("workspace:pick-folder"),

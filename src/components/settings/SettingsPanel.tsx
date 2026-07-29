@@ -51,6 +51,9 @@ export function SettingsPanel({
   onAutoFollowChange,
   statusPanelEnabled,
   onStatusPanelChange,
+  contextDirectory,
+  onPickContextDirectory,
+  onClearContextDirectory,
   theme,
   onThemeChange,
   accent,
@@ -71,6 +74,9 @@ export function SettingsPanel({
   onAutoFollowChange(value: boolean): void;
   statusPanelEnabled: boolean;
   onStatusPanelChange(value: boolean): void;
+  contextDirectory: string;
+  onPickContextDirectory(): Promise<string | null>;
+  onClearContextDirectory(): void;
   theme: ThemePreference;
   onThemeChange(value: ThemePreference): void;
   accent: AccentPreference;
@@ -94,6 +100,8 @@ export function SettingsPanel({
   const [skillQuery, setSkillQuery] = useState("");
   const [skillBusy, setSkillBusy] = useState<string>();
   const [skillError, setSkillError] = useState("");
+  const [contextDirectoryBusy, setContextDirectoryBusy] = useState(false);
+  const [contextDirectoryError, setContextDirectoryError] = useState("");
   const [storage, setStorage] = useState<{
     tasks: number;
     bytes: number;
@@ -149,6 +157,18 @@ export function SettingsPanel({
         enabled: !provider.enabled,
       }),
     );
+  }
+
+  async function chooseContextDirectory() {
+    setContextDirectoryError("");
+    setContextDirectoryBusy(true);
+    try {
+      await onPickContextDirectory();
+    } catch (error) {
+      setContextDirectoryError(errorMessage(error));
+    } finally {
+      setContextDirectoryBusy(false);
+    }
   }
   async function removeModel(provider: ProviderConfig, modelId: string) {
     const nextProvider = {
@@ -463,6 +483,44 @@ export function SettingsPanel({
                           {effortLabels[effort]}
                         </button>
                       ))}
+                    </div>
+                  </div>
+                  <div className="settings-row context-directory-setting">
+                    <span>
+                      <strong>上下文文件目录</strong>
+                      <small title={contextDirectory || undefined}>
+                        {contextDirectory || "未设置，使用系统默认目录"}
+                      </small>
+                      {contextDirectoryError && (
+                        <small className="settings-directory-error">
+                          {contextDirectoryError}
+                        </small>
+                      )}
+                    </span>
+                    <div className="settings-row-actions">
+                      <button
+                        className="secondary"
+                        type="button"
+                        disabled={contextDirectoryBusy}
+                        onClick={() => void chooseContextDirectory()}
+                      >
+                        <FolderOpen size={14} />
+                        {contextDirectoryBusy ? "选择中" : "选择目录"}
+                      </button>
+                      {contextDirectory && (
+                        <button
+                          className="settings-directory-clear"
+                          type="button"
+                          title="清除上下文文件目录"
+                          aria-label="清除上下文文件目录"
+                          onClick={() => {
+                            setContextDirectoryError("");
+                            onClearContextDirectory();
+                          }}
+                        >
+                          <X size={14} />
+                        </button>
+                      )}
                     </div>
                   </div>
                   <div className="settings-row">
