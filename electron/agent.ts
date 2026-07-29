@@ -45,7 +45,6 @@ import {
   fetchWithRetry,
   isRetryableStreamError,
   readResponseText,
-  readStreamChunk,
 } from "./request-guard";
 import {
   effectiveOpenAiProtocol,
@@ -53,17 +52,29 @@ import {
   shouldFallbackResponses,
 } from "./protocol-fallback";
 import {
-  claimedGitOperations,
+  missingRequestedGitOperations,
   requestedGitOperations,
   successfulGitEvidence,
 } from "./git-operation-verification";
 import {
-  claimedCodingOperations,
+  claimsNoChangeNeeded,
+  hasVerifiedNoChangeEvidence,
+  missingRequestedCodingOperations,
   requestedCodingOperations,
   shouldRequireCodingTool,
   successfulCodingEvidence,
+  type CodingOperation,
 } from "./coding-operation-verification";
+import {
+  missingRequestedBrowserOperations,
+  requestedBrowserOperations,
+  successfulBrowserEvidence,
+  type BrowserOperation,
+} from "./browser-operation-verification";
 import { loadActiveSkillInstructions } from "./agent-skills";
+import { AsyncQueue } from "./async-queue";
+import { readSseJson } from "./sse-stream";
+import { mutationChangedFromOutput } from "./mutation-evidence";
 import { getProviderWithKey } from "./store";
 import {
   bindBrowserRequest,
@@ -114,10 +125,7 @@ import {
   executeMongo,
   type MongoConnectInput,
 } from "./mongodb";
-import {
-  classifyMysqlSql,
-  classifySqlServerSql,
-} from "./sql-policy";
+import { classifyMysqlSql, classifySqlServerSql } from "./sql-policy";
 import {
   resolveProjectDiagnostic,
   type DiagnosticKind,
@@ -160,45 +168,29 @@ type ToolResult = Partial<
   >
 > & {
   output: string;
+  changed?: boolean;
+  executed?: boolean;
+  mutationAttempted?: boolean;
+  operationEvidence?: CodingOperation[];
+  browserOperationEvidence?: BrowserOperation[];
   subagentUsage?: { input: number; output: number; cached: number };
 };
 
 async function* streamOperationProgress<T>(
   operation: (report: (output: string) => void) => Promise<T>,
 ): AsyncGenerator<string, T> {
-  let latestOutput: string | undefined;
-  let wake: (() => void) | undefined;
-  let done = false;
+  const queue = new AsyncQueue<string>();
   let result: T | undefined;
-  let failure: unknown;
   const report = (output: string) => {
-    latestOutput = output;
-    wake?.();
-    wake = undefined;
+    queue.pushLatest(output);
   };
   void operation(report)
     .then((value) => {
       result = value;
-      done = true;
-      wake?.();
+      queue.close();
     })
-    .catch((error) => {
-      failure = error;
-      done = true;
-      wake?.();
-    });
-  while (!done || latestOutput !== undefined) {
-    if (latestOutput === undefined)
-      await new Promise<void>((resolve) => {
-        wake = resolve;
-      });
-    if (latestOutput !== undefined) {
-      const output = latestOutput;
-      latestOutput = undefined;
-      yield output;
-    }
-  }
-  if (failure) throw failure;
+    .catch((error) => queue.fail(error));
+  for await (const output of queue) yield output;
   return result as T;
 }
 type StructuredToolResult = {
@@ -227,7 +219,28 @@ type HistoryItem =
   | { kind: "calls"; calls: ToolCall[]; rawCalls: unknown[] }
   | { kind: "result"; callId: string; content: string };
 
-function compactRuntimeHistory(history: HistoryItem[], force = false) {
+function compactEvidenceCall(call: ToolCall) {
+  const input: Record<string, unknown> = {};
+  for (const key of [
+    "command",
+    "path",
+    "from",
+    "to",
+    "kind",
+    "processId",
+    "operation",
+  ]) {
+    if (call.input[key] !== undefined)
+      input[key] = String(call.input[key]).slice(0, 4_000);
+  }
+  return { id: call.id, name: call.name, input };
+}
+
+function compactRuntimeHistory(
+  history: HistoryItem[],
+  force = false,
+  activeConnections: Iterable<string> = [],
+) {
   if (history.length <= 8 && !force) return false;
   const firstMessage = history.find(
     (item): item is Extract<HistoryItem, { kind: "message" }> =>
@@ -258,28 +271,7 @@ function compactRuntimeHistory(history: HistoryItem[], force = false) {
   });
   const older = history.slice(0, -8);
   const facts: string[] = [];
-  // Connections opened earlier stay usable for the whole task, so their
-  // coordinates are durable facts that must survive compaction verbatim instead
-  // of being dropped with the rest of the call history. Keep the full input
-  // (host/port/user and, unlike the UI summary, the credentials the model may
-  // need to reconnect within this run) — runtime history is never shown to the
-  // user or persisted, so it is the safe place to retain them.
-  const connections: string[] = [];
   for (const item of older) {
-    if (item.kind === "calls")
-      for (const call of item.calls)
-        if (
-          [
-            "ssh_connect",
-            "mysql_connect",
-            "mysql_connect_via_ssh",
-            "sqlserver_connect",
-            "sqlserver_connect_via_ssh",
-            "mongodb_connect",
-            "mongodb_connect_via_ssh",
-          ].includes(call.name)
-        )
-          connections.push(`${call.name} ${JSON.stringify(call.input)}`);
     if (item.kind === "message" && item !== firstMessage)
       facts.push(
         `${item.role}: ${item.content.replace(/\s+/g, " ").slice(0, 500)}`,
@@ -301,7 +293,7 @@ function compactRuntimeHistory(history: HistoryItem[], force = false) {
       }
     }
   }
-  const uniqueConnections = [...new Set(connections)];
+  const uniqueConnections = [...new Set(activeConnections)];
   const connectionBlock = uniqueConnections.length
     ? `已建立的连接（会话在本次运行内仍然可用，如需重连可复用以下凭据，不要向用户重复索取）：\n${uniqueConnections.join("\n")}\n\n`
     : "";
@@ -318,6 +310,89 @@ function compactRuntimeHistory(history: HistoryItem[], force = false) {
     ...recent.filter((item) => item !== firstMessage),
   );
   return true;
+}
+
+function codingEvidenceFromActivities(activities: AgentActivity[]) {
+  const evidence: HistoryItem[] = [];
+  for (const activity of activities) {
+    evidence.push({
+      kind: "calls",
+      calls: [
+        compactEvidenceCall({
+          id: activity.id,
+          name: activity.tool,
+          input: {
+            ...activity.input,
+            command: activity.command,
+            path: activity.path,
+          },
+        }),
+      ],
+      rawCalls: [],
+    });
+    evidence.push({
+      kind: "result",
+      callId: activity.id,
+      content: JSON.stringify({
+        success: activity.status === "success",
+        data: {
+          changed: activity.changed,
+          executed: activity.executed,
+          exitCode: activity.exitCode,
+          output:
+            activity.tool === "process_output" ? activity.output : undefined,
+        },
+      }),
+    });
+  }
+  return [...successfulCodingEvidence(evidence)];
+}
+
+function browserEvidenceFromActivities(activities: AgentActivity[]) {
+  const evidence: HistoryItem[] = [];
+  for (const activity of activities) {
+    evidence.push({
+      kind: "calls",
+      calls: [
+        {
+          id: activity.id,
+          name: activity.tool,
+          input: activity.input,
+        },
+      ],
+      rawCalls: [],
+    });
+    evidence.push({
+      kind: "result",
+      callId: activity.id,
+      content: JSON.stringify({ success: activity.status === "success" }),
+    });
+  }
+  return [...successfulBrowserEvidence(evidence)];
+}
+
+function connectionFamily(tool: AgentToolName) {
+  if (tool === "ssh_connect" || tool === "ssh_disconnect") return "ssh";
+  if (tool.startsWith("mysql_")) return "mysql";
+  if (tool.startsWith("sqlserver_")) return "sqlserver";
+  if (tool.startsWith("mongodb_")) return "mongodb";
+  return undefined;
+}
+
+function updateActiveConnectionFacts(
+  active: Map<string, string>,
+  call: ToolCall,
+  succeeded: boolean,
+) {
+  if (!succeeded) return;
+  const family = connectionFamily(call.name);
+  if (!family) return;
+  if (call.name.endsWith("disconnect")) {
+    active.delete(family);
+    return;
+  }
+  if (call.name.includes("connect"))
+    active.set(family, `${call.name} ${JSON.stringify(call.input)}`);
 }
 
 const trim = (value: string) => value.replace(/\/+$/, "");
@@ -429,7 +504,9 @@ async function fetchPublic(
         ? (cause as { code?: string; message?: string })
         : undefined;
     const code = details?.code;
-    const message = details?.message || (error instanceof Error ? error.message : String(error));
+    const message =
+      details?.message ||
+      (error instanceof Error ? error.message : String(error));
     if (/fetch failed/i.test(message)) {
       const reason = code ? `${code}: ` : "";
       throw new Error(`网页连接失败（${reason}${message}）URL: ${url.href}`);
@@ -1335,7 +1412,8 @@ function isHardFailure(call: ToolCall, output: string) {
   if (call.name !== "run_command") return true;
   const script = String(call.input.command || "");
   if (/\*\*\* Begin Patch|\bapply_patch\b/i.test(script)) return true;
-  if (/命令执行超时|命令已取消|没有新输出，已判定卡住/.test(output)) return true;
+  if (/命令执行超时|命令已取消|没有新输出，已判定卡住/.test(output))
+    return true;
   if (
     /not recognized|CommandNotFoundException|找不到|无法将.*识别为/i.test(
       output,
@@ -1343,6 +1421,10 @@ function isHardFailure(call: ToolCall, output: string) {
   )
     return true;
   return false;
+}
+
+function isSchemaMutationSql(sql: string) {
+  return /^\s*(?:create|alter|drop|truncate|rename|grant|revoke)\b/i.test(sql);
 }
 
 function mysqlConnectInput(
@@ -1461,6 +1543,7 @@ async function applyPatch(
   if (lines[0]?.trim() !== "*** Begin Patch")
     throw new Error("补丁必须以 *** Begin Patch 开始");
   const changes: {
+    action: "Update" | "Add" | "Delete";
     file: string;
     before: string;
     after: string;
@@ -1497,21 +1580,33 @@ async function applyPatch(
               .map((line) => line.slice(1))
               .join("\n")
           : applyUpdatePatch(before, body);
-    changes.push({ file, before, after, existed });
+    changes.push({
+      action: action as "Update" | "Add" | "Delete",
+      file,
+      before,
+      after,
+      existed,
+    });
   }
   if (!changes.length) throw new Error("补丁中没有文件变更");
-  for (const change of changes) {
-    if (!change.after && change.existed) await unlink(change.file);
+  const actualChanges = changes.filter(
+    (change) =>
+      change.action === "Delete" ||
+      !change.existed ||
+      change.before !== change.after,
+  );
+  for (const change of actualChanges) {
+    if (change.action === "Delete") await unlink(change.file);
     else {
       await mkdir(path.dirname(change.file), { recursive: true });
       await writeFile(change.file, change.after, "utf8");
     }
   }
-  if (changes.length === 1 && changes[0].after) {
-    const change = changes[0];
+  if (actualChanges.length === 1 && actualChanges[0].action !== "Delete") {
+    const change = actualChanges[0];
     undoSnapshots.set(activityId, { root, requestId, ...change });
   }
-  const diffs = changes.map((change) => ({
+  const diffs = actualChanges.map((change) => ({
     path: path.relative(root, change.file).replaceAll("\\", "/"),
     ...diffFor(
       path.relative(root, change.file).replaceAll("\\", "/"),
@@ -1520,7 +1615,10 @@ async function applyPatch(
     ),
   }));
   return {
-    output: `已应用补丁，修改 ${changes.length} 个文件`,
+    output: actualChanges.length
+      ? `已应用补丁，修改 ${actualChanges.length} 个文件`
+      : "补丁内容与现有文件一致，未发生实际修改",
+    changed: actualChanges.length > 0,
     path:
       changes.length === 1
         ? path.relative(root, changes[0].file)
@@ -1529,7 +1627,8 @@ async function applyPatch(
     additions: diffs.reduce((sum, item) => sum + item.additions, 0),
     deletions: diffs.reduce((sum, item) => sum + item.deletions, 0),
     fileChanges: diffs,
-    undoable: changes.length === 1 && Boolean(changes[0].after),
+    undoable:
+      actualChanges.length === 1 && actualChanges[0].action !== "Delete",
   };
 }
 
@@ -1736,19 +1835,25 @@ async function execute(
       existed = false;
     }
     await mkdir(path.dirname(file), { recursive: true });
-    await writeFile(file, content, "utf8");
-    undoSnapshots.set(activityId, {
-      root,
-      requestId,
-      file,
-      before,
-      after: content,
-      existed,
-    });
+    const changed = !existed || before !== content;
+    if (changed) {
+      await writeFile(file, content, "utf8");
+      undoSnapshots.set(activityId, {
+        root,
+        requestId,
+        file,
+        before,
+        after: content,
+        existed,
+      });
+    }
     return {
-      output: `已写入 ${Buffer.byteLength(content)} 字节`,
+      output: changed
+        ? `已写入 ${Buffer.byteLength(content)} 字节`
+        : "文件内容一致，未发生实际修改",
+      changed,
       path: path.relative(root, file),
-      undoable: true,
+      undoable: changed,
       ...diffFor(
         path.relative(root, file).replaceAll("\\", "/"),
         before,
@@ -1765,8 +1870,20 @@ async function execute(
     );
   if (call.name === "make_directory") {
     const directory = workspacePath(root, call.input.path);
+    let existed = false;
+    try {
+      const info = await stat(directory);
+      if (!info.isDirectory()) throw new Error("目标路径已存在且不是目录");
+      existed = true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
     await mkdir(directory, { recursive: true });
-    return { path: path.relative(root, directory), output: "目录已创建" };
+    return {
+      path: path.relative(root, directory),
+      output: existed ? "目录已存在，未发生变更" : "目录已创建",
+      changed: !existed,
+    };
   }
   if (call.name === "move_path") {
     const from = workspacePath(root, call.input.from),
@@ -1776,6 +1893,7 @@ async function execute(
     return {
       path: path.relative(root, to),
       output: `已从 ${path.relative(root, from)} 移动到 ${path.relative(root, to)}`,
+      changed: true,
     };
   }
   if (call.name === "delete_path") {
@@ -1788,6 +1906,7 @@ async function execute(
     return {
       path: path.relative(root, target),
       output: info.isDirectory() ? "目录已删除" : "文件已删除",
+      changed: true,
     };
   }
   if (call.name === "git_status") {
@@ -1871,7 +1990,11 @@ async function execute(
       process.exitCode = code ?? -1;
     });
     backgroundProcesses.set(id, process);
-    return { command: script, output: `后台进程已启动\nprocessId: ${id}` };
+    return {
+      command: script,
+      output: `后台进程已创建，需读取进程输出确认运行状态\nprocessId: ${id}`,
+      executed: true,
+    };
   }
   if (call.name === "process_output") {
     const id = String(call.input.processId || ""),
@@ -1881,6 +2004,7 @@ async function execute(
     return {
       output: `${process.exitCode === undefined ? "状态: 运行中" : `状态: 已退出 (${process.exitCode})`}\n${process.output || "暂无输出"}`,
       exitCode: process.exitCode === undefined ? undefined : process.exitCode,
+      executed: true,
     };
   }
   if (call.name === "stop_process") {
@@ -2067,7 +2191,7 @@ async function execute(
         onOutput: onProgress,
       },
     );
-    return { ...result, command: remoteCommand };
+    return { ...result, command: remoteCommand, executed: true };
   }
   if (call.name === "ssh_list_directory") {
     const remotePath = String(call.input.path || ".");
@@ -2105,6 +2229,7 @@ async function execute(
     return {
       path: remotePath,
       output: `已原子写入远程文件，共 ${result.bytes} 字节`,
+      changed: result.before !== result.after,
       undoable: true,
       ...diffFor(remotePath, result.before, result.after),
     };
@@ -2123,6 +2248,7 @@ async function execute(
     return {
       path: remotePath,
       output: `已上传本地文件到远程 ${remotePath}，共 ${result.bytes} 字节`,
+      changed: true,
     };
   }
   if (call.name === "ssh_download_file") {
@@ -2138,6 +2264,7 @@ async function execute(
     return {
       path: localPath,
       output: `已下载远程文件到本地 ${localPath}，共 ${result.bytes} 字节`,
+      changed: true,
     };
   }
   if (call.name === "ssh_disconnect")
@@ -2208,15 +2335,23 @@ async function execute(
   if (call.name === "mysql_query") {
     const sql = String(call.input.sql || "");
     const values = Array.isArray(call.input.values) ? call.input.values : [];
+    const risk = classifyMysqlSql(sql);
+    const output = await queryMysql(
+      browserSessionId,
+      requestId,
+      sql,
+      values,
+      signal,
+    );
     return {
       command: sql,
-      output: await queryMysql(
-        browserSessionId,
-        requestId,
-        sql,
-        values,
-        signal,
-      ),
+      output,
+      executed: true,
+      changed:
+        risk === "read"
+          ? false
+          : isSchemaMutationSql(sql) || mutationChangedFromOutput(output),
+      mutationAttempted: risk !== "read",
     };
   }
   if (call.name === "mysql_disconnect")
@@ -2286,15 +2421,23 @@ async function execute(
   if (call.name === "sqlserver_query") {
     const sql = String(call.input.sql || "");
     const values = Array.isArray(call.input.values) ? call.input.values : [];
+    const risk = classifySqlServerSql(sql);
+    const output = await querySqlServer(
+      browserSessionId,
+      requestId,
+      sql,
+      values,
+      signal,
+    );
     return {
       command: sql,
-      output: await querySqlServer(
-        browserSessionId,
-        requestId,
-        sql,
-        values,
-        signal,
-      ),
+      output,
+      executed: true,
+      changed:
+        risk === "read"
+          ? false
+          : isSchemaMutationSql(sql) || mutationChangedFromOutput(output),
+      mutationAttempted: risk !== "read",
     };
   }
   if (call.name === "sqlserver_disconnect")
@@ -2361,15 +2504,27 @@ async function execute(
       throw error;
     }
   }
-  if (call.name === "mongodb_execute")
+  if (call.name === "mongodb_execute") {
+    const operation = String(call.input.operation || "");
+    const mutationAttempted = ![
+      "find",
+      "aggregate",
+      "countDocuments",
+      "distinct",
+    ].includes(operation);
+    const output = await executeMongo(
+      browserSessionId,
+      requestId,
+      call.input as any,
+      signal,
+    );
     return {
-      output: await executeMongo(
-        browserSessionId,
-        requestId,
-        call.input as any,
-        signal,
-      ),
+      output,
+      executed: true,
+      changed: mutationAttempted ? mutationChangedFromOutput(output) : false,
+      mutationAttempted,
     };
+  }
   if (call.name === "mongodb_disconnect")
     return {
       output: (await disconnectMongo(browserSessionId))
@@ -2455,6 +2610,16 @@ async function execute(
         (sum, activity) => sum + (activity.deletions ?? 0),
         0,
       ),
+      changed: childActivities.some(
+        (activity) =>
+          activity.status === "success" &&
+          (activity.changed === true ||
+            Boolean(activity.diff) ||
+            Boolean(activity.additions) ||
+            Boolean(activity.deletions)),
+      ),
+      operationEvidence: codingEvidenceFromActivities(childActivities),
+      browserOperationEvidence: browserEvidenceFromActivities(childActivities),
     };
   }
   if (call.name === "stop_agent") {
@@ -2467,6 +2632,8 @@ async function execute(
       output: JSON.stringify(visible, null, 2),
       childActivities: activityRecords,
       subagentUsage: usageDelta,
+      operationEvidence: codingEvidenceFromActivities(activityRecords),
+      browserOperationEvidence: browserEvidenceFromActivities(activityRecords),
     };
   }
   if (call.name === "diagnostics") {
@@ -2481,6 +2648,7 @@ async function execute(
       return {
         command: "未执行",
         output: diagnostic.message ?? "项目未配置对应诊断脚本，已跳过。",
+        executed: false,
       };
     const result = await command(
       root,
@@ -2498,6 +2666,7 @@ async function execute(
       command: diagnostic.command,
       output: result.output || "诊断未产生输出",
       exitCode: result.exitCode,
+      executed: true,
     };
   }
   const script = String(call.input.command || "");
@@ -2524,6 +2693,7 @@ async function execute(
     output: result.output || "命令未产生输出",
     command: script,
     exitCode: result.exitCode,
+    executed: true,
   };
 }
 
@@ -2533,40 +2703,7 @@ async function* sseJson(
   idleTimeoutMs?: number,
   onProgress?: (message: string) => void,
 ): AsyncGenerator<any> {
-  if (!response.body) throw new Error("模型没有返回响应流");
-  const reader = response.body.getReader(),
-    decoder = new TextDecoder();
-  let buffer = "";
-  const eventsFromBlock = (block: string) => {
-    const events: any[] = [];
-    for (const line of block.split(/\r?\n/)) {
-      if (!line.startsWith("data:")) continue;
-      const data = line.slice(5).trim();
-      if (data === "[DONE]") events.push({ type: "__sse_done" });
-      else if (data) events.push(JSON.parse(data));
-    }
-    return events;
-  };
-  while (true) {
-    const { done, value } = await readStreamChunk(
-      reader,
-      signal,
-      idleTimeoutMs,
-      onProgress,
-    );
-    buffer += decoder.decode(value, { stream: !done });
-    const blocks = buffer.split(/\r?\n\r?\n/);
-    buffer = blocks.pop() ?? "";
-    for (const block of blocks)
-      for (const event of eventsFromBlock(block)) yield event;
-    if (done) {
-      // Some relays close immediately after the final data line without the
-      // blank SSE delimiter. Do not discard that completion event.
-      if (buffer.trim())
-        for (const event of eventsFromBlock(buffer)) yield event;
-      break;
-    }
-  }
+  yield* readSseJson(response, { signal, idleTimeoutMs, onProgress });
 }
 
 async function parseStreamedTurn(
@@ -2575,6 +2712,7 @@ async function parseStreamedTurn(
   signal: AbortSignal,
   onText?: (delta: string) => void,
   onReasoning?: (delta: string) => void,
+  onProgress?: (message: string) => void,
   idleTimeoutMs?: number,
 ): Promise<Turn> {
   if (response.body) {
@@ -2587,7 +2725,7 @@ async function parseStreamedTurn(
       response,
       signal,
       idleTimeoutMs,
-      onReasoning,
+      onProgress,
     ))
       assembler.consume(event);
     assembler.assertStreamComplete();
@@ -2762,6 +2900,7 @@ type TurnStreamEvent =
   | { type: "text"; delta: string }
   | { type: "text_reset" }
   | { type: "reasoning"; delta: string }
+  | { type: "progress"; message: string }
   | { type: "complete"; turn: Turn };
 async function* streamModelTurn(
   root: string,
@@ -2772,16 +2911,11 @@ async function* streamModelTurn(
   toolsEnabled: boolean,
   requireToolCall: boolean,
 ): AsyncGenerator<TurnStreamEvent> {
-  const queue: TurnStreamEvent[] = [];
-  let wake: (() => void) | undefined,
-    done = false,
-    turn: Turn | undefined,
-    failure: unknown;
+  const queue = new AsyncQueue<TurnStreamEvent>();
+  let turn: Turn | undefined;
   const reconciler = new RetryTextReconciler();
   const enqueue = (event: TurnStreamEvent) => {
     queue.push(event);
-    wake?.();
-    wake = undefined;
   };
   const pushText = (delta: string) => {
     if (!delta) return;
@@ -2793,6 +2927,9 @@ async function* streamModelTurn(
   };
   const pushReasoning = (delta: string) => {
     if (delta) enqueue({ type: "reasoning", delta });
+  };
+  const pushProgress = (message: string) => {
+    if (message) enqueue({ type: "progress", message });
   };
   const sleep = (ms: number) =>
     new Promise<void>((resolve) => {
@@ -2820,6 +2957,7 @@ async function* streamModelTurn(
           requireToolCall,
           pushText,
           pushReasoning,
+          pushProgress,
         );
         return;
       } catch (error) {
@@ -2829,7 +2967,7 @@ async function* streamModelTurn(
         // that prefix, so replayed output is suppressed without a visual reset.
         const delay =
           2_000 * 2 ** (attempt - 1) + Math.floor(Math.random() * 750);
-        pushReasoning(
+        pushProgress(
           `上游暂时不可用，${Math.ceil(delay / 1_000)} 秒后自动重试（第 ${attempt} 次）…`,
         );
         await sleep(delay);
@@ -2839,22 +2977,10 @@ async function* streamModelTurn(
   };
   void run()
     .then(() => {
-      done = true;
-      wake?.();
+      queue.close();
     })
-    .catch((error) => {
-      failure = error;
-      done = true;
-      wake?.();
-    });
-  while (!done || queue.length) {
-    if (!queue.length)
-      await new Promise<void>((resolve) => {
-        wake = resolve;
-      });
-    while (queue.length) yield queue.shift()!;
-  }
-  if (failure) throw failure;
+    .catch((error) => queue.fail(error));
+  for await (const event of queue) yield event;
   yield { type: "complete", turn: turn! };
 }
 
@@ -2868,6 +2994,7 @@ async function modelTurn(
   requireToolCall = false,
   onText?: (delta: string) => void,
   onReasoning?: (delta: string) => void,
+  onProgress?: (message: string) => void,
   protocolOverride?: Protocol,
 ): Promise<Turn> {
   const provider = await getProviderWithKey(request.providerId);
@@ -2878,8 +3005,7 @@ async function modelTurn(
     (model) => model.modelId === request.modelId,
   )!;
   const protocol =
-    protocolOverride ??
-    effectiveOpenAiProtocol(provider.id, provider.protocol);
+    protocolOverride ?? effectiveOpenAiProtocol(provider.id, provider.protocol);
   const reasoning = {
     ...inferReasoningConfig(selectedModel.modelId, protocol),
     reasoningMode:
@@ -2901,11 +3027,11 @@ async function modelTurn(
       )
     : [];
   const isolation = createConversationIsolation(request.taskId, requestId);
-  const latestUserRequest = [...request.messages]
-    .reverse()
-    .find((message) => message.role === "user")?.content ?? "";
+  const latestUserRequest =
+    [...request.messages].reverse().find((message) => message.role === "user")
+      ?.content ?? "";
   const activeSkills = await loadActiveSkillInstructions(latestUserRequest);
-  const system = `${isolation.boundary}\nYou are a coding agent working in ${root}. Use the provided native tools to inspect and modify the project. Each run_command invocation uses a fresh PowerShell process, so environment variable changes do not persist to later commands; combine dependent setup and execution in one command. Prefer apply_patch for precise edits and write_file for new or complete files. Never invoke apply_patch, file deletion, file moves, or directory operations through run_command when a native tool exists. File tool paths accept absolute paths, including other drives (for example D:\\B on Windows); use them to read or write files the user explicitly points to outside ${root}, and resolve relative paths against ${root}. When you mention a file in your reply, always write its full workspace-relative path (for example src/views/Gooddetail.vue, not just Gooddetail.vue) so the user can tell exactly which file it is. Use web_search for current or externally verifiable information and fetch_url to inspect primary sources; preserve source URLs in the final answer. For interactive or authenticated sites use browser_open, browser_snapshot, browser_click, and browser_type. Credentials explicitly supplied by the user may be entered directly with browser_type. Browser recording is opt-in: call browser_record_start only after an explicit user request such as 开始录制, and call browser_record_stop when the user asks to stop or generate Python. Never record ordinary browsing by default. For independent work that can run concurrently, use spawn_agent with self-contained, non-overlapping tasks, then wait_agent before giving a final answer. Use list_agents, message_agent, and stop_agent to coordinate them. Subagents inherit this task's model, workspace, reasoning, and permissions. For remote servers, call ssh_connect with credentials explicitly supplied by the user, then use ssh_run and the SSH SFTP tools. Use ssh_upload_file to send a local file to the server and ssh_download_file to fetch a remote file to a local path; these transfer binary content directly, unlike ssh_write_file which only writes inline UTF-8 text. SSH exec sessions are non-interactive and may not load shell profiles; when a remote command depends on profile-defined PATH values, invoke the appropriate login shell explicitly. SSH host keys are not verified. Credentials supplied by the user may appear in commands, tool activity details, subagent tasks, and conversation text. For databases, use mysql_connect for direct MySQL access or mysql_connect_via_ssh for an SSH tunnel, then mysql_query; use ? placeholders and values for user-provided data when practical. Public direct MySQL connections use TLS by default and you must not retry with ssl=false unless the user explicitly approves. If CAPTCHA, SMS, passkey, or two-factor verification appears, pause and ask the user to complete it in the visible browser. Do not claim an action succeeded until its tool result confirms it.${activeSkills ? `\n\n${activeSkills}` : ""}${request.recoveryContext ? `\n\n<recovery_context>${request.recoveryContext}</recovery_context>\nThis task resumed after an interruption. Verify prior side effects before repeating them, and recreate any interrupted subagent work that is still needed.` : ""}`;
+  const system = `${isolation.boundary}\nYou are a coding agent working in ${root}. Use the provided native tools to inspect and modify the project. Each run_command invocation uses a fresh PowerShell process, so environment variable changes do not persist to later commands; combine dependent setup and execution in one command. Prefer apply_patch for precise edits and write_file for new or complete files. Never invoke apply_patch, file deletion, file moves, or directory operations through run_command when a native tool exists. File tool paths accept absolute paths, including other drives (for example D:\\B on Windows); use them to read or write files the user explicitly points to outside ${root}, and resolve relative paths against ${root}. When you mention a file in your reply, always write its full workspace-relative path (for example src/views/Gooddetail.vue, not just Gooddetail.vue) so the user can tell exactly which file it is. Use web_search for current or externally verifiable information and fetch_url to inspect primary sources; preserve source URLs in the final answer. For interactive or authenticated sites use browser_open, browser_snapshot, browser_click, and browser_type. Credentials explicitly supplied by the user may be entered directly with browser_type. Browser recording is opt-in: call browser_record_start only after an explicit user request such as 开始录制, and call browser_record_stop when the user asks to stop or generate Python. Never record ordinary browsing by default. For independent work that can run concurrently, use spawn_agent with self-contained, non-overlapping tasks, then wait_agent before giving a final answer. Use list_agents, message_agent, and stop_agent to coordinate them. Subagents inherit this task's model, workspace, reasoning, and permissions. For remote servers, call ssh_connect with credentials explicitly supplied by the user, then use ssh_run and the SSH SFTP tools. Use ssh_upload_file to send a local file to the server and ssh_download_file to fetch a remote file to a local path; these transfer binary content directly, unlike ssh_write_file which only writes inline UTF-8 text. SSH exec sessions are non-interactive and may not load shell profiles; when a remote command depends on profile-defined PATH values, invoke the appropriate login shell explicitly. SSH host keys are not verified. Credentials supplied by the user may appear in commands, tool activity details, subagent tasks, and conversation text. For databases, use mysql_connect for direct MySQL access or mysql_connect_via_ssh for an SSH tunnel, then mysql_query; use ? placeholders and values for user-provided data when practical. Public direct MySQL connections use TLS by default and you must not retry with ssl=false unless the user explicitly approves. If CAPTCHA, SMS, passkey, or two-factor verification appears, pause and ask the user to complete it in the visible browser. Do not claim an action succeeded until its tool result confirms it. Before finishing, compare every action requested by the user with successful tool results. A file task is complete only after a mutating tool produced an actual change; a validation is complete only after it really ran successfully after the latest change; a background service is started only after process_output confirms it is running. If no change was needed or an action could not be completed, state that explicitly instead of saying it was done.${activeSkills ? `\n\n${activeSkills}` : ""}${request.recoveryContext ? `\n\n<recovery_context>${request.recoveryContext}</recovery_context>\nThis task resumed after an interruption. Verify prior side effects before repeating them, and recreate any interrupted subagent work that is still needed.` : ""}`;
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...isolation.headers,
@@ -2941,8 +3067,7 @@ async function modelTurn(
             ? { reasoning_content: item.reasoningContent }
             : {}),
         });
-      }
-      else if (item.kind === "calls") {
+      } else if (item.kind === "calls") {
         const raw = item.rawCalls[0] as Record<string, unknown> | undefined;
         const message: Record<string, unknown> = {
           ...((raw?.message as Record<string, unknown> | undefined) ?? {
@@ -3200,7 +3325,7 @@ async function modelTurn(
       firstByteTimeoutMs,
       retries: 1,
       retryDelayMs: 2_000,
-      onProgress: onReasoning,
+      onProgress,
     },
   );
   writeLog("info", "model.response", {
@@ -3219,14 +3344,29 @@ async function modelTurn(
       response.headers.get("request-id") ??
       undefined,
   });
+  let responseErrorText: string | undefined;
   if (
     protocol === "openai-responses" &&
-    shouldFallbackResponses(provider.baseUrl, response.status)
+    !response.ok &&
+    (response.status === 400 || response.status === 422)
+  )
+    responseErrorText = await readResponseText(response, signal);
+  if (
+    protocol === "openai-responses" &&
+    shouldFallbackResponses(
+      provider.baseUrl,
+      response.status,
+      responseErrorText,
+    )
   ) {
-    await response.body?.cancel().catch(() => undefined);
+    // Do not let a relay with a non-settling cancel() block protocol fallback.
+    void response.body?.cancel().catch(() => undefined);
     rememberChatFallback(provider.id);
-    onReasoning?.(
-      `Responses API 返回 ${response.status}，已自动切换到 Chat Completions 兼容接口…`,
+    const compatibilityDetail = responseErrorText
+      ? "（工具调用历史格式不兼容）"
+      : "";
+    onProgress?.(
+      `Responses API 返回 ${response.status}${compatibilityDetail}，已自动切换到 Chat Completions 兼容接口…`,
     );
     writeLog("warn", "model.protocolFallback", {
       requestId: isolation.traceId,
@@ -3246,12 +3386,13 @@ async function modelTurn(
       requireToolCall,
       onText,
       onReasoning,
+      onProgress,
       "openai-chat",
     );
   }
   if (!response.ok)
     throw new Error(
-      `请求失败 (${response.status}): ${(await readResponseText(response, signal)).slice(0, 500)}`,
+      `请求失败 (${response.status}): ${(responseErrorText ?? (await readResponseText(response, signal))).slice(0, 500)}`,
     );
   if (/text\/event-stream/i.test(response.headers.get("content-type") || ""))
     return parseStreamedTurn(
@@ -3260,6 +3401,7 @@ async function modelTurn(
       signal,
       onText,
       onReasoning,
+      onProgress,
       reasoning.reasoningMode !== "none" ? 180_000 : undefined,
     );
   const json = JSON.parse(await readResponseText(response, signal)) as any;
@@ -3382,8 +3524,14 @@ export async function* runAgent(
     kind: "message",
     ...m,
   }));
+  // Keep a compact, request-local proof ledger outside the model context.
+  // Runtime history may be compacted during long tasks, but completion proof
+  // must survive until the request actually finishes.
+  const evidenceHistory: HistoryItem[] = [];
+  const activeConnectionFacts = new Map<string, string>();
   const requestedGitOps = requestedGitOperations(history);
   const requestedCodingOps = requestedCodingOperations(history);
+  const requestedBrowserOps = requestedBrowserOperations(history);
   const toolsEnabled = !isCasualGreeting(request.messages.at(-1));
   const usage = { input: 0, output: 0, cached: 0 };
   let lastPromptTokens = 0;
@@ -3393,7 +3541,8 @@ export async function* runAgent(
     unverifiedBrowserClaims = 0,
     unverifiedGitClaims = 0,
     unverifiedCodingClaims = 0,
-    autoContinues = 0;
+    autoContinues = 0,
+    emptyTurns = 0;
   while (!signal.aborted) {
     round += 1;
     if (
@@ -3405,6 +3554,7 @@ export async function* runAgent(
         compactRuntimeHistory(
           history,
           lastPromptTokens >= request.contextWindow * 0.99,
+          activeConnectionFacts.values(),
         )
       ) {
         const activity: AgentActivity = {
@@ -3434,6 +3584,7 @@ export async function* runAgent(
       streamedText = "";
     const bufferModelText =
       browserIsOpen(browserSessionId) ||
+      requestedBrowserOps.size > 0 ||
       requestedGitOps.size > 0 ||
       requestedCodingOps.size > 0 ||
       listSubagents(requestId).some((agent) => !agent.collected);
@@ -3447,12 +3598,14 @@ export async function* runAgent(
       shouldRequireCodingTool(
         request.modelId,
         requestedCodingOps,
-        successfulCodingEvidence(history),
+        successfulCodingEvidence(evidenceHistory),
       ),
     )) {
       if (event.type === "complete") turn = event.turn;
       else if (event.type === "reasoning")
         yield { type: "reasoning", delta: event.delta };
+      else if (event.type === "progress")
+        yield { type: "progress", message: event.message };
       else if (event.type === "text_reset") {
         // Upstream broke mid-answer and is being retried; drop what we streamed
         // so the fresh attempt does not append onto a truncated fragment.
@@ -3471,32 +3624,67 @@ export async function* runAgent(
     // input/output/cached accumulate across rounds for billing; promptTokens is
     // the latest round's prompt size, i.e. the real current context occupancy.
     yield { type: "usage", ...usage, promptTokens: lastPromptTokens };
-    const claimsBrowserAction =
-      browserIsOpen(browserSessionId) &&
-      !turn.calls.length &&
-      /(已|已经|刚刚|现在).{0,16}(点击|选择|填写|输入|提交|发送|打开|登录|切换)|(?:clicked|selected|filled|entered|submitted|sent|opened|logged in)/i.test(
-        turn.text,
-      );
-    if (claimsBrowserAction && unverifiedBrowserClaims < 2) {
-      unverifiedBrowserClaims += 1;
-      history.push({
-        kind: "message",
-        role: "assistant",
-        content: turn.text,
-        reasoningContent: turn.reasoningContent,
-      });
-      history.push({
-        kind: "message",
-        role: "user",
-        content:
-          "<runtime_verification>你声称执行了网页操作，但本轮没有任何浏览器工具调用。不要描述或假设操作成功；请立即使用 browser_snapshot 获取当前页面，再调用 browser_click/browser_type 实际执行，并通过新的页面快照验证结果。</runtime_verification>",
-      });
-      continue;
+    if (!turn.text.trim() && !turn.calls.length) {
+      if (emptyTurns < 2) {
+        emptyTurns += 1;
+        yield {
+          type: "progress",
+          message: `上游返回空响应，正在自动恢复（第 ${emptyTurns + 1} 次尝试）…`,
+        };
+        history.push({
+          kind: "message",
+          role: "user",
+          content:
+            "<runtime_verification>上一轮上游返回了空响应：没有正文，也没有工具调用。任务尚未完成。请从现有历史和工具结果继续，输出最终结论或立即调用下一步工具，不要再次返回空内容。</runtime_verification>",
+        });
+        continue;
+      }
+      yield {
+        type: "error",
+        message:
+          "模型连续返回空响应，KCode 无法确认任务已完成。请重试或更换模型通道。",
+      };
+      return;
     }
-    const claimedGitOps = claimedGitOperations(turn.text);
-    const gitEvidence = successfulGitEvidence(history);
-    const missingGitEvidence = [...claimedGitOps].filter(
-      (operation) => requestedGitOps.has(operation) && !gitEvidence.has(operation),
+    emptyTurns = 0;
+    const browserEvidence = successfulBrowserEvidence(evidenceHistory);
+    const missingBrowserEvidence = missingRequestedBrowserOperations(
+      requestedBrowserOps,
+      browserEvidence,
+    );
+    if (!turn.calls.length && missingBrowserEvidence.length) {
+      if (unverifiedBrowserClaims < 2) {
+        unverifiedBrowserClaims += 1;
+        history.push({
+          kind: "message",
+          role: "assistant",
+          content: turn.text,
+          reasoningContent: turn.reasoningContent,
+        });
+        history.push({
+          kind: "message",
+          role: "user",
+          content: `<runtime_verification>本次网页任务仍缺少成功工具结果：${missingBrowserEvidence.join(", ")}。不要总结为完成；请立即调用对应的 browser_open/browser_click/browser_type 工具实际执行。填写或点击后必须再调用 browser_snapshot 验证新页面。若无法执行，请明确报告未完成及原因。</runtime_verification>`,
+        });
+        continue;
+      }
+      closeSubagentMessageQueue(requestId);
+      const labels = {
+        open: "打开网页",
+        type: "填写网页",
+        click: "点击网页",
+        verify: "交互后页面验证",
+      } as const;
+      yield {
+        type: "error",
+        message: `网页操作未完成：缺少 ${missingBrowserEvidence.map((operation) => labels[operation]).join("、")} 的成功工具记录。`,
+      };
+      return;
+    }
+    const gitEvidence = successfulGitEvidence(evidenceHistory);
+    const missingGitEvidence = missingRequestedGitOperations(
+      requestedGitOps,
+      gitEvidence,
     );
     if (!turn.calls.length && missingGitEvidence.length) {
       if (unverifiedGitClaims < 2) {
@@ -3510,24 +3698,25 @@ export async function* runAgent(
         history.push({
           kind: "message",
           role: "user",
-          content: `<runtime_verification>你声称 Git/发布操作已经成功，但本次任务没有对应的成功工具结果。缺少证据：${missingGitEvidence.join(", ")}。不要重复成功结论；请实际调用工具执行操作，并在结束前用 git_status/git_log 以及 gh run list/gh run view 验证本地提交、远端推送和 Actions 运行。若无法执行，请明确报告未完成及原因。</runtime_verification>`,
+          content: `<runtime_verification>本次 Git/发布任务仍缺少成功工具结果：${missingGitEvidence.join(", ")}。不要总结为完成；请实际调用工具执行操作，并在结束前用 git_status/git_log 以及 gh run list/gh run view 验证本地提交、远端推送和 Actions 运行。若无法执行，请明确报告未完成及原因。</runtime_verification>`,
         });
         continue;
       }
-      yield {
-        type: "text",
-        delta: `未检测到可验证的 Git/发布工具结果，无法确认以下操作已经完成：${missingGitEvidence.join(", ")}。`,
-      };
       closeSubagentMessageQueue(requestId);
-      yield { type: "done" };
+      yield {
+        type: "error",
+        message: `Git/发布操作未完成：缺少 ${missingGitEvidence.join(", ")} 的成功执行记录。`,
+      };
       return;
     }
-    const claimedCodingOps = claimedCodingOperations(turn.text);
-    const codingEvidence = successfulCodingEvidence(history);
-    const missingCodingEvidence = [...claimedCodingOps].filter(
-      (operation) =>
-        requestedCodingOps.has(operation) && !codingEvidence.has(operation),
-    );
+    const codingEvidence = successfulCodingEvidence(evidenceHistory);
+    const verifiedNoChange =
+      hasVerifiedNoChangeEvidence(evidenceHistory) &&
+      claimsNoChangeNeeded(turn.text);
+    const missingCodingEvidence = missingRequestedCodingOperations(
+      requestedCodingOps,
+      codingEvidence,
+    ).filter((operation) => operation !== "modify" || !verifiedNoChange);
     if (!turn.calls.length && missingCodingEvidence.length) {
       if (unverifiedCodingClaims < 2) {
         unverifiedCodingClaims += 1;
@@ -3540,16 +3729,24 @@ export async function* runAgent(
         history.push({
           kind: "message",
           role: "user",
-          content: `<runtime_verification>你声称编码任务已经完成，但本次任务没有对应的成功工具结果。缺少证据：${missingCodingEvidence.join(", ")}。不要继续总结或假设文件已经改变；请立即使用工作区工具实际检查和修改，并用 diagnostics 或真实命令验证。若无法执行，请明确报告未完成及原因。</runtime_verification>`,
+          content: `<runtime_verification>本次编码任务仍缺少成功工具结果：${missingCodingEvidence.join(", ")}。不要继续总结或假设文件已经改变；请立即使用工作区工具实际检查和修改，并用 diagnostics 或真实命令验证。如果工具已经确认目标内容完全一致、确实无需修改，请明确写出“无需修改”，不要声称产生了改动。若无法执行，请明确报告未完成及原因。</runtime_verification>`,
         });
         continue;
       }
-      yield {
-        type: "text",
-        delta: `未检测到可验证的编码工具结果，无法确认以下操作已经完成：${missingCodingEvidence.join(", ")}。文件没有被 KCode 确认修改。`,
-      };
       closeSubagentMessageQueue(requestId);
-      yield { type: "done" };
+      const labels = {
+        inspect: "检查",
+        modify: "实际修改",
+        execute: "执行",
+        validate: "修改后验证",
+        connect: "建立远程连接",
+        upload: "上传文件",
+        download: "下载文件",
+      } as const;
+      yield {
+        type: "error",
+        message: `编码任务未完成：缺少 ${missingCodingEvidence.map((operation) => labels[operation]).join("、")} 的成功工具记录。`,
+      };
       return;
     }
     if (!turn.calls.length) {
@@ -3580,21 +3777,19 @@ export async function* runAgent(
         continue;
       }
     }
-    if (turn.text && (bufferModelText || !streamedText)) {
+    if (turn.text) {
       history.push({
         kind: "message",
         role: "assistant",
         content: turn.text,
         reasoningContent: turn.reasoningContent,
       });
-      yield { type: "text", delta: turn.text };
-    } else if (turn.text)
-      history.push({
-        kind: "message",
-        role: "assistant",
-        content: turn.text,
-        reasoningContent: turn.reasoningContent,
-      });
+      // A tool-call round is only an interim plan. Do not show completion
+      // wording before the tools have actually run; the verified final round
+      // will provide the user-facing conclusion.
+      if (!turn.calls.length && (bufferModelText || !streamedText))
+        yield { type: "text", delta: turn.text };
+    }
     if (!turn.calls.length) {
       // A round with no tool call normally means the model is done. But two
       // cases masquerade as "done" while the task is unfinished: (1) the
@@ -3626,6 +3821,11 @@ export async function* runAgent(
     // A productive round refreshes the auto-continue budget.
     autoContinues = 0;
     history.push({ kind: "calls", calls: turn.calls, rawCalls: turn.rawCalls });
+    evidenceHistory.push({
+      kind: "calls",
+      calls: turn.calls.map(compactEvidenceCall),
+      rawCalls: [],
+    });
     const roundFingerprints: string[] = [];
     let roundAdvanced = false;
     for (const call of turn.calls) {
@@ -3840,6 +4040,14 @@ export async function* runAgent(
         yield { type: "activity", activity };
       } else yield { type: "activity", activity };
       let finishMutationClaim: ((committed: boolean) => void) | undefined;
+      let resultEvidence: Pick<
+        ToolResult,
+        | "changed"
+        | "executed"
+        | "mutationAttempted"
+        | "operationEvidence"
+        | "browserOperationEvidence"
+      > = {};
       try {
         finishMutationClaim = claimSubagentMutation(
           requestId,
@@ -3876,6 +4084,13 @@ export async function* runAgent(
           subagentUsage: _subagentUsage,
           ...activityResult
         } = result;
+        resultEvidence = {
+          changed: result.changed,
+          executed: result.executed,
+          mutationAttempted: result.mutationAttempted,
+          operationEvidence: result.operationEvidence,
+          browserOperationEvidence: result.browserOperationEvidence,
+        };
         const cancelled =
           signal.aborted ||
           /命令已取消|操作已取消|任务已取消/i.test(result.output || "");
@@ -3883,7 +4098,11 @@ export async function* runAgent(
         const hardFailure =
           cancelled || (nonZero && isHardFailure(call, result.output));
         Object.assign(activity, activityResult, {
-          status: hardFailure ? "failed" : nonZero ? "completed" : "success",
+          status: hardFailure
+            ? "failed"
+            : nonZero || result.executed === false
+              ? "completed"
+              : "success",
           completedAt: Date.now(),
           errorSummary: cancelled
             ? "操作已停止"
@@ -3935,6 +4154,7 @@ export async function* runAgent(
       });
       roundFingerprints.push(fingerprint);
       const advanced =
+        resultEvidence.changed === true ||
         Boolean(activity.diff) ||
         Boolean(activity.additions) ||
         Boolean(activity.deletions);
@@ -3946,7 +4166,9 @@ export async function* runAgent(
         summary:
           activity.errorSummary ??
           (activity.status === "completed"
-            ? `${activity.title}已执行完成，退出码 ${activity.exitCode ?? "未知"}`
+            ? resultEvidence.executed === false
+              ? `${activity.title}未执行`
+              : `${activity.title}已执行完成，退出码 ${activity.exitCode ?? "未知"}`
             : `${activity.title}${activity.status === "success" ? "完成" : "未完成"}`),
         data: {
           output: activity.output,
@@ -3957,6 +4179,11 @@ export async function* runAgent(
           additions: activity.additions,
           deletions: activity.deletions,
           fileChanges: activity.fileChanges,
+          changed: resultEvidence.changed,
+          executed: resultEvidence.executed,
+          mutationAttempted: resultEvidence.mutationAttempted,
+          operationEvidence: resultEvidence.operationEvidence,
+          browserOperationEvidence: resultEvidence.browserOperationEvidence,
         },
         truncated: Boolean(
           activity.output && activity.output.length >= 100_000,
@@ -3970,10 +4197,34 @@ export async function* runAgent(
               }
             : undefined,
       };
+      updateActiveConnectionFacts(
+        activeConnectionFacts,
+        call,
+        structured.success,
+      );
       history.push({
         kind: "result",
         callId: call.id,
         content: JSON.stringify(structured),
+      });
+      evidenceHistory.push({
+        kind: "result",
+        callId: call.id,
+        content: JSON.stringify({
+          success: structured.success,
+          data: {
+            changed: structured.data.changed,
+            executed: structured.data.executed,
+            mutationAttempted: structured.data.mutationAttempted,
+            operationEvidence: structured.data.operationEvidence,
+            browserOperationEvidence: structured.data.browserOperationEvidence,
+            exitCode: structured.data.exitCode,
+            output:
+              call.name === "process_output"
+                ? String(structured.data.output ?? "").slice(0, 1_000)
+                : undefined,
+          },
+        }),
       });
     }
     const roundFingerprint = roundFingerprints.join("|");

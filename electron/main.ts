@@ -22,11 +22,13 @@ import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import type {
+  AgentEvent,
   ContextFile,
   ContextSummaryRequest,
   ModelRequest,
   ProviderConfig,
 } from "../src/types";
+import { RendererEventBatcher } from "./renderer-event-batcher";
 import {
   cancelContextSummary,
   discoverModels,
@@ -84,10 +86,7 @@ import {
 } from "./ipc-validation";
 import { initializeAppUpdater, scheduleUpdateChecks } from "./app-updater";
 import { createSkillStore, type ListedSkill } from "./skill-store";
-import {
-  clearAgentSkillCache,
-  configureAgentSkills,
-} from "./agent-skills";
+import { clearAgentSkillCache, configureAgentSkills } from "./agent-skills";
 import { networkFetch } from "./network";
 
 const controllers = new Map<string, AbortController>();
@@ -554,8 +553,7 @@ app.whenReady().then(() => {
     "workspace:show-folder-menu",
     async (event, workspacePath: string) => {
       const owner = BrowserWindow.fromWebContents(event.sender);
-      if (!owner || owner.isDestroyed())
-        throw new Error("无法确认工作区窗口");
+      if (!owner || owner.isDestroyed()) throw new Error("无法确认工作区窗口");
       const root = path.resolve(workspacePathSchema.parse(workspacePath));
       const info = await stat(root);
       if (!info.isDirectory()) throw new Error("工作区不是有效目录");
@@ -730,8 +728,12 @@ app.whenReady().then(() => {
     const controller = new AbortController();
     const startedAt = Date.now();
     controllers.set(id, controller);
+    const rendererEvents = new RendererEventBatcher((item: AgentEvent) => {
+      if (!event.sender.isDestroyed())
+        event.sender.send("chat:event", id, item);
+    });
     const removeSubagentEventSink = setSubagentEventSink(id, (item) =>
-      event.sender.send("chat:event", id, item),
+      rendererEvents.push(item),
     );
     const checkpointReady = writeCheckpoint(id, {
       id,
@@ -747,6 +749,7 @@ app.whenReady().then(() => {
       let checkpointStatus: "running" | "paused" | "done" = "running";
       let checkpointWrite = Promise.resolve();
       let lastCheckpointAt = 0;
+      let terminalEventSent = false;
       const queueCheckpoint = (force = false) => {
         const now = Date.now();
         if (!force && now - lastCheckpointAt < 5_000) return;
@@ -765,6 +768,8 @@ app.whenReady().then(() => {
       };
       try {
         for await (const item of runAgent(id, request, controller.signal)) {
+          if (item.type === "done" || item.type === "error")
+            terminalEventSent = true;
           events.push(item);
           if (events.length > 100) events.shift();
           checkpointStatus =
@@ -778,13 +783,29 @@ app.whenReady().then(() => {
               item.type === "error" ||
               item.type === "activity",
           );
-          event.sender.send("chat:event", id, item);
+          rendererEvents.push(item);
           if (item.type === "done") {
             await checkpointWrite;
             await removeCheckpoint(id);
             notifyTask("done");
           }
           if (item.type === "error") notifyTask("error", item.message);
+        }
+        if (!controller.signal.aborted && !terminalEventSent) {
+          const message =
+            "Agent 运行已意外结束，但没有返回完成或错误状态。任务已安全暂停，请重试。";
+          const item = { type: "error" as const, message };
+          events.push(item);
+          if (events.length > 100) events.shift();
+          checkpointStatus = "paused";
+          terminalEventSent = true;
+          queueCheckpoint(true);
+          rendererEvents.push(item);
+          notifyTask("error", message);
+          writeLog("error", "agent.missingTerminalEvent", {
+            id,
+            taskId: request.taskId,
+          });
         }
       } catch (error) {
         writeLog("error", "agent.request", {
@@ -795,18 +816,25 @@ app.whenReady().then(() => {
               ? { message: error.message, stack: error.stack }
               : String(error),
         });
-        if (!controller.signal.aborted) {
+        if (!controller.signal.aborted && !terminalEventSent) {
           const friendly = friendlyModelError(
             error instanceof Error ? error.message : String(error),
           );
-          event.sender.send("chat:event", id, {
+          const item = {
             type: "error",
             message: friendly,
-          });
+          } as const;
+          terminalEventSent = true;
+          checkpointStatus = "paused";
+          events.push(item);
+          if (events.length > 100) events.shift();
+          queueCheckpoint(true);
+          rendererEvents.push(item);
           notifyTask("error", friendly);
         }
       } finally {
         await stopSubagentsForParent(id, false);
+        rendererEvents.close();
         if (checkpointStatus !== "done") {
           checkpointStatus = "paused";
           queueCheckpoint(true);

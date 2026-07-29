@@ -15,6 +15,31 @@ test("falls back only for unavailable third-party Responses endpoints", () => {
   assert.equal(shouldFallbackResponses("https://api.openai.com", 502), false);
 });
 
+test("falls back for an explicit third-party Responses tool-history incompatibility", () => {
+  const error =
+    "The function_call_output in the thinking mode requires item_reference ids";
+  assert.equal(
+    shouldFallbackResponses("https://proxy.example/v1", 400, error),
+    true,
+  );
+  assert.equal(
+    shouldFallbackResponses("https://proxy.example/v1", 422, error),
+    true,
+  );
+  assert.equal(
+    shouldFallbackResponses(
+      "https://proxy.example/v1",
+      400,
+      "Invalid reasoning effort",
+    ),
+    false,
+  );
+  assert.equal(
+    shouldFallbackResponses("https://api.openai.com", 400, error),
+    false,
+  );
+});
+
 test("remembers a provider's Chat Completions fallback temporarily", () => {
   clearProtocolFallbacks();
   rememberChatFallback("proxy", 1_000);

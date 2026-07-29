@@ -28,9 +28,16 @@ export class AgentStreamAssembler {
     private onReasoning?: (delta: string) => void,
   ) {}
   consume(event: any) {
-    if (event.error?.message || event.type === "error")
+    if (
+      event.error?.message ||
+      event.type === "error" ||
+      event.type === "response.failed"
+    )
       throw new Error(
-        event.error?.message || event.message || "模型流式请求失败",
+        event.error?.message ||
+          event.response?.error?.message ||
+          event.message ||
+          "模型流式请求失败",
       );
     // Protocol-level completion markers. Without these, a quiet upstream
     // disconnect looks identical to a finished answer.

@@ -1,4 +1,4 @@
-import { memo, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { Virtuoso } from "react-virtuoso";
 import {
   Archive,
@@ -76,6 +76,13 @@ export const Sidebar = memo(function Sidebar({
   const [taskDropTarget, setTaskDropTarget] = useState<string>();
   const [draggedWorkspace, setDraggedWorkspace] = useState<string>();
   const [workspaceDropTarget, setWorkspaceDropTarget] = useState<string>();
+  const [scrolling, setScrolling] = useState(false);
+  const draggedTaskIdRef = useRef<string | undefined>(undefined);
+  const draggedWorkspaceRef = useRef<string | undefined>(undefined);
+  const pendingTaskDropTargetRef = useRef<string | undefined>(undefined);
+  const pendingWorkspaceDropTargetRef = useRef<string | undefined>(undefined);
+  const taskDropFrameRef = useRef<number | undefined>(undefined);
+  const workspaceDropFrameRef = useRef<number | undefined>(undefined);
   const rows = useMemo<SidebarRow[]>(() => {
     const next: SidebarRow[] = [];
     for (const group of workspaceGroups) {
@@ -87,14 +94,53 @@ export const Sidebar = memo(function Sidebar({
     return next;
   }, [collapsedWorkspaces, workspaceGroups]);
 
+  const scheduleTaskDropTarget = (taskId: string) => {
+    if (pendingTaskDropTargetRef.current === taskId) return;
+    pendingTaskDropTargetRef.current = taskId;
+    if (taskDropFrameRef.current !== undefined) return;
+    taskDropFrameRef.current = requestAnimationFrame(() => {
+      taskDropFrameRef.current = undefined;
+      setTaskDropTarget(pendingTaskDropTargetRef.current);
+    });
+  };
+  const scheduleWorkspaceDropTarget = (workspacePath: string) => {
+    if (pendingWorkspaceDropTargetRef.current === workspacePath) return;
+    pendingWorkspaceDropTargetRef.current = workspacePath;
+    if (workspaceDropFrameRef.current !== undefined) return;
+    workspaceDropFrameRef.current = requestAnimationFrame(() => {
+      workspaceDropFrameRef.current = undefined;
+      setWorkspaceDropTarget(pendingWorkspaceDropTargetRef.current);
+    });
+  };
   const finishTaskDrag = () => {
+    draggedTaskIdRef.current = undefined;
+    pendingTaskDropTargetRef.current = undefined;
+    if (taskDropFrameRef.current !== undefined) {
+      cancelAnimationFrame(taskDropFrameRef.current);
+      taskDropFrameRef.current = undefined;
+    }
     setDraggedTaskId(undefined);
     setTaskDropTarget(undefined);
   };
   const finishWorkspaceDrag = () => {
+    draggedWorkspaceRef.current = undefined;
+    pendingWorkspaceDropTargetRef.current = undefined;
+    if (workspaceDropFrameRef.current !== undefined) {
+      cancelAnimationFrame(workspaceDropFrameRef.current);
+      workspaceDropFrameRef.current = undefined;
+    }
     setDraggedWorkspace(undefined);
     setWorkspaceDropTarget(undefined);
   };
+  useEffect(
+    () => () => {
+      if (taskDropFrameRef.current !== undefined)
+        cancelAnimationFrame(taskDropFrameRef.current);
+      if (workspaceDropFrameRef.current !== undefined)
+        cancelAnimationFrame(workspaceDropFrameRef.current);
+    },
+    [],
+  );
 
   return (
     <aside className="sidebar">
@@ -130,10 +176,11 @@ export const Sidebar = memo(function Sidebar({
         </button>
       </div>
       <Virtuoso
-        className="workspace-tree"
+        className={`workspace-tree ${scrolling ? "scrolling" : ""}`}
         data={rows}
         fixedItemHeight={34}
         increaseViewportBy={170}
+        isScrolling={setScrolling}
         components={virtuosoComponents}
         computeItemKey={(_, row) =>
           row.kind === "workspace"
@@ -146,6 +193,7 @@ export const Sidebar = memo(function Sidebar({
               className={`workspace-flat-row ${draggedWorkspace === row.group.workspacePath ? "dragging" : ""} ${workspaceDropTarget === row.group.workspacePath && draggedWorkspace !== row.group.workspacePath ? "drop-target" : ""}`}
               draggable
               onDragStart={(event) => {
+                draggedWorkspaceRef.current = row.group.workspacePath;
                 setDraggedWorkspace(row.group.workspacePath);
                 event.dataTransfer.effectAllowed = "move";
                 event.dataTransfer.setData(
@@ -154,14 +202,15 @@ export const Sidebar = memo(function Sidebar({
                 );
               }}
               onDragOver={(event) => {
-                if (!draggedWorkspace) return;
+                if (!draggedWorkspaceRef.current) return;
                 event.preventDefault();
-                setWorkspaceDropTarget(row.group.workspacePath);
+                scheduleWorkspaceDropTarget(row.group.workspacePath);
               }}
               onDrop={(event) => {
-                if (!draggedWorkspace) return;
+                const sourcePath = draggedWorkspaceRef.current;
+                if (!sourcePath) return;
                 event.preventDefault();
-                reorderWorkspace(draggedWorkspace, row.group.workspacePath);
+                reorderWorkspace(sourcePath, row.group.workspacePath);
                 finishWorkspaceDrag();
               }}
               onDragEnd={finishWorkspaceDrag}
@@ -254,20 +303,21 @@ export const Sidebar = memo(function Sidebar({
               }}
               onDragStart={(event) => {
                 event.stopPropagation();
+                draggedTaskIdRef.current = row.task.id;
                 setDraggedTaskId(row.task.id);
                 event.dataTransfer.effectAllowed = "move";
                 event.dataTransfer.setData("text/plain", row.task.id);
               }}
               onDragOver={(event) => {
-                if (!draggedTaskId) return;
+                if (!draggedTaskIdRef.current) return;
                 event.preventDefault();
                 event.stopPropagation();
-                setTaskDropTarget(row.task.id);
+                scheduleTaskDropTarget(row.task.id);
               }}
               onDrop={(event) => {
                 event.preventDefault();
                 event.stopPropagation();
-                reorderTask(draggedTaskId, row.task.id);
+                reorderTask(draggedTaskIdRef.current, row.task.id);
                 finishTaskDrag();
               }}
               onDragEnd={finishTaskDrag}
@@ -324,58 +374,4 @@ export const Sidebar = memo(function Sidebar({
       />
     </aside>
   );
-}, sidebarPropsEqual);
-
-function sidebarPropsEqual(previous: SidebarProps, next: SidebarProps) {
-  if (previous === next) return true;
-  if (
-    previous.workspaceGroups === next.workspaceGroups &&
-    previous.collapsedWorkspaces === next.collapsedWorkspaces &&
-    previous.activeTaskId === next.activeTaskId &&
-    previous.taskQuery === next.taskQuery &&
-    previous.showArchived === next.showArchived
-  )
-    return true;
-  if (
-    previous.activeTaskId !== next.activeTaskId ||
-    previous.taskQuery !== next.taskQuery ||
-    previous.showArchived !== next.showArchived ||
-    previous.workspaceGroups.length !== next.workspaceGroups.length ||
-    previous.collapsedWorkspaces.size !== next.collapsedWorkspaces.size
-  )
-    return false;
-  for (const path of previous.collapsedWorkspaces)
-    if (!next.collapsedWorkspaces.has(path)) return false;
-  for (
-    let groupIndex = 0;
-    groupIndex < previous.workspaceGroups.length;
-    groupIndex += 1
-  ) {
-    const before = previous.workspaceGroups[groupIndex];
-    const after = next.workspaceGroups[groupIndex];
-    if (before === after) continue;
-    if (
-      before.workspacePath !== after.workspacePath ||
-      before.name !== after.name ||
-      before.conversations.length !== after.conversations.length
-    )
-      return false;
-    for (
-      let taskIndex = 0;
-      taskIndex < before.conversations.length;
-      taskIndex += 1
-    ) {
-      const left = before.conversations[taskIndex];
-      const right = after.conversations[taskIndex];
-      if (
-        left.id !== right.id ||
-        left.name !== right.name ||
-        left.archived !== right.archived ||
-        left.runningId !== right.runningId ||
-        left.runStatus !== right.runStatus
-      )
-        return false;
-    }
-  }
-  return true;
-}
+});

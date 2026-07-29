@@ -2,19 +2,22 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   claimedGitOperations,
+  missingRequestedGitOperations,
   requestedGitOperations,
   successfulGitEvidence,
 } from "./git-operation-verification";
 
 test("detects requested and claimed Git release operations", () => {
   assert.deepEqual(
-    [...requestedGitOperations([
-      {
-        kind: "message",
-        role: "user",
-        content: "提交到 GitHub 并触发打包",
-      },
-    ])],
+    [
+      ...requestedGitOperations([
+        {
+          kind: "message",
+          role: "user",
+          content: "提交到 GitHub 并触发打包",
+        },
+      ]),
+    ],
     ["commit", "push", "release"],
   );
   assert.deepEqual(
@@ -50,29 +53,74 @@ test("requires successful tool results as Git evidence", () => {
     { kind: "result", callId: "push", content: '{"success":false}' },
     { kind: "result", callId: "release", content: '{"success":true}' },
   ]);
-  assert.deepEqual([...evidence], ["commit", "release"]);
+  assert.deepEqual([...evidence], ["commit"]);
+  assert.deepEqual(
+    [
+      ...successfulGitEvidence([
+        calls,
+        { kind: "result", callId: "commit", content: '{"success":true}' },
+        { kind: "result", callId: "push", content: '{"success":true}' },
+        { kind: "result", callId: "release", content: '{"success":true}' },
+      ]),
+    ],
+    ["commit", "push", "release"],
+  );
 });
 
 test("model text and legacy results never count as execution evidence", () => {
   assert.deepEqual(
-    [...successfulGitEvidence([
-      {
-        kind: "message",
-        role: "assistant",
-        content: "已提交 571a852 并触发打包",
-      },
-      {
-        kind: "calls",
-        calls: [
-          {
-            id: "push",
-            name: "run_command",
-            input: { command: "git push" },
-          },
-        ],
-      },
-      { kind: "result", callId: "push", content: "命令执行成功" },
-    ])],
+    [
+      ...successfulGitEvidence([
+        {
+          kind: "message",
+          role: "assistant",
+          content: "已提交 571a852 并触发打包",
+        },
+        {
+          kind: "calls",
+          calls: [
+            {
+              id: "push",
+              name: "run_command",
+              input: { command: "git push" },
+            },
+          ],
+        },
+        { kind: "result", callId: "push", content: "命令执行成功" },
+      ]),
+    ],
     [],
+  );
+});
+
+test("inherits an actionable Git request but ignores status questions", () => {
+  assert.deepEqual(
+    [
+      ...requestedGitOperations([
+        {
+          kind: "message",
+          role: "user",
+          content: "提交到 GitHub 并触发打包",
+        },
+        { kind: "message", role: "assistant", content: "可以开始。" },
+        { kind: "message", role: "user", content: "开始吧" },
+      ]),
+    ],
+    ["commit", "push", "release"],
+  );
+  assert.deepEqual(
+    [
+      ...requestedGitOperations([
+        { kind: "message", role: "user", content: "已经提交到 GitHub 了吗？" },
+      ]),
+    ],
+    [],
+  );
+  assert.deepEqual(
+    missingRequestedGitOperations(
+      new Set(["commit", "push", "release"]),
+      new Set(["commit"]),
+    ),
+    ["push", "release"],
   );
 });

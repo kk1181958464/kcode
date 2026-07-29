@@ -96,7 +96,9 @@ export async function fetchWithRetry(
         onProgress?.(
           `上游返回 ${response.status}，将在 ${Math.max(1, Math.ceil(delay / 1_000))} 秒后重试…`,
         );
-        await response.body?.cancel().catch(() => undefined);
+        // A few proxy-backed Electron streams never settle cancel(). Retrying
+        // must not depend on that transport cleanup Promise resolving.
+        void response.body?.cancel().catch(() => undefined);
         await wait(delay, signal);
         continue;
       }

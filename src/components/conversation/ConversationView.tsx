@@ -36,9 +36,50 @@ import { DiffView } from "../common/DiffView";
 import { LinkifiedText } from "../common/LinkifiedText";
 import {
   getStreamingText,
+  getStreamingTextTail,
+  streamingProgressKey,
   streamingReasoningKey,
   subscribeStreamingText,
 } from "../../streaming-text-store";
+
+const ACTIVITY_INITIAL_RENDER_LIMIT = 32;
+const ACTIVITY_RENDER_PAGE_SIZE = 48;
+const FILE_INITIAL_RENDER_LIMIT = 8;
+const FILE_RENDER_PAGE_SIZE = 16;
+const ACTIVITY_DETAIL_RENDER_LIMIT = 24_000;
+const ACTIVITY_DETAIL_HEAD_CHARS = 4_000;
+const STREAMING_DOM_CHAR_LIMIT = 96_000;
+const STREAMING_DOM_TRIM_TARGET = 80_000;
+
+function renderedActivityDetail(detail: string) {
+  if (detail.length <= ACTIVITY_DETAIL_RENDER_LIMIT)
+    return { text: detail, omitted: 0 };
+  const tailLength = ACTIVITY_DETAIL_RENDER_LIMIT - ACTIVITY_DETAIL_HEAD_CHARS;
+  const omitted = detail.length - ACTIVITY_DETAIL_RENDER_LIMIT;
+  return {
+    text: `${detail.slice(0, ACTIVITY_DETAIL_HEAD_CHARS)}\n\n... 已省略中间 ${omitted.toLocaleString()} 个字符 ...\n\n${detail.slice(-tailLength)}`,
+    omitted,
+  };
+}
+
+const BoundedDiffView = memo(function BoundedDiffView({
+  text,
+}: {
+  text: string;
+}) {
+  const rendered = useMemo(() => renderedActivityDetail(text), [text]);
+  return (
+    <>
+      {rendered.omitted > 0 && (
+        <div className="activity-output-truncated">
+          差异过大，页面仅渲染首尾内容，中间已省略{" "}
+          {rendered.omitted.toLocaleString()} 个字符。
+        </div>
+      )}
+      <DiffView text={rendered.text} />
+    </>
+  );
+});
 
 function MessageItem({
   message,
@@ -208,13 +249,18 @@ function ActivityItem({
   );
   const pending = activity.status === "waiting";
   const detail = activity.diff || activity.output;
-  const readableFailure =
+  const rawReadableFailure =
     activity.errorSummary ||
     (activity.output && !/[\uFFFD]{1,}|[□�]{1,}/.test(activity.output)
       ? activity.output
       : activity.tool === "run_command"
         ? "命令执行失败，请查看详细输出。"
         : "工具执行失败，请查看详细输出。");
+  const readableFailure =
+    rawReadableFailure.length > 2_000
+      ? `... ${rawReadableFailure.slice(-2_000)}`
+      : rawReadableFailure;
+  const renderedDetail = detail ? renderedActivityDetail(detail) : undefined;
   useEffect(() => {
     if (activity.status === "failed") setExpanded(true);
     // Keep long-running commands expanded so heartbeats/live output stay visible.
@@ -407,12 +453,19 @@ function ActivityItem({
               </button>
             </div>
           )}
-          {detail &&
+          {renderedDetail?.omitted ? (
+            <div className="activity-output-truncated">
+              页面仅渲染首尾内容，中间已省略{" "}
+              {renderedDetail.omitted.toLocaleString()}{" "}
+              个字符；复制按钮仍会复制完整输出。
+            </div>
+          ) : null}
+          {renderedDetail &&
             (activity.diff ? (
-              <DiffView text={detail} />
+              <DiffView text={renderedDetail.text} />
             ) : (
               <pre>
-                <LinkifiedText text={detail} />
+                <LinkifiedText text={renderedDetail.text} />
               </pre>
             ))}
         </div>
@@ -507,6 +560,9 @@ const ExecutionSummary = memo(
     onActivityChange(activity: AgentActivity): void;
   }) {
     const [expanded, setExpanded] = useState(false);
+    const [visibleActivityCount, setVisibleActivityCount] = useState(
+      ACTIVITY_INITIAL_RENDER_LIMIT,
+    );
     // Recomputing these six passes on every streaming flush is wasted work; the
     // result only changes when the activity set changes.
     const { summary, waiting } = useMemo(() => {
@@ -551,7 +607,15 @@ const ExecutionSummary = memo(
     useEffect(() => {
       if (waiting) setExpanded(true);
     }, [waiting]);
+    useEffect(() => {
+      if (!expanded) setVisibleActivityCount(ACTIVITY_INITIAL_RENDER_LIMIT);
+    }, [expanded]);
     if (!activities.length) return null;
+    const hiddenActivityCount = Math.max(
+      0,
+      activities.length - visibleActivityCount,
+    );
+    const visibleActivities = activities.slice(hiddenActivityCount);
     return (
       <section className="execution-summary">
         <button
@@ -567,7 +631,26 @@ const ExecutionSummary = memo(
         </button>
         {expanded && (
           <div className="execution-summary-detail">
-            {activities.map((activity) => (
+            {hiddenActivityCount > 0 && (
+              <button
+                type="button"
+                className="execution-history-more"
+                onClick={() =>
+                  setVisibleActivityCount((count) =>
+                    Math.min(
+                      activities.length,
+                      count + ACTIVITY_RENDER_PAGE_SIZE,
+                    ),
+                  )
+                }
+              >
+                显示更早的{" "}
+                {Math.min(ACTIVITY_RENDER_PAGE_SIZE, hiddenActivityCount)}{" "}
+                个步骤
+                <small>还有 {hiddenActivityCount} 个未渲染</small>
+              </button>
+            )}
+            {visibleActivities.map((activity) => (
               <ActivityItem
                 key={activity.id}
                 activity={activity}
@@ -602,12 +685,14 @@ function AgentWorkingState({
   hasTrailingText,
   reasoning,
   reasoningNode,
+  progressNode,
 }: {
   activities: AgentActivity[];
   startedAt: number;
   hasTrailingText: boolean;
   reasoning?: string;
   reasoningNode?: React.ReactNode;
+  progressNode?: React.ReactNode;
 }) {
   const [elapsedMs, setElapsedMs] = useState(() => Date.now() - startedAt);
   useEffect(() => {
@@ -655,10 +740,15 @@ function AgentWorkingState({
       <div className="agent-working-track">
         <i />
       </div>
-      {(reasoning || reasoningNode) && !active && (
-        <div className="agent-working-reasoning" aria-live="polite">
+      {(reasoning || reasoningNode || progressNode) && !active && (
+        <div
+          className="agent-working-reasoning"
+          aria-live="polite"
+          data-has-static={reasoning ? "true" : "false"}
+        >
           {reasoning}
           {reasoningNode}
+          {progressNode}
         </div>
       )}
       {recent.length > 0 && (
@@ -698,6 +788,7 @@ const AssistantTimeline = memo(function AssistantTimeline({
   reasoning,
   streamingTail,
   streamingReasoning,
+  streamingProgress,
 }: {
   message: ChatMessage;
   activities: AgentActivity[];
@@ -708,6 +799,7 @@ const AssistantTimeline = memo(function AssistantTimeline({
   reasoning?: string;
   streamingTail?: React.ReactNode;
   streamingReasoning?: React.ReactNode;
+  streamingProgress?: React.ReactNode;
 }) {
   const renderText = (text: string) =>
     text ? (
@@ -741,6 +833,7 @@ const AssistantTimeline = memo(function AssistantTimeline({
             hasTrailingText={Boolean(message.content)}
             reasoning={reasoning}
             reasoningNode={streamingReasoning}
+            progressNode={streamingProgress}
           />
         )}
       </>
@@ -775,6 +868,7 @@ const AssistantTimeline = memo(function AssistantTimeline({
           hasTrailingText={hasTrailingText}
           reasoning={reasoning}
           reasoningNode={streamingReasoning}
+          progressNode={streamingProgress}
         />
       )}
     </div>
@@ -789,24 +883,72 @@ const StreamingTextLeaf = memo(function StreamingTextLeaf({
   offset: number;
 }) {
   const nodeRef = React.useRef<HTMLDivElement>(null);
-  const renderedLengthRef = React.useRef(0);
+  const tailNodeRef = React.useRef<Text | null>(null);
+  const renderedCharsRef = React.useRef(0);
   useLayoutEffect(() => {
-    const update = () => {
+    const replaceText = (value: string) => {
       const node = nodeRef.current;
       if (!node) return;
-      const next = getStreamingText(requestId).slice(offset);
-      const renderedLength = renderedLengthRef.current;
-      if (next.length < renderedLength) {
-        node.textContent = next;
-      } else if (next.length > renderedLength) {
-        node.append(document.createTextNode(next.slice(renderedLength)));
-      }
-      renderedLengthRef.current = next.length;
+      const visible =
+        value.length > STREAMING_DOM_CHAR_LIMIT
+          ? value.slice(-STREAMING_DOM_TRIM_TARGET)
+          : value;
+      node.textContent = visible;
+      renderedCharsRef.current = visible.length;
+      if (visible.length < value.length) node.dataset.truncated = "true";
+      else delete node.dataset.truncated;
+      // Never append into an arbitrarily large initial node. Subsequent live
+      // output starts in a bounded tail node so shaping/layout stays local.
+      tailNodeRef.current = null;
     };
-    renderedLengthRef.current = 0;
-    if (nodeRef.current) nodeRef.current.textContent = "";
-    update();
-    return subscribeStreamingText(requestId, update);
+    const trimRenderedText = () => {
+      const node = nodeRef.current;
+      if (!node || renderedCharsRef.current <= STREAMING_DOM_CHAR_LIMIT) return;
+      let removeCount = renderedCharsRef.current - STREAMING_DOM_TRIM_TARGET;
+      while (removeCount > 0 && node.firstChild) {
+        const first = node.firstChild;
+        if (!(first instanceof Text)) {
+          first.remove();
+          continue;
+        }
+        if (first.data.length <= removeCount) {
+          removeCount -= first.data.length;
+          renderedCharsRef.current -= first.data.length;
+          if (first === tailNodeRef.current) tailNodeRef.current = null;
+          first.remove();
+        } else {
+          first.deleteData(0, removeCount);
+          renderedCharsRef.current -= removeCount;
+          removeCount = 0;
+        }
+      }
+      node.dataset.truncated = "true";
+    };
+    const appendText = (delta: string) => {
+      const node = nodeRef.current;
+      if (!node || !delta) return;
+      let tail = tailNodeRef.current;
+      if (!tail || !tail.isConnected || tail.data.length >= 512) {
+        tail = document.createTextNode("");
+        node.append(tail);
+        tailNodeRef.current = tail;
+      }
+      tail.appendData(delta);
+      renderedCharsRef.current += delta.length;
+      trimRenderedText();
+    };
+    const snapshot = getStreamingTextTail(requestId, STREAMING_DOM_CHAR_LIMIT);
+    const snapshotStart = Math.max(
+      0,
+      snapshot.totalLength - snapshot.text.length,
+    );
+    const initial = snapshot.text.slice(Math.max(0, offset - snapshotStart));
+    replaceText(initial);
+    return subscribeStreamingText(requestId, (change) => {
+      if (change.type === "reset") replaceText("");
+      else if (change.type === "replace") replaceText(change.value);
+      else appendText(change.delta);
+    });
   }, [offset, requestId]);
   return <div ref={nodeRef} className="streaming-message-text" />;
 });
@@ -817,27 +959,78 @@ const StreamingReasoningLeaf = memo(function StreamingReasoningLeaf({
   requestId: string;
 }) {
   const nodeRef = React.useRef<HTMLSpanElement>(null);
-  const renderedLengthRef = React.useRef(0);
+  const textNodeRef = React.useRef<Text | null>(null);
   useLayoutEffect(() => {
     const key = streamingReasoningKey(requestId);
-    const update = () => {
+    const ensureTextNode = () => {
       const node = nodeRef.current;
-      if (!node) return;
-      const next = getStreamingText(key);
-      const renderedLength = renderedLengthRef.current;
-      if (next.length < renderedLength) {
-        node.textContent = next;
-      } else if (next.length > renderedLength) {
-        node.append(document.createTextNode(next.slice(renderedLength)));
+      if (!node) return undefined;
+      if (!textNodeRef.current) {
+        textNodeRef.current = document.createTextNode("");
+        node.replaceChildren(textNodeRef.current);
       }
-      renderedLengthRef.current = next.length;
+      return textNodeRef.current;
     };
-    renderedLengthRef.current = 0;
-    if (nodeRef.current) nodeRef.current.textContent = "";
-    update();
-    return subscribeStreamingText(key, update);
+    const textNode = ensureTextNode();
+    const initial = getStreamingText(key);
+    if (textNode) textNode.data = initial;
+    if (nodeRef.current) nodeRef.current.hidden = !initial;
+    return subscribeStreamingText(key, (change) => {
+      const target = ensureTextNode();
+      if (!target) return;
+      if (change.type === "reset") {
+        target.data = "";
+        if (nodeRef.current) nodeRef.current.hidden = true;
+      } else if (change.type === "replace") {
+        target.data = change.value;
+        if (nodeRef.current) nodeRef.current.hidden = !change.value;
+      } else {
+        target.appendData(change.delta);
+        if (nodeRef.current && change.delta) nodeRef.current.hidden = false;
+      }
+    });
   }, [requestId]);
-  return <span ref={nodeRef} />;
+  return <span ref={nodeRef} className="streaming-status-leaf" hidden />;
+});
+
+const StreamingProgressLeaf = memo(function StreamingProgressLeaf({
+  requestId,
+}: {
+  requestId: string;
+}) {
+  const nodeRef = React.useRef<HTMLSpanElement>(null);
+  const textNodeRef = React.useRef<Text | null>(null);
+  useLayoutEffect(() => {
+    const key = streamingProgressKey(requestId);
+    const ensureTextNode = () => {
+      const node = nodeRef.current;
+      if (!node) return undefined;
+      if (!textNodeRef.current) {
+        textNodeRef.current = document.createTextNode("");
+        node.replaceChildren(textNodeRef.current);
+      }
+      return textNodeRef.current;
+    };
+    const textNode = ensureTextNode();
+    const initial = getStreamingText(key);
+    if (textNode) textNode.data = initial;
+    if (nodeRef.current) nodeRef.current.hidden = !initial;
+    return subscribeStreamingText(key, (change) => {
+      const target = ensureTextNode();
+      if (!target) return;
+      if (change.type === "reset") {
+        target.data = "";
+        if (nodeRef.current) nodeRef.current.hidden = true;
+      } else if (change.type === "replace") {
+        target.data = change.value;
+        if (nodeRef.current) nodeRef.current.hidden = !change.value;
+      } else {
+        target.appendData(change.delta);
+        if (nodeRef.current && change.delta) nodeRef.current.hidden = false;
+      }
+    });
+  }, [requestId]);
+  return <span ref={nodeRef} className="streaming-status-leaf" hidden />;
 });
 
 const StreamingAssistantTimeline = memo(function StreamingAssistantTimeline({
@@ -860,19 +1053,51 @@ const StreamingAssistantTimeline = memo(function StreamingAssistantTimeline({
   // Capture the already-streamed prefix only when React has another structural
   // reason to render (tool activity, request state). New text is written into a
   // dedicated leaf node so streaming never schedules React work for the timeline.
-  const streamedPrefix = running ? getStreamingText(requestId) : "";
+  const streamedSnapshot = running
+    ? getStreamingTextTail(requestId, STREAMING_DOM_CHAR_LIMIT)
+    : { text: "", totalLength: 0 };
+  const fullStreamingLength =
+    message.content.length + streamedSnapshot.totalLength;
+  const omittedStreamingChars = Math.max(
+    0,
+    fullStreamingLength - STREAMING_DOM_CHAR_LIMIT,
+  );
+  const streamingFoldMarker = omittedStreamingChars
+    ? `[较早的 ${omittedStreamingChars.toLocaleString()} 个流式字符已暂时折叠，任务完成后会恢复完整内容]\n\n`
+    : "";
+  const visibleStreamingContent = (
+    message.content + streamedSnapshot.text
+  ).slice(-STREAMING_DOM_CHAR_LIMIT);
+  const foldedStreamingContent = omittedStreamingChars
+    ? streamingFoldMarker + visibleStreamingContent
+    : visibleStreamingContent;
   const displayMessage = useMemo(
     () =>
-      running && streamedPrefix
-        ? { ...message, content: message.content + streamedPrefix }
+      running && streamedSnapshot.totalLength
+        ? { ...message, content: foldedStreamingContent }
         : message,
-    [message, running, streamedPrefix],
+    [foldedStreamingContent, message, running, streamedSnapshot.totalLength],
   );
+  const displayActivities = useMemo(() => {
+    if (!omittedStreamingChars) return activities;
+    return activities.map((activity) => ({
+      ...activity,
+      contentOffset:
+        activity.contentOffset === undefined
+          ? undefined
+          : Math.max(
+              streamingFoldMarker.length,
+              activity.contentOffset -
+                omittedStreamingChars +
+                streamingFoldMarker.length,
+            ),
+    }));
+  }, [activities, omittedStreamingChars, streamingFoldMarker.length]);
 
   return (
     <AssistantTimeline
       message={displayMessage}
-      activities={activities}
+      activities={displayActivities}
       running={running}
       requestId={running ? requestId : undefined}
       workspacePath={workspacePath}
@@ -881,11 +1106,14 @@ const StreamingAssistantTimeline = memo(function StreamingAssistantTimeline({
       streamingReasoning={
         running ? <StreamingReasoningLeaf requestId={requestId} /> : undefined
       }
+      streamingProgress={
+        running ? <StreamingProgressLeaf requestId={requestId} /> : undefined
+      }
       streamingTail={
         running ? (
           <StreamingTextLeaf
             requestId={requestId}
-            offset={streamedPrefix.length}
+            offset={streamedSnapshot.totalLength}
           />
         ) : undefined
       }
@@ -899,6 +1127,9 @@ const FileChangesSummary = memo(function FileChangesSummary({
   activities: AgentActivity[];
 }) {
   const [expandedFile, setExpandedFile] = useState<string>();
+  const [visibleFileCount, setVisibleFileCount] = useState(
+    FILE_INITIAL_RENDER_LIMIT,
+  );
   const changed = activities.filter(
     (activity) =>
       fileTools.includes(activity.tool) &&
@@ -931,6 +1162,9 @@ const FileChangesSummary = memo(function FileChangesSummary({
     (sum, item) => sum + item.deletions,
     0,
   );
+  const fileEntries = [...grouped.entries()];
+  const visibleFileEntries = fileEntries.slice(0, visibleFileCount);
+  const hiddenFileCount = Math.max(0, fileEntries.length - visibleFileCount);
   return (
     <section className="file-changes-summary">
       <header>
@@ -945,7 +1179,7 @@ const FileChangesSummary = memo(function FileChangesSummary({
         </span>
       </header>
       <div>
-        {[...grouped.entries()].map(([file, stats]) => {
+        {visibleFileEntries.map(([file, stats]) => {
           const open = expandedFile === file;
           const hasDiff = stats.diffs.length > 0;
           return (
@@ -970,10 +1204,26 @@ const FileChangesSummary = memo(function FileChangesSummary({
                   <b>+{stats.additions}</b> <i>-{stats.deletions}</i>
                 </small>
               </button>
-              {open && hasDiff && <DiffView text={stats.diffs.join("\n\n")} />}
+              {open && hasDiff && (
+                <BoundedDiffView text={stats.diffs.join("\n\n")} />
+              )}
             </div>
           );
         })}
+        {hiddenFileCount > 0 && (
+          <button
+            type="button"
+            className="file-history-more"
+            onClick={() =>
+              setVisibleFileCount((count) =>
+                Math.min(fileEntries.length, count + FILE_RENDER_PAGE_SIZE),
+              )
+            }
+          >
+            再显示 {Math.min(FILE_RENDER_PAGE_SIZE, hiddenFileCount)} 个文件
+            <small>还有 {hiddenFileCount} 个</small>
+          </button>
+        )}
       </div>
     </section>
   );
@@ -1012,7 +1262,7 @@ const ConversationMessage = memo(
     );
     return (
       <div
-        className="conversation-turn-item"
+        className={`conversation-turn-item ${running ? "running" : "complete"}`}
         ref={message.role === "user" ? turnRef : undefined}
       >
         <MessageItem

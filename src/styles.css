@@ -394,6 +394,16 @@ select:focus-visible {
   min-height: 34px;
   box-sizing: border-box;
   overflow: hidden;
+  contain: layout paint style;
+}
+.workspace-tree button:not(:disabled),
+.workspace-tree button:not(:disabled):active {
+  transition: none;
+  transform: none;
+}
+.workspace-tree.scrolling .workspace-flat-row,
+.workspace-tree.scrolling .task-flat-row {
+  pointer-events: none;
 }
 .workspace-flat-row {
   padding-right: 4px;
@@ -755,12 +765,13 @@ select:focus-visible {
   white-space: nowrap;
   font-size: 10px;
 }
-.tasks small.task-running::before {
+.task-running::before {
   content: "";
   display: inline-block;
-  width: 5px;
-  height: 5px;
-  margin-right: 4px;
+  width: 6px;
+  height: 6px;
+  flex: 0 0 6px;
+  margin-right: 5px;
   border-radius: 50%;
   animation: pulse 1.2s ease-in-out infinite;
 }
@@ -1195,6 +1206,11 @@ select:focus-visible {
 .conversation-turn-item {
   contain: layout style;
 }
+.conversation-turn-item.complete {
+  content-visibility: auto;
+  contain: layout style paint;
+  contain-intrinsic-size: auto 440px;
+}
 .agent-activity {
   margin: -14px 0 22px 41px;
   border: 1px solid #d9ddd7;
@@ -1268,8 +1284,38 @@ select:focus-visible {
 .execution-summary-detail .agent-activity:last-child {
   border-bottom: 0;
 }
+.execution-history-more,
+.file-history-more {
+  width: 100%;
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-muted);
+  color: var(--muted);
+  font-size: 11px;
+  text-align: left;
+}
+.execution-history-more:hover,
+.file-history-more:hover {
+  background: var(--surface-hover);
+  color: var(--ink);
+}
+.execution-history-more small,
+.file-history-more small {
+  flex: 0 0 auto;
+  font-size: 10px;
+}
 .assistant-timeline {
   min-width: 0;
+}
+.assistant-timeline-group {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 96px;
 }
 .assistant-timeline-group > :first-child {
   margin-top: 0;
@@ -1362,6 +1408,10 @@ select:focus-visible {
 .changed-file-block .diff-view {
   border-top: 1px solid #eef0ec;
   border-radius: 0;
+}
+.file-history-more {
+  border-top: 1px solid var(--line);
+  border-bottom: 0;
 }
 .changed-file-row > span {
   min-width: 0;
@@ -1643,6 +1693,20 @@ select:focus-visible {
     Consolas,
     monospace;
 }
+.activity-output-truncated {
+  margin: 8px 10px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--surface-muted);
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+.agent-activity:not(.running):not(.waiting) {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 48px;
+}
 .activity-diff {
   background: #fbfcfa !important;
 }
@@ -1812,6 +1876,18 @@ select:focus-visible {
   font: inherit;
   line-height: 1.65;
 }
+.streaming-message-text[data-truncated="true"]::before {
+  content: "较早的流式内容已暂时折叠，任务完成后会恢复完整内容";
+  display: block;
+  margin-bottom: 10px;
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--surface-muted);
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
 .message.user .message-body {
   white-space: pre-wrap;
 }
@@ -1972,6 +2048,19 @@ select:focus-visible {
 }
 .message-body > :last-child {
   margin-bottom: 0;
+}
+.markdown-block {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 72px;
+}
+.markdown-block > :first-child {
+  margin-top: 0;
+}
+.markdown-block > :last-child {
+  margin-bottom: 0;
+}
+.markdown-block + .markdown-block {
+  margin-top: 11px;
 }
 .message-body p {
   margin: 0 0 11px;
@@ -5249,12 +5338,22 @@ select:focus-visible {
   border-left-color: var(--accent);
 }
 
-.tasks small.task-running {
+.task-running {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
   color: var(--accent);
 }
 
-.tasks small.task-running::before {
+.task-running::before {
   background: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.agent-working-reasoning:not([data-has-static="true"]):not(
+    :has(.streaming-status-leaf:not([hidden]))
+  ) {
+  display: none;
 }
 
 .sidebar-footer {
@@ -5594,6 +5693,10 @@ select:focus-visible {
   border-radius: var(--radius-lg) var(--radius-lg) 0 0;
   background: transparent;
   color: var(--ink);
+  /* The global control transition is useful for buttons, but makes every IME
+     style invalidation involve animation bookkeeping inside the editor. */
+  transition: none;
+  text-rendering: auto;
 }
 
 .composer-bar {

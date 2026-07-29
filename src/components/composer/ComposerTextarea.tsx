@@ -15,6 +15,7 @@ type ComposerTextareaProps = {
   value: string;
   disabled: boolean;
   placeholder: string;
+  onInputActivity(): void;
   onBlur(value: string): void;
   onPaste(event: React.ClipboardEvent<HTMLTextAreaElement>): void;
   onSubmit(): void;
@@ -31,6 +32,7 @@ export const ComposerTextarea = memo(
         value: initialValue,
         disabled,
         placeholder,
+        onInputActivity,
         onBlur,
         onPaste,
         onSubmit,
@@ -67,8 +69,14 @@ export const ComposerTextarea = memo(
           disabled={disabled}
           defaultValue={initialValue}
           onBlur={(event) => onBlur(event.currentTarget.value)}
-          onPaste={onPaste}
+          onBeforeInput={onInputActivity}
+          onCompositionUpdate={onInputActivity}
+          onPaste={(event) => {
+            onInputActivity();
+            onPaste(event);
+          }}
           onKeyDown={(event) => {
+            onInputActivity();
             if (event.nativeEvent.isComposing || event.keyCode === 229) return;
             if (event.key === "Enter" && !event.shiftKey) {
               event.preventDefault();

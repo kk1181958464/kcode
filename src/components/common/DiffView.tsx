@@ -1,6 +1,6 @@
 import React from "react";
 
-export function DiffView({
+export const DiffView = React.memo(function DiffView({
   text,
   className,
 }: {
@@ -32,4 +32,4 @@ export function DiffView({
       })}
     </pre>
   );
-}
+});

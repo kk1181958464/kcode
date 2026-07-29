@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  COMPOSER_STREAM_PAUSE_MS,
   STREAM_PACING_INTERVAL_MS,
+  StreamPacingBuffer,
   takeStreamPacedSlice,
 } from "../src/stream-pacing";
 
@@ -11,6 +13,7 @@ test("stream pacing releases a stable two-character slice normally", () => {
     remaining: "正在输出",
   });
   assert.equal(STREAM_PACING_INTERVAL_MS, 50);
+  assert.equal(COMPOSER_STREAM_PAUSE_MS, 120);
 });
 
 test("stream pacing holds a singleton until the next character arrives", () => {
@@ -27,6 +30,8 @@ test("stream pacing holds a singleton until the next character arrives", () => {
 test("stream pacing accelerates gradually when the backlog grows", () => {
   assert.equal(takeStreamPacedSlice("字".repeat(65)).slice.length, 4);
   assert.equal(takeStreamPacedSlice("字".repeat(161)).slice.length, 8);
+  assert.equal(takeStreamPacedSlice("字".repeat(513)).slice.length, 24);
+  assert.equal(takeStreamPacedSlice("字".repeat(2_049)).slice.length, 64);
 });
 
 test("stream pacing drains all text on completion", () => {
@@ -45,4 +50,31 @@ test("stream pacing does not split surrogate pairs", () => {
     slice: "😀世",
     remaining: "界",
   });
+});
+
+test("incremental pacing buffer consumes only new Unicode deltas", () => {
+  const buffer = new StreamPacingBuffer();
+  buffer.append("你好");
+  buffer.append("😀世界");
+  assert.equal(buffer.length, 5);
+  assert.equal(buffer.take(), "你好");
+  assert.equal(buffer.take(), "😀世");
+  assert.equal(buffer.take(false, true), "界");
+  assert.equal(buffer.length, 0);
+});
+
+test("incremental pacing buffer accelerates and drains a backlog", () => {
+  const buffer = new StreamPacingBuffer();
+  buffer.append("字".repeat(200));
+  assert.equal(buffer.take().length, 8);
+  assert.equal(buffer.length, 192);
+  assert.equal(buffer.take(true).length, 192);
+  assert.equal(buffer.length, 0);
+});
+
+test("incremental pacing buffer catches up after a large input pause", () => {
+  const buffer = new StreamPacingBuffer();
+  buffer.append("字".repeat(3_000));
+  assert.equal(buffer.take().length, 64);
+  assert.equal(buffer.length, 2_936);
 });

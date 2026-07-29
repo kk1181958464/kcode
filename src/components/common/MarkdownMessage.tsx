@@ -80,9 +80,14 @@ const MarkdownBlock = memo(function MarkdownBlock({
   content: string;
 }) {
   return (
-    <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-      {content}
-    </ReactMarkdown>
+    <div className="markdown-block">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={markdownComponents}
+      >
+        {content}
+      </ReactMarkdown>
+    </div>
   );
 });
 

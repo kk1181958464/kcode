@@ -4,7 +4,10 @@ import {
   appendStreamingText,
   consumeStreamingText,
   getStreamingText,
+  getStreamingTextTail,
+  replaceStreamingText,
   resetStreamingText,
+  streamingProgressKey,
   subscribeStreamingText,
 } from "../src/streaming-text-store";
 
@@ -36,4 +39,32 @@ test("streaming text store appends text and notifies only its request", () => {
 
   unsubscribeFirst();
   unsubscribeSecond();
+});
+
+test("streaming progress replaces the current status instead of appending history", () => {
+  const key = streamingProgressKey("request");
+  const changes: unknown[] = [];
+  const unsubscribe = subscribeStreamingText(key, (change) =>
+    changes.push(change),
+  );
+  replaceStreamingText(key, "等待首个响应");
+  replaceStreamingText(key, "断流后正在重连");
+  assert.equal(getStreamingText(key), "断流后正在重连");
+  assert.deepEqual(changes.at(-1), {
+    type: "replace",
+    value: "断流后正在重连",
+  });
+  resetStreamingText(key);
+  unsubscribe();
+});
+
+test("returns a bounded streaming tail without losing the full value", () => {
+  appendStreamingText("long", "开头😀");
+  appendStreamingText("long", "中间".repeat(3_000));
+  appendStreamingText("long", "结尾");
+  const tail = getStreamingTextTail("long", 10);
+  assert.equal(tail.totalLength, getStreamingText("long").length);
+  assert.equal(tail.text.endsWith("结尾"), true);
+  assert.equal(tail.text.length <= 11, true);
+  assert.equal(consumeStreamingText("long").startsWith("开头😀"), true);
 });

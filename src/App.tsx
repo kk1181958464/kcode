@@ -86,11 +86,14 @@ import {
   type ConversationScrollState,
   type QueuedChatMessage,
   type SettingsSection,
-  type SidebarTask,
   type TaskDrafts,
   type TaskRecord,
   type ThemePreference,
 } from "./models";
+import {
+  projectSidebarWorkspaceGroups,
+  type SidebarProjection,
+} from "./sidebar-projection";
 import {
   appendConversationWindow,
   latestConversationWindow,
@@ -146,13 +149,16 @@ import { TopBar } from "./components/topbar/TopBar";
 import { Sidebar } from "./components/sidebar/Sidebar";
 import { StatusPanel } from "./components/status/StatusPanel";
 import {
+  COMPOSER_STREAM_PAUSE_MS,
   STREAM_PACING_INTERVAL_MS,
-  takeStreamPacedSlice,
+  StreamPacingBuffer,
 } from "./stream-pacing";
 import {
   appendStreamingText,
   consumeStreamingText,
+  replaceStreamingText,
   resetStreamingText,
+  streamingProgressKey,
   streamingReasoningKey,
 } from "./streaming-text-store";
 import { registerAppToastHandler, type AppToast } from "./lib/toast";
@@ -443,7 +449,7 @@ export default function App() {
   const currentRequest = useRef<string | undefined>(undefined);
   const requestTasksRef = useRef(new Map<string, string>());
   const assistantLengthsRef = useRef(new Map<string, number>());
-  const pendingTextRef = useRef(new Map<string, string>());
+  const pendingTextRef = useRef(new Map<string, StreamPacingBuffer>());
   const pendingTextSinceRef = useRef(new Map<string, number>());
   // Keep streaming responsive without asking React and layout to work at 60fps.
   const textFlushTimerRef = useRef<number | undefined>(undefined);
@@ -452,9 +458,12 @@ export default function App() {
   const activeTaskIdRef = useRef(activeTaskId);
   const displayedTaskIdRef = useRef(activeTaskId);
   const tasksRef = useRef(tasks);
+  const sidebarProjectionRef = useRef<SidebarProjection | undefined>(undefined);
   const previewTimerRef = useRef<number | undefined>(undefined);
   const followFrameRef = useRef<number | undefined>(undefined);
   const bottomLayoutFrameRef = useRef<number | undefined>(undefined);
+  const bottomFollowTimerRef = useRef<number | undefined>(undefined);
+  const lastBottomFollowAtRef = useRef(0);
   const bottomSettleTimerRef = useRef<number | undefined>(undefined);
   const bottomSettleDeadlineRef = useRef(0);
   const scrollFrameRef = useRef<number | undefined>(undefined);
@@ -476,6 +485,7 @@ export default function App() {
   const composerPasteRef = useRef<
     (event: React.ClipboardEvent<HTMLTextAreaElement>) => void
   >(() => undefined);
+  const composerInputBusyUntilRef = useRef(0);
   const handleComposerSubmit = useCallback(
     () => composerSubmitRef.current(),
     [],
@@ -485,6 +495,10 @@ export default function App() {
       composerPasteRef.current(event),
     [],
   );
+  const handleComposerInputActivity = useCallback(() => {
+    composerInputBusyUntilRef.current =
+      performance.now() + COMPOSER_STREAM_PAUSE_MS;
+  }, []);
   const updateTaskDraft = useCallback((value: string) => {
     composerValueRef.current = value;
     const taskId = displayedTaskIdRef.current;
@@ -499,18 +513,24 @@ export default function App() {
       JSON.stringify(initialDrafts.current),
     );
   }, []);
-  const persistTaskDrafts = useCallback((value?: string) => {
+  const persistTaskDrafts = useCallback(
+    (value?: string) => {
     const latestValue =
       typeof value === "string"
         ? value
         : (composerRef.current?.getValue() ?? composerValueRef.current);
     updateTaskDraft(latestValue);
     writeTaskDrafts();
-  }, [updateTaskDraft, writeTaskDrafts]);
-  const clearTaskDraft = useCallback((taskId: string) => {
+    },
+    [updateTaskDraft, writeTaskDrafts],
+  );
+  const clearTaskDraft = useCallback(
+    (taskId: string) => {
     delete initialDrafts.current[taskId];
     writeTaskDrafts();
-  }, [writeTaskDrafts]);
+    },
+    [writeTaskDrafts],
+  );
   useEffect(() => {
     const persistWhenHidden = () => {
       if (document.visibilityState === "hidden") persistTaskDrafts();
@@ -608,9 +628,7 @@ export default function App() {
       })
       .catch((error) => {
         if (!cancelled) {
-          setContextError(
-            `数据库加载失败：${errorMessage(error)}`,
-          );
+          setContextError(`数据库加载失败：${errorMessage(error)}`);
           setTaskStorageReady(true);
         }
       });
@@ -771,16 +789,19 @@ export default function App() {
     const conversation = conversationRef.current;
     const messageList = conversation?.querySelector(".message-list");
     if (!messageList || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(() => {
-      if (autoFollowRef.current) {
-        setActiveConversationTurn(conversationTurns.at(-1)?.id);
-        setShowScrollToBottom(false);
-        programmaticScrollRef.current = true;
-      }
-      const pending = pendingScrollRestoreRef.current;
-      if (!autoFollowRef.current && !pending?.state.atBottom) return;
-      if (bottomLayoutFrameRef.current)
-        cancelAnimationFrame(bottomLayoutFrameRef.current);
+    const queueBottomFollow = () => {
+      if (bottomFollowTimerRef.current !== undefined) return;
+      const elapsed = performance.now() - lastBottomFollowAtRef.current;
+      const delay = Math.max(0, 50 - elapsed);
+      bottomFollowTimerRef.current = window.setTimeout(() => {
+        bottomFollowTimerRef.current = undefined;
+        lastBottomFollowAtRef.current = performance.now();
+        if (
+          !autoFollowRef.current &&
+          !pendingScrollRestoreRef.current?.state.atBottom
+        )
+          return;
+        if (bottomLayoutFrameRef.current) return;
       bottomLayoutFrameRef.current = requestAnimationFrame(() => {
         bottomLayoutFrameRef.current = undefined;
         const current = conversationRef.current;
@@ -791,6 +812,9 @@ export default function App() {
             !pendingScrollRestoreRef.current?.state.atBottom)
         )
           return;
+          // Keep bottom following while the user is at the bottom, but do not
+          // update React state or mark the scroll as programmatic here. This
+          // path runs during streaming and must stay out of the input hot path.
         current.scrollTop = current.scrollHeight;
         const taskId = displayedTaskIdRef.current;
         if (taskId)
@@ -798,13 +822,21 @@ export default function App() {
             top: current.scrollHeight,
             atBottom: true,
           });
-        if (!bottomSettleTimerRef.current)
-          programmaticScrollRef.current = false;
       });
+      }, delay);
+    };
+    const observer = new ResizeObserver(() => {
+      const pending = pendingScrollRestoreRef.current;
+      if (!autoFollowRef.current && !pending?.state.atBottom) return;
+      queueBottomFollow();
     });
     observer.observe(messageList);
     return () => {
       observer.disconnect();
+      if (bottomFollowTimerRef.current !== undefined) {
+        window.clearTimeout(bottomFollowTimerRef.current);
+        bottomFollowTimerRef.current = undefined;
+      }
       if (bottomLayoutFrameRef.current) {
         cancelAnimationFrame(bottomLayoutFrameRef.current);
         bottomLayoutFrameRef.current = undefined;
@@ -873,12 +905,9 @@ export default function App() {
       cancelAnimationFrame(turnLayoutFrameRef.current);
     turnLayoutFrameRef.current = requestAnimationFrame(() => {
       turnLayoutFrameRef.current = undefined;
-      turnPositionsRef.current = conversationTurns
-        .map((turn) => {
-          const element = turnRefs.current.get(turn.id);
-          return element ? { id: turn.id, top: element.offsetTop } : undefined;
-        })
-        .filter((item): item is { id: string; top: number } => Boolean(item));
+      turnPositionsRef.current = [...turnRefs.current.entries()]
+        .map(([id, element]) => ({ id, top: element.offsetTop }))
+        .sort((a, b) => a.top - b.top);
       const conversation = conversationRef.current;
       if (conversation) updateActiveTurn(conversation);
     });
@@ -899,67 +928,60 @@ export default function App() {
     // Programmatic bottom alignment also emits scroll events. Do not treat the
     // transient intermediate position as the user scrolling away from bottom.
     if (programmaticScrollRef.current) return;
-    if (
-      !conversationSearchOpen &&
-      container.scrollTop <= 48 &&
-      visibleTurnWindow.start > 0 &&
-      !loadingOlderTurnsRef.current
-    ) {
-      loadingOlderTurnsRef.current = true;
-      preserveWindowAnchor(visibleTurnWindow.start);
-      setVisibleTurnWindow((current) =>
-        prependConversationWindow(current, conversationPageSize),
-      );
-      return;
-    }
-    const distanceFromBottom =
-      container.scrollHeight - container.scrollTop - container.clientHeight;
-    if (
-      !conversationSearchOpen &&
-      distanceFromBottom <= 48 &&
-      hasNewerMessages &&
-      !loadingOlderTurnsRef.current
-    ) {
-      loadingOlderTurnsRef.current = true;
-      preserveWindowAnchor(
-        Math.max(visibleTurnWindow.start, visibleTurnWindow.end - 1),
-      );
-      setVisibleTurnWindow((current) =>
-        appendConversationWindow(
-          current,
-          conversationTurns.length,
-          conversationPageSize,
-        ),
-      );
-      return;
-    }
-    // Take user scroll intent synchronously so a streaming resize cannot pull
-    // the conversation back to the bottom before the rAF bookkeeping runs.
-    if (distanceFromBottom >= 72 && autoFollowRef.current) {
-      autoFollowRef.current = false;
-      setShowScrollToBottom(true);
-      refreshTurnPositions();
-      if (bottomLayoutFrameRef.current) {
-        cancelAnimationFrame(bottomLayoutFrameRef.current);
-        bottomLayoutFrameRef.current = undefined;
-      }
-    }
     if (scrollFrameRef.current) return;
     scrollFrameRef.current = requestAnimationFrame(() => {
       scrollFrameRef.current = undefined;
       const target = scrollTargetRef.current;
       if (!target) return;
-      const atBottom =
-        target.scrollHeight - target.scrollTop - target.clientHeight < 72;
+      // Read scroll geometry once per animation frame. Reading it in every
+      // native scroll event forces repeated synchronous layout on long output.
+      const scrollTop = target.scrollTop;
+      const clientHeight = target.clientHeight;
+      const scrollHeight = target.scrollHeight;
+      const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
+      if (
+        !conversationSearchOpen &&
+        scrollTop <= 48 &&
+        visibleTurnWindow.start > 0 &&
+        !loadingOlderTurnsRef.current
+      ) {
+        loadingOlderTurnsRef.current = true;
+        preserveWindowAnchor(visibleTurnWindow.start);
+        setVisibleTurnWindow((current) =>
+          prependConversationWindow(current, conversationPageSize),
+        );
+        return;
+      }
+      if (
+        !conversationSearchOpen &&
+        distanceFromBottom <= 48 &&
+        hasNewerMessages &&
+        !loadingOlderTurnsRef.current
+      ) {
+        loadingOlderTurnsRef.current = true;
+        preserveWindowAnchor(
+          Math.max(visibleTurnWindow.start, visibleTurnWindow.end - 1),
+        );
+        setVisibleTurnWindow((current) =>
+          appendConversationWindow(
+            current,
+            conversationTurns.length,
+            conversationPageSize,
+          ),
+        );
+        return;
+      }
+      const atBottom = distanceFromBottom < 72;
       const taskId = displayedTaskIdRef.current;
       if (taskId)
         scrollStateByTaskRef.current.set(taskId, {
-          top: target.scrollTop,
+          top: scrollTop,
           atBottom,
         });
       if (autoFollowRef.current !== atBottom) {
         autoFollowRef.current = atBottom;
         setShowScrollToBottom(!atBottom);
+        if (!atBottom) refreshTurnPositions();
       }
       updateActiveTurn(target);
     });
@@ -1027,6 +1049,14 @@ export default function App() {
     }
     bottomSettleDeadlineRef.current = 0;
     programmaticScrollRef.current = false;
+    if (autoFollowRef.current) {
+      autoFollowRef.current = false;
+      setShowScrollToBottom(true);
+    }
+    if (bottomLayoutFrameRef.current) {
+      cancelAnimationFrame(bottomLayoutFrameRef.current);
+      bottomLayoutFrameRef.current = undefined;
+    }
   }
 
   function scrollToTurn(turnId: string, index: number) {
@@ -1055,34 +1085,14 @@ export default function App() {
     setActiveConversationTurn(turnId);
   }
   const workspaceGroups = useMemo(() => {
-    const groups = new Map<string, SidebarTask[]>();
-    const query = taskQuery.trim().toLocaleLowerCase();
-    for (const task of tasks) {
-      if (Boolean(task.archived) !== showArchived) continue;
-      if (
-        query &&
-        !`${task.name} ${task.workspacePath}`
-          .toLocaleLowerCase()
-          .includes(query)
-      )
-        continue;
-      const sidebarTask = {
-        id: task.id,
-        name: task.name,
-        workspacePath: task.workspacePath,
-        archived: task.archived,
-        runningId: task.runningId,
-        runStatus: task.runStatus,
-      };
-      const conversations = groups.get(task.workspacePath);
-      if (conversations) conversations.push(sidebarTask);
-      else groups.set(task.workspacePath, [sidebarTask]);
-    }
-    return [...groups.entries()].map(([workspacePath, conversations]) => ({
-      workspacePath,
-      name: workspacePath.split(/[\\/]/).filter(Boolean).at(-1) || "工作区",
-      conversations,
-    }));
+    const projection = projectSidebarWorkspaceGroups(
+      tasks,
+      taskQuery,
+      showArchived,
+      sidebarProjectionRef.current,
+    );
+    sidebarProjectionRef.current = projection;
+    return projection.workspaceGroups;
   }, [tasks, taskQuery, showArchived]);
 
   async function refreshGitState() {
@@ -1171,9 +1181,7 @@ export default function App() {
           void window.kcode.state
             .save("tasks", tasks)
             .catch((error) =>
-              setContextError(
-                `数据库保存失败：${errorMessage(error)}`,
-              ),
+              setContextError(`数据库保存失败：${errorMessage(error)}`),
             ),
         2_000,
       );
@@ -1507,20 +1515,23 @@ export default function App() {
   // released in stable slices; a large backlog accelerates gradually.
   function flushPendingText(drainAll = false) {
     if (!pendingTextRef.current.size) return;
+    if (!drainAll && performance.now() < composerInputBusyUntilRef.current) {
+      scheduleTextFlush(
+        Math.max(16, composerInputBusyUntilRef.current - performance.now()),
+      );
+      return;
+    }
     const slices: [string, string][] = [];
     const now = Date.now();
     for (const [requestId, buffered] of pendingTextRef.current) {
-      if (!buffered) continue;
+      if (!buffered.length) continue;
       const bufferedSince = pendingTextSinceRef.current.get(requestId) ?? now;
-      const paced = takeStreamPacedSlice(
-        buffered,
+      const slice = buffered.take(
         drainAll,
         now - bufferedSince >= STREAM_PACING_INTERVAL_MS * 2,
       );
-      if (paced.slice) slices.push([requestId, paced.slice]);
-      if (paced.remaining)
-        pendingTextRef.current.set(requestId, paced.remaining);
-      else {
+      if (slice) slices.push([requestId, slice]);
+      if (!buffered.length) {
         pendingTextRef.current.delete(requestId);
         pendingTextSinceRef.current.delete(requestId);
       }
@@ -1534,14 +1545,13 @@ export default function App() {
     if (!drainAll && pendingTextRef.current.size) scheduleTextFlush();
   }
 
-  function scheduleTextFlush() {
+  function scheduleTextFlush(delay = STREAM_PACING_INTERVAL_MS) {
     if (textFlushTimerRef.current) return;
     textFlushTimerRef.current = window.setTimeout(() => {
       textFlushTimerRef.current = undefined;
       flushPendingText();
-    }, STREAM_PACING_INTERVAL_MS);
+    }, delay);
   }
-
 
   function clearPendingReasoning(requestId = currentRequest.current) {
     if (requestId) {
@@ -1556,6 +1566,10 @@ export default function App() {
       window.clearTimeout(reasoningFlushTimerRef.current);
       reasoningFlushTimerRef.current = undefined;
     }
+  }
+
+  function clearStreamingProgress(requestId: string) {
+    resetStreamingText(streamingProgressKey(requestId));
   }
 
   function scheduleReasoningFlush() {
@@ -1583,7 +1597,8 @@ export default function App() {
           event.type !== "done" &&
           event.type !== "error" &&
           event.type !== "text" &&
-          event.type !== "reasoning"
+          event.type !== "reasoning" &&
+          event.type !== "progress"
         )
           setTasks((all) => {
             const index = all.findIndex((task) => task.id === taskId);
@@ -1602,6 +1617,7 @@ export default function App() {
             return next;
           });
         if (event.type === "activity") {
+          clearStreamingProgress(id);
           if (isActive) clearPendingReasoning();
           const task = tasksRef.current.find((item) => item.id === taskId);
           const previous = task?.activities.find(
@@ -1644,11 +1660,7 @@ export default function App() {
           return;
         }
         if (event.type === "reasoning") {
-          const isRequestProgress =
-            /^(请求已发送，正在等待上游模型首个响应|上游模型尚未返回首个响应|上游返回 \d{3}|上游长时间无响应|Responses API 返回 \d{3})/.test(
-              event.delta,
-            );
-          if (isRequestProgress) return;
+          clearStreamingProgress(id);
           const task = tasksRef.current.find((item) => item.id === taskId);
           const hasRunningActivity = task?.activities.some(
             (activity) =>
@@ -1663,6 +1675,13 @@ export default function App() {
           }
           return;
         }
+        if (event.type === "progress") {
+          // Progress describes the current transport/retry phase. It replaces
+          // stale live reasoning so the two transient channels never overlap.
+          if (isActive) clearPendingReasoning(id);
+          replaceStreamingText(streamingProgressKey(id), event.message);
+          return;
+        }
         if (event.type === "text_reset") {
           // Upstream broke mid-answer and the agent is retrying: discard the
           // partial text we streamed so far, both buffered and already
@@ -1674,14 +1693,19 @@ export default function App() {
           return;
         }
         if (event.type === "text") {
+          clearStreamingProgress(id);
           if (isActive) clearPendingReasoning(id);
           assistantLengthsRef.current.set(
             id,
             (assistantLengthsRef.current.get(id) ?? 0) + event.delta.length,
           );
-          const pending = pendingTextRef.current.get(id) ?? "";
-          if (!pending) pendingTextSinceRef.current.set(id, Date.now());
-          pendingTextRef.current.set(id, pending + event.delta);
+          let pending = pendingTextRef.current.get(id);
+          if (!pending) {
+            pending = new StreamPacingBuffer();
+            pendingTextRef.current.set(id, pending);
+            pendingTextSinceRef.current.set(id, Date.now());
+          }
+          pending.append(event.delta);
           scheduleTextFlush();
         }
         if (event.type === "usage") {
@@ -1737,6 +1761,7 @@ export default function App() {
           }
         }
         if (event.type === "error") {
+          clearStreamingProgress(id);
           if (isActive) clearPendingReasoning(id);
           if (textFlushTimerRef.current) {
             window.clearTimeout(textFlushTimerRef.current);
@@ -1754,8 +1779,7 @@ export default function App() {
                   }
                 : message,
             );
-          const updateMessages = (all: ChatMessage[]) =>
-            commitFinalText(all);
+          const updateMessages = (all: ChatMessage[]) => commitFinalText(all);
           setTasks((all) =>
             all.map((task) =>
               task.id === taskId
@@ -1796,6 +1820,7 @@ export default function App() {
           assistantLengthsRef.current.delete(id);
         }
         if (event.type === "done") {
+          clearStreamingProgress(id);
           if (isActive) clearPendingReasoning(id);
           if (textFlushTimerRef.current) {
             window.clearTimeout(textFlushTimerRef.current);
@@ -2918,6 +2943,7 @@ export default function App() {
       currentRequest.current = undefined;
       setRunningId(undefined);
       clearPendingReasoning(requestId);
+      clearStreamingProgress(requestId);
       const stopActivities = (all: AgentActivity[]) =>
         all.map((activity) =>
           activity.requestId === requestId &&
@@ -3387,6 +3413,7 @@ export default function App() {
                 ref={composerRef}
                 disabled={summaryBusy}
                 value={input}
+                onInputActivity={handleComposerInputActivity}
                 onBlur={persistTaskDrafts}
                 onPaste={handleComposerPaste}
                 onSubmit={handleComposerSubmit}
@@ -3641,10 +3668,7 @@ export default function App() {
                   <button
                     className="send"
                     onClick={() => (runningId ? queueMessage() : void send())}
-                    disabled={
-                      !selected ||
-                      summaryBusy
-                    }
+                    disabled={!selected || summaryBusy}
                     title={
                       summaryBusy
                         ? "正在压缩上下文"

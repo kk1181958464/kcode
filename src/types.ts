@@ -244,6 +244,9 @@ export type AgentActivity = {
   exitCode?: number;
   undoable?: boolean;
   undone?: boolean;
+  /** Structured proof metadata used by the runtime completion verifier. */
+  changed?: boolean;
+  executed?: boolean;
   round?: number;
   contentOffset?: number;
   childActivities?: AgentActivity[];
@@ -333,6 +336,7 @@ export type ModelEvent =
   | { type: "text"; delta: string }
   | { type: "text_reset" }
   | { type: "reasoning"; delta: string }
+  | { type: "progress"; message: string }
   | {
       type: "usage";
       input: number;
