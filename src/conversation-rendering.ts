@@ -3,6 +3,13 @@ export const STREAMING_REASONING_DOM_TRIM_TARGET = 80_000;
 
 type PositionedActivity = { contentOffset?: number };
 
+export function visibleAssistantContent(value: string) {
+  return value
+    .replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, "")
+    .replace(/<think(?:ing)?>[\s\S]*$/gi, "")
+    .replace(/<\/?think(?:ing)?>/gi, "");
+}
+
 export function groupActivitiesByContentOffset<T extends PositionedActivity>(
   activities: readonly T[],
   contentLength: number,

@@ -6,7 +6,7 @@ export const uid = () => crypto.randomUUID();
 export const EMPTY_ACTIVITIES: AgentActivity[] = [];
 
 export type SettingsSection =
-  "general" | "models" | "skills" | "permissions" | "recordings";
+  "general" | "models" | "skills" | "permissions" | "recordings" | "remote";
 export type ThemePreference = "system" | "light" | "dark";
 export type AccentPreference =
   "indigo" | "violet" | "emerald" | "blue" | "orange" | "mono";

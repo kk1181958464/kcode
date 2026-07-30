@@ -28,6 +28,7 @@ import type {
   ModelRequest,
   ProviderConfig,
 } from "../src/types";
+import type { RemoteTaskSnapshot } from "../src/remote-types";
 import { RendererEventBatcher } from "./renderer-event-batcher";
 import { LatestWriteQueue } from "./latest-write-queue";
 import {
@@ -103,6 +104,19 @@ import {
   isSupportedContextFile,
 } from "../src/attachments";
 import {
+  closeRemoteConnection,
+  initializeRemoteControl,
+  remoteCommandResult,
+  remoteLogin,
+  remoteLogout,
+  remoteRegister,
+  remoteState,
+  remoteShouldKeepRunning,
+  syncRemoteTasks,
+  uploadProviderVault,
+  setRemoteEnabled,
+} from "./remote-control";
+import {
   isLegacyDevelopmentShortcut,
   windowsAppUserModelId,
 } from "./windows-app-id";
@@ -147,6 +161,11 @@ let mainWindow: BrowserWindow | undefined;
 let tray: Tray | undefined;
 let skillStore: ReturnType<typeof createSkillStore> | undefined;
 let unreadTasks = 0;
+let quitting = false;
+let rendererReady = false;
+const pendingRemoteCommands: Parameters<
+  NonNullable<Parameters<typeof initializeRemoteControl>[0]>["onCommand"]
+>[0][] = [];
 const svgImage = (svg: string) =>
   nativeImage.createFromDataURL(
     `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`,
@@ -363,6 +382,7 @@ async function listCheckpoints() {
   }
 }
 function createWindow() {
+  rendererReady = false;
   const icon = windowIcon();
   const win = new BrowserWindow({
     width: 1420,
@@ -382,6 +402,12 @@ function createWindow() {
   configureWindowsTaskbar(win, icon);
   win.once("ready-to-show", () => configureWindowsTaskbar(win, icon));
   mainWindow = win;
+  win.on("close", (event) => {
+    if (!quitting && remoteShouldKeepRunning()) {
+      event.preventDefault();
+      win.hide();
+    }
+  });
   setBrowserHost(win, {
     onState: (state) => {
       if (!win.isDestroyed()) win.webContents.send("browser:state", state);
@@ -473,6 +499,35 @@ app.whenReady().then(async () => {
     ]),
   );
   tray.on("click", showMainWindow);
+  ipcMain.handle("remote:state", () => remoteState());
+  ipcMain.handle(
+    "remote:register",
+    (_e, serverUrl: string, username: string, password: string) =>
+      remoteRegister(serverUrl, username, password),
+  );
+  ipcMain.handle(
+    "remote:login",
+    (_e, serverUrl: string, username: string, password: string) =>
+      remoteLogin(serverUrl, username, password),
+  );
+  ipcMain.handle("remote:logout", () => remoteLogout());
+  ipcMain.handle("remote:set-enabled", (_e, enabled: boolean) =>
+    setRemoteEnabled(Boolean(enabled)),
+  );
+  ipcMain.handle("remote:sync-tasks", (_e, tasks: RemoteTaskSnapshot[]) =>
+    syncRemoteTasks(tasks),
+  );
+  ipcMain.handle(
+    "remote:command-result",
+    (_e, id: string, ok: boolean, error?: string) =>
+      remoteCommandResult(id, Boolean(ok), error),
+  );
+  ipcMain.handle("remote:ready", (event) => {
+    rendererReady = true;
+    const target = BrowserWindow.fromWebContents(event.sender);
+    for (const command of pendingRemoteCommands.splice(0))
+      target?.webContents.send("remote:command", command);
+  });
   ipcMain.handle("providers:list", listProviders);
   ipcMain.handle("state:load", (_e, key: string) =>
     loadState(stateKeySchema.parse(key)),
@@ -519,14 +574,26 @@ app.whenReady().then(async () => {
   );
   ipcMain.handle(
     "providers:save",
-    (_e, provider: ProviderConfig, key?: string) => saveProvider(provider, key),
+    async (_e, provider: ProviderConfig, key?: string) => {
+      const result = await saveProvider(provider, key);
+      void uploadProviderVault().catch((error) =>
+        writeLog("warn", "remote.provider-sync.failed", error),
+      );
+      return result;
+    },
   );
   ipcMain.handle(
     "chat:undo",
     (_e, workspacePath: string, activityId: string, force?: boolean) =>
       undoActivity(workspacePath, activityId, Boolean(force)),
   );
-  ipcMain.handle("providers:remove", (_e, id: string) => removeProvider(id));
+  ipcMain.handle("providers:remove", async (_e, id: string) => {
+    const result = await removeProvider(id);
+    void uploadProviderVault().catch((error) =>
+      writeLog("warn", "remote.provider-sync.failed", error),
+    );
+    return result;
+  });
   ipcMain.handle("providers:discover", (_e, id: string) => discoverModels(id));
   ipcMain.handle("skills:list", (_e, refresh?: boolean) =>
     listPublicSkills(Boolean(refresh)),
@@ -1035,10 +1102,25 @@ app.whenReady().then(async () => {
       resolveApproval(requestId, activityId, allowed),
   );
   createWindow();
+  await initializeRemoteControl({
+    onState: (state) => {
+      if (!mainWindow || mainWindow.isDestroyed()) return;
+      mainWindow.webContents.send("remote:state", state);
+    },
+    onCommand: (command) => {
+      if (rendererReady && mainWindow && !mainWindow.isDestroyed())
+        mainWindow.webContents.send("remote:command", command);
+      else pendingRemoteCommands.push(command);
+    },
+  });
   scheduleUpdateChecks();
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
+});
+app.on("before-quit", () => {
+  quitting = true;
+  closeRemoteConnection();
 });
 app.on("window-all-closed", () => {
   void closeAllSubagents();

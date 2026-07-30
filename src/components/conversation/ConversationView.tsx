@@ -55,6 +55,7 @@ import {
   boundedStreamingReasoning,
   groupActivitiesByContentOffset,
   STREAMING_REASONING_DOM_CHAR_LIMIT,
+  visibleAssistantContent,
 } from "../../conversation-rendering";
 import {
   getActivityOutput,
@@ -131,6 +132,10 @@ function MessageItem({
       : undefined;
   const error = message.error ?? legacyError;
   const isError = Boolean(error);
+  const visibleContent =
+    message.role === "assistant"
+      ? visibleAssistantContent(message.content)
+      : message.content;
   return (
     <article className={`message ${message.role} ${isError ? "failed" : ""}`}>
       <div className={`message-avatar ${message.role}`}>
@@ -165,7 +170,7 @@ function MessageItem({
           <div className="message-actions">
             <button
               title="复制消息"
-              onClick={() => void copyWithToast(message.content)}
+              onClick={() => void copyWithToast(visibleContent)}
             >
               <Copy size={13} />
             </button>
@@ -203,11 +208,11 @@ function MessageItem({
           )}
           {message.role === "assistant" && !legacyError && assistantBody ? (
             assistantBody
-          ) : message.content ? (
+          ) : visibleContent ? (
             message.role === "assistant" && !legacyError ? (
-              <MarkdownMessage content={message.content} />
+              <MarkdownMessage content={visibleContent} />
             ) : (
-              !legacyError && message.content
+              !legacyError && visibleContent
             )
           ) : running ? (
             <div className="thinking">
@@ -1149,14 +1154,15 @@ const AssistantTimeline = memo(function AssistantTimeline({
   streamingReasoning?: React.ReactNode;
   streamingProgress?: React.ReactNode;
 }) {
-  const renderText = (text: string) =>
-    text ? (
-      running ? (
-        <div className="streaming-message-text">{text}</div>
-      ) : (
-        <MarkdownMessage content={text} />
-      )
-    ) : null;
+  const renderText = (text: string) => {
+    const visible = visibleAssistantContent(text);
+    if (!visible) return null;
+    return running ? (
+      <div className="streaming-message-text">{visible}</div>
+    ) : (
+      <MarkdownMessage content={visible} />
+    );
+  };
   const groups = groupActivitiesByContentOffset(
     activities,
     message.content.length,
@@ -1403,7 +1409,13 @@ const StreamingProgressLeaf = memo(function StreamingProgressLeaf({
       }
     });
   }, [requestId]);
-  return <span ref={nodeRef} className="streaming-status-leaf" hidden />;
+  return (
+    <span
+      ref={nodeRef}
+      className="streaming-status-leaf streaming-progress-leaf"
+      hidden
+    />
+  );
 });
 
 const StreamingAssistantTimeline = memo(function StreamingAssistantTimeline({

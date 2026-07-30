@@ -7,6 +7,9 @@ import { validateProviderBaseUrl } from "./provider-url";
 type StoredProvider = Omit<ProviderConfig, "hasApiKey"> & {
   encryptedApiKey?: string;
 };
+export type RemoteProvider = Omit<ProviderConfig, "hasApiKey"> & {
+  apiKey?: string;
+};
 type LegacyProtocol = ProviderConfig["protocol"] | "openai" | "anthropic";
 const XAI_PROVIDER_ID = "xai";
 const XAI_MIGRATION_PROVIDER_ID = "__kcode_xai_preset_v1";
@@ -117,12 +120,16 @@ export async function listProviders() {
     ...provider,
     models: provider.models.map((model) => {
       const inferred = inferContextWindow(model.modelId);
-      return model.contextWindow === 128_000 && inferred && inferred !== 128_000 && /^(glm-5\.1|glm-5\.2|deepseek-v4-(?:pro|flash))$/i.test(model.modelId)
+      return model.contextWindow === 128_000 &&
+        inferred &&
+        inferred !== 128_000 &&
+        /^(glm-5\.1|glm-5\.2|deepseek-v4-(?:pro|flash))$/i.test(model.modelId)
         ? { ...model, contextWindow: inferred }
         : model;
     }),
   }));
-  if (JSON.stringify(migrated) !== JSON.stringify(stored)) await writeStored(migrated);
+  if (JSON.stringify(migrated) !== JSON.stringify(stored))
+    await writeStored(migrated);
   return publicProviders(migrated);
 }
 
@@ -168,4 +175,33 @@ export async function getProviderWithKey(id: string) {
       Buffer.from(provider.encryptedApiKey, "base64"),
     ),
   };
+}
+
+export async function exportProviderVault(): Promise<RemoteProvider[]> {
+  const stored = addXaiPreset(await readStored());
+  return stored
+    .filter((provider) => provider.id !== XAI_MIGRATION_PROVIDER_ID)
+    .map(({ encryptedApiKey, ...provider }) => ({
+      ...provider,
+      ...(encryptedApiKey
+        ? {
+            apiKey: safeStorage.decryptString(
+              Buffer.from(encryptedApiKey, "base64"),
+            ),
+          }
+        : {}),
+    }));
+}
+
+export async function importProviderVault(providers: RemoteProvider[]) {
+  const next: StoredProvider[] = providers.map(({ apiKey, ...provider }) => ({
+    ...provider,
+    ...(apiKey
+      ? {
+          encryptedApiKey: safeStorage.encryptString(apiKey).toString("base64"),
+        }
+      : {}),
+  }));
+  await writeStored(addXaiPreset(next));
+  return publicProviders(next);
 }

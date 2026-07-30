@@ -5,7 +5,25 @@ import {
   groupActivitiesByContentOffset,
   STREAMING_REASONING_DOM_CHAR_LIMIT,
   STREAMING_REASONING_DOM_TRIM_TARGET,
+  visibleAssistantContent,
 } from "../src/conversation-rendering";
+
+test("hides inline reasoning blocks from persisted assistant messages", () => {
+  assert.equal(
+    visibleAssistantContent(
+      "先说明。<thinking>Verifying repository state</thinking>最终结论。",
+    ),
+    "先说明。最终结论。",
+  );
+  assert.equal(
+    visibleAssistantContent("可见内容\n<THINK>尚未闭合的内部判断"),
+    "可见内容\n",
+  );
+  assert.equal(
+    visibleAssistantContent("普通文本 </thinking> 继续"),
+    "普通文本  继续",
+  );
+});
 
 test("groups timeline activities in offset order while preserving insertion order", () => {
   const first = { id: "first", contentOffset: 8 };

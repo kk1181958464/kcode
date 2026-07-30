@@ -65,9 +65,12 @@ import {
   shouldFallbackResponses,
 } from "./protocol-fallback";
 import {
+  claimedUnavailableGitOperations,
+  isNotGitRepositoryOutput,
   missingRequestedGitOperations,
   requestedGitOperations,
   successfulGitEvidence,
+  unavailableGitOperations,
 } from "./git-operation-verification";
 import {
   claimsNoChangeNeeded,
@@ -1442,6 +1445,12 @@ function failureSummary(call: ToolCall, output: string, exitCode?: number) {
 // commands ran to completion; only genuine failures (missing program, timeout,
 // cancellation, misused patch) should surface as errors.
 function isHardFailure(call: ToolCall, output: string) {
+  if (call.name === "ssh_run") {
+    const script = String(call.input.command || "");
+    return !(
+      /\b(?:git|gh)\b/i.test(script) && isNotGitRepositoryOutput(output)
+    );
+  }
   if (call.name !== "run_command") return true;
   const script = String(call.input.command || "");
   if (/\*\*\* Begin Patch|\bapply_patch\b/i.test(script)) return true;
@@ -1950,7 +1959,14 @@ async function execute(
       signal,
       15_000,
     );
-    if (result.exitCode) throw new Error(result.output || "Git 状态读取失败");
+    if (result.exitCode) {
+      if (isNotGitRepositoryOutput(result.output))
+        return {
+          output: "当前工作区未初始化 Git：该目录不是 Git 仓库。",
+          executed: true,
+        };
+      throw new Error(result.output || "Git 状态读取失败");
+    }
     return { output: result.output || "工作区无变更" };
   }
   if (call.name === "git_diff") {
@@ -2747,12 +2763,14 @@ async function parseStreamedTurn(
   onReasoning?: (delta: string) => void,
   onProgress?: (message: string) => void,
   idleTimeoutMs?: number,
+  normalizeCumulativeChatChunks = false,
 ): Promise<Turn> {
   if (response.body) {
     const assembler = new AgentStreamAssembler(
       protocol as any,
       onText,
       onReasoning,
+      { normalizeCumulativeChatChunks },
     );
     for await (const event of sseJson(
       response,
@@ -3101,9 +3119,7 @@ async function modelTurn(
     body: Record<string, unknown> = {};
   if (protocol === "openai-chat") {
     url = apiEndpoint(provider.baseUrl, "chat/completions");
-    const messages: unknown[] = [
-      { role: "system", content: payloadSystem },
-    ];
+    const messages: unknown[] = [{ role: "system", content: payloadSystem }];
     for (const item of payloadHistory) {
       if (item.kind === "message") {
         const content = item.images?.length
@@ -3462,6 +3478,8 @@ async function modelTurn(
       onReasoning,
       onProgress,
       reasoning.reasoningMode !== "none" ? 180_000 : undefined,
+      protocol === "openai-chat" &&
+        /(?:^|[/:])glm(?:[-_.]|$)/i.test(request.modelId),
     );
   const json = JSON.parse(await readResponseText(response, signal)) as any;
   if (protocol === "openai-chat") {
@@ -3596,9 +3614,8 @@ export async function* runAgent(
     [...request.messages].reverse().find((message) => message.role === "user")
       ?.content ?? "";
   const advisoryOnly = isAdvisoryOnlyRequest(latestUserRequest);
-  const activeSkillInstructions = await loadActiveSkillInstructions(
-    latestUserRequest,
-  );
+  const activeSkillInstructions =
+    await loadActiveSkillInstructions(latestUserRequest);
   const modelRuntime: ModelTurnRuntime = {
     provider: await getProviderWithKey(request.providerId),
     activeSkills: [
@@ -3832,9 +3849,17 @@ export async function* runAgent(
       return;
     }
     const gitEvidence = successfulGitEvidence(evidenceHistory);
+    const unavailableGitEvidence = unavailableGitOperations(evidenceHistory);
+    const unavailableGitClaims = claimedUnavailableGitOperations(turn.text);
     const missingGitEvidence = missingRequestedGitOperations(
       requestedGitOps,
       gitEvidence,
+    ).filter(
+      (operation) =>
+        !(
+          unavailableGitEvidence.has(operation) &&
+          unavailableGitClaims.has(operation)
+        ),
     );
     if (!turn.calls.length && missingGitEvidence.length) {
       if (unverifiedGitClaims < 2) {
@@ -4412,10 +4437,17 @@ export async function* runAgent(
             operationEvidence: structured.data.operationEvidence,
             browserOperationEvidence: structured.data.browserOperationEvidence,
             exitCode: structured.data.exitCode,
-            output:
-              call.name === "process_output"
-                ? String(structured.data.output ?? "").slice(0, 1_000)
-                : undefined,
+            output: [
+              "process_output",
+              "git_status",
+              "git_log",
+              "git_diff",
+              "git_show",
+              "run_command",
+              "ssh_run",
+            ].includes(call.name)
+              ? String(structured.data.output ?? "").slice(0, 1_000)
+              : undefined,
           },
         }),
       });

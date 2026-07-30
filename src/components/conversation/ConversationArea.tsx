@@ -1,6 +1,6 @@
 import { memo, useEffect, useState, type RefObject } from "react";
 import { createPortal } from "react-dom";
-import { Bot, ChevronDown, Settings } from "lucide-react";
+import { Bot, ChevronDown, ChevronUp, Settings } from "lucide-react";
 import type { ConversationTurn } from "../../conversation-window";
 import type {
   AgentActivity,
@@ -119,6 +119,17 @@ export const ConversationArea = memo(function ConversationArea({
       current.start === start && current.end === end ? current : { start, end },
     );
   };
+  const scrollTurnRail = (direction: -1 | 1) => {
+    const rail = turnRailRef.current;
+    if (!rail) return;
+    setTurnPreview(undefined);
+    rail.scrollBy({
+      top:
+        direction *
+        Math.max(TURN_RAIL_ITEM_HEIGHT * 4, rail.clientHeight * 0.55),
+      behavior: "smooth",
+    });
+  };
   useEffect(() => {
     const frame = requestAnimationFrame(updateRailWindow);
     return () => cancelAnimationFrame(frame);
@@ -165,16 +176,28 @@ export const ConversationArea = memo(function ConversationArea({
             } as React.CSSProperties
           }
         >
-          <span
+          <button
+            type="button"
             className={`turn-rail-cue up ${turnRailOverflow.up ? "visible" : ""}`}
+            aria-label="向上浏览较早对话"
+            aria-hidden={!turnRailOverflow.up}
+            tabIndex={turnRailOverflow.up ? 0 : -1}
+            title="向上浏览较早对话"
+            onClick={() => scrollTurnRail(-1)}
           >
-            <ChevronDown size={12} />
-          </span>
-          <span
+            <ChevronUp size={15} strokeWidth={2.4} />
+          </button>
+          <button
+            type="button"
             className={`turn-rail-cue down ${turnRailOverflow.down ? "visible" : ""}`}
+            aria-label="向下浏览较新对话"
+            aria-hidden={!turnRailOverflow.down}
+            tabIndex={turnRailOverflow.down ? 0 : -1}
+            title="向下浏览较新对话"
+            onClick={() => scrollTurnRail(1)}
           >
-            <ChevronDown size={12} />
-          </span>
+            <ChevronDown size={15} strokeWidth={2.4} />
+          </button>
           <div className="turn-rail-line" />
           {railWindow.start > 0 && (
             <div
@@ -187,6 +210,7 @@ export const ConversationArea = memo(function ConversationArea({
             return (
               <button
                 key={turn.id}
+                className="turn-rail-turn"
                 ref={(element) => {
                   if (element) {
                     turnButtonRefs.current.set(turn.id, element);

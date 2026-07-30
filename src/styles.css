@@ -887,52 +887,74 @@ select:focus-visible {
   overscroll-behavior: contain;
   scrollbar-width: none;
   pointer-events: auto;
-  mask-image: linear-gradient(
-    to bottom,
-    transparent,
-    #000 14px,
-    #000 calc(100% - 14px),
-    transparent
-  );
 }
 .turn-rail::-webkit-scrollbar {
   display: none;
 }
 .turn-rail-cue {
   position: sticky;
-  left: 9px;
-  z-index: 4;
-  width: 18px;
-  height: 18px;
+  left: 6px;
+  z-index: 8;
+  width: 28px;
+  height: 28px;
   display: grid;
   place-items: center;
-  margin-bottom: -18px;
+  margin-bottom: -28px;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--accent) 48%, var(--line));
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--surface-raised) 94%, transparent);
   opacity: 0;
-  color: var(--muted);
-  filter: drop-shadow(0 1px 2px var(--surface-raised));
+  visibility: hidden;
+  color: var(--accent);
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--accent) 10%, transparent),
+    0 4px 12px rgb(0 0 0 / 18%);
+  cursor: pointer;
   pointer-events: none;
-  transition: opacity 160ms ease;
+  transform: scale(0.84);
+  transition:
+    opacity 160ms ease,
+    visibility 160ms ease,
+    transform 160ms ease,
+    border-color 120ms ease,
+    background 120ms ease,
+    color 120ms ease;
 }
 .turn-rail-cue.up {
-  top: 4px;
+  top: 5px;
+}
+.turn-rail-cue:hover {
+  border-color: var(--accent);
+  background: var(--surface-raised);
+  color: var(--ink);
+  box-shadow:
+    0 0 0 4px color-mix(in srgb, var(--accent) 16%, transparent),
+    0 5px 14px rgb(0 0 0 / 24%);
+}
+.turn-rail-cue:active {
+  transform: scale(0.93);
+}
+.turn-rail-cue:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 .turn-rail-cue.up svg {
-  transform: rotate(180deg);
-  animation: turn-rail-cue-up 1.35s ease-in-out infinite;
+  animation: turn-rail-cue-up 1.5s ease-in-out infinite;
 }
 .turn-rail-cue.down {
-  top: calc(100% - 22px);
+  top: calc(100% - 33px);
 }
 .turn-rail-cue.down svg {
-  animation: turn-rail-cue-down 1.35s ease-in-out infinite;
+  animation: turn-rail-cue-down 1.5s ease-in-out infinite;
 }
 @keyframes turn-rail-cue-up {
   0%,
   100% {
-    transform: rotate(180deg) translateY(0);
+    transform: translateY(0);
   }
   50% {
-    transform: rotate(180deg) translateY(3px);
+    transform: translateY(-2px);
   }
 }
 @keyframes turn-rail-cue-down {
@@ -941,7 +963,7 @@ select:focus-visible {
     transform: translateY(0);
   }
   50% {
-    transform: translateY(3px);
+    transform: translateY(2px);
   }
 }
 .turn-rail-line {
@@ -960,7 +982,7 @@ select:focus-visible {
   width: 1px;
   background: #d9ddd7;
 }
-.turn-rail > button {
+.turn-rail-turn {
   position: relative;
   width: 40px;
   height: 28px;
@@ -983,11 +1005,11 @@ select:focus-visible {
     height 0.12s,
     background 0.12s;
 }
-.turn-rail > button:hover .turn-tick {
+.turn-rail-turn:hover .turn-tick {
   width: 18px;
   background: #697269;
 }
-.turn-rail > button.active .turn-tick {
+.turn-rail-turn.active .turn-tick {
   left: 8px;
   width: 16px;
   height: 2px;
@@ -5259,8 +5281,8 @@ select:focus {
 :root[data-theme="dark"] .turn-tick {
   background: var(--muted);
 }
-:root[data-theme="dark"] .turn-rail > button:hover .turn-tick,
-:root[data-theme="dark"] .turn-rail > button.active .turn-tick {
+:root[data-theme="dark"] .turn-rail-turn:hover .turn-tick,
+:root[data-theme="dark"] .turn-rail-turn.active .turn-tick {
   background: var(--muted);
 }
 .app-toast > svg {
@@ -6668,7 +6690,10 @@ button[aria-busy="true"] {
 }
 
 .turn-rail-cue.visible {
-  opacity: 0.72;
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transform: scale(1);
 }
 
 @media (max-width: 860px) {
@@ -6870,10 +6895,10 @@ button[aria-busy="true"] {
 .turn-tick {
   background: var(--line-strong);
 }
-.turn-rail > button:hover .turn-tick {
+.turn-rail-turn:hover .turn-tick {
   background: var(--muted);
 }
-.turn-rail > button.active .turn-tick {
+.turn-rail-turn.active .turn-tick {
   background: var(--accent);
 }
 .turn-preview {
@@ -8419,6 +8444,33 @@ button[aria-busy="true"] {
   display: inline;
 }
 
+.streaming-progress-leaf:not([hidden]) {
+  color: var(--muted);
+  animation: streaming-progress-breathe 2.1s ease-in-out infinite;
+}
+
+@supports ((-webkit-background-clip: text) or (background-clip: text)) {
+  .streaming-progress-leaf:not([hidden]) {
+    background: linear-gradient(
+      90deg,
+      var(--muted) 0%,
+      var(--muted) 32%,
+      var(--ink) 50%,
+      var(--muted) 68%,
+      var(--muted) 100%
+    );
+    background-size: 240% 100%;
+    background-position: 100% 0;
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+}
+
+.assistant-tail-state:has(.streaming-progress-leaf:not([hidden])) > svg {
+  animation: pulse 1.45s ease-in-out infinite;
+}
+
 .assistant-tail-state:not(:has(.streaming-status-leaf:not([hidden]))) {
   display: none;
 }
@@ -8541,6 +8593,20 @@ button[aria-busy="true"] {
   }
 }
 
+@keyframes streaming-progress-breathe {
+  0% {
+    opacity: 0.58;
+    background-position: 100% 0;
+  }
+  48% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0.72;
+    background-position: -100% 0;
+  }
+}
+
 @media (max-width: 620px) {
   .execution-summary-head {
     grid-template-columns: 20px minmax(0, 1fr) 14px;
@@ -8564,8 +8630,16 @@ button[aria-busy="true"] {
 
 @media (prefers-reduced-motion: reduce) {
   .execution-summary.is-active > .execution-summary-head::before,
-  .agent-working-head::before {
+  .agent-working-head::before,
+  .streaming-progress-leaf:not([hidden]),
+  .assistant-tail-state:has(.streaming-progress-leaf:not([hidden])) > svg {
     animation: none;
+  }
+
+  .streaming-progress-leaf:not([hidden]) {
+    background: none;
+    color: var(--muted);
+    -webkit-text-fill-color: currentColor;
   }
 }
 
@@ -9377,5 +9451,214 @@ button[aria-busy="true"] {
 
   .composer-right {
     gap: 4px;
+  }
+}
+
+/* Optional remote control stays contained in Settings and does not change the
+   local-first application shell when no account is configured. */
+.remote-settings-section {
+  max-width: 720px;
+}
+
+.remote-local-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 14px;
+  padding: 11px 0 13px;
+  border-bottom: 1px solid var(--line);
+  color: var(--success);
+}
+
+.remote-local-note > svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.remote-local-note > span,
+.remote-account-head > span:nth-child(2) {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.remote-local-note strong,
+.remote-account-head strong {
+  color: var(--ink);
+  font-size: 11px;
+}
+
+.remote-local-note small,
+.remote-account-head small {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.remote-auth-settings,
+.remote-connected-settings {
+  padding: 15px;
+}
+
+.remote-auth-settings {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 13px;
+}
+
+.remote-auth-settings .remote-field:first-child,
+.remote-auth-actions {
+  grid-column: 1 / -1;
+}
+
+.remote-field {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.remote-field input {
+  width: 100%;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  outline: 0;
+  background: var(--surface-raised);
+  color: var(--ink);
+  font-size: 11px;
+}
+
+.remote-field input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+.remote-auth-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 2px;
+}
+
+.remote-auth-actions > button {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 11px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.remote-auth-actions > button:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--ink);
+}
+
+.remote-auth-actions > button.primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.remote-auth-actions > button.danger-text {
+  margin-left: auto;
+  color: var(--danger);
+}
+
+.remote-account-head {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  padding-bottom: 13px;
+  border-bottom: 1px solid var(--line);
+}
+
+.remote-connection-mark {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border-radius: 7px;
+  background: var(--surface-muted);
+  color: var(--muted);
+}
+
+.remote-connection-mark.online {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.remote-account-details {
+  display: grid;
+  gap: 0;
+  margin: 8px 0 12px;
+}
+
+.remote-account-details > div {
+  min-width: 0;
+  min-height: 30px;
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 65%, transparent);
+  font-size: 10px;
+}
+
+.remote-account-details dt {
+  color: var(--muted);
+}
+
+.remote-account-details dd {
+  min-width: 0;
+  overflow: hidden;
+  margin: 0;
+  color: var(--ink);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-inline-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin-top: 10px;
+  padding: 8px 9px;
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, var(--line));
+  border-radius: 6px;
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+@media (max-width: 620px) {
+  .remote-auth-settings {
+    grid-template-columns: 1fr;
+  }
+
+  .remote-auth-settings .remote-field:first-child,
+  .remote-auth-actions {
+    grid-column: auto;
+  }
+
+  .remote-auth-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .remote-auth-actions > button.danger-text {
+    margin-left: 0;
   }
 }

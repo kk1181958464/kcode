@@ -282,6 +282,10 @@ test("recognizes common validation commands without treating run build as an edi
     "mvn test",
     "./gradlew test",
     "python -m pytest",
+    "node --check agreement/agreement.js",
+    "php -l app/Controller.php",
+    "python -m json.tool package.json",
+    "Get-Content package.json -Raw | ConvertFrom-Json",
   ]) {
     const evidence = successfulCodingEvidence([
       {
@@ -296,6 +300,108 @@ test("recognizes common validation commands without treating run build as an edi
     ]);
     assert.equal(evidence.has("validate"), true, command);
   }
+});
+
+test("accepts successful post-edit validation executed through SSH", () => {
+  const calls = {
+    kind: "calls" as const,
+    calls: [
+      {
+        id: "edit",
+        name: "write_file",
+        input: { path: ".remote-edit/app.js" },
+      },
+      {
+        id: "upload",
+        name: "ssh_upload_file",
+        input: {
+          localPath: ".remote-edit/app.js",
+          remotePath: "/var/www/app/app.js",
+        },
+      },
+      {
+        id: "remote-check",
+        name: "ssh_run",
+        input: {
+          command:
+            "cd /var/www/app && node --check app.js && Get-Content package.json -Raw | ConvertFrom-Json",
+        },
+      },
+    ],
+  };
+  const evidence = successfulCodingEvidence([
+    calls,
+    {
+      kind: "result",
+      callId: "edit",
+      content: '{"success":true,"data":{"changed":true}}',
+    },
+    {
+      kind: "result",
+      callId: "upload",
+      content: '{"success":true,"data":{"changed":true}}',
+    },
+    {
+      kind: "result",
+      callId: "remote-check",
+      content: '{"success":true,"data":{"executed":true,"exitCode":0}}',
+    },
+  ]);
+  assert.equal(evidence.has("modify"), true);
+  assert.equal(evidence.has("upload"), true);
+  assert.equal(evidence.has("execute"), true);
+  assert.equal(evidence.has("validate"), true);
+});
+
+test("does not accept a failed SSH syntax check as validation", () => {
+  const evidence = successfulCodingEvidence([
+    {
+      kind: "calls",
+      calls: [
+        {
+          id: "remote-check",
+          name: "ssh_run",
+          input: { command: "node --check broken.js" },
+        },
+      ],
+    },
+    {
+      kind: "result",
+      callId: "remote-check",
+      content: '{"success":false,"data":{"executed":true,"exitCode":1}}',
+    },
+  ]);
+  assert.equal(evidence.has("execute"), true);
+  assert.equal(evidence.has("validate"), false);
+});
+
+test("accepts an explicit pass marker from a custom validation script", () => {
+  const evidence = successfulCodingEvidence([
+    {
+      kind: "calls",
+      calls: [
+        {
+          id: "custom-check",
+          name: "run_command",
+          input: { command: "node $scriptPath $root" },
+        },
+      ],
+    },
+    {
+      kind: "result",
+      callId: "custom-check",
+      content: JSON.stringify({
+        success: true,
+        data: {
+          executed: true,
+          exitCode: 0,
+          output: "VALIDATE PASS: 页面文件与 WXML 结构均通过校验。",
+        },
+      }),
+    },
+  ]);
+  assert.equal(evidence.has("execute"), true);
+  assert.equal(evidence.has("validate"), true);
 });
 
 test("does not turn coding status questions into execution requests", () => {

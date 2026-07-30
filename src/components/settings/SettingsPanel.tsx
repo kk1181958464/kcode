@@ -4,10 +4,14 @@ import {
   Check,
   ChevronDown,
   CircleHelp,
+  Cloud,
   Cpu,
   Download,
+  ExternalLink,
   FileCode2,
   FolderOpen,
+  LogIn,
+  LogOut,
   LockOpen,
   Monitor,
   Moon,
@@ -16,8 +20,11 @@ import {
   Search,
   ShieldCheck,
   SlidersHorizontal,
+  Smartphone,
   Sun,
   Trash2,
+  Wifi,
+  WifiOff,
   X,
 } from "lucide-react";
 import { inferContextWindow, inferReasoningConfig } from "../../types";
@@ -40,6 +47,7 @@ import { effortLabels, savedEfforts } from "../../lib/model-utils";
 import { errorMessage } from "../../lib/format";
 import { isPermissionPolicyCustomized } from "../../permissions";
 import { ProviderModal } from "./ProviderModal";
+import type { RemoteControlState } from "../../remote-types";
 
 export function SettingsPanel({
   providers,
@@ -63,6 +71,8 @@ export function SettingsPanel({
   onPermissionModeChange,
   permissionPolicy,
   onPermissionPolicyChange,
+  remoteControlState,
+  onRemoteControlStateChange,
   onClose,
 }: {
   providers: ProviderConfig[];
@@ -86,6 +96,8 @@ export function SettingsPanel({
   onPermissionModeChange(value: PermissionMode): void;
   permissionPolicy: PermissionPolicy;
   onPermissionPolicyChange(value: PermissionPolicy): void;
+  remoteControlState: RemoteControlState;
+  onRemoteControlStateChange(value: RemoteControlState): void;
   onClose(): void;
 }) {
   const [section, setSection] = useState<SettingsSection>(initialSection);
@@ -103,6 +115,17 @@ export function SettingsPanel({
   const [skillError, setSkillError] = useState("");
   const [contextDirectoryBusy, setContextDirectoryBusy] = useState(false);
   const [contextDirectoryError, setContextDirectoryError] = useState("");
+  const [remoteServerUrl, setRemoteServerUrl] = useState(
+    remoteControlState.serverUrl,
+  );
+  const [remoteUsername, setRemoteUsername] = useState(
+    remoteControlState.username ?? "",
+  );
+  const [remotePassword, setRemotePassword] = useState("");
+  const [remoteBusy, setRemoteBusy] = useState<
+    "login" | "register" | "logout" | "toggle"
+  >();
+  const [remoteError, setRemoteError] = useState("");
   const [storage, setStorage] = useState<{
     tasks: number;
     bytes: number;
@@ -131,6 +154,11 @@ export function SettingsPanel({
     if (section === "general")
       void window.kcode?.state.stats().then(setStorage);
   }, [section]);
+  useEffect(() => {
+    setRemoteServerUrl(remoteControlState.serverUrl);
+    if (remoteControlState.username)
+      setRemoteUsername(remoteControlState.username);
+  }, [remoteControlState.serverUrl, remoteControlState.username]);
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) =>
       event.key === "Escape" && !adding && !editing && onClose();
@@ -167,6 +195,54 @@ export function SettingsPanel({
       setContextDirectoryError(errorMessage(error));
     } finally {
       setContextDirectoryBusy(false);
+    }
+  }
+  async function authenticateRemote(register: boolean) {
+    const remote = window.kcode?.remote;
+    if (!remote) return;
+    setRemoteBusy(register ? "register" : "login");
+    setRemoteError("");
+    try {
+      const state = register
+        ? await remote.register(remoteServerUrl, remoteUsername, remotePassword)
+        : await remote.login(remoteServerUrl, remoteUsername, remotePassword);
+      onRemoteControlStateChange(state);
+      setProviders(await window.kcode.providers.list());
+      setRemotePassword("");
+    } catch (error) {
+      setRemoteError(errorMessage(error));
+    } finally {
+      setRemoteBusy(undefined);
+    }
+  }
+  async function toggleRemoteControl() {
+    const remote = window.kcode?.remote;
+    if (!remote) return;
+    setRemoteBusy("toggle");
+    setRemoteError("");
+    try {
+      onRemoteControlStateChange(
+        await remote.setEnabled(!remoteControlState.enabled),
+      );
+    } catch (error) {
+      setRemoteError(errorMessage(error));
+    } finally {
+      setRemoteBusy(undefined);
+    }
+  }
+  async function logoutRemoteControl() {
+    const remote = window.kcode?.remote;
+    if (!remote) return;
+    setRemoteBusy("logout");
+    setRemoteError("");
+    try {
+      await remote.logout();
+      onRemoteControlStateChange(await remote.state());
+      setRemotePassword("");
+    } catch (error) {
+      setRemoteError(errorMessage(error));
+    } finally {
+      setRemoteBusy(undefined);
     }
   }
   async function removeModel(provider: ProviderConfig, modelId: string) {
@@ -319,6 +395,20 @@ export function SettingsPanel({
               <span>通用</span>
             </button>
             <button
+              className={section === "remote" ? "active" : ""}
+              onClick={() => setSection("remote")}
+            >
+              <Smartphone size={16} />
+              <span>远程控制</span>
+              <small>
+                {remoteControlState.connected
+                  ? "在线"
+                  : remoteControlState.configured
+                    ? "离线"
+                    : ""}
+              </small>
+            </button>
+            <button
               className={section === "models" ? "active" : ""}
               onClick={() => setSection("models")}
             >
@@ -355,6 +445,167 @@ export function SettingsPanel({
             </button>
           </nav>
           <div className="settings-content">
+            {section === "remote" && (
+              <section className="settings-section remote-settings-section">
+                <div className="settings-section-header">
+                  <h3>远程控制</h3>
+                  <p>仅在需要从手机访问这台电脑时登录，本地功能不受影响。</p>
+                </div>
+                <div className="remote-local-note">
+                  <Monitor size={17} />
+                  <span>
+                    <strong>本地模式始终可用</strong>
+                    <small>
+                      未登录或关闭远程控制时，任务和模型仍保存在本机。
+                    </small>
+                  </span>
+                </div>
+                {!remoteControlState.configured ? (
+                  <div className="settings-group remote-auth-settings">
+                    <label className="remote-field">
+                      <span>服务器地址</span>
+                      <input
+                        value={remoteServerUrl}
+                        onChange={(event) =>
+                          setRemoteServerUrl(event.target.value)
+                        }
+                        placeholder="https://remote.example.com"
+                      />
+                    </label>
+                    <label className="remote-field">
+                      <span>账号</span>
+                      <input
+                        value={remoteUsername}
+                        autoComplete="username"
+                        onChange={(event) =>
+                          setRemoteUsername(event.target.value)
+                        }
+                        placeholder="账号或邮箱"
+                      />
+                    </label>
+                    <label className="remote-field">
+                      <span>密码</span>
+                      <input
+                        type="password"
+                        value={remotePassword}
+                        autoComplete="current-password"
+                        onChange={(event) =>
+                          setRemotePassword(event.target.value)
+                        }
+                        placeholder="至少 10 位"
+                      />
+                    </label>
+                    <div className="remote-auth-actions">
+                      <button
+                        className="primary"
+                        disabled={Boolean(remoteBusy)}
+                        onClick={() => void authenticateRemote(false)}
+                      >
+                        {remoteBusy === "login" ? (
+                          <RefreshCw className="spin" size={14} />
+                        ) : (
+                          <LogIn size={14} />
+                        )}
+                        登录并开启
+                      </button>
+                      <button
+                        disabled={Boolean(remoteBusy)}
+                        onClick={() => void authenticateRemote(true)}
+                      >
+                        <Cloud size={14} />
+                        创建账号
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="settings-group remote-connected-settings">
+                    <div className="remote-account-head">
+                      <span
+                        className={`remote-connection-mark ${remoteControlState.connected ? "online" : ""}`}
+                      >
+                        {remoteControlState.connected ? (
+                          <Wifi size={16} />
+                        ) : (
+                          <WifiOff size={16} />
+                        )}
+                      </span>
+                      <span>
+                        <strong>{remoteControlState.username}</strong>
+                        <small>
+                          {remoteControlState.connected
+                            ? "手机可以控制这台电脑"
+                            : remoteControlState.enabled
+                              ? "正在等待重新连接"
+                              : "远程控制已关闭"}
+                        </small>
+                      </span>
+                      <button
+                        className={`setting-switch ${remoteControlState.enabled ? "on" : ""}`}
+                        role="switch"
+                        aria-checked={remoteControlState.enabled}
+                        disabled={remoteBusy === "toggle"}
+                        title={
+                          remoteControlState.enabled
+                            ? "关闭远程控制"
+                            : "开启远程控制"
+                        }
+                        onClick={() => void toggleRemoteControl()}
+                      >
+                        <span />
+                      </button>
+                    </div>
+                    <dl className="remote-account-details">
+                      <div>
+                        <dt>电脑</dt>
+                        <dd>{remoteControlState.deviceName}</dd>
+                      </div>
+                      <div>
+                        <dt>服务</dt>
+                        <dd title={remoteControlState.serverUrl}>
+                          {remoteControlState.serverUrl}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>同步</dt>
+                        <dd>
+                          {remoteControlState.lastSyncedAt
+                            ? new Date(
+                                remoteControlState.lastSyncedAt,
+                              ).toLocaleTimeString()
+                            : "等待任务数据"}
+                        </dd>
+                      </div>
+                    </dl>
+                    <div className="remote-auth-actions">
+                      <button
+                        onClick={() =>
+                          void window.kcode.shell.openExternal(
+                            remoteControlState.serverUrl,
+                          )
+                        }
+                      >
+                        <ExternalLink size={14} />
+                        打开手机版
+                      </button>
+                      <button
+                        className="danger-text"
+                        disabled={remoteBusy === "logout"}
+                        onClick={() => void logoutRemoteControl()}
+                      >
+                        <LogOut size={14} />
+                        退出远程账号
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {(remoteError || remoteControlState.error) && (
+                  <div className="settings-inline-error">
+                    <CircleHelp size={14} />
+                    {remoteError || remoteControlState.error}
+                  </div>
+                )}
+              </section>
+            )}
             {section === "recordings" && (
               <section className="settings-section">
                 <div className="settings-section-header">

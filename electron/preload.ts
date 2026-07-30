@@ -108,6 +108,33 @@ const api: KCodeApi = {
       return () => ipcRenderer.removeListener("browser:state", listener);
     },
   },
+  remote: {
+    state: () => ipcRenderer.invoke("remote:state"),
+    register: (serverUrl, username, password) =>
+      ipcRenderer.invoke("remote:register", serverUrl, username, password),
+    login: (serverUrl, username, password) =>
+      ipcRenderer.invoke("remote:login", serverUrl, username, password),
+    logout: () => ipcRenderer.invoke("remote:logout"),
+    setEnabled: (enabled) => ipcRenderer.invoke("remote:set-enabled", enabled),
+    syncTasks: (tasks) => ipcRenderer.invoke("remote:sync-tasks", tasks),
+    commandResult: (id, ok, error) =>
+      ipcRenderer.invoke("remote:command-result", id, ok, error),
+    ready: () => ipcRenderer.invoke("remote:ready"),
+    onState: (callback) => {
+      const listener = (_e: unknown, state: Parameters<typeof callback>[0]) =>
+        callback(state);
+      ipcRenderer.on("remote:state", listener);
+      return () => ipcRenderer.removeListener("remote:state", listener);
+    },
+    onCommand: (callback) => {
+      const listener = (
+        _e: unknown,
+        envelope: Parameters<typeof callback>[0],
+      ) => callback(envelope);
+      ipcRenderer.on("remote:command", listener);
+      return () => ipcRenderer.removeListener("remote:command", listener);
+    },
+  },
 };
 contextBridge.exposeInMainWorld("kcode", api);
 window.addEventListener("error", (event) =>

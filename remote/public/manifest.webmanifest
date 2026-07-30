@@ -1,0 +1,17 @@
+{
+  "name": "KCode Remote",
+  "short_name": "KCode",
+  "description": "远程查看和控制电脑上的 KCode 任务",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#18181b",
+  "icons": [
+    {
+      "src": "/kcode-icon.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

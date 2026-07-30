@@ -1,4 +1,5 @@
 import type { ChatMessage } from "./types";
+import { visibleAssistantContent } from "./conversation-rendering";
 
 export type ConversationWindow = { start: number; end: number };
 
@@ -37,8 +38,14 @@ export function conversationTurnPreviews(
       id: message.id,
       question: previewText(message.content, 120),
       answer:
-        previewText(assistant?.content || assistant?.error || "", 220) ||
-        (queued ? "消息已排队，等待上一轮完成" : "此轮正在等待回复"),
+        previewText(
+          assistant
+            ? visibleAssistantContent(assistant.content) ||
+                assistant.error ||
+                ""
+            : "",
+          220,
+        ) || (queued ? "消息已排队，等待上一轮完成" : "此轮正在等待回复"),
       messageIndex: index,
     });
   }

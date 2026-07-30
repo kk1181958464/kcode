@@ -19,6 +19,13 @@ type VerificationMessage = Extract<
 
 const CONTINUATION_REQUEST =
   /^(?:好|好的|可以|行|继续|继续吧|开始|开始吧|执行吧|就这么做|按(?:你|上面|这个).{0,12}做|都弄|都改|全部(?:做|弄|改|修改))(?:了|吧|啊|呀)?[。！!，,\s]*$/i;
+const COMMAND_TOOLS = new Set(["run_command", "ssh_run"]);
+
+export function isNotGitRepositoryOutput(value: string) {
+  return /not a git repository|outside (?:a )?git repository|不是\s*(?:一个\s*)?git\s*(?:仓库|存储库)|(?:当前|该|这个|工作区|目录).{0,20}(?:未初始化|没有).{0,8}git|no git repository/i.test(
+    value,
+  );
+}
 
 function relevantRequestContent(history: VerificationHistoryItem[]) {
   const messages = history.filter(
@@ -82,6 +89,95 @@ export function claimedGitOperations(text: string) {
   return operations;
 }
 
+export function claimedUnavailableGitOperations(text: string) {
+  const operations = new Set<GitOperation>();
+  if (
+    /not a git repository|(?:不是|并非).{0,12}git\s*(?:仓库|项目)|(?:没有|未初始化).{0,10}git\s*(?:仓库|项目)|(?:目录|工作区).{0,16}(?:不能|无法).{0,8}(?:提交|commit)/i.test(
+      text,
+    )
+  ) {
+    operations.add("commit");
+    operations.add("push");
+    operations.add("release");
+  }
+  if (
+    /(?:未配置|没有|找不到|未找到|无法确定).{0,24}(?:github\s*仓库|远端仓库|remote|发布目标)|无法.{0,12}(?:推送|push)/i.test(
+      text,
+    )
+  ) {
+    operations.add("push");
+    operations.add("release");
+  }
+  if (
+    /(?:没有|未配置|找不到|未找到).{0,20}(?:actions|工作流|workflow)|无法.{0,12}(?:发布|触发|打包)/i.test(
+      text,
+    )
+  )
+    operations.add("release");
+  return operations;
+}
+
+export function unavailableGitOperations(history: VerificationHistoryItem[]) {
+  const calls = new Map<
+    string,
+    { id: string; name: string; input: Record<string, unknown> }
+  >();
+  for (const item of history)
+    if (item.kind === "calls")
+      for (const call of item.calls) calls.set(call.id, call);
+
+  const operations = new Set<GitOperation>();
+  for (const item of history) {
+    if (item.kind !== "result") continue;
+    const call = calls.get(item.callId);
+    if (!call) continue;
+    const command = COMMAND_TOOLS.has(call.name)
+      ? String(call.input.command ?? "")
+      : "";
+    if (!call.name.startsWith("git_") && !/\b(?:git|gh)\b/i.test(command))
+      continue;
+    let output = "";
+    try {
+      const result = JSON.parse(item.content) as {
+        data?: { output?: unknown };
+      };
+      output = String(result.data?.output ?? "");
+    } catch {
+      continue;
+    }
+    if (isNotGitRepositoryOutput(output)) {
+      operations.add("commit");
+      operations.add("push");
+      operations.add("release");
+      continue;
+    }
+    if (
+      /no such remote|does not appear to be a git repository|(?:未配置|没有).{0,12}(?:远端|remote)/i.test(
+        output,
+      )
+    ) {
+      operations.add("push");
+      operations.add("release");
+    }
+    if (
+      /could not determine.{0,20}repository|no repositories found|未找到.{0,20}(?:github|仓库)|无法确定.{0,20}(?:仓库|发布目标)/i.test(
+        output,
+      ) ||
+      (/\bgh\s+repo\s+list\b/i.test(command) && output.trim() === "[]")
+    ) {
+      operations.add("push");
+      operations.add("release");
+    }
+    if (
+      /workflow not found|no workflows found|未找到.{0,16}(?:工作流|workflow|actions)/i.test(
+        output,
+      )
+    )
+      operations.add("release");
+  }
+  return operations;
+}
+
 export function successfulGitEvidence(history: VerificationHistoryItem[]) {
   const successfulCallIds = new Set<string>();
   for (const item of history) {
@@ -111,7 +207,9 @@ export function successfulGitEvidence(history: VerificationHistoryItem[]) {
     if (!successfulCallIds.has(item.callId)) continue;
     const call = calls.get(item.callId);
     const command =
-      call?.name === "run_command" ? String(call.input.command ?? "") : "";
+      call && COMMAND_TOOLS.has(call.name)
+        ? String(call.input.command ?? "")
+        : "";
     if (/\bgit\s+commit\b/i.test(command)) operations.add("commit");
     if (/\bgit\s+push\b/i.test(command)) {
       operations.add("push");

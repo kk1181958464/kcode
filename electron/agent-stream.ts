@@ -12,10 +12,46 @@ export type AssembledTurn = {
   finishReason: string;
 };
 type PendingCall = { id: string; name: string; args: string; raw?: any };
+type AgentStreamAssemblerOptions = {
+  normalizeCumulativeChatChunks?: boolean;
+};
+
+const INLINE_REASONING_OPEN_TAGS = ["<think>", "<thinking>"];
+const INLINE_REASONING_CLOSE_TAGS = ["</think>", "</thinking>"];
+
+function firstInlineReasoningTag(value: string, tags: readonly string[]) {
+  const lower = value.toLowerCase();
+  let match: { index: number; length: number } | undefined;
+  for (const tag of tags) {
+    const index = lower.indexOf(tag);
+    if (index >= 0 && (!match || index < match.index))
+      match = { index, length: tag.length };
+  }
+  return match;
+}
+
+function pendingInlineReasoningTagLength(
+  value: string,
+  tags: readonly string[],
+) {
+  const lower = value.toLowerCase();
+  const limit = Math.min(
+    lower.length,
+    Math.max(...tags.map((tag) => tag.length - 1)),
+  );
+  for (let length = limit; length > 0; length -= 1) {
+    const suffix = lower.slice(-length);
+    if (tags.some((tag) => tag.startsWith(suffix))) return length;
+  }
+  return 0;
+}
 
 export class AgentStreamAssembler {
   private text = "";
+  private rawText = "";
   private reasoningContent = "";
+  private inlineTextBuffer = "";
+  private inlineReasoning = false;
   private usage = { input: 0, output: 0, cached: 0 };
   private calls = new Map<number, PendingCall>();
   private responseItems: any[] = [];
@@ -26,6 +62,7 @@ export class AgentStreamAssembler {
     private protocol: Protocol,
     private onText?: (delta: string) => void,
     private onReasoning?: (delta: string) => void,
+    private options: AgentStreamAssemblerOptions = {},
   ) {}
   consume(event: any) {
     if (
@@ -58,8 +95,14 @@ export class AgentStreamAssembler {
             args: "",
           };
         if (part.id) current.id = part.id;
-        current.name += part.function?.name || "";
-        current.args += part.function?.arguments || "";
+        current.name += this.normalizeChatChunk(
+          current.name,
+          part.function?.name,
+        );
+        current.args += this.normalizeChatChunk(
+          current.args,
+          part.function?.arguments,
+        );
         this.calls.set(index, current);
       }
       if (event.usage)
@@ -205,6 +248,7 @@ export class AgentStreamAssembler {
     throw new Error("模型响应流意外中断（未收到完整响应）");
   }
   finish(): AssembledTurn {
+    this.flushInlineText();
     const calls = [...this.calls.values()].map((call) => {
       let input: Record<string, unknown> = {};
       try {
@@ -262,14 +306,78 @@ export class AgentStreamAssembler {
   }
   private addText(delta?: string) {
     if (!delta) return;
-    this.text += delta;
-    this.onText?.(delta);
+    const normalized = this.normalizeChatChunk(this.rawText, delta);
+    if (!normalized) return;
+    this.rawText += normalized;
+    this.consumeInlineText(normalized);
   }
   // Reasoning is separate from answer text, but OpenAI-compatible thinking
   // models require it to be passed back with the assistant tool-call message.
   private addReasoning(delta?: string) {
     if (!delta) return;
-    this.reasoningContent += delta;
-    this.onReasoning?.(delta);
+    const normalized = this.normalizeChatChunk(this.reasoningContent, delta);
+    if (!normalized) return;
+    this.reasoningContent += normalized;
+    this.onReasoning?.(normalized);
+  }
+  private appendVisibleText(value: string) {
+    if (!value) return;
+    this.text += value;
+    this.onText?.(value);
+  }
+  private appendInlineReasoning(value: string) {
+    if (!value) return;
+    this.reasoningContent += value;
+    this.onReasoning?.(value);
+  }
+  private consumeInlineText(value: string) {
+    this.inlineTextBuffer += value;
+    while (this.inlineTextBuffer) {
+      const tags = this.inlineReasoning
+        ? INLINE_REASONING_CLOSE_TAGS
+        : INLINE_REASONING_OPEN_TAGS;
+      const match = firstInlineReasoningTag(this.inlineTextBuffer, tags);
+      if (match) {
+        const content = this.inlineTextBuffer.slice(0, match.index);
+        if (this.inlineReasoning) this.appendInlineReasoning(content);
+        else this.appendVisibleText(content);
+        this.inlineTextBuffer = this.inlineTextBuffer.slice(
+          match.index + match.length,
+        );
+        this.inlineReasoning = !this.inlineReasoning;
+        continue;
+      }
+      const pendingLength = pendingInlineReasoningTagLength(
+        this.inlineTextBuffer,
+        tags,
+      );
+      const ready = this.inlineTextBuffer.slice(
+        0,
+        this.inlineTextBuffer.length - pendingLength,
+      );
+      if (this.inlineReasoning) this.appendInlineReasoning(ready);
+      else this.appendVisibleText(ready);
+      this.inlineTextBuffer = this.inlineTextBuffer.slice(
+        this.inlineTextBuffer.length - pendingLength,
+      );
+      break;
+    }
+  }
+  private flushInlineText() {
+    if (!this.inlineTextBuffer) return;
+    if (this.inlineReasoning) this.appendInlineReasoning(this.inlineTextBuffer);
+    else this.appendVisibleText(this.inlineTextBuffer);
+    this.inlineTextBuffer = "";
+  }
+  private normalizeChatChunk(current: string, chunk?: string) {
+    if (!chunk) return "";
+    if (
+      this.protocol === "openai-chat" &&
+      this.options.normalizeCumulativeChatChunks &&
+      current &&
+      chunk.startsWith(current)
+    )
+      return chunk.slice(current.length);
+    return chunk;
   }
 }

@@ -1,3 +1,9 @@
+import type {
+  RemoteCommandEnvelope,
+  RemoteControlState,
+  RemoteTaskSnapshot,
+} from "./remote-types";
+
 export type Protocol =
   | "openai-responses"
   | "openai-chat"
@@ -494,6 +500,26 @@ export type KCodeApi = {
         canGoForward?: boolean;
       }) => void,
     ): () => void;
+  };
+  remote: {
+    state(): Promise<RemoteControlState>;
+    register(
+      serverUrl: string,
+      username: string,
+      password: string,
+    ): Promise<RemoteControlState>;
+    login(
+      serverUrl: string,
+      username: string,
+      password: string,
+    ): Promise<RemoteControlState>;
+    logout(): Promise<void>;
+    setEnabled(enabled: boolean): Promise<RemoteControlState>;
+    syncTasks(tasks: RemoteTaskSnapshot[]): Promise<void>;
+    commandResult(id: string, ok: boolean, error?: string): Promise<void>;
+    ready(): Promise<void>;
+    onState(callback: (state: RemoteControlState) => void): () => void;
+    onCommand(callback: (envelope: RemoteCommandEnvelope) => void): () => void;
   };
 };
 

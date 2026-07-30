@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  claimedUnavailableGitOperations,
   claimedGitOperations,
   missingRequestedGitOperations,
   requestedGitOperations,
   successfulGitEvidence,
+  unavailableGitOperations,
 } from "./git-operation-verification";
 
 test("detects requested and claimed Git release operations", () => {
@@ -62,6 +64,97 @@ test("requires successful tool results as Git evidence", () => {
         { kind: "result", callId: "push", content: '{"success":true}' },
         { kind: "result", callId: "release", content: '{"success":true}' },
       ]),
+    ],
+    ["commit", "push", "release"],
+  );
+});
+
+test("accepts successful Git operations executed through SSH", () => {
+  const calls = {
+    kind: "calls" as const,
+    calls: [
+      {
+        id: "remote-commit",
+        name: "ssh_run",
+        input: { command: "git commit -m release" },
+      },
+      {
+        id: "remote-push",
+        name: "ssh_run",
+        input: { command: "git push origin main" },
+      },
+      {
+        id: "remote-trigger",
+        name: "ssh_run",
+        input: { command: "gh workflow run package.yml" },
+      },
+      {
+        id: "remote-verify",
+        name: "ssh_run",
+        input: { command: "gh run view 123" },
+      },
+    ],
+  };
+  assert.deepEqual(
+    [
+      ...successfulGitEvidence([
+        calls,
+        {
+          kind: "result",
+          callId: "remote-commit",
+          content: '{"success":true}',
+        },
+        {
+          kind: "result",
+          callId: "remote-push",
+          content: '{"success":true}',
+        },
+        {
+          kind: "result",
+          callId: "remote-trigger",
+          content: '{"success":true}',
+        },
+        {
+          kind: "result",
+          callId: "remote-verify",
+          content: '{"success":true}',
+        },
+      ]),
+    ],
+    ["commit", "push", "release"],
+  );
+});
+
+test("treats a verified non-repository as an explicit Git blocker", () => {
+  const history = [
+    {
+      kind: "calls" as const,
+      calls: [
+        {
+          id: "probe",
+          name: "ssh_run",
+          input: { command: "git status --short --branch" },
+        },
+      ],
+    },
+    {
+      kind: "result" as const,
+      callId: "probe",
+      content: JSON.stringify({
+        success: false,
+        data: { output: "fatal: not a git repository (or any parent)" },
+      }),
+    },
+  ];
+  assert.deepEqual(
+    [...unavailableGitOperations(history)],
+    ["commit", "push", "release"],
+  );
+  assert.deepEqual(
+    [
+      ...claimedUnavailableGitOperations(
+        "线上目录不是 Git 仓库，因此无法提交和推送，也不能确定发布目标。",
+      ),
     ],
     ["commit", "push", "release"],
   );

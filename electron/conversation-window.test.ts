@@ -63,3 +63,16 @@ test("builds concise hover previews from each turn's assistant reply", () => {
     },
   ]);
 });
+
+test("removes persisted thinking blocks from hover previews", () => {
+  const turns = conversationTurnPreviews([
+    { id: "u1", role: "user", content: "检查仓库", createdAt: 1 },
+    {
+      id: "a1",
+      role: "assistant",
+      content: "<thinking>inspect repository</thinking>当前目录没有 Git。",
+      createdAt: 2,
+    },
+  ]);
+  assert.equal(turns[0].answer, "当前目录没有 Git。");
+});

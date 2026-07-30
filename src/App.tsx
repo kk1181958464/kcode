@@ -70,6 +70,8 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import appLogo from "../build/icon.png";
 import { inferContextWindow, inferReasoningConfig } from "./types";
+import type { RemoteCommandEnvelope, RemoteControlState } from "./remote-types";
+import { remoteTaskSnapshot } from "./remote-snapshot";
 import {
   AGENT_STATIC_TOKENS,
   CONTEXT_AUTO_COMPACT_RATIO,
@@ -427,6 +429,15 @@ export default function App() {
     () => localStorage.getItem("kcode.contextDirectory") || "",
   );
   const [contextError, setContextError] = useState("");
+  const [remoteControlState, setRemoteControlState] =
+    useState<RemoteControlState>(() => ({
+      configured: false,
+      enabled: false,
+      connected: false,
+      serverUrl: "",
+      deviceId: "",
+      deviceName: "",
+    }));
   useEffect(() => {
     const resetComposerDrag = () => {
       composerDragDepthRef.current = 0;
@@ -537,6 +548,10 @@ export default function App() {
   const activeTaskIdRef = useRef(activeTaskId);
   const displayedTaskIdRef = useRef(activeTaskId);
   const tasksRef = useRef(tasks);
+  const remoteCommandHandlerRef = useRef<
+    (envelope: RemoteCommandEnvelope) => void
+  >(() => undefined);
+  const remoteSyncTimerRef = useRef<number | undefined>(undefined);
   const hydratedTaskIdsRef = useRef(new Set(tasks.map((task) => task.id)));
   const persistedTaskRefsRef = useRef(new Map<string, TaskRecord>());
   const persistedTaskOrderRef = useRef("");
@@ -1293,6 +1308,59 @@ export default function App() {
   useEffect(() => {
     tasksRef.current = tasks;
   }, [tasks]);
+
+  useEffect(() => {
+    const remote = window.kcode?.remote;
+    if (!remote) return;
+    let active = true;
+    void remote.state().then((state) => {
+      if (active) setRemoteControlState(state);
+    });
+    const unsubscribeState = remote.onState((state) => {
+      if (active) setRemoteControlState(state);
+    });
+    const unsubscribeCommand = remote.onCommand((envelope) =>
+      remoteCommandHandlerRef.current(envelope),
+    );
+    void remote.ready();
+    return () => {
+      active = false;
+      unsubscribeState();
+      unsubscribeCommand();
+    };
+  }, []);
+
+  useEffect(() => {
+    const remote = window.kcode?.remote;
+    if (
+      !remote ||
+      !taskStorageReady ||
+      !remoteControlState.configured ||
+      !remoteControlState.enabled
+    )
+      return;
+    if (remoteSyncTimerRef.current)
+      window.clearTimeout(remoteSyncTimerRef.current);
+    remoteSyncTimerRef.current = window.setTimeout(() => {
+      remoteSyncTimerRef.current = undefined;
+      void remote.syncTasks(tasks.map(remoteTaskSnapshot)).catch((error) =>
+        setRemoteControlState((state) => ({
+          ...state,
+          error: errorMessage(error),
+        })),
+      );
+    }, 450);
+    return () => {
+      if (remoteSyncTimerRef.current)
+        window.clearTimeout(remoteSyncTimerRef.current);
+      remoteSyncTimerRef.current = undefined;
+    };
+  }, [
+    tasks,
+    taskStorageReady,
+    remoteControlState.configured,
+    remoteControlState.enabled,
+  ]);
 
   useEffect(() => {
     if (!activeTaskId && tasks[0]) {
@@ -3419,6 +3487,98 @@ export default function App() {
       assistantLengthsRef.current.delete(requestId);
     }
   }
+
+  remoteCommandHandlerRef.current = (envelope) => {
+    void (async () => {
+      try {
+        const command = envelope.command;
+        const current = tasksRef.current.find(
+          (task) => task.id === command.taskId,
+        );
+        if (!current) throw new Error("手机选择的任务已不存在");
+        const task = await ensureTaskLoaded(current);
+        if (command.type === "task.load") {
+          await window.kcode.remote.syncTasks(
+            tasksRef.current
+              .map((item) => (item.id === task.id ? task : item))
+              .map(remoteTaskSnapshot),
+          );
+        } else if (command.type === "task.send") {
+          const content = command.content.trim();
+          if (!content) throw new Error("远程消息不能为空");
+          const user: QueuedChatMessage = {
+            id: uid(),
+            role: "user",
+            content,
+            createdAt: Date.now(),
+            queued: true,
+          };
+          setTasks((all) =>
+            all.map((item) =>
+              item.id === task.id
+                ? {
+                    ...item,
+                    messages: [...item.messages, user],
+                    updatedAt: Date.now(),
+                  }
+                : item,
+            ),
+          );
+          if (displayedTaskIdRef.current === task.id)
+            setMessages((all) => [...all, user]);
+        } else if (command.type === "task.cancel") {
+          if (!task.runningId) throw new Error("任务当前没有在运行");
+          if (
+            displayedTaskIdRef.current === task.id &&
+            currentRequest.current === task.runningId
+          )
+            await cancel();
+          else {
+            await window.kcode.chat.cancel(task.runningId);
+            const completedAt = Date.now();
+            setTasks((all) =>
+              all.map((item) =>
+                item.id === task.id
+                  ? {
+                      ...item,
+                      runningId: undefined,
+                      runStatus: "cancelled",
+                      updatedAt: completedAt,
+                      activities: item.activities.map((activity) =>
+                        activity.requestId === task.runningId &&
+                        (activity.status === "running" ||
+                          activity.status === "waiting")
+                          ? {
+                              ...activity,
+                              status: "failed" as const,
+                              completedAt,
+                              errorSummary: "操作已从手机停止",
+                            }
+                          : activity,
+                      ),
+                    }
+                  : item,
+              ),
+            );
+          }
+        } else if (command.type === "task.approve") {
+          await window.kcode.chat.approve(
+            command.requestId,
+            command.activityId,
+            command.allowed,
+          );
+        }
+        await window.kcode.remote.commandResult(envelope.id, true);
+      } catch (error) {
+        await window.kcode?.remote?.commandResult(
+          envelope.id,
+          false,
+          errorMessage(error),
+        );
+      }
+    })();
+  };
+
   async function resumeCheckpoint(checkpoint: AgentCheckpoint) {
     if (!activeTask || runningId || summaryBusy) return;
     const taskId = activeTask.id;
@@ -4182,6 +4342,8 @@ export default function App() {
               onPermissionModeChange={updatePermissionMode}
               permissionPolicy={permissionPolicy}
               onPermissionPolicyChange={updatePermissionPolicy}
+              remoteControlState={remoteControlState}
+              onRemoteControlStateChange={setRemoteControlState}
               onClose={() => setSettings(false)}
             />
           </Suspense>

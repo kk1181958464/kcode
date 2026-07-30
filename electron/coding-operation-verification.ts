@@ -276,8 +276,21 @@ function hasActualMutation(data: Record<string, unknown> | undefined) {
 }
 
 function isValidationCommand(command: string) {
-  return /(?:^|[;&|]\s*|\{\s*)(?:(?:npm|pnpm|yarn|bun)\s+(?:test|(?:run\s+)?(?:test(?::[\w.-]+)?|typecheck|lint|build|check|verify|compile))|(?:npx|pnpm\s+exec|yarn\s+exec|bunx)\s+(?:vitest|jest|tsc|eslint)|vitest|jest|pytest|python\s+-m\s+(?:pytest|unittest)|phpunit|php\s+artisan\s+test|composer\s+test|go\s+(?:test|vet)|cargo\s+(?:test|check|clippy|build)|dotnet\s+(?:test|build)|(?:\.\/?|\.\\)?(?:mvnw?|gradlew?|gradle)\b[^;&|\n]{0,120}\b(?:test|verify|check|build|package)\b|make\s+(?:test|check)|deno\s+test|tsc)(?:\s|$)/i.test(
-    command.trim(),
+  const value = command.trim();
+  return (
+    /(?:^|[;&|]\s*|\n\s*|\{\s*)(?:(?:npm|pnpm|yarn|bun)\s+(?:test|(?:run\s+)?(?:test(?::[\w.-]+)?|typecheck|lint|build|check|verify|compile))|(?:npx|pnpm\s+exec|yarn\s+exec|bunx)\s+(?:vitest|jest|tsc|vue-tsc|eslint|biome|prettier)|vitest|jest|pytest|python\s+-m\s+(?:pytest|unittest|py_compile|compileall|json\.tool)|phpunit|php(?:\.exe)?\s+(?:-l|artisan\s+test)|composer\s+test|go\s+(?:test|vet)|cargo\s+(?:test|check|clippy|build)|dotnet\s+(?:test|build)|(?:\.\/?|\.\\)?(?:mvnw?|gradlew?|gradle)\b[^;&|\n]{0,120}\b(?:test|verify|check|build|package)\b|make\s+(?:test|check)|deno\s+(?:test|check)|(?:node(?:\.exe)?\s+--check)|(?:bash|sh)\s+-n|ruby\s+-c|jq\s+(?:empty|--exit-status)|(?:vue-)?tsc|eslint|biome\s+(?:check|lint)|prettier\s+--check|Test-Json|ConvertFrom-Json)(?:\s|$)/i.test(
+      value,
+    ) ||
+    /\bJSON\.parse\s*\(|\bConvertFrom-Json\b|\bTest-Json\b|\b(?:test|check|verify|validate)[\w.-]*\.(?:[cm]?js|py|php|sh)\b/i.test(
+      value,
+    )
+  );
+}
+
+function hasSuccessfulValidationOutput(value: unknown) {
+  if (typeof value !== "string") return false;
+  return /\b(?:validation|validate|verification|syntax(?:[ -]check)?|tests?|typecheck|lint|build)\s*(?::|=|-)?\s*(?:pass(?:ed)?|success(?:ful)?|ok)\b|\b(?:pass(?:ed)?|success(?:ful)?|ok)\s*(?::|=|-)?\s*(?:validation|verification|syntax|tests?|typecheck|lint|build)\b|no syntax errors detected|(?:验证|校验|测试|语法检查|构建).{0,24}(?:通过|成功|无错误)/i.test(
+    value,
   );
 }
 
@@ -364,8 +377,9 @@ export function successfulCodingEvidence(
     if (childEvidence.includes("modify")) lastMutation = sequence;
     if (childEvidence.includes("validate")) lastValidation = sequence + 0.5;
 
-    const command =
-      call.name === "run_command" ? String(call.input.command ?? "") : "";
+    const command = ["run_command", "ssh_run"].includes(call.name)
+      ? String(call.input.command ?? "")
+      : "";
     // Command text only describes intent. It cannot prove that the workspace
     // actually changed (for example `2>$null` or a no-op formatter). Mutation
     // evidence must come from structured tool-result metadata.
@@ -394,7 +408,7 @@ export function successfulCodingEvidence(
       data.changed !== true
     )
       operations.add("inspect");
-    if (call.name === "run_command") {
+    if (["run_command", "ssh_run"].includes(call.name)) {
       if (
         (successful || (executed && data?.exitCode === 1)) &&
         /\b(?:cat|type|findstr|rg|grep|git\s+(?:status|diff|log|show))\b/i.test(
@@ -402,7 +416,12 @@ export function successfulCodingEvidence(
         )
       )
         operations.add("inspect");
-      if (successful && executed && isValidationCommand(command))
+      if (
+        successful &&
+        executed &&
+        (isValidationCommand(command) ||
+          hasSuccessfulValidationOutput(data?.output))
+      )
         lastValidation = sequence;
     }
     if (call.name === "diagnostics" && successful && data?.executed === true) {

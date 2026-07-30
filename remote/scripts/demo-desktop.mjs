@@ -1,0 +1,109 @@
+import WebSocket from "ws";
+
+const server = process.env.KCODE_DEMO_SERVER || "http://127.0.0.1:8787";
+const username = process.env.KCODE_DEMO_USERNAME;
+const password = process.env.KCODE_DEMO_PASSWORD;
+if (!username || !password)
+  throw new Error("KCODE_DEMO_USERNAME and KCODE_DEMO_PASSWORD are required");
+
+const login = await fetch(`${server}/api/auth/login`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ username, password, clientType: "desktop" }),
+});
+const auth = await login.json();
+if (!login.ok || !auth.token) throw new Error(auth.error || "login failed");
+
+const wsUrl = new URL(server);
+wsUrl.protocol = wsUrl.protocol === "https:" ? "wss:" : "ws:";
+wsUrl.pathname = "/ws";
+wsUrl.search = new URLSearchParams({
+  deviceId: "demo-windows-pc",
+  name: "工作电脑",
+  platform: "win32",
+  version: "demo",
+}).toString();
+
+const socket = new WebSocket(wsUrl, ["kcode-v1", `kcode-token.${auth.token}`]);
+const now = Date.now();
+const tasks = [
+  {
+    id: "demo-task",
+    name: "优化 KCode 远程控制",
+    workspaceName: "kcode",
+    createdAt: now - 3_600_000,
+    updatedAt: now,
+    runStatus: "running",
+    runningId: "demo-run",
+    modelSelection: "openai|gpt-5.6-sol",
+    messages: [
+      {
+        id: "user-1",
+        role: "user",
+        content: "检查手机版任务同步和远程审批流程。",
+        createdAt: now - 180_000,
+      },
+      {
+        id: "assistant-1",
+        role: "assistant",
+        content:
+          "我已经完成账号连接和任务快照同步，现在正在验证手机端发送、停止和审批操作。",
+        createdAt: now - 120_000,
+        model: "gpt-5.6-sol",
+      },
+    ],
+    activities: [
+      {
+        id: "activity-1",
+        requestId: "demo-run",
+        tool: "apply_patch",
+        status: "completed",
+        title: "接入远程任务快照",
+        narrative: "让手机断线重连后仍能恢复任务详情。",
+        startedAt: now - 90_000,
+        completedAt: now - 70_000,
+        path: "src/remote-snapshot.ts",
+        additions: 86,
+        deletions: 0,
+      },
+      {
+        id: "activity-2",
+        requestId: "demo-run",
+        tool: "run_command",
+        status: "running",
+        title: "验证移动端连接",
+        narrative: "检查手机消息是否能准确路由到当前电脑。",
+        startedAt: now - 35_000,
+      },
+    ],
+    usage: { input: 18240, output: 1368, cached: 9200 },
+    durationMs: 155000,
+  },
+];
+
+function publish() {
+  socket.send(JSON.stringify({ type: "tasks.replace", tasks }));
+}
+
+socket.on("open", publish);
+socket.on("message", (raw) => {
+  const message = JSON.parse(raw.toString());
+  if (message.type !== "command") return;
+  const command = message.command;
+  if (command.type === "task.send") {
+    tasks[0].messages.push({
+      id: `remote-${Date.now()}`,
+      role: "user",
+      content: command.content,
+      createdAt: Date.now(),
+    });
+    tasks[0].updatedAt = Date.now();
+    publish();
+  }
+  socket.send(
+    JSON.stringify({ type: "command.result", id: message.id, ok: true }),
+  );
+});
+
+process.on("SIGINT", () => socket.close());
+process.on("SIGTERM", () => socket.close());
