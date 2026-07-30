@@ -4,11 +4,39 @@ import {
   claimedCodingOperations,
   claimsNoChangeNeeded,
   hasVerifiedNoChangeEvidence,
+  isAdvisoryOnlyRequest,
   missingRequestedCodingOperations,
   requestedCodingOperations,
   shouldRequireCodingTool,
   successfulCodingEvidence,
 } from "./coding-operation-verification";
+
+test("keeps explicit no-edit architecture questions out of coding verification", () => {
+  const content =
+    "你先大概看下，我想加一个手机版，能在手机上控制电脑上，应该怎么做，只说不改";
+  assert.equal(isAdvisoryOnlyRequest(content), true);
+  assert.deepEqual(
+    [
+      ...requestedCodingOperations([
+        { kind: "message", role: "user", content },
+      ]),
+    ],
+    [],
+  );
+});
+
+test("does not treat a scoped no-change clause as an advisory-only request", () => {
+  const content = "不要修改颜色，把输入框布局优化一下";
+  assert.equal(isAdvisoryOnlyRequest(content), false);
+  assert.deepEqual(
+    [
+      ...requestedCodingOperations([
+        { kind: "message", role: "user", content },
+      ]),
+    ],
+    ["modify"],
+  );
+});
 
 test("detects coding work requested and falsely claimed by a text-only reply", () => {
   assert.deepEqual(

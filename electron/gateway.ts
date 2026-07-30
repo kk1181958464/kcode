@@ -13,6 +13,29 @@ const apiEndpoint = (baseUrl: string, resource: string) => {
   return `${base}${/\/v1$/i.test(base) ? "" : "/v1"}/${resource}`;
 };
 
+function discoveredImageSupport(model: Record<string, unknown>) {
+  const architecture =
+    model.architecture && typeof model.architecture === "object"
+      ? (model.architecture as Record<string, unknown>)
+      : undefined;
+  const modalityLists = [
+    model.input_modalities,
+    architecture?.input_modalities,
+  ];
+  for (const value of modalityLists) {
+    if (!Array.isArray(value)) continue;
+    return value.some((item) => /image|vision|multimodal/i.test(String(item)));
+  }
+  const capabilities =
+    model.capabilities && typeof model.capabilities === "object"
+      ? (model.capabilities as Record<string, unknown>)
+      : undefined;
+  for (const key of ["vision", "image_input", "imageInput"]) {
+    if (typeof capabilities?.[key] === "boolean") return capabilities[key];
+  }
+  return undefined;
+}
+
 async function checkedFetch(url: string, init: RequestInit) {
   const response = await networkFetch(url, init);
   if (!response.ok) {
@@ -85,15 +108,16 @@ export async function discoverModels(
     headers,
   });
   const json = (await response.json()) as {
-    data?: { id: string; display_name?: string }[];
+    data?: Record<string, unknown>[];
   };
   return (json.data ?? []).map((model) => ({
-    id: `${provider.id}:${model.id}`,
-    modelId: model.id,
-    displayName: model.display_name || model.id,
+    id: `${provider.id}:${String(model.id)}`,
+    modelId: String(model.id),
+    displayName: String(model.display_name || model.id),
     protocol: provider.protocol,
-    contextWindow: inferContextWindow(model.id),
-    ...inferReasoningConfig(model.id, provider.protocol),
+    supportsImages: discoveredImageSupport(model),
+    contextWindow: inferContextWindow(String(model.id)),
+    ...inferReasoningConfig(String(model.id), provider.protocol),
   }));
 }
 

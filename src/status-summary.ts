@@ -1,4 +1,5 @@
 import type { AgentActivity, AgentToolName } from "./types";
+import type { TaskRunStatus } from "./task-status";
 
 const FILE_TOOLS = new Set<AgentToolName>([
   "write_file",
@@ -26,7 +27,20 @@ export type StatusFileChange = {
   path: string;
   additions: number;
   deletions: number;
+  diffs: string[];
 };
+
+export type StatusOverviewTone = "running" | "success" | "failure" | "neutral";
+
+/** The rail headline describes the request outcome, not an individual step. */
+export function statusOverviewTone(
+  runStatus: TaskRunStatus,
+): StatusOverviewTone {
+  if (runStatus === "running") return "running";
+  if (runStatus === "completed") return "success";
+  if (runStatus === "failed") return "failure";
+  return "neutral";
+}
 
 export function latestRequestActivities(
   activities: AgentActivity[],
@@ -85,9 +99,12 @@ export function summarizeStatusActivities(activities: AgentActivity[]) {
         path: change.path,
         additions: 0,
         deletions: 0,
+        diffs: [],
       };
       current.additions += change.additions;
       current.deletions += change.deletions;
+      const diff = change.diff || (changes.length === 1 ? activity.diff : "");
+      if (diff && !current.diffs.includes(diff)) current.diffs.push(diff);
       files.set(change.path, current);
     }
   }

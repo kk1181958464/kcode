@@ -92,6 +92,8 @@ export type ModelConfig = {
   modelId: string;
   displayName: string;
   protocol: Protocol;
+  /** Optional provider metadata. Unknown means the runtime should probe once. */
+  supportsImages?: boolean;
   contextWindow?: number;
   reasoningMode?: ReasoningMode;
   reasoningEfforts?: ReasoningEffort[];
@@ -217,6 +219,12 @@ export type GitWorkspaceState = {
   error?: string;
 };
 
+export type GitFileDiff = {
+  path: string;
+  diff: string;
+  error?: string;
+};
+
 export type AgentFileChange = {
   path: string;
   diff?: string;
@@ -233,6 +241,11 @@ export type AgentActivity = {
   startedAt: number;
   completedAt?: number;
   input: Record<string, unknown>;
+  /** Concise user-facing explanation for why this step is being executed. */
+  narrative?: string;
+  /** Numbered plan captured from the model's pre-tool narration. */
+  planSteps?: string[];
+  planStep?: number;
   output?: string;
   errorSummary?: string;
   path?: string;
@@ -452,6 +465,7 @@ export type KCodeApi = {
   workspace: {
     pickFolder(): Promise<WorkspaceFolder | null>;
     gitState(path: string, includeDiff?: boolean): Promise<GitWorkspaceState>;
+    gitFileDiff(path: string, filePath: string): Promise<GitFileDiff>;
     showFolderMenu(path: string): Promise<void>;
   };
   browser: {

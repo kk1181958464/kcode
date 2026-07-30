@@ -28,6 +28,16 @@ import {
   type Protocol,
   type ReasoningEffort,
 } from "../src/types";
+import {
+  imageInputSupport,
+  isUnsupportedImageInputError,
+} from "../src/model-capabilities";
+import {
+  activityExecutionNarrative,
+  nextExecutionNarrative,
+  normalizeExecutionNarrative,
+} from "../src/execution-narrative";
+import { extractExecutionPlan, sameExecutionPlan } from "../src/execution-plan";
 import { isCasualGreeting } from "../src/intent";
 import {
   permissionCategoryForCommand,
@@ -62,6 +72,7 @@ import {
 import {
   claimsNoChangeNeeded,
   hasVerifiedNoChangeEvidence,
+  isAdvisoryOnlyRequest,
   missingRequestedCodingOperations,
   requestedCodingOperations,
   shouldRequireCodingTool,
@@ -214,6 +225,7 @@ type Turn = {
 type ModelTurnRuntime = {
   provider: Awaited<ReturnType<typeof getProviderWithKey>>;
   activeSkills: string;
+  omitImageInputs?: boolean;
 };
 type HistoryItem =
   | {
@@ -225,6 +237,20 @@ type HistoryItem =
     }
   | { kind: "calls"; calls: ToolCall[]; rawCalls: unknown[] }
   | { kind: "result"; callId: string; content: string };
+
+function hasImageAttachments(history: HistoryItem[]) {
+  return history.some(
+    (item) => item.kind === "message" && Boolean(item.images?.length),
+  );
+}
+
+function historyWithoutImages(history: HistoryItem[]): HistoryItem[] {
+  return history.map((item) =>
+    item.kind === "message" && item.images?.length
+      ? { ...item, images: undefined }
+      : item,
+  );
+}
 
 function compactEvidenceCall(call: ToolCall) {
   const input: Record<string, unknown> = {};
@@ -3018,6 +3044,12 @@ async function modelTurn(
   )!;
   const protocol =
     protocolOverride ?? effectiveOpenAiProtocol(provider.id, provider.protocol);
+  const imageSupport = imageInputSupport(selectedModel, protocol);
+  const omitImageInputs =
+    runtime?.omitImageInputs === true || imageSupport === "unsupported";
+  const payloadHistory = omitImageInputs
+    ? historyWithoutImages(history)
+    : history;
   const reasoning = {
     ...inferReasoningConfig(selectedModel.modelId, protocol),
     reasoningMode:
@@ -3042,10 +3074,19 @@ async function modelTurn(
   const latestUserRequest =
     [...request.messages].reverse().find((message) => message.role === "user")
       ?.content ?? "";
-  const activeSkills =
+  const activeSkills = [
     runtime?.activeSkills ??
-    (await loadActiveSkillInstructions(latestUserRequest));
+      (await loadActiveSkillInstructions(latestUserRequest)),
+    "When a task has multiple independent phases, begin with a short numbered plan (1., 2., 3. …). Before every tool-call group, write one or two concise user-facing progress sentences explaining which plan step you are executing and why. After a failed tool result, explain how you are adjusting the approach before the next tool call. Never claim success before a tool result confirms it.",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
   const system = `${isolation.boundary}\nYou are a coding agent working in ${root}. Use the provided native tools to inspect and modify the project. Each run_command invocation uses a fresh PowerShell process, so environment variable changes do not persist to later commands; combine dependent setup and execution in one command. Prefer apply_patch for precise edits and write_file for new or complete files. Never invoke apply_patch, file deletion, file moves, or directory operations through run_command when a native tool exists. File tool paths accept absolute paths, including other drives (for example D:\\B on Windows); use them to read or write files the user explicitly points to outside ${root}, and resolve relative paths against ${root}. When you mention a file in your reply, always write its full workspace-relative path (for example src/views/Gooddetail.vue, not just Gooddetail.vue) so the user can tell exactly which file it is. Use web_search for current or externally verifiable information and fetch_url to inspect primary sources; preserve source URLs in the final answer. For interactive or authenticated sites use browser_open, browser_snapshot, browser_click, and browser_type. Credentials explicitly supplied by the user may be entered directly with browser_type. Browser recording is opt-in: call browser_record_start only after an explicit user request such as 开始录制, and call browser_record_stop when the user asks to stop or generate Python. Never record ordinary browsing by default. For independent work that can run concurrently, use spawn_agent with self-contained, non-overlapping tasks, then wait_agent before giving a final answer. Use list_agents, message_agent, and stop_agent to coordinate them. Subagents inherit this task's model, workspace, reasoning, and permissions. For remote servers, call ssh_connect with credentials explicitly supplied by the user, then use ssh_run and the SSH SFTP tools. Use ssh_upload_file to send a local file to the server and ssh_download_file to fetch a remote file to a local path; these transfer binary content directly, unlike ssh_write_file which only writes inline UTF-8 text. SSH exec sessions are non-interactive and may not load shell profiles; when a remote command depends on profile-defined PATH values, invoke the appropriate login shell explicitly. SSH host keys are not verified. Credentials supplied by the user may appear in commands, tool activity details, subagent tasks, and conversation text. For databases, use mysql_connect for direct MySQL access or mysql_connect_via_ssh for an SSH tunnel, then mysql_query; use ? placeholders and values for user-provided data when practical. Public direct MySQL connections use TLS by default and you must not retry with ssl=false unless the user explicitly approves. If CAPTCHA, SMS, passkey, or two-factor verification appears, pause and ask the user to complete it in the visible browser. Do not claim an action succeeded until its tool result confirms it. Before finishing, compare every action requested by the user with successful tool results. A file task is complete only after a mutating tool produced an actual change; a validation is complete only after it really ran successfully after the latest change; a background service is started only after process_output confirms it is running. If no change was needed or an action could not be completed, state that explicitly instead of saying it was done.${activeSkills ? `\n\n${activeSkills}` : ""}${request.recoveryContext ? `\n\n<recovery_context>${request.recoveryContext}</recovery_context>\nThis task resumed after an interruption. Verify prior side effects before repeating them, and recreate any interrupted subagent work that is still needed.` : ""}`;
+  const imageInputNotice =
+    omitImageInputs && hasImageAttachments(history)
+      ? "\n\n当前模型不支持图片输入，历史图片附件已被省略。请只依据文字、上下文文件和工作区继续，不要假装看到了图片。"
+      : "";
+  const payloadSystem = `${system}${imageInputNotice}`;
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...isolation.headers,
@@ -3060,8 +3101,10 @@ async function modelTurn(
     body: Record<string, unknown> = {};
   if (protocol === "openai-chat") {
     url = apiEndpoint(provider.baseUrl, "chat/completions");
-    const messages: unknown[] = [{ role: "system", content: system }];
-    for (const item of history) {
+    const messages: unknown[] = [
+      { role: "system", content: payloadSystem },
+    ];
+    for (const item of payloadHistory) {
       if (item.kind === "message") {
         const content = item.images?.length
           ? [
@@ -3138,8 +3181,8 @@ async function modelTurn(
     };
   } else if (protocol === "openai-responses") {
     url = apiEndpoint(provider.baseUrl, "responses");
-    const input: unknown[] = [{ role: "developer", content: system }];
-    for (const item of history) {
+    const input: unknown[] = [{ role: "developer", content: payloadSystem }];
+    for (const item of payloadHistory) {
       if (item.kind === "message")
         input.push({
           role: item.role,
@@ -3187,7 +3230,7 @@ async function modelTurn(
   } else if (protocol === "anthropic-messages") {
     url = apiEndpoint(provider.baseUrl, "messages");
     const messages: { role: string; content: unknown }[] = [];
-    for (const item of history) {
+    for (const item of payloadHistory) {
       if (item.kind === "message")
         messages.push({
           role: item.role,
@@ -3231,7 +3274,7 @@ async function modelTurn(
     }
     body = {
       model: request.modelId,
-      system,
+      system: payloadSystem,
       messages,
       max_tokens: 4096,
       stream: true,
@@ -3252,7 +3295,7 @@ async function modelTurn(
   } else {
     url = `${trim(provider.baseUrl)}/v1beta/models/${encodeURIComponent(request.modelId)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(provider.apiKey)}`;
     const contents: { role: string; parts: unknown[] }[] = [];
-    for (const item of history) {
+    for (const item of payloadHistory) {
       if (item.kind === "message")
         contents.push({
           role: item.role === "assistant" ? "model" : "user",
@@ -3276,7 +3319,7 @@ async function modelTurn(
               })),
         });
       else {
-        const call = [...history]
+        const call = [...payloadHistory]
           .reverse()
           .find(
             (entry) =>
@@ -3296,7 +3339,7 @@ async function modelTurn(
       }
     }
     body = {
-      systemInstruction: { parts: [{ text: system }] },
+      systemInstruction: { parts: [{ text: payloadSystem }] },
       contents,
       generationConfig:
         reasoning.reasoningMode === "budget"
@@ -3353,7 +3396,7 @@ async function modelTurn(
     status: response.status,
     requestBytes: Buffer.byteLength(serializedBody, "utf8"),
     toolCount: runtimeTools.length,
-    historyHash: historyFingerprint(history),
+    historyHash: historyFingerprint(payloadHistory),
     upstreamRequestId:
       response.headers.get("x-request-id") ??
       response.headers.get("request-id") ??
@@ -3552,10 +3595,37 @@ export async function* runAgent(
   const latestUserRequest =
     [...request.messages].reverse().find((message) => message.role === "user")
       ?.content ?? "";
+  const advisoryOnly = isAdvisoryOnlyRequest(latestUserRequest);
+  const activeSkillInstructions = await loadActiveSkillInstructions(
+    latestUserRequest,
+  );
   const modelRuntime: ModelTurnRuntime = {
     provider: await getProviderWithKey(request.providerId),
-    activeSkills: await loadActiveSkillInstructions(latestUserRequest),
+    activeSkills: [
+      activeSkillInstructions,
+      advisoryOnly
+        ? "本轮用户明确要求只咨询、不改动。可以使用只读工具核对信息，但不得修改文件、运行会产生副作用的命令，也不得执行 Git 或发布操作；直接给出方案、步骤和取舍。"
+        : "",
+    ]
+      .filter(Boolean)
+      .join("\n\n"),
   };
+  const requestContainsImages = hasImageAttachments(history);
+  const selectedRuntimeModel = modelRuntime.provider.models.find(
+    (model) => model.modelId === request.modelId,
+  );
+  if (
+    requestContainsImages &&
+    selectedRuntimeModel &&
+    imageInputSupport(
+      selectedRuntimeModel,
+      effectiveOpenAiProtocol(
+        modelRuntime.provider.id,
+        modelRuntime.provider.protocol,
+      ),
+    ) === "unsupported"
+  )
+    modelRuntime.omitImageInputs = true;
   const usage = { input: 0, output: 0, cached: 0 };
   let lastPromptTokens = 0;
   let round = 0,
@@ -3566,8 +3636,20 @@ export async function* runAgent(
     unverifiedCodingClaims = 0,
     autoContinues = 0,
     emptyTurns = 0;
+  let previousRoundActivity: AgentActivity | undefined;
+  let previousRoundFailure: AgentActivity | undefined;
+  let activePlanSteps: string[] = [];
+  let planCursor = 0;
+  let imageFallbackNoticeSent = false;
   while (!signal.aborted) {
     round += 1;
+    yield {
+      type: "progress",
+      message: nextExecutionNarrative(
+        previousRoundActivity,
+        previousRoundFailure,
+      ),
+    };
     if (
       request.contextWindow &&
       lastPromptTokens >= request.contextWindow * 0.92
@@ -3589,6 +3671,8 @@ export async function* runAgent(
           startedAt: Date.now(),
           completedAt: Date.now(),
           input: {},
+          narrative:
+            "上下文接近预算，先压缩较早的运行记录，保留当前任务所需事实后继续执行。",
           output: `已将 ${before} 条运行记录压缩为 ${history.length} 条，Agent 将继续执行`,
           round,
           progress: "advanced",
@@ -3604,43 +3688,85 @@ export async function* runAgent(
         content: `<parent_instruction>${message}</parent_instruction>`,
       });
     let turn: Turn | undefined,
-      streamedText = "";
+      streamedText = "",
+      streamedReasoning = "";
     const bufferModelText =
       browserIsOpen(browserSessionId) ||
       requestedBrowserOps.size > 0 ||
       requestedGitOps.size > 0 ||
       requestedCodingOps.size > 0 ||
       listSubagents(requestId).some((agent) => !agent.collected);
-    for await (const event of streamModelTurn(
-      root,
-      requestId,
-      request,
-      history,
-      signal,
-      toolsEnabled,
-      shouldRequireCodingTool(
-        request.modelId,
-        requestedCodingOps,
-        successfulCodingEvidence(evidenceHistory),
-      ),
-      modelRuntime,
-    )) {
-      if (event.type === "complete") turn = event.turn;
-      else if (event.type === "reasoning")
-        yield { type: "reasoning", delta: event.delta };
-      else if (event.type === "progress")
-        yield { type: "progress", message: event.message };
-      else if (event.type === "text_reset") {
-        // Upstream broke mid-answer and is being retried; drop what we streamed
-        // so the fresh attempt does not append onto a truncated fragment.
-        streamedText = "";
-        if (!bufferModelText) yield { type: "text_reset" };
-      } else {
-        streamedText += event.delta;
-        if (!bufferModelText) yield { type: "text", delta: event.delta };
+    if (
+      requestContainsImages &&
+      modelRuntime.omitImageInputs &&
+      !imageFallbackNoticeSent
+    ) {
+      imageFallbackNoticeSent = true;
+      yield {
+        type: "progress",
+        message:
+          "当前模型不支持图片输入，已跳过图片附件，继续根据文字和工作区内容处理…",
+      };
+    }
+    let imageRetryAttempted = false;
+    for (;;) {
+      try {
+        for await (const event of streamModelTurn(
+          root,
+          requestId,
+          request,
+          history,
+          signal,
+          toolsEnabled,
+          shouldRequireCodingTool(
+            request.modelId,
+            requestedCodingOps,
+            successfulCodingEvidence(evidenceHistory),
+          ),
+          modelRuntime,
+        )) {
+          if (event.type === "complete") turn = event.turn;
+          else if (event.type === "reasoning") {
+            streamedReasoning += event.delta;
+            yield { type: "reasoning", delta: event.delta };
+          } else if (event.type === "progress")
+            yield { type: "progress", message: event.message };
+          else if (event.type === "text_reset") {
+            // Upstream broke mid-answer and is being retried; drop what we streamed
+            // so the fresh attempt does not append onto a truncated fragment.
+            streamedText = "";
+            if (!bufferModelText) yield { type: "text_reset" };
+          } else {
+            streamedText += event.delta;
+            if (!bufferModelText) yield { type: "text", delta: event.delta };
+          }
+        }
+        break;
+      } catch (error) {
+        const canRetryWithoutImages =
+          requestContainsImages &&
+          !imageRetryAttempted &&
+          !modelRuntime.omitImageInputs &&
+          !turn &&
+          !streamedText &&
+          !streamedReasoning &&
+          isUnsupportedImageInputError(error);
+        if (!canRetryWithoutImages) throw error;
+        imageRetryAttempted = true;
+        modelRuntime.omitImageInputs = true;
+        if (!imageFallbackNoticeSent) {
+          imageFallbackNoticeSent = true;
+          yield {
+            type: "progress",
+            message:
+              "上游模型不接受图片输入，已自动跳过图片附件并用文字上下文重试…",
+          };
+        }
       }
     }
     if (!turn) throw new Error("模型流结束但没有完成结果");
+    if (turn.reasoningContent && !streamedReasoning.trim())
+      yield { type: "reasoning", delta: turn.reasoningContent };
     lastPromptTokens = turn.usage.input;
     usage.input += turn.usage.input;
     usage.output += turn.usage.output;
@@ -3801,6 +3927,21 @@ export async function* runAgent(
         continue;
       }
     }
+    const roundNarrative = turn.calls.length
+      ? normalizeExecutionNarrative(turn.text)
+      : "";
+    const detectedPlan = extractExecutionPlan(turn.text);
+    if (
+      detectedPlan.length >= 2 &&
+      !sameExecutionPlan(activePlanSteps, detectedPlan)
+    ) {
+      activePlanSteps = detectedPlan;
+      planCursor = 0;
+    }
+    const planSteps = activePlanSteps.length ? activePlanSteps : undefined;
+    const planStep = planSteps
+      ? Math.min(planCursor, planSteps.length - 1)
+      : undefined;
     if (turn.text) {
       history.push({
         kind: "message",
@@ -3808,10 +3949,13 @@ export async function* runAgent(
         content: turn.text,
         reasoningContent: turn.reasoningContent,
       });
-      // A tool-call round is only an interim plan. Do not show completion
-      // wording before the tools have actually run; the verified final round
-      // will provide the user-facing conclusion.
-      if (!turn.calls.length && (bufferModelText || !streamedText))
+      // Coding runs buffer model text until the turn shape is known. Once the
+      // turn contains tools, the text is a progress update and belongs in the
+      // visible timeline before those activities. The final no-tool turn is
+      // still the verified conclusion.
+      if (turn.calls.length && bufferModelText)
+        yield { type: "text", delta: turn.text };
+      else if (!turn.calls.length && (bufferModelText || !streamedText))
         yield { type: "text", delta: turn.text };
     }
     if (!turn.calls.length) {
@@ -3852,6 +3996,8 @@ export async function* runAgent(
     });
     const roundFingerprints: string[] = [];
     let roundAdvanced = false;
+    let roundLastActivity: AgentActivity | undefined;
+    let roundFailedActivity: AgentActivity | undefined;
     for (const call of turn.calls) {
       const titles: Record<AgentToolName, string> = {
         list_directory: "查看目录",
@@ -3928,6 +4074,9 @@ export async function* runAgent(
                   message: String(call.input.message || ""),
                 }
               : call.input,
+        narrative: roundNarrative || undefined,
+        planSteps,
+        planStep,
         path:
           typeof call.input.path === "string"
             ? call.input.path
@@ -3940,6 +4089,7 @@ export async function* runAgent(
             : undefined,
         round,
       };
+      activity.narrative ||= activityExecutionNarrative(activity);
       const browserTool = call.name.startsWith("browser_");
       const mysqlSql =
         call.name === "mysql_query" ? String(call.input.sql || "").trim() : "";
@@ -4024,6 +4174,8 @@ export async function* runAgent(
             ? "只读模式已阻止此操作"
             : "当前权限策略已阻止此操作";
         yield { type: "activity", activity };
+        roundLastActivity = activity;
+        roundFailedActivity = activity;
         history.push({
           kind: "result",
           callId: call.id,
@@ -4047,6 +4199,8 @@ export async function* runAgent(
           activity.completedAt = Date.now();
           activity.output = "用户拒绝了此操作";
           yield { type: "activity", activity };
+          roundLastActivity = activity;
+          roundFailedActivity = activity;
           history.push({
             kind: "result",
             callId: call.id,
@@ -4197,6 +4351,9 @@ export async function* runAgent(
       roundAdvanced ||= advanced;
       activity.progress = advanced ? "advanced" : "unchanged";
       yield { type: "activity", activity };
+      roundLastActivity = activity;
+      if (activity.status === "failed" || activity.status === "denied")
+        roundFailedActivity = activity;
       const structured: StructuredToolResult = {
         success: activity.status === "success",
         summary:
@@ -4263,6 +4420,10 @@ export async function* runAgent(
         }),
       });
     }
+    previousRoundActivity = roundLastActivity;
+    previousRoundFailure = roundFailedActivity;
+    if (activePlanSteps.length && !roundFailedActivity && roundLastActivity)
+      planCursor = Math.min(planCursor + 1, activePlanSteps.length - 1);
     const roundFingerprint = roundFingerprints.join("|");
     const madeProgress = roundAdvanced || roundFingerprint !== lastFingerprint;
     stalledRounds = madeProgress ? 0 : stalledRounds + 1;

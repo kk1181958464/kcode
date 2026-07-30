@@ -2,7 +2,7 @@ import {
   Activity,
   BrainCircuit,
   CheckCircle2,
-  ChevronDown,
+  ChevronRight,
   CircleAlert,
   Clock3,
   FileCode2,
@@ -16,10 +16,12 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { CONTEXT_AUTO_COMPACT_RATIO } from "../../context";
+import { extractGitFileDiff } from "../../git-diff";
 import { activityTarget, formatDuration, workingPhase } from "../../lib/format";
 import type { TaskRecord } from "../../models";
 import {
   summarizeStatusActivities,
+  statusOverviewTone,
   type StatusFileChange,
 } from "../../status-summary";
 import type { TaskRunStatus } from "../../task-status";
@@ -101,17 +103,38 @@ function fileName(path: string) {
   return path.replace(/\\/g, "/").split("/").filter(Boolean).at(-1) || path;
 }
 
-function FileChangeRow({ change }: { change: StatusFileChange }) {
+function FileChangeRow({
+  change,
+  active,
+  onClick,
+}: {
+  change: StatusFileChange;
+  active: boolean;
+  onClick(): void;
+}) {
   return (
-    <div className="status-file-row" title={change.path}>
+    <button
+      type="button"
+      className={`status-file-row ${active ? "is-active" : ""}`}
+      title={`查看 ${change.path} 的改动`}
+      onClick={onClick}
+    >
       <FileCode2 size={12} />
       <span>{fileName(change.path)}</span>
       <small>
         <b>+{change.additions}</b>
         <i>-{change.deletions}</i>
       </small>
-    </div>
+      <ChevronRight size={12} />
+    </button>
   );
+}
+
+function parseGitStatusPath(line: string) {
+  const value = line.slice(3).trim();
+  const renamed = value.lastIndexOf(" -> ");
+  const path = renamed >= 0 ? value.slice(renamed + 4) : value;
+  return path.replace(/^['"]|['"]$/g, "");
 }
 
 export function StatusPanel({
@@ -146,6 +169,10 @@ export function StatusPanel({
   restoreFullContext,
 }: StatusPanelProps) {
   const [liveDurationMs, setLiveDurationMs] = useState(durationMs);
+  const [selectedDiffPath, setSelectedDiffPath] = useState<string>();
+  const [loadedFileDiff, setLoadedFileDiff] = useState("");
+  const [fileDiffError, setFileDiffError] = useState("");
+  const [fileDiffLoading, setFileDiffLoading] = useState(false);
   useEffect(() => {
     if (!runningId || !activeTask?.startedAt) {
       setLiveDurationMs(durationMs);
@@ -161,6 +188,25 @@ export function StatusPanel({
     () => summarizeStatusActivities(activities),
     [activities],
   );
+  const fileChanges = useMemo(() => {
+    const merged = new Map(
+      activitySummary.fileChanges.map((change) => [change.path, change]),
+    );
+    if (gitState.available && gitState.summary) {
+      for (const line of gitState.summary.split(/\r?\n/)) {
+        if (!line.trim()) continue;
+        const path = parseGitStatusPath(line);
+        if (!path || merged.has(path)) continue;
+        merged.set(path, {
+          path,
+          additions: 0,
+          deletions: 0,
+          diffs: [],
+        });
+      }
+    }
+    return [...merged.values()];
+  }, [activitySummary.fileChanges, gitState.available, gitState.summary]);
   const queuedCount = messages.filter((message) =>
     Boolean((message as ChatMessage & { queued?: boolean }).queued),
   ).length;
@@ -171,6 +217,7 @@ export function StatusPanel({
   const totalTokens = usage.input + usage.output;
   const currentPhase = workingPhase(activities, liveDurationMs);
   const running = runStatus === "running";
+  const overviewTone = statusOverviewTone(runStatus);
   const headline = running
     ? currentPhase.phase
     : statusHeadline(runStatus, Boolean(activities.length));
@@ -193,7 +240,7 @@ export function StatusPanel({
   const useGitChangeTotals = gitState.available && gitState.files > 0;
   const displayChangeCount = useGitChangeTotals
     ? gitState.files
-    : activitySummary.fileChanges.length;
+    : fileChanges.length;
   const displayAdditions = useGitChangeTotals
     ? gitState.additions
     : activitySummary.additions;
@@ -201,20 +248,88 @@ export function StatusPanel({
     ? gitState.deletions
     : activitySummary.deletions;
   const showChanges =
-    activitySummary.fileChanges.length > 0 ||
-    (gitState.available && gitState.files > 0);
+    fileChanges.length > 0 || (gitState.available && gitState.files > 0);
+  const selectedDiffChange = fileChanges.find(
+    (change) => change.path === selectedDiffPath,
+  );
+  const selectedDiffText = selectedDiffChange?.diffs.length
+    ? selectedDiffChange.diffs.join("\n\n")
+    : selectedDiffPath
+      ? loadedFileDiff || extractGitFileDiff(gitState.diff, selectedDiffPath)
+      : gitState.diff;
+  const openDiff = (path?: string) => {
+    const nextPath = path || fileChanges[0]?.path;
+    if (nextPath !== selectedDiffPath) {
+      setLoadedFileDiff("");
+      setFileDiffError("");
+    }
+    setSelectedDiffPath(nextPath);
+    setGitDiffOpen(() => true);
+    if (!gitState.diff) void refreshGitState(true);
+  };
+  useEffect(() => {
+    setSelectedDiffPath(undefined);
+    setLoadedFileDiff("");
+    setFileDiffError("");
+  }, [activeTask?.id]);
+  useEffect(() => {
+    if (
+      !gitDiffOpen ||
+      !selectedDiffPath ||
+      selectedDiffChange?.diffs.length ||
+      extractGitFileDiff(gitState.diff, selectedDiffPath) ||
+      !activeTask?.workspacePath ||
+      !window.kcode?.workspace.gitFileDiff
+    )
+      return;
+    let cancelled = false;
+    setFileDiffLoading(true);
+    void window.kcode.workspace
+      .gitFileDiff(activeTask.workspacePath, selectedDiffPath)
+      .then((result) => {
+        if (cancelled) return;
+        setLoadedFileDiff(result.diff);
+        setFileDiffError(result.error || "");
+      })
+      .catch((error) => {
+        if (!cancelled)
+          setFileDiffError(
+            error instanceof Error ? error.message : String(error),
+          );
+      })
+      .finally(() => {
+        if (!cancelled) setFileDiffLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeTask?.workspacePath,
+    gitDiffOpen,
+    gitState.diff,
+    selectedDiffChange?.diffs.length,
+    selectedDiffPath,
+  ]);
+  useEffect(() => {
+    if (!gitDiffOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setGitDiffOpen(() => false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [gitDiffOpen, setGitDiffOpen]);
 
   return (
     <aside className="status-panel" aria-label="任务详情">
       {showRunOverview && (
         <section
-          className={`status-run-overview ${running ? "is-running" : ""} ${activitySummary.failures ? "has-failures" : ""}`}
+          className={`status-run-overview ${running ? "is-running" : ""} ${overviewTone === "success" ? "is-success" : ""} ${overviewTone === "failure" ? "has-failures" : ""}`}
         >
           <div className="status-section-heading">
             <span>
               {running ? (
                 <Activity size={14} />
-              ) : activitySummary.failures || runStatus === "failed" ? (
+              ) : overviewTone === "failure" ? (
                 <CircleAlert size={14} />
               ) : (
                 <CheckCircle2 size={14} />
@@ -243,9 +358,7 @@ export function StatusPanel({
             {activitySummary.commands > 0 && (
               <span>{activitySummary.commands} 个命令</span>
             )}
-            {activitySummary.fileChanges.length > 0 && (
-              <span>{activitySummary.fileChanges.length} 个文件</span>
-            )}
+            {fileChanges.length > 0 && <span>{fileChanges.length} 个文件</span>}
             {queuedCount > 0 && <span>{queuedCount} 条排队</span>}
             {activitySummary.failures > 0 && (
               <span className="status-failure-count">
@@ -286,38 +399,27 @@ export function StatusPanel({
               <em>-{displayDeletions}</em>
             </b>
           </div>
-          {activitySummary.fileChanges.length > 0 && (
+          {fileChanges.length > 0 && (
             <div className="status-file-list">
-              <small>本轮涉及</small>
-              {activitySummary.fileChanges.slice(0, 4).map((change) => (
-                <FileChangeRow key={change.path} change={change} />
-              ))}
-              {activitySummary.fileChanges.length > 4 && (
-                <p>另有 {activitySummary.fileChanges.length - 4} 个文件</p>
-              )}
+              <small>文件列表 · 点击查看差异</small>
+              <div className="status-file-list-scroll">
+                {fileChanges.map((change) => (
+                  <FileChangeRow
+                    key={change.path}
+                    change={change}
+                    active={change.path === selectedDiffPath}
+                    onClick={() => openDiff(change.path)}
+                  />
+                ))}
+              </div>
             </div>
           )}
           {gitState.available && gitState.files > 0 && (
-            <button
-              className="git-diff-toggle"
-              onClick={() =>
-                setGitDiffOpen((value) => {
-                  const next = !value;
-                  if (next) void refreshGitState(true);
-                  return next;
-                })
-              }
-            >
-              {gitDiffOpen ? "收起工作区差异" : "查看工作区差异"}
-              <ChevronDown size={13} />
+            <button className="git-diff-toggle" onClick={() => openDiff()}>
+              查看全部更新
+              <ChevronRight size={13} />
             </button>
           )}
-          {gitDiffOpen &&
-            (gitState.diff ? (
-              <DiffView text={gitState.diff} className="git-diff-view" />
-            ) : (
-              <pre className="git-diff-view">{gitState.summary}</pre>
-            ))}
         </section>
       )}
 
@@ -508,6 +610,92 @@ export function StatusPanel({
             <small>{effortLabels[reasoningEffort]}</small>
           </span>
         </footer>
+      )}
+
+      {gitDiffOpen && (
+        <div
+          className="git-diff-layer"
+          onMouseDown={(event) =>
+            event.target === event.currentTarget && setGitDiffOpen(() => false)
+          }
+        >
+          <section
+            className="git-diff-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-label="查看文件更新"
+          >
+            <header>
+              <span>
+                <GitCompareArrows size={16} />
+                <strong>文件更新</strong>
+              </span>
+              <button
+                type="button"
+                title="关闭"
+                aria-label="关闭文件更新"
+                onClick={() => setGitDiffOpen(() => false)}
+              >
+                <X size={16} />
+              </button>
+            </header>
+            <div className="git-diff-dialog-body">
+              {fileChanges.length > 0 && (
+                <nav className="git-diff-file-nav" aria-label="更新文件">
+                  <button
+                    type="button"
+                    className={!selectedDiffPath ? "is-active" : ""}
+                    onClick={() => {
+                      setSelectedDiffPath(undefined);
+                      setLoadedFileDiff("");
+                      setFileDiffError("");
+                      if (!gitState.diff) void refreshGitState(true);
+                    }}
+                  >
+                    <span>全部更新</span>
+                    <small>
+                      +{displayAdditions} -{displayDeletions}
+                    </small>
+                  </button>
+                  {fileChanges.map((change) => (
+                    <button
+                      type="button"
+                      key={change.path}
+                      className={
+                        change.path === selectedDiffPath ? "is-active" : ""
+                      }
+                      onClick={() => openDiff(change.path)}
+                      title={change.path}
+                    >
+                      <span>{fileName(change.path)}</span>
+                      <small>
+                        +{change.additions} -{change.deletions}
+                      </small>
+                    </button>
+                  ))}
+                </nav>
+              )}
+              <div className="git-diff-dialog-content">
+                {fileDiffLoading || (gitRefreshing && !selectedDiffText) ? (
+                  <div className="git-diff-loading">
+                    <RefreshCw className="spinning" size={14} />
+                    正在读取更新
+                  </div>
+                ) : fileDiffError ? (
+                  <pre className="git-diff-empty">{fileDiffError}</pre>
+                ) : selectedDiffText ? (
+                  <DiffView text={selectedDiffText} />
+                ) : (
+                  <pre className="git-diff-empty">
+                    {selectedDiffPath
+                      ? "该文件当前没有可显示的文本差异。"
+                      : gitState.summary || "当前没有可显示的更新。"}
+                  </pre>
+                )}
+              </div>
+            </div>
+          </section>
+        </div>
       )}
 
       {summaryOpen && activeTask?.contextSummary && (

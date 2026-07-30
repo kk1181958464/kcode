@@ -4,6 +4,7 @@ import {
   isValidationActivity,
   latestRequestActivities,
   summarizeStatusActivities,
+  statusOverviewTone,
 } from "../src/status-summary";
 import type { AgentActivity } from "../src/types";
 
@@ -43,6 +44,7 @@ test("status summary aggregates successful file changes and command results", ()
       path: "src/App.tsx",
       additions: 12,
       deletions: 3,
+      diff: "diff --git a/src/App.tsx b/src/App.tsx",
     }),
     activity({
       id: "edit-2",
@@ -68,9 +70,18 @@ test("status summary aggregates successful file changes and command results", ()
   assert.equal(summary.commands, 2);
   assert.equal(summary.failures, 1);
   assert.equal(summary.active?.id, "build");
+  assert.deepEqual(summary.fileChanges[0].diffs, [
+    "diff --git a/src/App.tsx b/src/App.tsx",
+  ]);
   assert.deepEqual(
     summary.validations.map((item) => item.id),
     ["test", "build"],
   );
   assert.equal(isValidationActivity(activities[0]), false);
+});
+
+test("a completed run stays successful when one step failed and was recovered", () => {
+  assert.equal(statusOverviewTone("completed"), "success");
+  assert.equal(statusOverviewTone("failed"), "failure");
+  assert.equal(statusOverviewTone("running"), "running");
 });

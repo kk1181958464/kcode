@@ -158,24 +158,14 @@ const iconPath = () =>
     path.join(app.getAppPath(), iconFileName),
     path.resolve(__dirname, "../../", iconFileName),
   ].find(existsSync);
-const icoPath = () =>
-  (app.isPackaged
-    ? [path.join(process.resourcesPath, "icon.ico")]
-    : [
-        path.resolve(app.getAppPath(), "build/icon.ico"),
-        path.resolve(__dirname, "../../build/icon.ico"),
-      ]
-  ).find(existsSync);
-const windowIcon = () =>
-  process.platform === "win32" ? icoPath() || iconPath() : iconPath();
-function configureWindowsTaskbar(win: BrowserWindow, icon?: string) {
+const windowIcon = () => appIcon(256);
+function configureWindowsTaskbar(win: BrowserWindow, icon = windowIcon()) {
   if (process.platform !== "win32") return;
-  if (icon) win.setIcon(icon);
-  const taskbarIcon = icoPath() || iconPath();
-  win.setAppDetails({
-    appId: appUserModelId,
-    ...(taskbarIcon ? { appIconPath: taskbarIcon, appIconIndex: 0 } : {}),
-  });
+  if (!icon.isEmpty()) win.setIcon(icon);
+  // The current taskbar icon comes from the native image above. The ICO is
+  // only needed by the installer and should not overwrite a valid window icon
+  // through the relaunch metadata.
+  win.setAppDetails({ appId: appUserModelId });
 }
 async function removeLegacyDevelopmentShortcut() {
   if (process.platform !== "win32" || !app.isPackaged) return;
@@ -196,6 +186,51 @@ async function removeLegacyDevelopmentShortcut() {
   } catch (error) {
     writeLog("warn", "windows.legacy-shortcut.remove-failed", error);
   }
+}
+async function repairWindowsShortcuts() {
+  if (process.platform !== "win32" || !app.isPackaged) return;
+  const icon = path.join(process.resourcesPath, "icon.ico");
+  if (!existsSync(icon)) return;
+  const shortcutPaths = [
+    path.join(
+      app.getPath("appData"),
+      "Microsoft",
+      "Windows",
+      "Start Menu",
+      "Programs",
+      "KCode.lnk",
+    ),
+    path.join(app.getPath("desktop"), "KCode.lnk"),
+  ];
+  await Promise.all(
+    shortcutPaths.map(async (shortcutPath) => {
+      if (!existsSync(shortcutPath)) return;
+      try {
+        const shortcut = shell.readShortcutLink(shortcutPath);
+        if (
+          !shortcut.target ||
+          path.resolve(shortcut.target).toLowerCase() !==
+            path.resolve(process.execPath).toLowerCase()
+        )
+          return;
+        const updated = shell.writeShortcutLink(shortcutPath, "update", {
+          target: shortcut.target,
+          icon,
+          iconIndex: 0,
+          appUserModelId,
+        });
+        if (updated)
+          writeLog("info", "windows.shortcut.icon-repaired", {
+            shortcutPath,
+          });
+      } catch (error) {
+        writeLog("warn", "windows.shortcut.icon-repair-failed", {
+          shortcutPath,
+          error,
+        });
+      }
+    }),
+  );
 }
 const appIcon = (size = 32) => {
   const file = iconPath();
@@ -345,6 +380,7 @@ function createWindow() {
     },
   });
   configureWindowsTaskbar(win, icon);
+  win.once("ready-to-show", () => configureWindowsTaskbar(win, icon));
   mainWindow = win;
   setBrowserHost(win, {
     onState: (state) => {
@@ -396,6 +432,7 @@ function createWindow() {
 
 app.whenReady().then(async () => {
   await removeLegacyDevelopmentShortcut();
+  await repairWindowsShortcuts();
   const bundledSkillsRoot = app.isPackaged
     ? path.join(process.resourcesPath, "skills")
     : path.join(app.getAppPath(), "skills");
@@ -623,31 +660,63 @@ app.whenReady().then(async () => {
       ]).popup({ window: owner });
     },
   );
+  const runGit = (root: string, args: string[]) =>
+    new Promise<{ code: number; output: string }>((resolve) => {
+      const child = spawn(resolveGitExecutable(), args, {
+        cwd: root,
+        windowsHide: true,
+        shell: false,
+      });
+      let output = "";
+      child.stdout.on("data", (chunk) => {
+        output = (output + chunk.toString("utf8")).slice(-200_000);
+      });
+      child.stderr.on("data", (chunk) => {
+        output = (output + chunk.toString("utf8")).slice(-200_000);
+      });
+      child.on("error", (error) =>
+        resolve({ code: -1, output: error.message }),
+      );
+      child.on("close", (code) => resolve({ code: code ?? -1, output }));
+    });
+  const resolveWorkspaceFile = (root: string, rawPath: string) => {
+    const value = workspacePathSchema.parse(rawPath);
+    const target = path.resolve(
+      path.isAbsolute(value) ? value : path.join(root, value),
+    );
+    const relative = path.relative(root, target);
+    if (
+      !relative ||
+      relative === ".." ||
+      relative.startsWith(`..${path.sep}`) ||
+      path.isAbsolute(relative)
+    )
+      throw new Error("文件路径必须位于当前工作区内");
+    return { target, relative: relative.replaceAll("\\", "/") };
+  };
+  const untrackedDiff = (relative: string, text: string) => {
+    const lines = text.replace(/\r\n?/g, "\n").split("\n");
+    if (lines.at(-1) === "") lines.pop();
+    const body = lines.map((line) => `+${line}`).join("\n");
+    return [
+      `diff --git a/${relative} b/${relative}`,
+      "new file mode 100644",
+      "--- /dev/null",
+      `+++ b/${relative}`,
+      `@@ -0,0 +1,${lines.length} @@`,
+      body,
+    ]
+      .filter(Boolean)
+      .join("\n")
+      .slice(0, 200_000);
+  };
   ipcMain.handle(
     "workspace:git-state",
     async (_event, workspacePath: string, includeDiff = false) => {
       const root = path.resolve(workspacePathSchema.parse(workspacePath));
       const info = await stat(root);
       if (!info.isDirectory()) throw new Error("工作区不是有效目录");
-      const git = (args: string[]) =>
-        new Promise<{ code: number; output: string }>((resolve) => {
-          const child = spawn(resolveGitExecutable(), args, {
-            cwd: root,
-            windowsHide: true,
-            shell: false,
-          });
-          let output = "";
-          child.stdout.on("data", (chunk) => {
-            output = (output + chunk.toString("utf8")).slice(-200_000);
-          });
-          child.stderr.on("data", (chunk) => {
-            output = (output + chunk.toString("utf8")).slice(-200_000);
-          });
-          child.on("error", (error) =>
-            resolve({ code: -1, output: error.message }),
-          );
-          child.on("close", (code) => resolve({ code: code ?? -1, output }));
-        });
+      const git = (args: string[]) => runGit(root, args);
       const branch = await git(["branch", "--show-current"]);
       if (branch.code !== 0)
         return {
@@ -659,7 +728,7 @@ app.whenReady().then(async () => {
           diff: "",
           error: "当前工作区未初始化 Git",
         };
-      const status = await git(["status", "--short"]);
+      const status = await git(["status", "--short", "--untracked-files=all"]);
       const tracked = await git(["diff", "--numstat", "HEAD"]);
       const untracked = status.output
         .split(/\r?\n/)
@@ -685,6 +754,59 @@ app.whenReady().then(async () => {
           0,
           200_000,
         ),
+      };
+    },
+  );
+  ipcMain.handle(
+    "workspace:git-file-diff",
+    async (_event, workspacePath: string, filePath: string) => {
+      const root = path.resolve(workspacePathSchema.parse(workspacePath));
+      const rootInfo = await stat(root);
+      if (!rootInfo.isDirectory()) throw new Error("工作区不是有效目录");
+      const file = resolveWorkspaceFile(root, filePath);
+      const git = (args: string[]) => runGit(root, args);
+      const result = await git([
+        "diff",
+        "--no-ext-diff",
+        "--no-color",
+        "HEAD",
+        "--",
+        file.relative,
+      ]);
+      if (result.code === 0 && result.output.trim())
+        return { path: file.relative, diff: result.output };
+
+      const status = await git([
+        "status",
+        "--short",
+        "--untracked-files=all",
+        "--",
+        file.relative,
+      ]);
+      if (!status.output.split(/\r?\n/).some((line) => line.startsWith("?? ")))
+        return {
+          path: file.relative,
+          diff: "",
+          error: result.code !== 0 ? result.output.trim() : undefined,
+        };
+
+      const info = await stat(file.target);
+      if (info.size > 2_000_000)
+        return {
+          path: file.relative,
+          diff: "",
+          error: "文件超过 2 MB，暂不在弹窗中展开。",
+        };
+      const content = await readFile(file.target);
+      if (content.includes(0))
+        return {
+          path: file.relative,
+          diff: "",
+          error: "这是二进制文件，没有可读的文本差异。",
+        };
+      return {
+        path: file.relative,
+        diff: untrackedDiff(file.relative, content.toString("utf8")),
       };
     },
   );

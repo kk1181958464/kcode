@@ -10,10 +10,13 @@ import { createPortal } from "react-dom";
 import {
   Bot,
   BrainCircuit,
+  CheckCircle2,
   ChevronDown,
   CircleAlert,
   Copy,
   FileCode2,
+  ListChecks,
+  LoaderCircle,
   RotateCcw,
   Terminal,
   UserRound,
@@ -27,11 +30,15 @@ import type {
   ImageAttachment,
 } from "../../types";
 import { EMPTY_ACTIVITIES, type QueuedChatMessage } from "../../models";
+import { activityExecutionNarrative } from "../../execution-narrative";
+import {
+  summarizeExecutionPlan,
+  type ExecutionPlanStepStatus,
+} from "../../execution-plan";
 import {
   activityFocus,
   activityTarget,
   formatDuration,
-  workingPhase,
 } from "../../lib/format";
 import { copyWithToast } from "../../lib/toast";
 import { MarkdownMessage } from "../common/MarkdownMessage";
@@ -308,6 +315,7 @@ const ActivityItem = memo(function ActivityItem({
       : rawReadableFailure;
   const renderedDetail =
     expanded && detail ? renderedActivityDetail(detail) : undefined;
+  const executionNarrative = activityExecutionNarrative(activity);
   const liveOutput = activity.status === "running" && !detail;
   useEffect(() => {
     if (activity.status === "failed") setExpanded(true);
@@ -417,6 +425,13 @@ const ActivityItem = memo(function ActivityItem({
       </div>
       {expanded && (
         <div className="activity-detail">
+          <div className="activity-purpose">
+            <BrainCircuit size={14} />
+            <span>
+              <strong>执行说明</strong>
+              <small>{executionNarrative}</small>
+            </span>
+          </div>
           {pending && requestId && (
             <div className="approval-actions">
               <span>此操作会修改工作区或执行命令</span>
@@ -661,19 +676,93 @@ function activeExecutionCopy(activity: AgentActivity) {
   }
 }
 
+function PlanStepMark({
+  status,
+  index,
+}: {
+  status: ExecutionPlanStepStatus;
+  index: number;
+}) {
+  if (status === "completed") return <CheckCircle2 size={13} />;
+  if (status === "failed") return <CircleAlert size={13} />;
+  if (status === "running")
+    return <LoaderCircle className="execution-plan-spinner" size={13} />;
+  return <span>{index + 1}</span>;
+}
+
+function ExecutionPlanList({
+  steps,
+  current,
+  statuses,
+}: {
+  steps: string[];
+  current: number;
+  statuses: ExecutionPlanStepStatus[];
+}) {
+  return (
+    <div className="execution-plan-list">
+      <header>
+        <span>
+          <ListChecks size={13} />
+          <strong>执行计划</strong>
+        </span>
+        <small>
+          第 {current + 1} / {steps.length} 步
+        </small>
+      </header>
+      {steps.map((step, index) => (
+        <div
+          className={`execution-plan-step ${statuses[index]} ${index === current ? "current" : ""}`}
+          key={`${index}:${step}`}
+        >
+          <span className="execution-plan-step-mark">
+            <PlanStepMark status={statuses[index]} index={index} />
+          </span>
+          <span className="execution-plan-step-copy">
+            <strong>{step}</strong>
+            <small>
+              {statuses[index] === "completed"
+                ? "已完成"
+                : statuses[index] === "running"
+                  ? "执行中"
+                  : statuses[index] === "failed"
+                    ? "失败，正在调整"
+                    : "待执行"}
+            </small>
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 const ExecutionSummary = memo(
   function ExecutionSummary({
     activities,
+    allActivities,
     running,
+    isLatestGroup,
+    requestFailed,
+    hasLeadingNarration,
+    hasTrailingNarration,
     requestId,
     workspacePath,
     onActivityChange,
+    reasoningNode,
+    progressNode,
   }: {
     activities: AgentActivity[];
+    allActivities: AgentActivity[];
     running: boolean;
+    isLatestGroup: boolean;
+    requestFailed: boolean;
+    hasLeadingNarration: boolean;
+    hasTrailingNarration: boolean;
     requestId?: string;
     workspacePath: string;
     onActivityChange(activity: AgentActivity): void;
+    reasoningNode?: React.ReactNode;
+    progressNode?: React.ReactNode;
   }) {
     const [expanded, setExpanded] = useState(false);
     const [visibleActivityCount, setVisibleActivityCount] = useState(
@@ -684,6 +773,11 @@ const ExecutionSummary = memo(
       [activities],
     );
     const previewFiles = fileStats.entries.slice(0, FILE_INITIAL_RENDER_LIMIT);
+    const planInfo = useMemo(
+      () => summarizeExecutionPlan(allActivities),
+      [allActivities],
+    );
+    const inlineActivities = activities.slice(-4);
     // Recomputing these passes on every streaming flush is wasted work; the
     // result only changes when the activity set changes.
     const executionStats = useMemo(() => {
@@ -714,7 +808,7 @@ const ExecutionSummary = memo(
     }, [activities]);
     const activeRunning =
       running && executionStats.active?.status === "running";
-    const executionInProgress = running && !executionStats.waiting;
+    const executionInProgress = activeRunning;
     let headline = "执行完成";
     let focus = "";
     if (executionStats.waiting && executionStats.active) {
@@ -724,13 +818,17 @@ const ExecutionSummary = memo(
       const copy = activeExecutionCopy(executionStats.active);
       headline = copy.label;
       focus = copy.target;
-    } else if (running && executionStats.last) {
-      headline =
-        executionStats.last.status === "failed"
-          ? "步骤失败，正在调整"
-          : "正在规划下一步";
+    } else if (requestFailed) {
+      headline = "执行未完成";
     } else if (executionStats.failures) {
-      headline = "执行完成，存在失败项";
+      headline =
+        running && !hasTrailingNarration
+          ? "步骤失败"
+          : "执行完成，已记录失败项";
+    } else if (executionStats.commands) {
+      headline = `已执行 ${executionStats.commands} 个命令`;
+    } else if (activities.length) {
+      headline = `已完成 ${activities.length} 个步骤`;
     }
     useEffect(() => {
       if (executionStats.waiting) setExpanded(true);
@@ -744,9 +842,18 @@ const ExecutionSummary = memo(
       activities.length - visibleActivityCount,
     );
     const visibleActivities = activities.slice(hiddenActivityCount);
+    const showPlanList = Boolean(
+      isLatestGroup && planInfo && (Boolean(executionStats.active) || expanded),
+    );
+    const fallbackNarrative = executionStats.active
+      ? hasLeadingNarration
+        ? ""
+        : activityExecutionNarrative(executionStats.active)
+      : "";
+    const narrativeLabel = "执行说明";
     return (
       <section
-        className={`execution-summary ${fileStats.files ? "has-file-stats" : ""} ${executionStats.failures ? "has-failures" : ""} ${executionInProgress ? "is-active" : ""} ${executionStats.waiting ? "is-waiting" : ""}`}
+        className={`execution-summary ${fileStats.files ? "has-file-stats" : ""} ${requestFailed ? "has-failures" : ""} ${executionInProgress ? "is-active" : ""} ${executionStats.waiting ? "is-waiting" : ""}`}
       >
         <button
           className="execution-summary-head"
@@ -778,6 +885,11 @@ const ExecutionSummary = memo(
               {executionStats.agents > 0 && (
                 <span>{executionStats.agents} 个子 Agent</span>
               )}
+              {isLatestGroup && planInfo && (
+                <span className="execution-summary-plan-count">
+                  第 {planInfo.current + 1} / {planInfo.steps.length} 步
+                </span>
+              )}
               {fileStats.files > 0 && <span>{fileStats.files} 个文件</span>}
               {fileStats.files > 0 && (
                 <span className="execution-summary-diff">
@@ -797,6 +909,66 @@ const ExecutionSummary = memo(
           </span>
           <ChevronDown size={14} />
         </button>
+        {inlineActivities.length > 0 && (
+          <div className="execution-summary-toolline" aria-label="本组执行命令">
+            {inlineActivities.map((activity) => {
+              const target = activityTarget(activity);
+              return (
+                <span
+                  className={`execution-summary-tool ${activity.status}`}
+                  key={activity.id}
+                  title={target || activity.title}
+                >
+                  <i />
+                  <b>{activity.title}</b>
+                  {target && <code>{target}</code>}
+                </span>
+              );
+            })}
+            {activities.length > inlineActivities.length && (
+              <small>
+                还有 {activities.length - inlineActivities.length} 项
+              </small>
+            )}
+          </div>
+        )}
+        {isLatestGroup && planInfo && !showPlanList && (
+          <div className="execution-plan-progress">
+            <span>
+              <ListChecks size={12} />第 {planInfo.current + 1} /{" "}
+              {planInfo.steps.length} 步
+            </span>
+            <strong>{planInfo.steps[planInfo.current]}</strong>
+          </div>
+        )}
+        {showPlanList && planInfo && (
+          <ExecutionPlanList
+            steps={planInfo.steps}
+            current={planInfo.current}
+            statuses={planInfo.statuses}
+          />
+        )}
+        {running &&
+          executionStats.active &&
+          (fallbackNarrative || reasoningNode || progressNode) && (
+            <div
+              className={`execution-summary-narrative ${fallbackNarrative ? "" : "live-only"}`}
+              aria-live="polite"
+            >
+              <span className="execution-summary-narrative-label">
+                {narrativeLabel}
+              </span>
+              <span className="execution-summary-narrative-copy">
+                {reasoningNode}
+                {progressNode}
+                {fallbackNarrative && (
+                  <span className="execution-summary-narrative-fallback">
+                    {fallbackNarrative}
+                  </span>
+                )}
+              </span>
+            </div>
+          )}
         {expanded && (
           <div className="execution-summary-detail">
             <div className="execution-summary-detail-head">
@@ -871,64 +1043,57 @@ const ExecutionSummary = memo(
   (prev, next) => {
     if (
       prev.running !== next.running ||
+      prev.isLatestGroup !== next.isLatestGroup ||
+      prev.requestFailed !== next.requestFailed ||
+      prev.hasLeadingNarration !== next.hasLeadingNarration ||
+      prev.hasTrailingNarration !== next.hasTrailingNarration ||
       prev.requestId !== next.requestId ||
       prev.workspacePath !== next.workspacePath ||
       prev.onActivityChange !== next.onActivityChange ||
-      prev.activities.length !== next.activities.length
+      prev.activities.length !== next.activities.length ||
+      prev.allActivities.length !== next.allActivities.length
     )
       return false;
-    return prev.activities.every(
-      (activity, index) => activity === next.activities[index],
+    if (
+      !prev.activities.every(
+        (activity, index) => activity === next.activities[index],
+      )
+    )
+      return false;
+    return prev.allActivities.every(
+      (activity, index) => activity === next.allActivities[index],
     );
   },
 );
 
 function AgentWorkingState({
   activities,
-  startedAt,
   hasTrailingText,
   reasoning,
   reasoningNode,
-  progressNode,
 }: {
   activities: AgentActivity[];
-  startedAt: number;
   hasTrailingText: boolean;
   reasoning?: string;
   reasoningNode?: React.ReactNode;
-  progressNode?: React.ReactNode;
 }) {
-  const [elapsedMs, setElapsedMs] = useState(() => Date.now() - startedAt);
   const visible = activities.length === 0 && !hasTrailingText;
-  useEffect(() => {
-    if (!visible) return;
-    const update = () => setElapsedMs(Date.now() - startedAt);
-    update();
-    const timer = window.setInterval(update, 500);
-    return () => window.clearInterval(timer);
-  }, [startedAt, visible]);
   // Once a tool exists, the execution summary owns the whole run, including
-  // planning gaps between tools. A second spinner below it would duplicate the
+  // planning gaps between tools. A second indicator below it would duplicate the
   // completed step and make the request look like two independent processes.
   // Pure Q&A also drops this planning state as soon as answer text appears.
   if (!visible) return null;
-  const { phase, detail } = workingPhase(activities, elapsedMs);
   return (
     <div className="agent-working">
-      <div className="agent-working-head">
+      <div className="agent-working-head" aria-live="polite">
         <span className="agent-working-mark">
           <BrainCircuit size={13} />
         </span>
-        <span>
-          <strong aria-live="polite">{phase}</strong>
-          <small>{detail}</small>
+        <span className="agent-working-copy">
+          <strong>正在规划下一步</strong>
         </span>
-        <time>{formatDuration(elapsedMs)}</time>
       </div>
-      <div className="agent-working-track">
-        <i />
-      </div>
-      {(reasoning || reasoningNode || progressNode) && (
+      {(reasoning || reasoningNode) && (
         <div
           className="agent-working-reasoning"
           aria-live="polite"
@@ -936,9 +1101,27 @@ function AgentWorkingState({
         >
           {reasoning}
           {reasoningNode}
-          {progressNode}
         </div>
       )}
+    </div>
+  );
+}
+
+function AssistantTailState({
+  reasoningNode,
+  progressNode,
+}: {
+  reasoningNode?: React.ReactNode;
+  progressNode?: React.ReactNode;
+}) {
+  if (!reasoningNode && !progressNode) return null;
+  return (
+    <div className="assistant-tail-state" aria-live="polite">
+      <BrainCircuit size={12} />
+      <span>
+        {reasoningNode}
+        {progressNode}
+      </span>
     </div>
   );
 }
@@ -978,6 +1161,10 @@ const AssistantTimeline = memo(function AssistantTimeline({
     activities,
     message.content.length,
   );
+  const hasActiveActivity = activities.some(
+    (activity) =>
+      activity.status === "running" || activity.status === "waiting",
+  );
   if (!groups.length)
     return (
       <>
@@ -986,44 +1173,56 @@ const AssistantTimeline = memo(function AssistantTimeline({
         {running && (
           <AgentWorkingState
             activities={activities}
-            startedAt={message.createdAt}
             hasTrailingText={Boolean(message.content)}
             reasoning={reasoning}
             reasoningNode={streamingReasoning}
-            progressNode={streamingProgress}
           />
         )}
       </>
     );
+  const lastGroupOffset = groups.at(-1)?.[0] ?? 0;
+  const hasTrailingNarration = Boolean(
+    message.content.slice(lastGroupOffset).trim(),
+  );
   let cursor = 0;
-  const lastActivityOffset = groups.at(-1)?.[0] ?? 0;
-  const hasTrailingText = message.content.length > lastActivityOffset;
   return (
     <div className="assistant-timeline">
       {groups.map(([offset, group], index) => {
         const text = message.content.slice(cursor, offset);
         cursor = offset;
+        const latestGroup = index === groups.length - 1;
+        const hasTrailingNarration =
+          latestGroup && Boolean(message.content.slice(offset).trim());
         return (
           <div className="assistant-timeline-group" key={`${offset}:${index}`}>
             {renderText(text)}
             <ExecutionSummary
               activities={group}
-              running={running && index === groups.length - 1}
+              allActivities={activities}
+              running={running && latestGroup}
+              isLatestGroup={latestGroup}
+              requestFailed={Boolean(message.error) && latestGroup}
+              hasLeadingNarration={Boolean(text.trim())}
+              hasTrailingNarration={hasTrailingNarration}
               requestId={requestId}
               workspacePath={workspacePath}
               onActivityChange={onActivityChange}
+              reasoningNode={
+                latestGroup && hasActiveActivity
+                  ? streamingReasoning
+                  : undefined
+              }
+              progressNode={
+                latestGroup && hasActiveActivity ? streamingProgress : undefined
+              }
             />
           </div>
         );
       })}
       {renderText(message.content.slice(cursor))}
       {streamingTail}
-      {running && (
-        <AgentWorkingState
-          activities={activities}
-          startedAt={message.createdAt}
-          hasTrailingText={hasTrailingText}
-          reasoning={reasoning}
+      {running && !hasActiveActivity && !hasTrailingNarration && (
+        <AssistantTailState
           reasoningNode={streamingReasoning}
           progressNode={streamingProgress}
         />

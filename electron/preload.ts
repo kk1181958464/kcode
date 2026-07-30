@@ -83,6 +83,8 @@ const api: KCodeApi = {
     pickFolder: () => ipcRenderer.invoke("workspace:pick-folder"),
     gitState: (path, includeDiff) =>
       ipcRenderer.invoke("workspace:git-state", path, includeDiff),
+    gitFileDiff: (path, filePath) =>
+      ipcRenderer.invoke("workspace:git-file-diff", path, filePath),
     showFolderMenu: (path) =>
       ipcRenderer.invoke("workspace:show-folder-menu", path),
   },

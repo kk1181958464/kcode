@@ -490,8 +490,8 @@ export default function App() {
     canGoForward?: boolean;
   }>({ open: false });
   const [browserAddress, setBrowserAddress] = useState("");
-  // Latest reasoning/thinking snippet for the active turn, shown live under the
-  // working spinner. Cleared once visible text or a tool activity takes over.
+  // Latest reasoning/thinking snippet for the active turn. The renderer keeps
+  // it beside the current activity until the next planning phase replaces it.
   useEffect(() => window.kcode?.browser?.onState(setBrowserState), []);
   useEffect(
     () => setBrowserAddress(browserState.url || ""),
@@ -1747,6 +1747,7 @@ export default function App() {
       window.clearTimeout(reasoningFlushTimerRef.current);
       reasoningFlushTimerRef.current = undefined;
     }
+    if (pendingReasoningRef.current.size) scheduleReasoningFlush();
   }
 
   function clearStreamingProgress(requestId: string) {
@@ -1805,8 +1806,6 @@ export default function App() {
           });
         if (event.type === "activity") {
           resetActivityOutput(event.activity.id);
-          clearStreamingProgress(id);
-          if (isActive) clearPendingReasoning();
           const task = tasksRef.current.find((item) => item.id === taskId);
           const previous = task?.activities.find(
             (item) => item.id === event.activity.id,
@@ -1849,24 +1848,17 @@ export default function App() {
         }
         if (event.type === "reasoning") {
           clearStreamingProgress(id);
-          const task = tasksRef.current.find((item) => item.id === taskId);
-          const hasRunningActivity = task?.activities.some(
-            (activity) =>
-              activity.status === "running" || activity.status === "waiting",
+          pendingReasoningRef.current.set(
+            id,
+            (pendingReasoningRef.current.get(id) ?? "") + event.delta,
           );
-          if (isActive && !hasRunningActivity) {
-            pendingReasoningRef.current.set(
-              id,
-              (pendingReasoningRef.current.get(id) ?? "") + event.delta,
-            );
-            scheduleReasoningFlush();
-          }
+          scheduleReasoningFlush();
           return;
         }
         if (event.type === "progress") {
-          // Progress describes the current transport/retry phase. It replaces
-          // stale live reasoning so the two transient channels never overlap.
-          if (isActive) clearPendingReasoning(id);
+          // A new planning/recovery phase replaces the previous round's live
+          // reasoning. It remains visible while the selected tool is running.
+          clearPendingReasoning(id);
           replaceStreamingText(streamingProgressKey(id), event.message);
           return;
         }
@@ -1882,7 +1874,7 @@ export default function App() {
         }
         if (event.type === "text") {
           clearStreamingProgress(id);
-          if (isActive) clearPendingReasoning(id);
+          clearPendingReasoning(id);
           assistantLengthsRef.current.set(
             id,
             (assistantLengthsRef.current.get(id) ?? 0) + event.delta.length,
@@ -1954,7 +1946,7 @@ export default function App() {
         }
         if (event.type === "error") {
           clearStreamingProgress(id);
-          if (isActive) clearPendingReasoning(id);
+          clearPendingReasoning(id);
           if (textFlushTimerRef.current) {
             window.clearTimeout(textFlushTimerRef.current);
             textFlushTimerRef.current = undefined;
@@ -2013,7 +2005,7 @@ export default function App() {
         }
         if (event.type === "done") {
           clearStreamingProgress(id);
-          if (isActive) clearPendingReasoning(id);
+          clearPendingReasoning(id);
           if (textFlushTimerRef.current) {
             window.clearTimeout(textFlushTimerRef.current);
             textFlushTimerRef.current = undefined;
@@ -2205,7 +2197,6 @@ export default function App() {
     setUsedContextCount(0);
     currentRequest.current = undefined;
     setRunningId(undefined);
-    clearPendingReasoning();
     requestStartedRef.current = undefined;
     contextByMessageRef.current.clear();
     autoFollowRef.current = true;

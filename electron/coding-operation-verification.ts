@@ -27,6 +27,19 @@ type VerificationMessage = Extract<
 const CONTINUATION_REQUEST =
   /^(?:好|好的|可以|行|继续|继续吧|开始|开始吧|开始弄吧|开始改吧|改吧|修吧|做吧|弄吧|执行吧|就这么做|按(?:你|上面|这个).{0,12}做|都弄|都改|全部(?:做|弄|改|修改)|上面(?:的)?全部(?:做|弄|改|修改))(?:了|吧|啊|呀)?[。！!，,\s]*$/i;
 
+export function isAdvisoryOnlyRequest(content: string) {
+  const normalized = content.replace(/\s+/g, "");
+  if (
+    /只说不改|只讲不改|(?:不要|不用|先别)(?:修改|改动|执行|运行)(?:代码|文件|项目)?[。！!]?$/i.test(
+      normalized,
+    )
+  )
+    return true;
+  return /(?:只说|只讲)(?:一下)?(?:方案|思路)|只需要(?:说明|解释|介绍|回答)(?:即可|就行)?[。！!]?$|仅(?:咨询|了解|说明)[。！!]?$|只(?:咨询|了解一下|回答)(?:即可|就行)?[。！!]?$/i.test(
+    normalized,
+  );
+}
+
 function relevantRequestContent(history: CodingVerificationHistoryItem[]) {
   const messages = history.filter(
     (item): item is VerificationMessage => item.kind === "message",
@@ -48,6 +61,7 @@ export function requestedCodingOperations(
   history: CodingVerificationHistoryItem[],
 ) {
   const content = relevantRequestContent(history);
+  if (isAdvisoryOnlyRequest(content)) return new Set<CodingOperation>();
   const validationContent = content.replace(
     /(?:触发|启动).{0,12}(?:打包|发布|Actions|工作流)|\btrigger.{0,12}(?:build|release|actions|workflow)\b/gi,
     "",
