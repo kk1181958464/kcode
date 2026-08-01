@@ -14,6 +14,8 @@
   --success-soft: #e9f7f0;
   --danger: #c93646;
   --danger-soft: #fff0f1;
+  --warning: #b36a08;
+  --warning-soft: #fff7e6;
   --shadow: 0 14px 42px rgb(30 35 48 / 9%);
 }
 
@@ -493,6 +495,13 @@ p {
 }
 .activity-row code {
   font-family: ui-monospace, Consolas, monospace;
+}
+.activity-row .activity-attention {
+  padding: 4px 6px;
+  border-left: 2px solid var(--warning);
+  background: var(--warning-soft);
+  color: var(--warning);
+  white-space: normal;
 }
 .activity-row em {
   color: var(--success);

@@ -40,6 +40,7 @@ test("builds a bounded remote task snapshot without absolute workspace paths", (
         tool: "apply_patch",
         status: "success",
         title: "修改文件",
+        liveStatus: "等待人工验证：请完成人机验证",
         input: { apiKey: "must-not-sync" },
         command: "deploy --token must-not-sync",
         path: "D:\\projects\\private\\kcode\\src\\App.tsx",
@@ -54,6 +55,10 @@ test("builds a bounded remote task snapshot without absolute workspace paths", (
   assert.equal(snapshot.messages[0].imageCount, 1);
   assert.equal(snapshot.messages[1].content, "远程可见结论");
   assert.equal(snapshot.activities[0].path, "kcode/src/App.tsx");
+  assert.equal(
+    snapshot.activities[0].liveStatus,
+    "等待人工验证：请完成人机验证",
+  );
   assert.ok(!serialized.includes("secret-binary-data"));
   assert.ok(!serialized.includes("must-not-sync"));
   assert.ok(!serialized.includes("D:\\\\projects"));

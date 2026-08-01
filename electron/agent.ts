@@ -75,6 +75,7 @@ import {
 import {
   claimsNoChangeNeeded,
   hasVerifiedNoChangeEvidence,
+  hasVerifiedNoChangeReport,
   isAdvisoryOnlyRequest,
   missingRequestedCodingOperations,
   requestedCodingOperations,
@@ -92,6 +93,8 @@ import { loadActiveSkillInstructions } from "./agent-skills";
 import { AsyncQueue } from "./async-queue";
 import { readSseJson } from "./sse-stream";
 import { mutationChangedFromOutput } from "./mutation-evidence";
+import { hasUserSuppliedVerificationCode } from "./browser-cdp";
+import { applyUpdatePatch, normalizeLineEndings } from "./text-patch";
 import { getProviderWithKey } from "./store";
 import {
   bindBrowserRequest,
@@ -188,6 +191,7 @@ type ToolResult = Partial<
   changed?: boolean;
   executed?: boolean;
   mutationAttempted?: boolean;
+  noChangeReported?: boolean;
   operationEvidence?: CodingOperation[];
   browserOperationEvidence?: BrowserOperation[];
   subagentUsage?: { input: number; output: number; cached: number };
@@ -265,6 +269,7 @@ function compactEvidenceCall(call: ToolCall) {
     "kind",
     "processId",
     "operation",
+    "reason",
   ]) {
     if (call.input[key] !== undefined)
       input[key] = String(call.input[key]).slice(0, 4_000);
@@ -624,7 +629,7 @@ const tools = [
   {
     name: "apply_patch",
     description:
-      "Apply a Begin Patch text patch for precise file edits. Never invoke apply_patch through run_command; call this tool directly. Supports Update File, Add File, and Delete File sections.",
+      "Apply a Begin Patch text patch for precise file edits. Never invoke apply_patch through run_command; call this tool directly. Supports Update File, Add File, and Delete File sections. LF, CRLF, and CR files are matched automatically, and existing line endings are preserved.",
     parameters: {
       type: "object",
       properties: { patch: { type: "string" } },
@@ -750,6 +755,19 @@ const tools = [
     },
   },
   {
+    name: "report_no_change",
+    description:
+      "Report that the requested code or configuration change is unnecessary after successful read-only inspection. Use only when the inspected target already satisfies the request, the issue is outside the workspace, or there is no actionable target. Give a specific evidence-based reason; never use this merely because editing is difficult.",
+    parameters: {
+      type: "object",
+      properties: {
+        reason: { type: "string", minLength: 8, maxLength: 1000 },
+      },
+      required: ["reason"],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "web_search",
     description:
       "Search the public internet. Returns structured titles, URLs, and snippets. Use this for current facts and finding documentation.",
@@ -792,12 +810,13 @@ const tools = [
   {
     name: "browser_snapshot",
     description:
-      "Return page text and references for visible interactive elements in the current browser.",
+      "Return page text and fresh references for visible interactive elements, including iframe and accessible Shadow DOM controls. Take a new snapshot after navigation or a page-changing interaction. When human verification is present, this tool waits while the user completes it in the visible browser, then returns the verified page automatically.",
     parameters: { type: "object", properties: {}, additionalProperties: false },
   },
   {
     name: "browser_click",
-    description: "Click an element reference from the latest browser snapshot.",
+    description:
+      "Click an element reference from the latest browser snapshot using a trusted Chromium input event.",
     parameters: {
       type: "object",
       properties: { ref: { type: "string" } },
@@ -808,7 +827,7 @@ const tools = [
   {
     name: "browser_type",
     description:
-      "Type text into an element from the latest browser snapshot, including credentials explicitly provided by the user.",
+      "Replace the value of an element from the latest browser snapshot using trusted Chromium keyboard input, including credentials explicitly provided by the user.",
     parameters: {
       type: "object",
       properties: { ref: { type: "string" }, text: { type: "string" } },
@@ -1550,38 +1569,13 @@ function diffFor(file: string, before: string, after: string) {
   };
 }
 
-function applyUpdatePatch(original: string, lines: string[]) {
-  const source = original.split("\n");
-  let cursor = 0;
-  const output: string[] = [];
-  for (const line of lines) {
-    if (line.startsWith("@@")) continue;
-    const marker = line[0],
-      value = line.slice(1);
-    if (marker === " ") {
-      const index = source.indexOf(value, cursor);
-      if (index < 0) throw new Error(`补丁上下文不匹配：${value}`);
-      output.push(...source.slice(cursor, index + 1));
-      cursor = index + 1;
-    } else if (marker === "-") {
-      const index = source.indexOf(value, cursor);
-      if (index < 0) throw new Error(`补丁删除内容不匹配：${value}`);
-      output.push(...source.slice(cursor, index));
-      cursor = index + 1;
-    } else if (marker === "+") output.push(value);
-    else if (line) throw new Error(`无法识别的补丁行：${line}`);
-  }
-  output.push(...source.slice(cursor));
-  return output.join("\n");
-}
-
 async function applyPatch(
   root: string,
   requestId: string,
   activityId: string,
   patchText: string,
 ): Promise<ToolResult> {
-  const lines = patchText.replaceAll("\r\n", "\n").split("\n");
+  const lines = normalizeLineEndings(patchText).split("\n");
   if (lines[0]?.trim() !== "*** Begin Patch")
     throw new Error("补丁必须以 *** Begin Patch 开始");
   const changes: {
@@ -1784,7 +1778,7 @@ async function execute(
       paths.map(async (item) => {
         const file = workspacePath(root, item);
         const content = await readFile(file, "utf8");
-        return `===== ${path.relative(root, file)} =====\n${content.slice(0, 40_000)}`;
+        return `===== ${path.relative(root, file)} =====\n${normalizeLineEndings(content).slice(0, 40_000)}`;
       }),
     );
     return { output: sections.join("\n\n").slice(0, 120_000) };
@@ -1813,13 +1807,14 @@ async function execute(
   if (call.name === "read_file") {
     const file = workspacePath(root, call.input.path);
     const content = await readFile(file, "utf8");
+    const normalizedContent = normalizeLineEndings(content);
     const start = Math.max(1, Number(call.input.startLine) || 1),
       end = Math.min(
-        content.split("\n").length,
+        normalizedContent.split("\n").length,
         Number(call.input.endLine) || start + 399,
       );
     return {
-      output: content
+      output: normalizedContent
         .split("\n")
         .slice(start - 1, end)
         .map((line, i) => `${start + i}: ${line}`)
@@ -2152,7 +2147,17 @@ async function execute(
   }
   if (call.name === "browser_snapshot")
     return {
-      output: JSON.stringify(await snapshotBrowser(browserSessionId), null, 2),
+      output: JSON.stringify(
+        await snapshotBrowser(browserSessionId, {
+          signal,
+          onProgress,
+          waitForVerification: !hasUserSuppliedVerificationCode(
+            request.messages,
+          ),
+        }),
+        null,
+        2,
+      ),
     };
   if (call.name === "browser_click")
     return {
@@ -2685,6 +2690,18 @@ async function execute(
       browserOperationEvidence: browserEvidenceFromActivities(activityRecords),
     };
   }
+  if (call.name === "report_no_change") {
+    const reason = String(call.input.reason || "")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (reason.length < 8)
+      throw new Error("无需修改的原因必须包含具体检查结论");
+    return {
+      output: `无需修改：${reason}`,
+      changed: false,
+      noChangeReported: true,
+    };
+  }
   if (call.name === "diagnostics") {
     const kind = String(call.input.kind || "");
     if (!new Set(["typecheck", "test", "lint", "build"]).has(kind))
@@ -3099,12 +3116,17 @@ async function modelTurn(
   ]
     .filter(Boolean)
     .join("\n\n");
-  const system = `${isolation.boundary}\nYou are a coding agent working in ${root}. Use the provided native tools to inspect and modify the project. Each run_command invocation uses a fresh PowerShell process, so environment variable changes do not persist to later commands; combine dependent setup and execution in one command. Prefer apply_patch for precise edits and write_file for new or complete files. Never invoke apply_patch, file deletion, file moves, or directory operations through run_command when a native tool exists. File tool paths accept absolute paths, including other drives (for example D:\\B on Windows); use them to read or write files the user explicitly points to outside ${root}, and resolve relative paths against ${root}. When you mention a file in your reply, always write its full workspace-relative path (for example src/views/Gooddetail.vue, not just Gooddetail.vue) so the user can tell exactly which file it is. Use web_search for current or externally verifiable information and fetch_url to inspect primary sources; preserve source URLs in the final answer. For interactive or authenticated sites use browser_open, browser_snapshot, browser_click, and browser_type. Credentials explicitly supplied by the user may be entered directly with browser_type. Browser recording is opt-in: call browser_record_start only after an explicit user request such as 开始录制, and call browser_record_stop when the user asks to stop or generate Python. Never record ordinary browsing by default. For independent work that can run concurrently, use spawn_agent with self-contained, non-overlapping tasks, then wait_agent before giving a final answer. Use list_agents, message_agent, and stop_agent to coordinate them. Subagents inherit this task's model, workspace, reasoning, and permissions. For remote servers, call ssh_connect with credentials explicitly supplied by the user, then use ssh_run and the SSH SFTP tools. Use ssh_upload_file to send a local file to the server and ssh_download_file to fetch a remote file to a local path; these transfer binary content directly, unlike ssh_write_file which only writes inline UTF-8 text. SSH exec sessions are non-interactive and may not load shell profiles; when a remote command depends on profile-defined PATH values, invoke the appropriate login shell explicitly. SSH host keys are not verified. Credentials supplied by the user may appear in commands, tool activity details, subagent tasks, and conversation text. For databases, use mysql_connect for direct MySQL access or mysql_connect_via_ssh for an SSH tunnel, then mysql_query; use ? placeholders and values for user-provided data when practical. Public direct MySQL connections use TLS by default and you must not retry with ssl=false unless the user explicitly approves. If CAPTCHA, SMS, passkey, or two-factor verification appears, pause and ask the user to complete it in the visible browser. Do not claim an action succeeded until its tool result confirms it. Before finishing, compare every action requested by the user with successful tool results. A file task is complete only after a mutating tool produced an actual change; a validation is complete only after it really ran successfully after the latest change; a background service is started only after process_output confirms it is running. If no change was needed or an action could not be completed, state that explicitly instead of saying it was done.${activeSkills ? `\n\n${activeSkills}` : ""}${request.recoveryContext ? `\n\n<recovery_context>${request.recoveryContext}</recovery_context>\nThis task resumed after an interruption. Verify prior side effects before repeating them, and recreate any interrupted subagent work that is still needed.` : ""}`;
+  const system = `${isolation.boundary}\nYou are a coding agent working in ${root}. Use the provided native tools to inspect and modify the project. Each run_command invocation uses a fresh PowerShell process, so environment variable changes do not persist to later commands; combine dependent setup and execution in one command. Prefer apply_patch for precise edits and write_file for new or complete files. Never invoke apply_patch, file deletion, file moves, or directory operations through run_command when a native tool exists. File tool paths accept absolute paths, including other drives (for example D:\\B on Windows); use them to read or write files the user explicitly points to outside ${root}, and resolve relative paths against ${root}. When you mention a file in your reply, always write its full workspace-relative path (for example src/views/Gooddetail.vue, not just Gooddetail.vue) so the user can tell exactly which file it is. Use web_search for current or externally verifiable information and fetch_url to inspect primary sources; preserve source URLs in the final answer. For interactive or authenticated sites use browser_open, browser_snapshot, browser_click, and browser_type. Credentials explicitly supplied by the user may be entered directly with browser_type. Browser recording is opt-in: call browser_record_start only after an explicit user request such as 开始录制, and call browser_record_stop when the user asks to stop or generate Python. Never record ordinary browsing by default. For independent work that can run concurrently, use spawn_agent with self-contained, non-overlapping tasks, then wait_agent before giving a final answer. Use list_agents, message_agent, and stop_agent to coordinate them. Subagents inherit this task's model, workspace, reasoning, and permissions. For remote servers, call ssh_connect with credentials explicitly supplied by the user, then use ssh_run and the SSH SFTP tools. Use ssh_upload_file to send a local file to the server and ssh_download_file to fetch a remote file to a local path; these transfer binary content directly, unlike ssh_write_file which only writes inline UTF-8 text. SSH exec sessions are non-interactive and may not load shell profiles; when a remote command depends on profile-defined PATH values, invoke the appropriate login shell explicitly. SSH host keys are not verified. Credentials supplied by the user may appear in commands, tool activity details, subagent tasks, and conversation text. For databases, use mysql_connect for direct MySQL access or mysql_connect_via_ssh for an SSH tunnel, then mysql_query; use ? placeholders and values for user-provided data when practical. Public direct MySQL connections use TLS by default and you must not retry with ssl=false unless the user explicitly approves. Never attempt to solve or bypass CAPTCHA, SMS, passkey, or two-factor verification. browser_snapshot waits while the user completes human verification in the visible browser and resumes automatically afterward, so do not end the task merely to ask the user to say continue. Do not claim an action succeeded until its tool result confirms it. Before finishing, compare every action requested by the user with successful tool results. A file task is complete only after a mutating tool produced an actual change; a validation is complete only after it really ran successfully after the latest change; a background service is started only after process_output confirms it is running. If successful inspection proves that no code or configuration change is needed, call report_no_change with the specific evidence-based reason before the final response; do not manufacture a no-op edit. If an action could not be completed, state that explicitly instead of saying it was done.${activeSkills ? `\n\n${activeSkills}` : ""}${request.recoveryContext ? `\n\n<recovery_context>${request.recoveryContext}</recovery_context>\nThis task resumed after an interruption. Verify prior side effects before repeating them, and recreate any interrupted subagent work that is still needed.` : ""}`;
   const imageInputNotice =
     omitImageInputs && hasImageAttachments(history)
       ? "\n\n当前模型不支持图片输入，历史图片附件已被省略。请只依据文字、上下文文件和工作区继续，不要假装看到了图片。"
       : "";
-  const payloadSystem = `${system}${imageInputNotice}`;
+  const suppliedVerificationCodeNotice = hasUserSuppliedVerificationCode(
+    request.messages,
+  )
+    ? "\n\nThe user explicitly supplied a numeric SMS, email, OTP, or 2FA code in this conversation. You may enter that supplied code with browser_type and submit it; this narrow exception is not permission to retrieve, guess, solve, or bypass any verification."
+    : "";
+  const payloadSystem = `${system}${suppliedVerificationCodeNotice}${imageInputNotice}`;
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...isolation.headers,
@@ -3888,10 +3910,18 @@ export async function* runAgent(
     const verifiedNoChange =
       hasVerifiedNoChangeEvidence(evidenceHistory) &&
       claimsNoChangeNeeded(turn.text);
+    const verifiedNoChangeReport =
+      verifiedNoChange && hasVerifiedNoChangeReport(evidenceHistory);
     const missingCodingEvidence = missingRequestedCodingOperations(
       requestedCodingOps,
       codingEvidence,
-    ).filter((operation) => operation !== "modify" || !verifiedNoChange);
+    ).filter(
+      (operation) =>
+        !(
+          (operation === "modify" && verifiedNoChange) ||
+          (operation === "validate" && verifiedNoChangeReport)
+        ),
+    );
     if (!turn.calls.length && missingCodingEvidence.length) {
       if (unverifiedCodingClaims < 2) {
         unverifiedCodingClaims += 1;
@@ -3904,7 +3934,7 @@ export async function* runAgent(
         history.push({
           kind: "message",
           role: "user",
-          content: `<runtime_verification>本次编码任务仍缺少成功工具结果：${missingCodingEvidence.join(", ")}。不要继续总结或假设文件已经改变；请立即使用工作区工具实际检查和修改，并用 diagnostics 或真实命令验证。如果工具已经确认目标内容完全一致、确实无需修改，请明确写出“无需修改”，不要声称产生了改动。若无法执行，请明确报告未完成及原因。</runtime_verification>`,
+          content: `<runtime_verification>本次编码任务仍缺少成功工具结果：${missingCodingEvidence.join(", ")}。不要继续总结或假设文件已经改变；请立即使用工作区工具实际检查和修改，并用 diagnostics 或真实命令验证。如果只读工具已经确认目标内容正确、问题位于工作区之外或没有可执行的修改目标，请调用 report_no_change 记录具体证据，再明确说明“无需修改”；不要制造无意义改动。若无法执行，请明确报告未完成及原因。</runtime_verification>`,
         });
         continue;
       }
@@ -4044,6 +4074,7 @@ export async function* runAgent(
         process_output: "进程输出",
         stop_process: "停止进程",
         diagnostics: "项目诊断",
+        report_no_change: "确认无需修改",
         web_search: "搜索互联网",
         fetch_url: "读取网页",
         browser_open: "打开浏览器",
@@ -4242,6 +4273,7 @@ export async function* runAgent(
         | "changed"
         | "executed"
         | "mutationAttempted"
+        | "noChangeReported"
         | "operationEvidence"
         | "browserOperationEvidence"
       > = {};
@@ -4272,6 +4304,13 @@ export async function* runAgent(
             break;
           }
           const nextOutput = step.value;
+          const verificationStatus = /^\[等待人工验证\]\s*([^。]+)/.exec(
+            nextOutput,
+          )?.[1];
+          if (verificationStatus && !activity.liveStatus) {
+            activity.liveStatus = `等待人工验证：${verificationStatus}`;
+            yield { type: "activity", activity: { ...activity } };
+          }
           if (nextOutput !== lastProgressOutput) {
             if (nextOutput.startsWith(lastProgressOutput))
               yield {
@@ -4303,6 +4342,7 @@ export async function* runAgent(
           changed: result.changed,
           executed: result.executed,
           mutationAttempted: result.mutationAttempted,
+          noChangeReported: result.noChangeReported,
           operationEvidence: result.operationEvidence,
           browserOperationEvidence: result.browserOperationEvidence,
         };
@@ -4324,6 +4364,7 @@ export async function* runAgent(
             : hardFailure
               ? failureSummary(call, result.output, result.exitCode)
               : undefined,
+          liveStatus: undefined,
         });
         for (const childActivity of childActivities ?? [])
           yield {
@@ -4359,6 +4400,7 @@ export async function* runAgent(
         activity.errorSummary = cancelled
           ? "操作已停止"
           : failureSummary(call, failureOutput);
+        activity.liveStatus = undefined;
       }
       const fingerprint = JSON.stringify({
         tool: call.name,
@@ -4434,6 +4476,7 @@ export async function* runAgent(
             changed: structured.data.changed,
             executed: structured.data.executed,
             mutationAttempted: structured.data.mutationAttempted,
+            noChangeReported: structured.data.noChangeReported,
             operationEvidence: structured.data.operationEvidence,
             browserOperationEvidence: structured.data.browserOperationEvidence,
             exitCode: structured.data.exitCode,

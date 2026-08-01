@@ -56,6 +56,7 @@ type Task = {
     status: string;
     title: string;
     narrative?: string;
+    liveStatus?: string;
     planSteps?: string[];
     planStep?: number;
     startedAt: number;
@@ -616,6 +617,11 @@ function App() {
                         <strong>{activity.title}</strong>
                         {activity.narrative && (
                           <small>{activity.narrative}</small>
+                        )}
+                        {activity.liveStatus && (
+                          <small className="activity-attention">
+                            {activity.liveStatus}
+                          </small>
                         )}
                         {activity.path && <code>{activity.path}</code>}
                         {activity.errorSummary && (

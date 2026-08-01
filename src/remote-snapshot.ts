@@ -24,6 +24,7 @@ function snapshotActivity(
     status: activity.status,
     title: activity.title.slice(0, 240),
     narrative: activity.narrative?.slice(0, 2_000),
+    liveStatus: activity.liveStatus?.slice(0, 500),
     planSteps: activity.planSteps
       ?.slice(0, 12)
       .map((step) => step.slice(0, 300)),

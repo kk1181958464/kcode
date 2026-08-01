@@ -27,6 +27,13 @@ export function groupActivitiesByContentOffset<T extends PositionedActivity>(
   return [...grouped.entries()].sort(([left], [right]) => left - right);
 }
 
+export function shouldShowAssistantTailState(
+  running: boolean,
+  hasActiveActivity: boolean,
+) {
+  return running && !hasActiveActivity;
+}
+
 export function boundedStreamingReasoning(value: string): {
   text: string;
   truncated: boolean;

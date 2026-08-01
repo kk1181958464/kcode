@@ -54,6 +54,7 @@ import {
 import {
   boundedStreamingReasoning,
   groupActivitiesByContentOffset,
+  shouldShowAssistantTailState,
   STREAMING_REASONING_DOM_CHAR_LIMIT,
   visibleAssistantContent,
 } from "../../conversation-rendering";
@@ -483,16 +484,18 @@ const ActivityItem = memo(function ActivityItem({
               <i className="live-dot" />
               <span>
                 <strong>
-                  {activity.tool === "ssh_run"
-                    ? "等待远程命令返回"
-                    : activity.tool === "run_command" &&
-                        /\b(ssh|scp|sftp|plink|pscp|putty|ssh-keyscan)\b/i.test(
-                          activity.command || "",
-                        )
-                      ? "网络命令执行中（可能长时间无输出），可点停止强制终止"
-                      : activity.tool === "run_command"
-                        ? "命令执行中，无输出时也会显示进度心跳"
-                        : "操作正在执行"}
+                  {activity.liveStatus
+                    ? activity.liveStatus
+                    : activity.tool === "ssh_run"
+                      ? "等待远程命令返回"
+                      : activity.tool === "run_command" &&
+                          /\b(ssh|scp|sftp|plink|pscp|putty|ssh-keyscan)\b/i.test(
+                            activity.command || "",
+                          )
+                        ? "网络命令执行中（可能长时间无输出），可点停止强制终止"
+                        : activity.tool === "run_command"
+                          ? "命令执行中，无输出时也会显示进度心跳"
+                          : "操作正在执行"}
                 </strong>
                 <small>已运行 {formatDuration(elapsedMs)}</small>
               </span>
@@ -1123,9 +1126,10 @@ function AssistantTailState({
   return (
     <div className="assistant-tail-state" aria-live="polite">
       <BrainCircuit size={12} />
-      <span>
+      <span className="assistant-tail-copy">
         {reasoningNode}
         {progressNode}
+        <span className="assistant-tail-fallback">正在继续执行…</span>
       </span>
     </div>
   );
@@ -1186,10 +1190,6 @@ const AssistantTimeline = memo(function AssistantTimeline({
         )}
       </>
     );
-  const lastGroupOffset = groups.at(-1)?.[0] ?? 0;
-  const hasTrailingNarration = Boolean(
-    message.content.slice(lastGroupOffset).trim(),
-  );
   let cursor = 0;
   return (
     <div className="assistant-timeline">
@@ -1227,7 +1227,7 @@ const AssistantTimeline = memo(function AssistantTimeline({
       })}
       {renderText(message.content.slice(cursor))}
       {streamingTail}
-      {running && !hasActiveActivity && !hasTrailingNarration && (
+      {shouldShowAssistantTailState(running, hasActiveActivity) && (
         <AssistantTailState
           reasoningNode={streamingReasoning}
           progressNode={streamingProgress}

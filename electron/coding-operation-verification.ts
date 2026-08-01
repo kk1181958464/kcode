@@ -212,16 +212,10 @@ function parsedResults(history: CodingVerificationHistoryItem[]) {
   return results;
 }
 
-function successfulResults(history: CodingVerificationHistoryItem[]) {
-  return new Map(
-    [...parsedResults(history)].filter(([, result]) => result.success === true),
-  );
-}
-
-export function hasVerifiedNoChangeEvidence(
+function verifiedNoChangeEvidence(
   history: CodingVerificationHistoryItem[],
 ) {
-  const results = successfulResults(history);
+  const parsed = parsedResults(history);
   const noOpCapableTools = new Set([
     "apply_patch",
     "write_file",
@@ -232,11 +226,57 @@ export function hasVerifiedNoChangeEvidence(
     "mongodb_execute",
     "diagnostics",
   ]);
+  const inspectionTools = new Set([
+    "list_directory",
+    "glob_files",
+    "read_many_files",
+    "path_info",
+    "read_file",
+    "search_code",
+    "git_status",
+    "git_diff",
+    "git_log",
+    "git_show",
+    "web_search",
+    "fetch_url",
+    "browser_snapshot",
+    "browser_screenshot",
+    "ssh_list_directory",
+    "ssh_read_file",
+  ]);
+  const calls = new Map<
+    string,
+    { id: string; name: string; input: Record<string, unknown> }
+  >();
   for (const item of history) {
-    if (item.kind !== "calls") continue;
-    for (const call of item.calls) {
-      if (!noOpCapableTools.has(call.name)) continue;
-      const data = results.get(call.id)?.data;
+    if (item.kind === "calls")
+      for (const call of item.calls) calls.set(call.id, call);
+  }
+  let inspected = false;
+  let mutated = false;
+  let explicitReport = false;
+  let verifiedNoOp = false;
+  for (const item of history) {
+    if (item.kind !== "result") continue;
+    const call = calls.get(item.callId);
+    const result = parsed.get(item.callId);
+    if (!call || result?.success !== true) continue;
+    const data = result.data;
+    const command = ["run_command", "ssh_run"].includes(call.name)
+      ? String(call.input.command ?? "")
+      : "";
+    if (
+      inspectionTools.has(call.name) ||
+      (["run_command", "ssh_run"].includes(call.name) &&
+        data?.executed === true &&
+        isInspectionCommand(command))
+    )
+      inspected = true;
+    if (hasActualMutation(data)) {
+      mutated = true;
+      explicitReport = false;
+    }
+    if (noOpCapableTools.has(call.name)) {
       if (
         data?.changed === false &&
         (data.mutationAttempted === true ||
@@ -244,14 +284,35 @@ export function hasVerifiedNoChangeEvidence(
             call.name,
           ))
       )
-        return true;
+        verifiedNoOp = true;
     }
+    if (
+      call.name === "report_no_change" &&
+      data?.noChangeReported === true &&
+      String(call.input.reason ?? "").trim().length >= 8 &&
+      inspected &&
+      !mutated
+    )
+      explicitReport = true;
   }
-  return false;
+  return { verifiedNoOp, explicitReport };
+}
+
+export function hasVerifiedNoChangeEvidence(
+  history: CodingVerificationHistoryItem[],
+) {
+  const evidence = verifiedNoChangeEvidence(history);
+  return evidence.verifiedNoOp || evidence.explicitReport;
+}
+
+export function hasVerifiedNoChangeReport(
+  history: CodingVerificationHistoryItem[],
+) {
+  return verifiedNoChangeEvidence(history).explicitReport;
 }
 
 export function claimsNoChangeNeeded(text: string) {
-  return /(?:无需|不需要|没有必要|不必)(?:再)?(?:修改|改动|变更)|(?:内容|文件|配置|目录).{0,12}(?:一致|相同|已经正确|符合要求)|(?:未|没有)发生实际(?:修改|改动|变更)|已经(?:是|处于|符合).{0,16}(?:目标|预期|要求|正确)|\b(?:no changes? (?:were )?(?:needed|required)|already (?:correct|matches?|up[ -]to[ -]date)|nothing (?:needed|to change)|unchanged)\b/i.test(
+  return /(?:无需|不需要|没有必要|不必)(?:再)?(?:修改|改动|变更)|(?:本次|因此|所以)?(?:不(?:会|再)?|没有)(?:进行|产生|做)?(?:任何)?(?:修改|改动|变更)|(?:内容|文件|配置|目录).{0,12}(?:一致|相同|已经正确|符合要求)|(?:未|没有)发生实际(?:修改|改动|变更)|已经(?:是|处于|符合).{0,16}(?:目标|预期|要求|正确)|\b(?:no changes? (?:were )?(?:needed|required)|already (?:correct|matches?|up[ -]to[ -]date)|nothing (?:needed|to change)|unchanged)\b/i.test(
     text,
   );
 }
@@ -284,6 +345,12 @@ function isValidationCommand(command: string) {
     /\bJSON\.parse\s*\(|\bConvertFrom-Json\b|\bTest-Json\b|\b(?:test|check|verify|validate)[\w.-]*\.(?:[cm]?js|py|php|sh)\b/i.test(
       value,
     )
+  );
+}
+
+function isInspectionCommand(command: string) {
+  return /\b(?:cat|type|findstr|rg|grep|Get-Content|Get-ChildItem|Select-String|Test-Path|Resolve-Path|git\s+(?:status|diff|log|show))\b/i.test(
+    command,
   );
 }
 
@@ -411,9 +478,7 @@ export function successfulCodingEvidence(
     if (["run_command", "ssh_run"].includes(call.name)) {
       if (
         (successful || (executed && data?.exitCode === 1)) &&
-        /\b(?:cat|type|findstr|rg|grep|git\s+(?:status|diff|log|show))\b/i.test(
-          command,
-        )
+        isInspectionCommand(command)
       )
         operations.add("inspect");
       if (

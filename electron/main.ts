@@ -335,6 +335,26 @@ function notifyTask(result: "done" | "error", message?: string) {
     notification.show();
   }
 }
+function notifyBrowserVerification(details: {
+  sessionId: string;
+  message: string;
+}) {
+  updateUnread(unreadTasks + 1);
+  if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isFocused())
+    mainWindow.flashFrame(true);
+  if (!Notification.isSupported()) return;
+  const notification = new Notification({
+    title: "KCode 等待网页验证",
+    body: `${details.message}。完成后任务会自动继续。`,
+    icon: appIcon(),
+    silent: false,
+  });
+  notification.on("click", () => {
+    showMainWindow();
+    activateBrowserSession(details.sessionId);
+  });
+  notification.show();
+}
 // Reject any id that could escape the checkpoints dir. Legit ids are
 // randomUUID() or request ids ([A-Za-z0-9_-]); path separators / dots are not.
 const checkpointPath = (id: string) => {
@@ -420,6 +440,7 @@ function createWindow() {
           message: "网页已关闭，浏览器任务已停止",
         });
     },
+    onVerificationRequired: notifyBrowserVerification,
   });
   win.on("focus", () => updateUnread(0));
   win.on("closed", () => {

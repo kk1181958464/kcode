@@ -499,6 +499,9 @@ export default function App() {
     recording?: boolean;
     canGoBack?: boolean;
     canGoForward?: boolean;
+    verificationRequired?: boolean;
+    verificationSince?: number;
+    verificationMessage?: string;
   }>({ open: false });
   const [browserAddress, setBrowserAddress] = useState("");
   // Latest reasoning/thinking snippet for the active turn. The renderer keeps

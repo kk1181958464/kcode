@@ -54,6 +54,7 @@ export type RemoteTaskSnapshot = {
     status: string;
     title: string;
     narrative?: string;
+    liveStatus?: string;
     planSteps?: string[];
     planStep?: number;
     startedAt: number;

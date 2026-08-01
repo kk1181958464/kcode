@@ -41,6 +41,7 @@ export type AgentToolName =
   | "process_output"
   | "stop_process"
   | "diagnostics"
+  | "report_no_change"
   | "web_search"
   | "fetch_url"
   | "browser_open"
@@ -265,6 +266,8 @@ export type AgentActivity = {
   undone?: boolean;
   /** Structured proof metadata used by the runtime completion verifier. */
   changed?: boolean;
+  /** Transient state that should also be visible on remote task views. */
+  liveStatus?: string;
   executed?: boolean;
   round?: number;
   contentOffset?: number;
@@ -498,6 +501,9 @@ export type KCodeApi = {
         recording?: boolean;
         canGoBack?: boolean;
         canGoForward?: boolean;
+        verificationRequired?: boolean;
+        verificationSince?: number;
+        verificationMessage?: string;
       }) => void,
     ): () => void;
   };

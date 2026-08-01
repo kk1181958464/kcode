@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   boundedStreamingReasoning,
   groupActivitiesByContentOffset,
+  shouldShowAssistantTailState,
   STREAMING_REASONING_DOM_CHAR_LIMIT,
   STREAMING_REASONING_DOM_TRIM_TARGET,
   visibleAssistantContent,
@@ -41,6 +42,12 @@ test("groups timeline activities in offset order while preserving insertion orde
       [10, [after]],
     ],
   );
+});
+
+test("keeps a running tail visible between completed tools and the next step", () => {
+  assert.equal(shouldShowAssistantTailState(true, false), true);
+  assert.equal(shouldShowAssistantTailState(true, true), false);
+  assert.equal(shouldShowAssistantTailState(false, false), false);
 });
 
 test("keeps streaming reasoning DOM bounded and preserves surrogate pairs", () => {

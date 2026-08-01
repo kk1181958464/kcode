@@ -3181,6 +3181,39 @@ select:focus-visible {
   padding: 0 10px 0 13px;
   border-bottom: 1px solid var(--line);
 }
+.browser-verification {
+  position: relative;
+  z-index: 5;
+  height: 44px;
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) 18px;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--warning) 30%, var(--line));
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+.browser-verification > span {
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+}
+.browser-verification strong,
+.browser-verification small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.browser-verification strong {
+  color: var(--ink);
+  font-size: 10px;
+  font-weight: 650;
+}
+.browser-verification small {
+  color: var(--muted);
+  font-size: 9px;
+}
 .browser-navigation {
   display: flex;
   gap: 1px;
@@ -3232,6 +3265,15 @@ select:focus-visible {
 .browser-show-tab svg {
   color: var(--success);
 }
+.browser-show-tab.verification {
+  border-color: color-mix(in srgb, var(--warning) 45%, var(--line));
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+.browser-show-tab.verification svg {
+  color: var(--warning);
+}
+
 .status-panel > header {
   padding: 12px 14px;
   height: auto;
@@ -8444,22 +8486,25 @@ button[aria-busy="true"] {
   display: inline;
 }
 
-.streaming-progress-leaf:not([hidden]) {
+.streaming-progress-leaf:not([hidden]),
+.assistant-tail-fallback {
   color: var(--muted);
-  animation: streaming-progress-breathe 2.1s ease-in-out infinite;
+  animation: streaming-progress-breathe 2.1s linear infinite;
+  will-change: background-position;
 }
 
 @supports ((-webkit-background-clip: text) or (background-clip: text)) {
-  .streaming-progress-leaf:not([hidden]) {
-    background: linear-gradient(
+  .streaming-progress-leaf:not([hidden]),
+  .assistant-tail-fallback {
+    background: repeating-linear-gradient(
       90deg,
       var(--muted) 0%,
-      var(--muted) 32%,
-      var(--ink) 50%,
-      var(--muted) 68%,
-      var(--muted) 100%
+      var(--muted) 16%,
+      var(--ink) 25%,
+      var(--muted) 34%,
+      var(--muted) 50%
     );
-    background-size: 240% 100%;
+    background-size: 200% 100%;
     background-position: 100% 0;
     -webkit-background-clip: text;
     background-clip: text;
@@ -8467,11 +8512,12 @@ button[aria-busy="true"] {
   }
 }
 
-.assistant-tail-state:has(.streaming-progress-leaf:not([hidden])) > svg {
+.assistant-tail-state > svg {
   animation: pulse 1.45s ease-in-out infinite;
 }
 
-.assistant-tail-state:not(:has(.streaming-status-leaf:not([hidden]))) {
+.assistant-tail-state:has(.streaming-status-leaf:not([hidden]))
+  .assistant-tail-fallback {
   display: none;
 }
 
@@ -8594,16 +8640,11 @@ button[aria-busy="true"] {
 }
 
 @keyframes streaming-progress-breathe {
-  0% {
-    opacity: 0.58;
+  from {
     background-position: 100% 0;
   }
-  48% {
-    opacity: 1;
-  }
-  100% {
-    opacity: 0.72;
-    background-position: -100% 0;
+  to {
+    background-position: 0 0;
   }
 }
 
@@ -8632,11 +8673,13 @@ button[aria-busy="true"] {
   .execution-summary.is-active > .execution-summary-head::before,
   .agent-working-head::before,
   .streaming-progress-leaf:not([hidden]),
-  .assistant-tail-state:has(.streaming-progress-leaf:not([hidden])) > svg {
+  .assistant-tail-fallback,
+  .assistant-tail-state > svg {
     animation: none;
   }
 
-  .streaming-progress-leaf:not([hidden]) {
+  .streaming-progress-leaf:not([hidden]),
+  .assistant-tail-fallback {
     background: none;
     color: var(--muted);
     -webkit-text-fill-color: currentColor;

@@ -4,6 +4,8 @@ import {
   PanelRightClose,
   PanelRightOpen,
   RefreshCw,
+  ShieldAlert,
+  LoaderCircle,
   X,
 } from "lucide-react";
 
@@ -18,6 +20,9 @@ interface BrowserState {
   recording?: boolean;
   canGoBack?: boolean;
   canGoForward?: boolean;
+  verificationRequired?: boolean;
+  verificationSince?: number;
+  verificationMessage?: string;
 }
 
 export interface BrowserPanelProps {
@@ -37,14 +42,24 @@ export function BrowserPanel({
     if (browserState.hidden && browserState.sessionId) {
       return (
         <button
-          className="browser-show-tab"
-          title="重新显示后台运行的浏览器"
+          className={`browser-show-tab ${browserState.verificationRequired ? "verification" : ""}`}
+          title={
+            browserState.verificationRequired
+              ? "显示需要人工验证的网页"
+              : "重新显示后台运行的浏览器"
+          }
           onClick={() =>
             void window.kcode.browser.activate(browserState.sessionId)
           }
         >
-          <PanelRightOpen size={15} />
-          <span>显示浏览器</span>
+          {browserState.verificationRequired ? (
+            <ShieldAlert size={15} />
+          ) : (
+            <PanelRightOpen size={15} />
+          )}
+          <span>
+            {browserState.verificationRequired ? "需要验证" : "显示浏览器"}
+          </span>
         </button>
       );
     }
@@ -132,6 +147,18 @@ export function BrowserPanel({
           <X size={16} />
         </button>
       </header>
+      {browserState.verificationRequired && (
+        <div className="browser-verification" role="status" aria-live="polite">
+          <ShieldAlert size={17} />
+          <span>
+            <strong>
+              {browserState.verificationMessage || "请完成网页验证"}
+            </strong>
+            <small>完成后模型会自动继续</small>
+          </span>
+          <LoaderCircle className="spinning" size={15} />
+        </div>
+      )}
     </aside>
   );
 }

@@ -4,6 +4,7 @@ import {
   claimedCodingOperations,
   claimsNoChangeNeeded,
   hasVerifiedNoChangeEvidence,
+  hasVerifiedNoChangeReport,
   isAdvisoryOnlyRequest,
   missingRequestedCodingOperations,
   requestedCodingOperations,
@@ -219,6 +220,108 @@ test("does not count successful no-op file tools as modification evidence", () =
     },
   ];
   assert.deepEqual([...successfulCodingEvidence(changedHistory)], ["modify"]);
+});
+
+test("accepts an explicit no-change report only after successful inspection", () => {
+  const history = [
+    {
+      kind: "calls" as const,
+      calls: [
+        {
+          id: "inspect",
+          name: "ssh_run",
+          input: { command: "Get-Content /tmp/jobs.json" },
+        },
+      ],
+    },
+    {
+      kind: "result" as const,
+      callId: "inspect",
+      content:
+        '{"success":true,"data":{"executed":true,"exitCode":0}}',
+    },
+    {
+      kind: "calls" as const,
+      calls: [
+        {
+          id: "no-change",
+          name: "report_no_change",
+          input: {
+            reason: "服务器队列状态正常，工作区中没有需要修改的配置目标。",
+          },
+        },
+      ],
+    },
+    {
+      kind: "result" as const,
+      callId: "no-change",
+      content:
+        '{"success":true,"data":{"changed":false,"noChangeReported":true}}',
+    },
+  ];
+  const evidence = successfulCodingEvidence(history);
+  assert.deepEqual([...evidence], ["execute", "inspect"]);
+  assert.equal(hasVerifiedNoChangeEvidence(history), true);
+  assert.equal(hasVerifiedNoChangeReport(history), true);
+  assert.equal(
+    claimsNoChangeNeeded("只读检查已确认当前状态正确，因此本次不修改配置。"),
+    true,
+  );
+  assert.deepEqual(
+    missingRequestedCodingOperations(
+      new Set(["inspect", "modify", "validate"]),
+      evidence,
+    ).filter((operation) => {
+      if (operation === "modify") return !hasVerifiedNoChangeEvidence(history);
+      if (operation === "validate") return !hasVerifiedNoChangeReport(history);
+      return true;
+    }),
+    [],
+  );
+});
+
+test("rejects an unsupported no-change report and one made after mutation", () => {
+  const reportCall = {
+    kind: "calls" as const,
+    calls: [
+      {
+        id: "no-change",
+        name: "report_no_change",
+        input: { reason: "检查后确认没有可执行的修改目标。" },
+      },
+    ],
+  };
+  const reportResult = {
+    kind: "result" as const,
+    callId: "no-change",
+    content:
+      '{"success":true,"data":{"changed":false,"noChangeReported":true}}',
+  };
+  assert.equal(
+    hasVerifiedNoChangeEvidence([reportCall, reportResult]),
+    false,
+  );
+  assert.equal(
+    hasVerifiedNoChangeEvidence([
+      {
+        kind: "calls",
+        calls: [{ id: "read", name: "read_file", input: { path: "a.ts" } }],
+      },
+      { kind: "result", callId: "read", content: '{"success":true}' },
+      {
+        kind: "calls",
+        calls: [{ id: "edit", name: "write_file", input: { path: "a.ts" } }],
+      },
+      {
+        kind: "result",
+        callId: "edit",
+        content: '{"success":true,"data":{"changed":true}}',
+      },
+      reportCall,
+      reportResult,
+    ]),
+    false,
+  );
 });
 
 test("does not mistake shell redirection or a literal angle bracket for a file edit", () => {
