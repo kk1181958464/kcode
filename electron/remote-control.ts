@@ -7,6 +7,7 @@ import type {
   RemoteCommandEnvelope,
   RemoteControlState,
   RemoteProvider,
+  RemoteTaskStreamEvent,
   RemoteTaskSnapshot,
 } from "../src/remote-types";
 import { exportProviderVault, importProviderVault } from "./store";
@@ -339,6 +340,15 @@ export async function syncRemoteTasks(tasks: RemoteTaskSnapshot[]) {
     lastState = { ...lastState, lastSyncedAt, error: undefined };
     callbacks?.onState(lastState);
   }
+}
+
+export async function syncRemoteTaskEvent(event: RemoteTaskStreamEvent) {
+  await ensureLoaded();
+  if (!persisted.enabled || !token()) return;
+  const encoded = JSON.stringify(event);
+  if (Buffer.byteLength(encoded, "utf8") > 512 * 1024)
+    throw new Error("远程实时事件超过 512 KB 限制");
+  sendSocket(event);
 }
 
 export function remoteCommandResult(id: string, ok: boolean, error?: string) {

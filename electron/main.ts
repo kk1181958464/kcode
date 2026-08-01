@@ -112,6 +112,7 @@ import {
   remoteRegister,
   remoteState,
   remoteShouldKeepRunning,
+  syncRemoteTaskEvent,
   syncRemoteTasks,
   uploadProviderVault,
   setRemoteEnabled,
@@ -537,6 +538,9 @@ app.whenReady().then(async () => {
   );
   ipcMain.handle("remote:sync-tasks", (_e, tasks: RemoteTaskSnapshot[]) =>
     syncRemoteTasks(tasks),
+  );
+  ipcMain.handle("remote:sync-task-event", (_e, event) =>
+    syncRemoteTaskEvent(event),
   );
   ipcMain.handle(
     "remote:command-result",

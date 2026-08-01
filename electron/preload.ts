@@ -117,6 +117,8 @@ const api: KCodeApi = {
     logout: () => ipcRenderer.invoke("remote:logout"),
     setEnabled: (enabled) => ipcRenderer.invoke("remote:set-enabled", enabled),
     syncTasks: (tasks) => ipcRenderer.invoke("remote:sync-tasks", tasks),
+    syncTaskEvent: (event) =>
+      ipcRenderer.invoke("remote:sync-task-event", event),
     commandResult: (id, ok, error) =>
       ipcRenderer.invoke("remote:command-result", id, ok, error),
     ready: () => ipcRenderer.invoke("remote:ready"),

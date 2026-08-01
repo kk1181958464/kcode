@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   claimedCodingOperations,
   claimsNoChangeNeeded,
+  compactOperationEvidenceResult,
   hasVerifiedNoChangeEvidence,
   hasVerifiedNoChangeReport,
   isAdvisoryOnlyRequest,
@@ -175,6 +176,7 @@ test("does not count successful no-op file tools as modification evidence", () =
   assert.deepEqual([...successfulCodingEvidence(noOpHistory)], []);
   assert.equal(hasVerifiedNoChangeEvidence(noOpHistory), true);
   assert.equal(claimsNoChangeNeeded("文件内容一致，无需修改。"), true);
+  assert.equal(claimsNoChangeNeeded("本轮没有文件修改需求。"), true);
   assert.equal(claimsNoChangeNeeded("已经修改完成。"), false);
   assert.equal(
     hasVerifiedNoChangeEvidence([
@@ -271,6 +273,45 @@ test("accepts an explicit no-change report only after successful inspection", ()
     missingRequestedCodingOperations(
       new Set(["inspect", "modify", "validate"]),
       evidence,
+    ).filter((operation) => {
+      if (operation === "modify") return !hasVerifiedNoChangeEvidence(history);
+      if (operation === "validate") return !hasVerifiedNoChangeReport(history);
+      return true;
+    }),
+    [],
+  );
+});
+
+test("preserves an explicit no-change report in the compact evidence ledger", () => {
+  const history = [
+    {
+      kind: "calls" as const,
+      calls: [
+        { id: "inspect", name: "git_status", input: {} },
+        {
+          id: "no-change",
+          name: "report_no_change",
+          input: {
+            reason: "测试已执行，失败项仅依赖本机未配置的外部服务，工作区没有修改目标。",
+          },
+        },
+      ],
+    },
+    compactOperationEvidenceResult("inspect", "git_status", true, {
+      output: "工作区无修改",
+    }),
+    compactOperationEvidenceResult("no-change", "report_no_change", true, {
+      changed: false,
+      noChangeReported: true,
+    }),
+  ];
+
+  assert.equal(hasVerifiedNoChangeEvidence(history), true);
+  assert.equal(hasVerifiedNoChangeReport(history), true);
+  assert.deepEqual(
+    missingRequestedCodingOperations(
+      new Set(["inspect", "modify", "validate"]),
+      successfulCodingEvidence(history),
     ).filter((operation) => {
       if (operation === "modify") return !hasVerifiedNoChangeEvidence(history);
       if (operation === "validate") return !hasVerifiedNoChangeReport(history);

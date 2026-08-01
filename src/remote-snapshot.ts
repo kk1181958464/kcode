@@ -60,6 +60,12 @@ export function remoteTaskSnapshot(task: TaskRecord): RemoteTaskSnapshot {
       createdAt: message.createdAt,
       model: message.model,
       imageCount: message.images?.length || undefined,
+      files: message.contextAttachments?.length
+        ? message.contextAttachments.slice(0, 9).map((file) => ({
+            name: file.name.slice(0, 240),
+            size: file.size,
+          }))
+        : undefined,
     })),
     activities: task.activities.slice(-160).map(snapshotActivity),
     usage: task.usage

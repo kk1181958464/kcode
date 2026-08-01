@@ -1,0 +1,34 @@
+name: kcode_mobile
+description: "KCode remote control client for Android and iOS."
+publish_to: "none"
+version: 0.1.5+1
+
+environment:
+  sdk: ^3.12.2
+
+dependencies:
+  file_picker: ^10.3.10
+  flutter:
+    sdk: flutter
+  shared_preferences: ^2.5.5
+  webview_flutter: ^4.14.1
+  webview_flutter_android: ^4.13.0
+  webview_flutter_wkwebview: ^3.26.0
+
+dev_dependencies:
+  flutter_launcher_icons: ^0.14.4
+  flutter_lints: ^6.0.0
+  flutter_test:
+    sdk: flutter
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/kcode-icon.png
+
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: assets/kcode-icon.png
+  min_sdk_android: 24
+  remove_alpha_ios: true

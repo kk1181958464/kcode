@@ -8,8 +8,11 @@ import {
   CircleDot,
   Cloud,
   FileDiff,
+  FileText,
+  ImagePlus,
   LoaderCircle,
   LogOut,
+  Paperclip,
   RefreshCw,
   Send,
   ShieldCheck,
@@ -18,8 +21,18 @@ import {
   Terminal,
   Wifi,
   WifiOff,
+  X,
 } from "lucide-react";
 import { AdminApp } from "./admin";
+import {
+  MAX_MOBILE_FILES,
+  MAX_MOBILE_IMAGES,
+  addMobileContextFiles,
+  addMobileImages,
+  formatAttachmentSize,
+  type MobileContextAttachment,
+  type MobileImageAttachment,
+} from "./mobile-attachments";
 import "./styles.css";
 
 type User = { id: string; username: string };
@@ -48,6 +61,7 @@ type Task = {
     createdAt: number;
     model?: string;
     imageCount?: number;
+    files?: Array<{ name: string; size: number }>;
   }>;
   activities: Array<{
     id: string;
@@ -73,7 +87,15 @@ type Task = {
 };
 type RemoteCommand =
   | { type: "task.load"; taskId: string }
-  | { type: "task.send"; taskId: string; content: string }
+  | {
+      type: "task.send";
+      taskId: string;
+      content: string;
+      attachments?: {
+        images?: MobileImageAttachment[];
+        files?: MobileContextAttachment[];
+      };
+    }
   | { type: "task.cancel"; taskId: string }
   | {
       type: "task.approve";
@@ -82,6 +104,19 @@ type RemoteCommand =
       activityId: string;
       allowed: boolean;
     };
+
+type LiveStream = {
+  taskId: string;
+  requestId: string;
+  content: string;
+  reasoning?: string;
+  progress?: string;
+  updatedAt: number;
+};
+
+function liveStreamKey(taskId: string, requestId: string) {
+  return `${taskId}:${requestId}`;
+}
 
 const jsonRequest = async <T,>(path: string, init?: RequestInit) => {
   const response = await fetch(path, {
@@ -121,7 +156,9 @@ function statusClass(task: Task) {
   return "idle";
 }
 
-function latestPreview(task: Task) {
+function latestPreview(task: Task, live?: LiveStream) {
+  if (live?.content.trim()) return live.content;
+  if (live?.progress?.trim()) return live.progress;
   const message = [...task.messages]
     .reverse()
     .find((item) => item.content || item.error);
@@ -245,13 +282,43 @@ function App() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [draft, setDraft] = useState("");
+  const [mobileImages, setMobileImages] = useState<MobileImageAttachment[]>([]);
+  const [mobileFiles, setMobileFiles] = useState<MobileContextAttachment[]>([]);
+  const [liveStreams, setLiveStreams] = useState<Record<string, LiveStream>>(
+    {},
+  );
   const [mobileDetail, setMobileDetail] = useState(false);
   const socketRef = useRef<WebSocket | null>(null);
   const reconnectRef = useRef<number | null>(null);
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const conversationRef = useRef<HTMLDivElement | null>(null);
+  const autoFollowRef = useRef(true);
 
   const selectedDevice = devices.find((item) => item.id === deviceId);
   const selectedTask = tasks.find((item) => item.id === selectedTaskId);
+  const selectedLiveStream = selectedTask?.runningId
+    ? liveStreams[liveStreamKey(selectedTask.id, selectedTask.runningId)]
+    : undefined;
   const online = Boolean(selectedDevice?.online && connected);
+
+  function applyTaskSnapshots(nextTasks: Task[]) {
+    setTasks(nextTasks);
+    setLiveStreams((current) => {
+      const next: Record<string, LiveStream> = {};
+      for (const task of nextTasks) {
+        if (!task.runningId) continue;
+        const key = liveStreamKey(task.id, task.runningId);
+        if (current[key]) next[key] = current[key];
+      }
+      return next;
+    });
+    setSelectedTaskId((current) =>
+      nextTasks.some((item) => item.id === current)
+        ? current
+        : nextTasks[0]?.id || "",
+    );
+  }
 
   async function loadSession() {
     try {
@@ -290,12 +357,7 @@ function App() {
     const result = await jsonRequest<{ tasks: Task[] }>(
       `/api/devices/${encodeURIComponent(target)}/tasks`,
     );
-    setTasks(result.tasks);
-    setSelectedTaskId((current) =>
-      result.tasks.some((item) => item.id === current)
-        ? current
-        : result.tasks[0]?.id || "",
-    );
+    applyTaskSnapshots(result.tasks);
   }
 
   useEffect(() => {
@@ -343,17 +405,55 @@ function App() {
             devices?: Device[];
             ok?: boolean;
             error?: string;
+            event?: string;
+            taskId?: string;
+            requestId?: string;
+            content?: string;
+            reasoning?: string;
+            progress?: string;
+            updatedAt?: number;
           };
           if (
             message.type === "tasks.changed" &&
             message.deviceId === deviceId &&
             message.tasks
           ) {
-            setTasks(message.tasks);
-            setSelectedTaskId((current) =>
-              message.tasks!.some((item) => item.id === current)
+            applyTaskSnapshots(message.tasks);
+          }
+          if (
+            message.type === "task.event" &&
+            message.event === "stream" &&
+            message.deviceId === deviceId &&
+            message.taskId &&
+            message.requestId &&
+            typeof message.content === "string" &&
+            typeof message.updatedAt === "number"
+          ) {
+            const stream: LiveStream = {
+              taskId: message.taskId,
+              requestId: message.requestId,
+              content: message.content,
+              reasoning: message.reasoning,
+              progress: message.progress,
+              updatedAt: message.updatedAt,
+            };
+            const key = liveStreamKey(stream.taskId, stream.requestId);
+            setLiveStreams((current) =>
+              current[key]?.updatedAt > stream.updatedAt
                 ? current
-                : message.tasks![0]?.id || "",
+                : { ...current, [key]: stream },
+            );
+            setTasks((current) =>
+              current.map((task) =>
+                task.id === stream.taskId
+                  ? {
+                      ...task,
+                      runningId: stream.requestId,
+                      runStatus: "running",
+                      updatedAt: Math.max(task.updatedAt, stream.updatedAt),
+                    }
+                  : task,
+              ),
             );
           }
           if (message.type === "devices.changed" && message.devices)
@@ -400,9 +500,60 @@ function App() {
       }
       setNotice("已发送到电脑");
       window.setTimeout(() => setNotice(""), 2200);
+      return true;
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "发送失败");
+      return false;
     }
+  }
+
+  async function selectMobileImages(selected: File[]) {
+    if (!selected.length) return;
+    const result = await addMobileImages(mobileImages, mobileFiles, selected);
+    setMobileImages(result.images);
+    setError(result.errors.join("；"));
+  }
+
+  async function selectMobileFiles(selected: File[]) {
+    if (!selected.length) return;
+    const result = await addMobileContextFiles(
+      mobileFiles,
+      mobileImages,
+      selected,
+    );
+    setMobileFiles(result.files);
+    setError(result.errors.join("；"));
+  }
+
+  function clearMobileAttachments() {
+    setMobileImages([]);
+    setMobileFiles([]);
+  }
+
+  async function submitMobileMessage(event: React.FormEvent) {
+    event.preventDefault();
+    const content = draft.trim();
+    if (
+      !selectedTask ||
+      !online ||
+      (!content && !mobileImages.length && !mobileFiles.length)
+    )
+      return;
+    const sent = await sendCommand({
+      type: "task.send",
+      taskId: selectedTask.id,
+      content,
+      attachments:
+        mobileImages.length || mobileFiles.length
+          ? {
+              images: mobileImages.length ? mobileImages : undefined,
+              files: mobileFiles.length ? mobileFiles : undefined,
+            }
+          : undefined,
+    });
+    if (!sent) return;
+    setDraft("");
+    clearMobileAttachments();
   }
 
   async function logout() {
@@ -413,13 +564,32 @@ function App() {
     setUser(undefined);
     setDevices([]);
     setTasks([]);
+    setLiveStreams({});
     setSelectedTaskId("");
+    setDraft("");
+    clearMobileAttachments();
   }
 
   const waitingActivity = useMemo(
     () => selectedTask?.activities.find((item) => item.status === "waiting"),
     [selectedTask],
   );
+
+  useEffect(() => {
+    if (!autoFollowRef.current) return;
+    const frame = window.requestAnimationFrame(() => {
+      const conversation = conversationRef.current;
+      if (conversation) conversation.scrollTop = conversation.scrollHeight;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [
+    selectedTaskId,
+    selectedTask?.messages.length,
+    selectedTask?.activities.length,
+    selectedLiveStream?.content.length,
+    selectedLiveStream?.reasoning?.length,
+    selectedLiveStream?.progress,
+  ]);
 
   if (loading)
     return (
@@ -464,6 +634,8 @@ function App() {
             onChange={(event) => {
               setDeviceId(event.target.value);
               setMobileDetail(false);
+              setDraft("");
+              clearMobileAttachments();
             }}
             aria-label="选择电脑"
           >
@@ -499,8 +671,13 @@ function App() {
               key={task.id}
               className={`task-item ${task.id === selectedTaskId ? "selected" : ""}`}
               onClick={() => {
+                if (task.id !== selectedTaskId) {
+                  setDraft("");
+                  clearMobileAttachments();
+                }
                 setSelectedTaskId(task.id);
                 setMobileDetail(true);
+                autoFollowRef.current = true;
                 if (online)
                   void sendCommand({ type: "task.load", taskId: task.id });
               }}
@@ -511,7 +688,14 @@ function App() {
                 <small>
                   {task.workspaceName} · {formatTime(task.updatedAt)}
                 </small>
-                <em>{latestPreview(task)}</em>
+                <em>
+                  {latestPreview(
+                    task,
+                    task.runningId
+                      ? liveStreams[liveStreamKey(task.id, task.runningId)]
+                      : undefined,
+                  )}
+                </em>
               </span>
             </button>
           ))}
@@ -561,37 +745,98 @@ function App() {
         )}
         {selectedTask ? (
           <>
-            <div className="conversation-view">
-              {selectedTask.messages.map((message) => (
-                <article
-                  key={message.id}
-                  className={`remote-message ${message.role}`}
-                >
-                  <div className="message-meta">
-                    <span>
-                      {message.role === "user"
-                        ? "你"
-                        : message.model || "KCode"}
-                    </span>
-                    <time>{formatTime(message.createdAt)}</time>
-                  </div>
-                  <div className="message-body">
-                    {message.error ? (
-                      <span className="message-error">{message.error}</span>
-                    ) : (
-                      message.content ||
-                      (message.role === "assistant" && selectedTask.runningId
-                        ? "正在生成…"
-                        : "")
-                    )}
-                    {message.imageCount ? (
-                      <small className="image-count">
-                        包含 {message.imageCount} 张图片
+            <div
+              className="conversation-view"
+              ref={conversationRef}
+              onScroll={(event) => {
+                const element = event.currentTarget;
+                autoFollowRef.current =
+                  element.scrollHeight -
+                    element.scrollTop -
+                    element.clientHeight <
+                  96;
+              }}
+            >
+              {selectedTask.messages.map((message) => {
+                const isLiveAssistant =
+                  message.role === "assistant" &&
+                  message.id === `assistant:${selectedTask.runningId}`;
+                const live = isLiveAssistant ? selectedLiveStream : undefined;
+                const content = `${message.content}${live?.content || ""}`;
+                return (
+                  <article
+                    key={message.id}
+                    className={`remote-message ${message.role}`}
+                  >
+                    <div className="message-meta">
+                      <span>
+                        {message.role === "user"
+                          ? "你"
+                          : message.model || "KCode"}
+                      </span>
+                      <time>{formatTime(message.createdAt)}</time>
+                    </div>
+                    <div className="message-body">
+                      {message.error ? (
+                        <span className="message-error">{message.error}</span>
+                      ) : content ? (
+                        content
+                      ) : live?.reasoning ? (
+                        <span className="live-reasoning">
+                          {live.reasoning.slice(-1_200)}
+                        </span>
+                      ) : (
+                        live?.progress ||
+                        (isLiveAssistant ? "正在等待模型响应" : "")
+                      )}
+                      {isLiveAssistant && (
+                        <small className="live-generation-state">
+                          <i />
+                          {content
+                            ? "继续生成中"
+                            : live?.progress || "正在生成"}
+                        </small>
+                      )}
+                      {message.imageCount ? (
+                        <small className="attachment-summary">
+                          <ImagePlus size={12} />
+                          {message.imageCount} 张图片
+                        </small>
+                      ) : null}
+                      {message.files?.length ? (
+                        <small className="attachment-summary">
+                          <FileText size={12} />
+                          {message.files.map((file) => file.name).join("、")}
+                        </small>
+                      ) : null}
+                    </div>
+                  </article>
+                );
+              })}
+              {selectedLiveStream &&
+                !selectedTask.messages.some(
+                  (message) =>
+                    message.id === `assistant:${selectedLiveStream.requestId}`,
+                ) && (
+                  <article className="remote-message assistant live-synthetic">
+                    <div className="message-meta">
+                      <span>KCode</span>
+                      <time>{formatTime(selectedLiveStream.updatedAt)}</time>
+                    </div>
+                    <div className="message-body">
+                      {selectedLiveStream.content ||
+                        selectedLiveStream.reasoning?.slice(-1_200) ||
+                        selectedLiveStream.progress ||
+                        "正在等待模型响应"}
+                      <small className="live-generation-state">
+                        <i />
+                        {selectedLiveStream.content
+                          ? "继续生成中"
+                          : selectedLiveStream.progress || "正在生成"}
                       </small>
-                    ) : null}
-                  </div>
-                </article>
-              ))}
+                    </div>
+                  </article>
+                )}
               {!!selectedTask.activities.length && (
                 <section className="activity-section">
                   <div className="section-label">
@@ -678,52 +923,135 @@ function App() {
                 </div>
               )}
             </div>
-            <form
-              className="mobile-composer"
-              onSubmit={(event) => {
-                event.preventDefault();
-                const content = draft.trim();
-                if (!content || !online) return;
-                setDraft("");
-                void sendCommand({
-                  type: "task.send",
-                  taskId: selectedTask.id,
-                  content,
-                });
-              }}
-            >
-              <textarea
-                value={draft}
-                onChange={(event) => setDraft(event.target.value)}
-                placeholder={
-                  online ? "给电脑上的 KCode 发消息" : "电脑离线，暂时不能发送"
-                }
-                disabled={!online}
-                rows={1}
+            <form className="mobile-composer" onSubmit={submitMobileMessage}>
+              <input
+                ref={imageInputRef}
+                hidden
+                type="file"
+                accept="image/png,image/jpeg,image/webp,image/gif"
+                multiple
+                onChange={(event) => {
+                  const files = Array.from(event.currentTarget.files || []);
+                  event.currentTarget.value = "";
+                  void selectMobileImages(files);
+                }}
               />
-              {selectedTask.runningId && (
+              <input
+                ref={fileInputRef}
+                hidden
+                type="file"
+                multiple
+                onChange={(event) => {
+                  const files = Array.from(event.currentTarget.files || []);
+                  event.currentTarget.value = "";
+                  void selectMobileFiles(files);
+                }}
+              />
+              {!!(mobileImages.length || mobileFiles.length) && (
+                <div className="mobile-attachment-tray">
+                  {mobileImages.map((image) => (
+                    <div className="mobile-attachment image" key={image.id}>
+                      <img src={image.dataUrl} alt="" />
+                      <span>
+                        <strong>{image.name}</strong>
+                        <small>{formatAttachmentSize(image.size)}</small>
+                      </span>
+                      <button
+                        type="button"
+                        title={`移除 ${image.name}`}
+                        onClick={() =>
+                          setMobileImages((current) =>
+                            current.filter((item) => item.id !== image.id),
+                          )
+                        }
+                      >
+                        <X size={12} />
+                      </button>
+                    </div>
+                  ))}
+                  {mobileFiles.map((file) => (
+                    <div className="mobile-attachment file" key={file.id}>
+                      <FileText size={16} />
+                      <span>
+                        <strong>{file.name}</strong>
+                        <small>{formatAttachmentSize(file.size)}</small>
+                      </span>
+                      <button
+                        type="button"
+                        title={`移除 ${file.name}`}
+                        onClick={() =>
+                          setMobileFiles((current) =>
+                            current.filter((item) => item.id !== file.id),
+                          )
+                        }
+                      >
+                        <X size={12} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="mobile-composer-row">
                 <button
                   type="button"
-                  className="stop-button"
-                  title="停止任务"
-                  onClick={() =>
-                    void sendCommand({
-                      type: "task.cancel",
-                      taskId: selectedTask.id,
-                    })
+                  className="attachment-button"
+                  title={`添加图片（${mobileImages.length}/${MAX_MOBILE_IMAGES}）`}
+                  disabled={!online || mobileImages.length >= MAX_MOBILE_IMAGES}
+                  onClick={() => imageInputRef.current?.click()}
+                >
+                  <ImagePlus size={17} />
+                </button>
+                <button
+                  type="button"
+                  className="attachment-button"
+                  title={`添加文件（${mobileFiles.length}/${MAX_MOBILE_FILES}）`}
+                  disabled={!online || mobileFiles.length >= MAX_MOBILE_FILES}
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <Paperclip size={17} />
+                </button>
+                <textarea
+                  value={draft}
+                  onChange={(event) => setDraft(event.target.value)}
+                  placeholder={
+                    online
+                      ? selectedTask.runningId
+                        ? "发送后将排队执行"
+                        : "给电脑上的 KCode 发消息"
+                      : "电脑离线，暂时不能发送"
+                  }
+                  disabled={!online}
+                  rows={1}
+                />
+                {selectedTask.runningId && (
+                  <button
+                    type="button"
+                    className="stop-button"
+                    title="停止任务"
+                    onClick={() =>
+                      void sendCommand({
+                        type: "task.cancel",
+                        taskId: selectedTask.id,
+                      })
+                    }
+                  >
+                    <Square size={15} fill="currentColor" />
+                  </button>
+                )}
+                <button
+                  type="submit"
+                  className="send-button"
+                  title="发送"
+                  disabled={
+                    !online ||
+                    (!draft.trim() &&
+                      !mobileImages.length &&
+                      !mobileFiles.length)
                   }
                 >
-                  <Square size={15} fill="currentColor" />
+                  <Send size={16} />
                 </button>
-              )}
-              <button
-                type="submit"
-                className="send-button"
-                title="发送"
-                disabled={!online || !draft.trim()}
-              >
-                <Send size={16} />
-              </button>
+              </div>
             </form>
           </>
         ) : (

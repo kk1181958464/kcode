@@ -9,6 +9,10 @@ npm install
 npm run dev
 ```
 
+## Mobile
+
+The Flutter Android/iOS client lives in [`mobile/`](mobile/README.md). It reuses the remote service for accounts, tasks, live output, approvals, and attachments.
+
 ## Supported endpoints
 
 - OpenAI-compatible: `GET /v1/models`, `POST /v1/chat/completions`

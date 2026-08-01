@@ -1,4 +1,18 @@
-import type { ProviderConfig } from "./types";
+import type { ImageAttachment, ProviderConfig } from "./types";
+
+export const MAX_REMOTE_ATTACHMENT_BYTES = 7 * 1024 * 1024;
+
+export type RemoteContextAttachment = {
+  id: string;
+  name: string;
+  content: string;
+  size: number;
+};
+
+export type RemoteAttachments = {
+  images?: ImageAttachment[];
+  files?: RemoteContextAttachment[];
+};
 
 export type RemoteControlState = {
   configured: boolean;
@@ -14,7 +28,12 @@ export type RemoteControlState = {
 
 export type RemoteCommand =
   | { type: "task.load"; taskId: string }
-  | { type: "task.send"; taskId: string; content: string }
+  | {
+      type: "task.send";
+      taskId: string;
+      content: string;
+      attachments?: RemoteAttachments;
+    }
   | { type: "task.cancel"; taskId: string }
   | {
       type: "task.approve";
@@ -27,6 +46,17 @@ export type RemoteCommand =
 export type RemoteCommandEnvelope = {
   id: string;
   command: RemoteCommand;
+};
+
+export type RemoteTaskStreamEvent = {
+  type: "task.event";
+  event: "stream";
+  taskId: string;
+  requestId: string;
+  content: string;
+  reasoning?: string;
+  progress?: string;
+  updatedAt: number;
 };
 
 export type RemoteTaskSnapshot = {
@@ -46,6 +76,7 @@ export type RemoteTaskSnapshot = {
     createdAt: number;
     model?: string;
     imageCount?: number;
+    files?: Array<{ name: string; size: number }>;
   }>;
   activities: Array<{
     id: string;

@@ -74,6 +74,7 @@ import {
 } from "./git-operation-verification";
 import {
   claimsNoChangeNeeded,
+  compactOperationEvidenceResult,
   hasVerifiedNoChangeEvidence,
   hasVerifiedNoChangeReport,
   isAdvisoryOnlyRequest,
@@ -4442,6 +4443,7 @@ export async function* runAgent(
           changed: resultEvidence.changed,
           executed: resultEvidence.executed,
           mutationAttempted: resultEvidence.mutationAttempted,
+          noChangeReported: resultEvidence.noChangeReported,
           operationEvidence: resultEvidence.operationEvidence,
           browserOperationEvidence: resultEvidence.browserOperationEvidence,
         },
@@ -4467,33 +4469,14 @@ export async function* runAgent(
         callId: call.id,
         content: JSON.stringify(structured),
       });
-      evidenceHistory.push({
-        kind: "result",
-        callId: call.id,
-        content: JSON.stringify({
-          success: structured.success,
-          data: {
-            changed: structured.data.changed,
-            executed: structured.data.executed,
-            mutationAttempted: structured.data.mutationAttempted,
-            noChangeReported: structured.data.noChangeReported,
-            operationEvidence: structured.data.operationEvidence,
-            browserOperationEvidence: structured.data.browserOperationEvidence,
-            exitCode: structured.data.exitCode,
-            output: [
-              "process_output",
-              "git_status",
-              "git_log",
-              "git_diff",
-              "git_show",
-              "run_command",
-              "ssh_run",
-            ].includes(call.name)
-              ? String(structured.data.output ?? "").slice(0, 1_000)
-              : undefined,
-          },
-        }),
-      });
+      evidenceHistory.push(
+        compactOperationEvidenceResult(
+          call.id,
+          call.name,
+          structured.success,
+          structured.data,
+        ),
+      );
     }
     previousRoundActivity = roundLastActivity;
     previousRoundFailure = roundFailedActivity;

@@ -11,15 +11,17 @@ import {
   Monitor,
   Radio,
   RefreshCw,
+  Settings2,
   ShieldCheck,
   Terminal,
+  UserPlus,
   Users,
   Wifi,
   WifiOff,
 } from "lucide-react";
 
 type AdminUser = { id: string; username: string };
-type AdminView = "overview" | "users" | "devices" | "commands";
+type AdminView = "overview" | "users" | "devices" | "commands" | "settings";
 type AdminSnapshot = {
   viewer: AdminUser;
   service: {
@@ -602,6 +604,57 @@ function CommandsView({ snapshot }: { snapshot: AdminSnapshot }) {
   );
 }
 
+function SettingsView({
+  snapshot,
+  saving,
+  onRegistrationChange,
+}: {
+  snapshot: AdminSnapshot;
+  saving: boolean;
+  onRegistrationChange(open: boolean): void;
+}) {
+  const open = snapshot.service.registrationOpen;
+  return (
+    <div className="admin-view">
+      <section className="admin-settings-panel">
+        <header className="admin-panel-heading">
+          <span>
+            <Settings2 size={15} />
+            账号设置
+          </span>
+          <small className={open ? "setting-open" : ""}>
+            {open ? "注册已开放" : "注册已关闭"}
+          </small>
+        </header>
+        <div className="admin-setting-row">
+          <span className="admin-setting-icon">
+            <UserPlus size={17} />
+          </span>
+          <span className="admin-setting-copy">
+            <strong>开放账号注册</strong>
+            <small>允许新用户创建 KCode 远程账号</small>
+          </span>
+          <label
+            className="admin-toggle"
+            aria-label="开放账号注册"
+            aria-busy={saving}
+          >
+            <input
+              type="checkbox"
+              checked={open}
+              disabled={saving}
+              onChange={(event) =>
+                onRegistrationChange(event.currentTarget.checked)
+              }
+            />
+            <span className="admin-toggle-track" aria-hidden="true" />
+          </label>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 const navigation: Array<{
   id: AdminView;
   label: string;
@@ -611,6 +664,7 @@ const navigation: Array<{
   { id: "users", label: "账号", icon: <Users size={16} /> },
   { id: "devices", label: "设备", icon: <Monitor size={16} /> },
   { id: "commands", label: "命令", icon: <Terminal size={16} /> },
+  { id: "settings", label: "设置", icon: <Settings2 size={16} /> },
 ];
 
 export function AdminApp() {
@@ -620,6 +674,7 @@ export function AdminApp() {
   const [view, setView] = useState<AdminView>("overview");
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [savingSettings, setSavingSettings] = useState(false);
   const [error, setError] = useState("");
 
   const title = useMemo(
@@ -679,6 +734,36 @@ export function AdminApp() {
     setUser(undefined);
     setSnapshot(undefined);
     setRegistrationOpen(false);
+  }
+
+  async function updateRegistration(open: boolean) {
+    if (savingSettings) return;
+    setSavingSettings(true);
+    try {
+      const result = await adminRequest<{ registrationOpen: boolean }>(
+        "/api/admin/settings",
+        {
+          method: "PUT",
+          body: JSON.stringify({ registrationOpen: open }),
+        },
+      );
+      setSnapshot((current) =>
+        current
+          ? {
+              ...current,
+              service: {
+                ...current.service,
+                registrationOpen: result.registrationOpen,
+              },
+            }
+          : current,
+      );
+      setError("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "注册设置保存失败");
+    } finally {
+      setSavingSettings(false);
+    }
   }
 
   if (loading)
@@ -793,8 +878,14 @@ export function AdminApp() {
             <UsersView snapshot={snapshot} />
           ) : view === "devices" ? (
             <DevicesView snapshot={snapshot} />
-          ) : (
+          ) : view === "commands" ? (
             <CommandsView snapshot={snapshot} />
+          ) : (
+            <SettingsView
+              snapshot={snapshot}
+              saving={savingSettings}
+              onRegistrationChange={(open) => void updateRegistration(open)}
+            />
           )}
         </div>
       </section>

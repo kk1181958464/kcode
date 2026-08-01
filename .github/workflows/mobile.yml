@@ -1,0 +1,87 @@
+name: Mobile
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "mobile/**"
+      - ".github/workflows/mobile.yml"
+  pull_request:
+    paths:
+      - "mobile/**"
+      - ".github/workflows/mobile.yml"
+
+permissions:
+  contents: read
+
+env:
+  FLUTTER_VERSION: 3.44.8
+  KCODE_REMOTE_URL: https://kcode.98104.cn
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v7
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter test
+
+  android:
+    needs: verify
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: gradle
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: flutter build apk --release --dart-define=KCODE_REMOTE_URL=${{ env.KCODE_REMOTE_URL }}
+      - run: flutter build appbundle --release --dart-define=KCODE_REMOTE_URL=${{ env.KCODE_REMOTE_URL }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: KCode-Android
+          path: |
+            mobile/build/app/outputs/flutter-apk/app-release.apk
+            mobile/build/app/outputs/bundle/release/app-release.aab
+
+  ios:
+    needs: verify
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v7
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: flutter build ios --release --no-codesign --dart-define=KCODE_REMOTE_URL=${{ env.KCODE_REMOTE_URL }}
+      - name: Package unsigned iOS app
+        run: ditto -c -k --sequesterRsrc --keepParent build/ios/iphoneos/Runner.app build/ios/KCode-iOS-unsigned.zip
+      - uses: actions/upload-artifact@v7
+        with:
+          name: KCode-iOS-unsigned
+          path: mobile/build/ios/KCode-iOS-unsigned.zip

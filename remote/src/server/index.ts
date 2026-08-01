@@ -21,7 +21,9 @@ import {
   isRecord,
   parseClientType,
   parseRemoteCommand,
+  parseRemoteTaskEvent,
   parseTaskSnapshots,
+  remoteCommandAuditPayload,
   stringValue,
   type ClientType,
   type RemoteCommand,
@@ -38,6 +40,7 @@ const SESSION_DAYS = Math.min(
   Math.max(1, Number(process.env.KCODE_SESSION_DAYS || 30)),
 );
 const ALLOW_REGISTRATION = process.env.KCODE_ALLOW_REGISTRATION === "true";
+const REGISTRATION_SETTING = "registration_open";
 const MAX_BODY_BYTES = 12 * 1024 * 1024;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIRECTORY = process.env.KCODE_PUBLIC_DIRECTORY
@@ -252,7 +255,24 @@ function createLoginSession(
 }
 
 function registrationOpen() {
-  return ALLOW_REGISTRATION || database.userCount() === 0;
+  if (database.userCount() === 0) return true;
+  const setting = database.setting(REGISTRATION_SETTING);
+  return setting === undefined ? ALLOW_REGISTRATION : setting === "true";
+}
+
+function authInput(body: Record<string, unknown>) {
+  try {
+    return {
+      username: normalizeUsername(body.username),
+      password: validatePassword(body.password),
+      clientType: parseClientType(body.clientType),
+    };
+  } catch (error) {
+    throw new HttpError(
+      400,
+      error instanceof Error ? error.message : "账号登录参数无效",
+    );
+  }
 }
 
 function databaseStorageBytes() {
@@ -364,7 +384,7 @@ function routeCommand(
     id: commandId,
     userId: session.userId,
     deviceId,
-    payload: command,
+    payload: remoteCommandAuditPayload(command),
     now,
   });
   socketSend(desktop.socket, { type: "command", id: commandId, command });
@@ -393,9 +413,7 @@ async function api(
     if (!registrationOpen())
       throw new HttpError(403, "当前服务器已关闭新账号注册");
     const body = await requestBody(request);
-    const username = normalizeUsername(body.username);
-    const password = validatePassword(body.password);
-    const clientType = parseClientType(body.clientType);
+    const { username, password, clientType } = authInput(body);
     enforceAuthRateLimit(request, username);
     if (database.findUser(username)) throw new HttpError(409, "账号已存在");
     const passwordRecord = await hashPassword(password);
@@ -421,9 +439,7 @@ async function api(
 
   if (method === "POST" && url.pathname === "/api/auth/login") {
     const body = await requestBody(request);
-    const username = normalizeUsername(body.username);
-    const password = validatePassword(body.password);
-    const clientType = parseClientType(body.clientType);
+    const { username, password, clientType } = authInput(body);
     enforceAuthRateLimit(request, username);
     const user = database.findUser(username);
     if (
@@ -485,6 +501,20 @@ async function api(
       devices: database.listAdminDevices(),
       commands: database.listAdminCommands(40),
     });
+    return true;
+  }
+
+  if (method === "PUT" && url.pathname === "/api/admin/settings") {
+    requireAdministrator(request);
+    const body = await requestBody(request);
+    if (typeof body.registrationOpen !== "boolean")
+      throw new HttpError(400, "账号注册设置无效");
+    database.saveSetting(
+      REGISTRATION_SETTING,
+      body.registrationOpen ? "true" : "false",
+      Date.now(),
+    );
+    json(response, 200, { registrationOpen: registrationOpen() });
     return true;
   }
 
@@ -678,11 +708,12 @@ websocketServer.on("connection", (socket, request) => {
           return;
         }
         if (type === "task.event") {
-          const encoded = JSON.stringify(message);
+          const taskEvent = parseRemoteTaskEvent(message);
+          const encoded = JSON.stringify(taskEvent);
           if (Buffer.byteLength(encoded, "utf8") > 512 * 1024)
             throw new Error("实时事件过大");
           broadcastMobile(session.userId, {
-            ...message,
+            ...taskEvent,
             deviceId: client.deviceId,
           });
           return;

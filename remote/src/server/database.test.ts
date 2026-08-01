@@ -69,6 +69,9 @@ test("persists account sessions, devices, encrypted task payloads and config", a
 
     database.saveConfig("user-1", "ciphertext", 6);
     assert.equal(database.config("user-1")?.ciphertext, "ciphertext");
+    assert.equal(database.setting("registration_open"), undefined);
+    database.saveSetting("registration_open", "true", 6);
+    assert.equal(database.setting("registration_open"), "true");
 
     database.createCommand({
       id: "command-1",
@@ -136,6 +139,22 @@ test("migrates the oldest legacy account to administrator", async () => {
     assert.equal(database.isAdministrator("newer"), false);
   } finally {
     database.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("persists server settings across database restarts", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "kcode-settings-"));
+  const file = path.join(directory, "remote.sqlite");
+  const first = new RemoteDatabase(file);
+  first.saveSetting("registration_open", "true", 1);
+  first.close();
+
+  const reopened = new RemoteDatabase(file);
+  try {
+    assert.equal(reopened.setting("registration_open"), "true");
+  } finally {
+    reopened.close();
     await rm(directory, { recursive: true, force: true });
   }
 });

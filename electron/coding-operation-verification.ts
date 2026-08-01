@@ -19,6 +19,43 @@ export type CodingVerificationHistoryItem =
     }
   | { kind: "result"; callId: string; content: string };
 
+const EVIDENCE_OUTPUT_TOOLS = new Set([
+  "process_output",
+  "git_status",
+  "git_log",
+  "git_diff",
+  "git_show",
+  "run_command",
+  "ssh_run",
+]);
+
+export function compactOperationEvidenceResult(
+  callId: string,
+  toolName: string,
+  success: boolean,
+  data: Record<string, unknown>,
+): Extract<CodingVerificationHistoryItem, { kind: "result" }> {
+  return {
+    kind: "result",
+    callId,
+    content: JSON.stringify({
+      success,
+      data: {
+        changed: data.changed,
+        executed: data.executed,
+        mutationAttempted: data.mutationAttempted,
+        noChangeReported: data.noChangeReported,
+        operationEvidence: data.operationEvidence,
+        browserOperationEvidence: data.browserOperationEvidence,
+        exitCode: data.exitCode,
+        output: EVIDENCE_OUTPUT_TOOLS.has(toolName)
+          ? String(data.output ?? "").slice(0, 1_000)
+          : undefined,
+      },
+    }),
+  };
+}
+
 type VerificationMessage = Extract<
   CodingVerificationHistoryItem,
   { kind: "message" }
@@ -312,7 +349,7 @@ export function hasVerifiedNoChangeReport(
 }
 
 export function claimsNoChangeNeeded(text: string) {
-  return /(?:无需|不需要|没有必要|不必)(?:再)?(?:修改|改动|变更)|(?:本次|因此|所以)?(?:不(?:会|再)?|没有)(?:进行|产生|做)?(?:任何)?(?:修改|改动|变更)|(?:内容|文件|配置|目录).{0,12}(?:一致|相同|已经正确|符合要求)|(?:未|没有)发生实际(?:修改|改动|变更)|已经(?:是|处于|符合).{0,16}(?:目标|预期|要求|正确)|\b(?:no changes? (?:were )?(?:needed|required)|already (?:correct|matches?|up[ -]to[ -]date)|nothing (?:needed|to change)|unchanged)\b/i.test(
+  return /(?:无需|不需要|没有必要|不必)(?:再)?(?:修改|改动|变更)|(?:本次|因此|所以)?(?:不(?:会|再)?|没有)(?:进行|产生|做)?(?:任何)?(?:修改|改动|变更)|(?:本次|本轮|当前)?(?:没有|不存在)(?:任何)?(?:需要|可执行)?的?(?:文件|代码|配置)?(?:修改|改动|变更)(?:需求|目标|必要)|(?:内容|文件|配置|目录).{0,12}(?:一致|相同|已经正确|符合要求)|(?:未|没有)发生实际(?:修改|改动|变更)|已经(?:是|处于|符合).{0,16}(?:目标|预期|要求|正确)|\b(?:no changes? (?:were )?(?:needed|required)|already (?:correct|matches?|up[ -]to[ -]date)|nothing (?:needed|to change)|unchanged)\b/i.test(
     text,
   );
 }

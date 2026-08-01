@@ -25,6 +25,7 @@ test("builds a bounded remote task snapshot without absolute workspace paths", (
             size: 100,
           },
         ],
+        contextAttachments: [{ name: "Component.vue", size: 120 }],
       },
       {
         id: "message-2",
@@ -53,6 +54,9 @@ test("builds a bounded remote task snapshot without absolute workspace paths", (
   const serialized = JSON.stringify(snapshot);
   assert.equal(snapshot.workspaceName, "kcode");
   assert.equal(snapshot.messages[0].imageCount, 1);
+  assert.deepEqual(snapshot.messages[0].files, [
+    { name: "Component.vue", size: 120 },
+  ]);
   assert.equal(snapshot.messages[1].content, "远程可见结论");
   assert.equal(snapshot.activities[0].path, "kcode/src/App.tsx");
   assert.equal(

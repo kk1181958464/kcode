@@ -70,7 +70,15 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import appLogo from "../build/icon.png";
 import { inferContextWindow, inferReasoningConfig } from "./types";
-import type { RemoteCommandEnvelope, RemoteControlState } from "./remote-types";
+import type {
+  RemoteCommandEnvelope,
+  RemoteControlState,
+  RemoteTaskStreamEvent,
+} from "./remote-types";
+import {
+  materializeRemoteAttachments,
+  remoteAttachmentPrompt,
+} from "./remote-attachments";
 import { remoteTaskSnapshot } from "./remote-snapshot";
 import {
   AGENT_STATIC_TOKENS,
@@ -174,6 +182,7 @@ import {
 import {
   appendStreamingText,
   consumeStreamingText,
+  getStreamingText,
   replaceStreamingText,
   resetStreamingText,
   streamingProgressKey,
@@ -555,6 +564,7 @@ export default function App() {
     (envelope: RemoteCommandEnvelope) => void
   >(() => undefined);
   const remoteSyncTimerRef = useRef<number | undefined>(undefined);
+  const remoteStreamTimersRef = useRef(new Map<string, number>());
   const hydratedTaskIdsRef = useRef(new Set(tasks.map((task) => task.id)));
   const persistedTaskRefsRef = useRef(new Map<string, TaskRecord>());
   const persistedTaskOrderRef = useRef("");
@@ -1333,6 +1343,15 @@ export default function App() {
     };
   }, []);
 
+  useEffect(
+    () => () => {
+      for (const timer of remoteStreamTimersRef.current.values())
+        window.clearTimeout(timer);
+      remoteStreamTimersRef.current.clear();
+    },
+    [],
+  );
+
   useEffect(() => {
     const remote = window.kcode?.remote;
     if (
@@ -1765,6 +1784,36 @@ export default function App() {
 
   // Decouple uneven upstream chunks from the visual cadence. Normal output is
   // released in stable slices; a large backlog accelerates gradually.
+  function flushRemoteStreamSync(requestId: string) {
+    const scheduled = remoteStreamTimersRef.current.get(requestId);
+    if (scheduled) window.clearTimeout(scheduled);
+    remoteStreamTimersRef.current.delete(requestId);
+    const taskId = requestTasksRef.current.get(requestId);
+    const remote = window.kcode?.remote;
+    if (!taskId || !remote) return;
+    const event: RemoteTaskStreamEvent = {
+      type: "task.event",
+      event: "stream",
+      taskId,
+      requestId,
+      content: getStreamingText(requestId).slice(-96_000),
+      reasoning: getStreamingText(streamingReasoningKey(requestId)).slice(
+        -8_000,
+      ),
+      progress: getStreamingText(streamingProgressKey(requestId)).slice(-1_000),
+      updatedAt: Date.now(),
+    };
+    void remote.syncTaskEvent(event).catch(() => undefined);
+  }
+
+  function scheduleRemoteStreamSync(requestId: string) {
+    if (remoteStreamTimersRef.current.has(requestId)) return;
+    remoteStreamTimersRef.current.set(
+      requestId,
+      window.setTimeout(() => flushRemoteStreamSync(requestId), 180),
+    );
+  }
+
   function flushPendingText(drainAll = false) {
     if (!pendingTextRef.current.size) return;
     if (!drainAll && performance.now() < composerInputBusyUntilRef.current) {
@@ -1792,8 +1841,10 @@ export default function App() {
       if (!drainAll && pendingTextRef.current.size) scheduleTextFlush();
       return;
     }
-    for (const [requestId, delta] of slices)
+    for (const [requestId, delta] of slices) {
       appendStreamingText(requestId, delta);
+      scheduleRemoteStreamSync(requestId);
+    }
     if (!drainAll && pendingTextRef.current.size) scheduleTextFlush();
   }
 
@@ -1809,6 +1860,7 @@ export default function App() {
     if (requestId) {
       pendingReasoningRef.current.delete(requestId);
       resetStreamingText(streamingReasoningKey(requestId));
+      scheduleRemoteStreamSync(requestId);
     } else {
       for (const id of pendingReasoningRef.current.keys())
         resetStreamingText(streamingReasoningKey(id));
@@ -1823,6 +1875,7 @@ export default function App() {
 
   function clearStreamingProgress(requestId: string) {
     resetStreamingText(streamingProgressKey(requestId));
+    scheduleRemoteStreamSync(requestId);
   }
 
   function scheduleReasoningFlush() {
@@ -1831,8 +1884,10 @@ export default function App() {
       reasoningFlushTimerRef.current = undefined;
       const pending = [...pendingReasoningRef.current.entries()];
       pendingReasoningRef.current.clear();
-      for (const [requestId, delta] of pending)
+      for (const [requestId, delta] of pending) {
         appendStreamingText(streamingReasoningKey(requestId), delta);
+        scheduleRemoteStreamSync(requestId);
+      }
     }, 100);
   }
 
@@ -1931,6 +1986,7 @@ export default function App() {
           // reasoning. It remains visible while the selected tool is running.
           clearPendingReasoning(id);
           replaceStreamingText(streamingProgressKey(id), event.message);
+          scheduleRemoteStreamSync(id);
           return;
         }
         if (event.type === "text_reset") {
@@ -1941,6 +1997,7 @@ export default function App() {
           pendingTextSinceRef.current.delete(id);
           resetStreamingText(id);
           assistantLengthsRef.current.set(id, 0);
+          scheduleRemoteStreamSync(id);
           return;
         }
         if (event.type === "text") {
@@ -1952,6 +2009,7 @@ export default function App() {
           );
           if (!isActive) {
             appendStreamingText(id, event.delta);
+            scheduleRemoteStreamSync(id);
             return;
           }
           let pending = pendingTextRef.current.get(id);
@@ -2023,6 +2081,7 @@ export default function App() {
             textFlushTimerRef.current = undefined;
           }
           flushPendingText(true);
+          flushRemoteStreamSync(id);
           const finalText = consumeStreamingText(id);
           const commitFinalText = (all: ChatMessage[]) =>
             all.map((message) =>
@@ -2082,6 +2141,7 @@ export default function App() {
             textFlushTimerRef.current = undefined;
           }
           flushPendingText(true);
+          flushRemoteStreamSync(id);
           const finalText = consumeStreamingText(id);
           const commitFinalText = (all: ChatMessage[]) =>
             all.map((message) =>
@@ -2908,6 +2968,9 @@ export default function App() {
       content: text || "请分析这些图片",
       createdAt: Date.now(),
       images: attachedImages,
+      contextAttachments: attachedFiles.length
+        ? attachedFiles.map(({ name, size }) => ({ name, size }))
+        : undefined,
       queued: true,
     };
     contextByMessageRef.current.set(user.id, attachedFiles);
@@ -3022,6 +3085,7 @@ export default function App() {
           content: queuedMessage.content,
           createdAt: queuedMessage.createdAt,
           images: queuedMessage.images,
+          contextAttachments: queuedMessage.contextAttachments,
         }
       : retrying && cleanMessages.at(-1)?.role === "user"
         ? (cleanMessages.at(-1) as ChatMessage)
@@ -3031,6 +3095,9 @@ export default function App() {
             content: text || "请分析这些图片",
             createdAt: Date.now(),
             images: attachedImages,
+            contextAttachments: attachedFiles.length
+              ? attachedFiles.map(({ name, size }) => ({ name, size }))
+              : undefined,
           };
     const nextMessages = queuedMessage
       ? cleanMessages.map((message) =>
@@ -3430,6 +3497,7 @@ export default function App() {
         textFlushTimerRef.current = undefined;
       }
       flushPendingText(true);
+      flushRemoteStreamSync(requestId);
       const partialText = consumeStreamingText(requestId);
       if (partialText) {
         const commitPartialText = (all: ChatMessage[]) =>
@@ -3507,15 +3575,26 @@ export default function App() {
               .map(remoteTaskSnapshot),
           );
         } else if (command.type === "task.send") {
-          const content = command.content.trim();
-          if (!content) throw new Error("远程消息不能为空");
+          const { images, files } = materializeRemoteAttachments(
+            command.attachments,
+          );
+          const content = remoteAttachmentPrompt(
+            command.content,
+            images.length,
+            files.length,
+          );
           const user: QueuedChatMessage = {
             id: uid(),
             role: "user",
             content,
             createdAt: Date.now(),
+            images: images.length ? images : undefined,
+            contextAttachments: files.length
+              ? files.map(({ name, size }) => ({ name, size }))
+              : undefined,
             queued: true,
           };
+          contextByMessageRef.current.set(user.id, files);
           setTasks((all) =>
             all.map((item) =>
               item.id === task.id

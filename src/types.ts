@@ -1,6 +1,7 @@
 import type {
   RemoteCommandEnvelope,
   RemoteControlState,
+  RemoteTaskStreamEvent,
   RemoteTaskSnapshot,
 } from "./remote-types";
 
@@ -197,6 +198,7 @@ export type ChatMessage = {
   createdAt: number;
   model?: string;
   images?: ImageAttachment[];
+  contextAttachments?: Array<{ name: string; size: number }>;
 };
 
 export type ModelRequest = {
@@ -522,6 +524,7 @@ export type KCodeApi = {
     logout(): Promise<void>;
     setEnabled(enabled: boolean): Promise<RemoteControlState>;
     syncTasks(tasks: RemoteTaskSnapshot[]): Promise<void>;
+    syncTaskEvent(event: RemoteTaskStreamEvent): Promise<void>;
     commandResult(id: string, ok: boolean, error?: string): Promise<void>;
     ready(): Promise<void>;
     onState(callback: (state: RemoteControlState) => void): () => void;

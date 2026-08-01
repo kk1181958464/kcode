@@ -143,6 +143,44 @@ try {
   });
   assert.equal(adminSession.body.user.username, owner.username);
 
+  assert.equal((await request("/api/health")).body.registrationOpen, false);
+  const openedRegistration = await request("/api/admin/settings", {
+    method: "PUT",
+    headers: { Cookie: cookie },
+    body: JSON.stringify({ registrationOpen: true }),
+  });
+  assert.equal(openedRegistration.body.registrationOpen, true);
+  const invalidRegistration = await fetch(`${origin}/api/auth/register`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: "", password: "", clientType: "desktop" }),
+  });
+  assert.equal(invalidRegistration.status, 400);
+  await request("/api/auth/register", {
+    method: "POST",
+    body: JSON.stringify({
+      username: "member",
+      password: "correct-horse-battery-member",
+      clientType: "desktop",
+    }),
+  });
+  const closedRegistration = await request("/api/admin/settings", {
+    method: "PUT",
+    headers: { Cookie: cookie },
+    body: JSON.stringify({ registrationOpen: false }),
+  });
+  assert.equal(closedRegistration.body.registrationOpen, false);
+  const blockedRegistration = await fetch(`${origin}/api/auth/register`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      username: "blocked-member",
+      password: "correct-horse-battery-blocked",
+      clientType: "desktop",
+    }),
+  });
+  assert.equal(blockedRegistration.status, 403);
+
   const wsOrigin = origin.replace("http:", "ws:");
   const deviceId = "desktop-e2e";
   desktop = await openSocket(
@@ -175,6 +213,25 @@ try {
   );
   assert.equal((await tasksChanged).tasks[0].name, "Remote test");
 
+  const streamed = nextMessage(
+    mobile,
+    (message) => message.type === "task.event" && message.event === "stream",
+  );
+  desktop.send(
+    JSON.stringify({
+      type: "task.event",
+      event: "stream",
+      taskId: "task-1",
+      requestId: "request-1",
+      content: "正在实时生成",
+      progress: "正在检查项目",
+      updatedAt: Date.now(),
+    }),
+  );
+  const streamedMessage = await streamed;
+  assert.equal(streamedMessage.deviceId, deviceId);
+  assert.equal(streamedMessage.content, "正在实时生成");
+
   const desktopCommand = nextMessage(
     desktop,
     (message) => message.type === "command",
@@ -184,11 +241,36 @@ try {
       type: "command",
       id: "command-1",
       deviceId,
-      command: { type: "task.send", taskId: "task-1", content: "继续" },
+      command: {
+        type: "task.send",
+        taskId: "task-1",
+        content: "继续",
+        attachments: {
+          images: [
+            {
+              id: "image-1",
+              name: "screen.png",
+              mediaType: "image/png",
+              dataUrl: `data:image/png;base64,${Buffer.from("image-bytes").toString("base64")}`,
+              size: 11,
+            },
+          ],
+          files: [
+            {
+              id: "file-1",
+              name: "Component.vue",
+              content: "<template><main /></template>",
+              size: 29,
+            },
+          ],
+        },
+      },
     }),
   );
   const routed = await desktopCommand;
   assert.equal(routed.command.content, "继续");
+  assert.equal(routed.command.attachments.images[0].size, 11);
+  assert.equal(routed.command.attachments.files[0].name, "Component.vue");
 
   const commandResult = nextMessage(
     mobile,
@@ -202,7 +284,7 @@ try {
   const adminOverview = await request("/api/admin/overview", {
     headers: { Cookie: cookie },
   });
-  assert.equal(adminOverview.body.totals.users, 1);
+  assert.equal(adminOverview.body.totals.users, 2);
   assert.equal(adminOverview.body.totals.onlineDevices, 1);
   assert.equal(adminOverview.body.totals.tasks, 1);
   assert.equal(adminOverview.body.commands[0].commandType, "task.send");

@@ -140,6 +140,11 @@ export class RemoteDatabase {
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS server_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
       CREATE INDEX IF NOT EXISTS tasks_updated ON tasks(user_id, device_id, updated_at DESC);
       CREATE INDEX IF NOT EXISTS commands_device ON commands(user_id, device_id, created_at DESC);
     `);
@@ -167,6 +172,23 @@ export class RemoteDatabase {
         }
       ).total,
     );
+  }
+
+  setting(key: string) {
+    return (
+      this.connection
+        .prepare("SELECT value FROM server_settings WHERE key=?")
+        .get(key) as { value: string } | undefined
+    )?.value;
+  }
+
+  saveSetting(key: string, value: string, now: number) {
+    this.connection
+      .prepare(
+        `INSERT INTO server_settings(key,value,updated_at) VALUES(?,?,?)
+         ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`,
+      )
+      .run(key, value, now);
   }
 
   createUser(user: UserRow) {
