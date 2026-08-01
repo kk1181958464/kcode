@@ -70,6 +70,34 @@ function openSocket(url, protocols, options) {
   });
 }
 
+function openSocketWithMessage(url, protocols, options, predicate) {
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(url, protocols, options);
+    let opened = false;
+    let matched;
+    const timer = setTimeout(() => {
+      socket.terminate();
+      reject(new Error("websocket replay timeout"));
+    }, 5_000);
+    const finish = () => {
+      if (!opened || !matched) return;
+      clearTimeout(timer);
+      resolve({ socket, message: matched });
+    };
+    socket.on("open", () => {
+      opened = true;
+      finish();
+    });
+    socket.on("message", (raw) => {
+      const value = JSON.parse(raw.toString());
+      if (!predicate(value)) return;
+      matched = value;
+      finish();
+    });
+    socket.once("error", reject);
+  });
+}
+
 function nextMessage(socket, predicate) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -195,6 +223,7 @@ try {
     mobile,
     (message) => message.type === "tasks.changed",
   );
+  const firstStreamUpdatedAt = Date.now();
   desktop.send(
     JSON.stringify({
       type: "tasks.replace",
@@ -225,12 +254,45 @@ try {
       requestId: "request-1",
       content: "正在实时生成",
       progress: "正在检查项目",
-      updatedAt: Date.now(),
+      updatedAt: firstStreamUpdatedAt,
     }),
   );
   const streamedMessage = await streamed;
   assert.equal(streamedMessage.deviceId, deviceId);
   assert.equal(streamedMessage.content, "正在实时生成");
+
+  mobile.close();
+  await new Promise((resolve) => mobile.once("close", resolve));
+  const bufferedStreamUpdatedAt = firstStreamUpdatedAt + 1;
+  desktop.send(
+    JSON.stringify({
+      type: "task.event",
+      event: "stream",
+      taskId: "task-1",
+      requestId: "request-1",
+      content: "手机离线期间仍在生成",
+      progress: "正在继续处理",
+      updatedAt: bufferedStreamUpdatedAt,
+    }),
+  );
+  await sleep(50);
+  const taskStateWithStream = await request(`/api/devices/${deviceId}/tasks`, {
+    headers: { Cookie: cookie },
+  });
+  assert.equal(
+    taskStateWithStream.body.streams[0].content,
+    "手机离线期间仍在生成",
+  );
+
+  const replayed = await openSocketWithMessage(
+    `${wsOrigin}/ws`,
+    [],
+    { headers: { Cookie: cookie } },
+    (message) => message.type === "task.event" && message.event === "stream",
+  );
+  mobile = replayed.socket;
+  assert.equal(replayed.message.deviceId, deviceId);
+  assert.equal(replayed.message.content, "手机离线期间仍在生成");
 
   const desktopCommand = nextMessage(
     desktop,
@@ -245,6 +307,7 @@ try {
         type: "task.send",
         taskId: "task-1",
         content: "继续",
+        clientMessageId: "mobile-message-1",
         attachments: {
           images: [
             {
@@ -269,6 +332,7 @@ try {
   );
   const routed = await desktopCommand;
   assert.equal(routed.command.content, "继续");
+  assert.equal(routed.command.clientMessageId, "mobile-message-1");
   assert.equal(routed.command.attachments.images[0].size, 11);
   assert.equal(routed.command.attachments.files[0].name, "Component.vue");
 
@@ -280,6 +344,61 @@ try {
     JSON.stringify({ type: "command.result", id: "command-1", ok: true }),
   );
   assert.equal((await commandResult).ok, true);
+
+  const rejectedCommand = nextMessage(
+    mobile,
+    (message) =>
+      message.type === "command.result" && message.id === "command-offline",
+  );
+  mobile.send(
+    JSON.stringify({
+      type: "command",
+      id: "command-offline",
+      deviceId: "missing-device",
+      command: {
+        type: "task.send",
+        taskId: "task-1",
+        content: "离线重试",
+        clientMessageId: "mobile-message-offline",
+      },
+    }),
+  );
+  const rejected = await rejectedCommand;
+  assert.equal(rejected.ok, false);
+  assert.match(rejected.error, /不在线/);
+
+  const finalTasksChanged = nextMessage(
+    mobile,
+    (message) => message.type === "tasks.changed",
+  );
+  desktop.send(
+    JSON.stringify({
+      type: "tasks.replace",
+      tasks: [
+        {
+          id: "task-1",
+          name: "Remote test",
+          workspaceName: "kcode",
+          createdAt: 1,
+          updatedAt: bufferedStreamUpdatedAt + 1,
+          messages: [
+            {
+              id: "assistant:request-1",
+              role: "assistant",
+              content: "手机离线期间仍在生成",
+              createdAt: bufferedStreamUpdatedAt,
+            },
+          ],
+          activities: [],
+        },
+      ],
+    }),
+  );
+  assert.equal((await finalTasksChanged).streams.length, 0);
+  const finalTaskState = await request(`/api/devices/${deviceId}/tasks`, {
+    headers: { Cookie: cookie },
+  });
+  assert.equal(finalTaskState.body.streams.length, 0);
 
   const adminOverview = await request("/api/admin/overview", {
     headers: { Cookie: cookie },

@@ -2443,7 +2443,7 @@ select:focus-visible {
   display: grid;
   place-items: center;
   padding: 0;
-  transform: translateX(-50%);
+  translate: -50% 0;
   border: 1px solid #cfd5cf;
   border-radius: 50%;
 }
@@ -5960,7 +5960,13 @@ select:focus-visible {
   border-color: var(--accent);
   background: var(--surface-raised);
   color: var(--accent);
-  transform: translateX(-50%) translateY(-2px);
+}
+
+.scroll-to-bottom:disabled {
+  cursor: wait;
+  opacity: 1;
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 /* Menus and overlays */

@@ -17,6 +17,7 @@ import {
   verifyPassword,
 } from "./auth.js";
 import { RemoteDatabase, type SessionRow } from "./database.js";
+import { LiveStreamCache } from "./live-stream-cache.js";
 import {
   isRecord,
   parseClientType,
@@ -73,6 +74,7 @@ const database = new RemoteDatabase(DATABASE_PATH, {
 const clients = new Set<SocketClient>();
 const desktops = new Map<string, SocketClient>();
 const authAttempts = new Map<string, { count: number; resetAt: number }>();
+const liveStreams = new LiveStreamCache();
 
 function deviceKey(userId: string, deviceId: string) {
   return `${userId}:${deviceId}`;
@@ -332,11 +334,19 @@ function staticFile(
     file = path.join(PUBLIC_DIRECTORY, "index.html");
   if (!existsSync(file)) throw new HttpError(404, "页面不存在");
   securityHeaders(response);
+  const relativeFile = path
+    .relative(PUBLIC_DIRECTORY, file)
+    .replaceAll("\\", "/");
+  const immutableAsset =
+    relativeFile.startsWith("assets/") &&
+    /-[A-Za-z0-9_-]{8,}\.[A-Za-z0-9]+$/.test(relativeFile);
   response.writeHead(200, {
     "Content-Type": contentType(file),
     "Cache-Control": file.endsWith("index.html")
-      ? "no-cache"
-      : "public, max-age=86400",
+      ? "no-store, must-revalidate"
+      : immutableAsset
+        ? "public, max-age=31536000, immutable"
+        : "public, max-age=3600, must-revalidate",
   });
   if (request.method === "HEAD") response.end();
   else createReadStream(file).pipe(response);
@@ -534,6 +544,7 @@ async function api(
       throw new HttpError(404, "设备不存在");
     json(response, 200, {
       tasks: database.listTasks(session.userId, deviceId),
+      streams: liveStreams.list(session.userId, deviceId),
     });
     return true;
   }
@@ -574,7 +585,12 @@ async function api(
     const body = await requestBody(request);
     const deviceId = stringValue(body.deviceId, "设备 ID");
     const command = parseRemoteCommand(body.command);
-    const id = routeCommand(session, deviceId, command);
+    const id = routeCommand(
+      session,
+      deviceId,
+      command,
+      body.id === undefined ? randomUUID() : stringValue(body.id, "命令 ID"),
+    );
     json(response, 202, { id, status: "sent" });
     return true;
   }
@@ -687,9 +703,12 @@ websocketServer.on("connection", (socket, request) => {
       role: "mobile",
       devices: onlineDevices(session.userId),
     });
+    for (const stream of liveStreams.list(session.userId))
+      socketSend(socket, stream);
   }
 
   socket.on("message", (raw) => {
+    let mobileCommandId: string | undefined;
     try {
       const message = JSON.parse(raw.toString()) as unknown;
       if (!isRecord(message)) throw new Error("消息格式无效");
@@ -699,11 +718,13 @@ websocketServer.on("connection", (socket, request) => {
         if (!client.deviceId) throw new Error("设备尚未就绪");
         if (type === "tasks.replace") {
           const tasks = parseTaskSnapshots(message.tasks);
+          liveStreams.reconcile(session.userId, client.deviceId, tasks);
           database.replaceTasks(session.userId, client.deviceId, tasks);
           broadcastMobile(session.userId, {
             type: "tasks.changed",
             deviceId: client.deviceId,
             tasks,
+            streams: liveStreams.list(session.userId, client.deviceId),
           });
           return;
         }
@@ -712,10 +733,10 @@ websocketServer.on("connection", (socket, request) => {
           const encoded = JSON.stringify(taskEvent);
           if (Buffer.byteLength(encoded, "utf8") > 512 * 1024)
             throw new Error("实时事件过大");
-          broadcastMobile(session.userId, {
-            ...taskEvent,
-            deviceId: client.deviceId,
-          });
+          broadcastMobile(
+            session.userId,
+            liveStreams.update(session.userId, client.deviceId, taskEvent),
+          );
           return;
         }
         if (type === "command.result") {
@@ -749,6 +770,7 @@ websocketServer.on("connection", (socket, request) => {
           typeof message.id === "string" && message.id.trim()
             ? stringValue(message.id, "命令 ID")
             : randomUUID();
+        mobileCommandId = id;
         const deviceId = stringValue(message.deviceId, "设备 ID");
         const command = parseRemoteCommand(message.command);
         routeCommand(session, deviceId, command, id);
@@ -757,10 +779,19 @@ websocketServer.on("connection", (socket, request) => {
       }
       throw new Error("手机端消息类型无效");
     } catch (error) {
-      socketSend(socket, {
-        type: "error",
-        message: error instanceof Error ? error.message : "消息处理失败",
-      });
+      const errorMessage =
+        error instanceof Error ? error.message : "消息处理失败";
+      socketSend(
+        socket,
+        session.clientType === "mobile" && mobileCommandId
+          ? {
+              type: "command.result",
+              id: mobileCommandId,
+              ok: false,
+              error: errorMessage,
+            }
+          : { type: "error", message: errorMessage },
+      );
     }
   });
 

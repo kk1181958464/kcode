@@ -85,14 +85,39 @@ function publish() {
   socket.send(JSON.stringify({ type: "tasks.replace", tasks }));
 }
 
-socket.on("open", publish);
+const liveOutput = [
+  "正在核对手机端实时输出链路。",
+  "服务器已经保存最新的正文增量。",
+  "手机切到后台再回来时会恢复已生成内容。",
+  "任务结束后，最终回答会替换实时缓存。",
+];
+let liveOutputTimer;
+socket.on("open", () => {
+  publish();
+  let index = 0;
+  liveOutputTimer = setInterval(() => {
+    index = Math.min(index + 1, liveOutput.length);
+    socket.send(
+      JSON.stringify({
+        type: "task.event",
+        event: "stream",
+        taskId: tasks[0].id,
+        requestId: tasks[0].runningId,
+        content: liveOutput.slice(0, index).join("\n"),
+        progress: "正在同步实时正文",
+        updatedAt: Date.now(),
+      }),
+    );
+    if (index === liveOutput.length) clearInterval(liveOutputTimer);
+  }, 450);
+});
 socket.on("message", (raw) => {
   const message = JSON.parse(raw.toString());
   if (message.type !== "command") return;
   const command = message.command;
   if (command.type === "task.send") {
     tasks[0].messages.push({
-      id: `remote-${Date.now()}`,
+      id: command.clientMessageId || `remote-${Date.now()}`,
       role: "user",
       content: command.content,
       createdAt: Date.now(),
@@ -105,5 +130,10 @@ socket.on("message", (raw) => {
   );
 });
 
-process.on("SIGINT", () => socket.close());
-process.on("SIGTERM", () => socket.close());
+function close() {
+  if (liveOutputTimer) clearInterval(liveOutputTimer);
+  socket.close();
+}
+
+process.on("SIGINT", close);
+process.on("SIGTERM", close);

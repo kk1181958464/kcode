@@ -32,6 +32,7 @@ export type RemoteCommand =
       type: "task.send";
       taskId: string;
       content: string;
+      clientMessageId?: string;
       attachments?: RemoteAttachments;
     }
   | { type: "task.cancel"; taskId: string }

@@ -18,7 +18,6 @@ import {
   ShieldCheck,
   Smartphone,
   Square,
-  Terminal,
   Wifi,
   WifiOff,
   X,
@@ -91,6 +90,7 @@ type RemoteCommand =
       type: "task.send";
       taskId: string;
       content: string;
+      clientMessageId?: string;
       attachments?: {
         images?: MobileImageAttachment[];
         files?: MobileContextAttachment[];
@@ -105,6 +105,17 @@ type RemoteCommand =
       allowed: boolean;
     };
 
+type PendingMobileMessage = {
+  id: string;
+  deviceId: string;
+  taskId: string;
+  content: string;
+  createdAt: number;
+  status: "sending" | "sent" | "failed";
+  error?: string;
+  command: Extract<RemoteCommand, { type: "task.send" }>;
+};
+
 type LiveStream = {
   taskId: string;
   requestId: string;
@@ -116,6 +127,29 @@ type LiveStream = {
 
 function liveStreamKey(taskId: string, requestId: string) {
   return `${taskId}:${requestId}`;
+}
+
+function mergeLiveContent(content: string, liveContent = "") {
+  if (!liveContent || content.endsWith(liveContent)) return content;
+  return content + liveContent;
+}
+
+function clientId(prefix: string) {
+  const id = globalThis.crypto?.randomUUID?.();
+  return id
+    ? `${prefix}-${id}`
+    : `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function mainBundleSource(documentRoot: Document) {
+  const source = Array.from(
+    documentRoot.querySelectorAll<HTMLScriptElement>(
+      "script[type='module'][src]",
+    ),
+  )
+    .map((script) => script.getAttribute("src"))
+    .find(Boolean);
+  return source ? new URL(source, location.href).href : "";
 }
 
 const jsonRequest = async <T,>(path: string, init?: RequestInit) => {
@@ -284,15 +318,26 @@ function App() {
   const [draft, setDraft] = useState("");
   const [mobileImages, setMobileImages] = useState<MobileImageAttachment[]>([]);
   const [mobileFiles, setMobileFiles] = useState<MobileContextAttachment[]>([]);
+  const [pendingMessages, setPendingMessages] = useState<
+    PendingMobileMessage[]
+  >([]);
   const [liveStreams, setLiveStreams] = useState<Record<string, LiveStream>>(
     {},
   );
   const [mobileDetail, setMobileDetail] = useState(false);
+  const [updateAvailable, setUpdateAvailable] = useState(false);
   const socketRef = useRef<WebSocket | null>(null);
   const reconnectRef = useRef<number | null>(null);
+  const pendingCommandsRef = useRef(new Map<string, string>());
+  const pendingTimersRef = useRef(new Map<string, number>());
+  const pendingCleanupTimersRef = useRef(new Map<string, number>());
+  const optimisticCommandIdsRef = useRef(new Set<string>());
+  const deviceIdRef = useRef(deviceId);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const conversationRef = useRef<HTMLDivElement | null>(null);
+  const scrollTrackRef = useRef<HTMLDivElement | null>(null);
+  const scrollThumbRef = useRef<HTMLElement | null>(null);
   const autoFollowRef = useRef(true);
 
   const selectedDevice = devices.find((item) => item.id === deviceId);
@@ -300,9 +345,24 @@ function App() {
   const selectedLiveStream = selectedTask?.runningId
     ? liveStreams[liveStreamKey(selectedTask.id, selectedTask.runningId)]
     : undefined;
+  const selectedPendingMessages = pendingMessages.filter(
+    (message) =>
+      message.deviceId === deviceId && message.taskId === selectedTaskId,
+  );
   const online = Boolean(selectedDevice?.online && connected);
 
-  function applyTaskSnapshots(nextTasks: Task[]) {
+  function applyTaskSnapshots(nextTasks: Task[], targetDeviceId = deviceId) {
+    if (targetDeviceId !== deviceIdRef.current) return;
+    const confirmedMessageIds = new Set(
+      nextTasks.flatMap((task) => task.messages.map((message) => message.id)),
+    );
+    setPendingMessages((current) =>
+      current.filter(
+        (message) =>
+          message.deviceId !== targetDeviceId ||
+          !confirmedMessageIds.has(message.id),
+      ),
+    );
     setTasks(nextTasks);
     setLiveStreams((current) => {
       const next: Record<string, LiveStream> = {};
@@ -317,6 +377,45 @@ function App() {
       nextTasks.some((item) => item.id === current)
         ? current
         : nextTasks[0]?.id || "",
+    );
+  }
+
+  function applyLiveStreams(
+    streams: LiveStream[],
+    targetDeviceId = deviceIdRef.current,
+  ) {
+    if (!streams.length || targetDeviceId !== deviceIdRef.current) return;
+    setLiveStreams((current) => {
+      const next = { ...current };
+      for (const stream of streams) {
+        const key = liveStreamKey(stream.taskId, stream.requestId);
+        if (!next[key] || next[key].updatedAt <= stream.updatedAt)
+          next[key] = stream;
+      }
+      return next;
+    });
+    const latestByTask = new Map<string, LiveStream>();
+    for (const stream of streams) {
+      const current = latestByTask.get(stream.taskId);
+      if (!current || current.updatedAt <= stream.updatedAt)
+        latestByTask.set(stream.taskId, stream);
+    }
+    setTasks((current) =>
+      current.map((task) => {
+        const stream = latestByTask.get(task.id);
+        if (
+          !stream ||
+          (task.runningId !== stream.requestId &&
+            task.updatedAt > stream.updatedAt)
+        )
+          return task;
+        return {
+          ...task,
+          runningId: stream.requestId,
+          runStatus: "running",
+          updatedAt: Math.max(task.updatedAt, stream.updatedAt),
+        };
+      }),
     );
   }
 
@@ -354,15 +453,273 @@ function App() {
       setTasks([]);
       return;
     }
-    const result = await jsonRequest<{ tasks: Task[] }>(
-      `/api/devices/${encodeURIComponent(target)}/tasks`,
+    const result = await jsonRequest<{
+      tasks: Task[];
+      streams?: Array<LiveStream & { deviceId?: string }>;
+    }>(`/api/devices/${encodeURIComponent(target)}/tasks`);
+    applyTaskSnapshots(result.tasks, target);
+    applyLiveStreams(result.streams || [], target);
+  }
+
+  function clearPendingTimer(commandId: string) {
+    const timer = pendingTimersRef.current.get(commandId);
+    if (timer !== undefined) window.clearTimeout(timer);
+    pendingTimersRef.current.delete(commandId);
+  }
+
+  function clearPendingTransports(pendingId: string) {
+    for (const [commandId, messageId] of pendingCommandsRef.current) {
+      if (messageId !== pendingId) continue;
+      clearPendingTimer(commandId);
+      pendingCommandsRef.current.delete(commandId);
+    }
+  }
+
+  function clearPendingCleanup(pendingId: string) {
+    const timer = pendingCleanupTimersRef.current.get(pendingId);
+    if (timer !== undefined) window.clearTimeout(timer);
+    pendingCleanupTimersRef.current.delete(pendingId);
+  }
+
+  function schedulePendingCleanup(pendingId: string) {
+    clearPendingCleanup(pendingId);
+    pendingCleanupTimersRef.current.set(
+      pendingId,
+      window.setTimeout(() => {
+        pendingCleanupTimersRef.current.delete(pendingId);
+        setPendingMessages((current) =>
+          current.filter((message) => message.id !== pendingId),
+        );
+      }, 3_000),
     );
-    applyTaskSnapshots(result.tasks);
+  }
+
+  function updatePendingMessage(
+    pendingId: string,
+    status: PendingMobileMessage["status"],
+    error?: string,
+  ) {
+    setPendingMessages((current) =>
+      current.map((message) =>
+        message.id === pendingId
+          ? { ...message, status, error: error || undefined }
+          : message,
+      ),
+    );
+  }
+
+  function schedulePendingTimeout(
+    commandId: string,
+    pendingId: string,
+    timeout: number,
+    message: string,
+  ) {
+    clearPendingTimer(commandId);
+    pendingTimersRef.current.set(
+      commandId,
+      window.setTimeout(() => {
+        pendingTimersRef.current.delete(commandId);
+        updatePendingMessage(pendingId, "failed", message);
+      }, timeout),
+    );
+  }
+
+  function acceptPendingCommand(commandId: string) {
+    const pendingId = pendingCommandsRef.current.get(commandId);
+    if (!pendingId) return false;
+    updatePendingMessage(pendingId, "sending");
+    schedulePendingTimeout(
+      commandId,
+      pendingId,
+      20_000,
+      "电脑端未确认收到消息，点按感叹号重试",
+    );
+    return true;
+  }
+
+  function finishPendingCommand(
+    commandId: string,
+    ok: boolean,
+    error?: string,
+  ) {
+    const optimisticCommand = optimisticCommandIdsRef.current.delete(commandId);
+    const pendingId = pendingCommandsRef.current.get(commandId);
+    if (!pendingId) return optimisticCommand;
+    clearPendingTimer(commandId);
+    pendingCommandsRef.current.delete(commandId);
+    updatePendingMessage(
+      pendingId,
+      ok ? "sent" : "failed",
+      ok ? undefined : error || "电脑端执行失败，点按感叹号重试",
+    );
+    if (ok) schedulePendingCleanup(pendingId);
+    return true;
+  }
+
+  async function sendPendingMessage(message: PendingMobileMessage) {
+    clearPendingCleanup(message.id);
+    clearPendingTransports(message.id);
+    updatePendingMessage(message.id, "sending");
+    const commandId = clientId("command");
+    optimisticCommandIdsRef.current.add(commandId);
+    pendingCommandsRef.current.set(commandId, message.id);
+    schedulePendingTimeout(
+      commandId,
+      message.id,
+      10_000,
+      "服务器未确认收到消息，点按感叹号重试",
+    );
+    try {
+      if (socketRef.current?.readyState === WebSocket.OPEN) {
+        socketRef.current.send(
+          JSON.stringify({
+            type: "command",
+            id: commandId,
+            deviceId: message.deviceId,
+            command: message.command,
+          }),
+        );
+      } else {
+        await jsonRequest("/api/commands", {
+          method: "POST",
+          body: JSON.stringify({
+            id: commandId,
+            deviceId: message.deviceId,
+            command: message.command,
+          }),
+        });
+        acceptPendingCommand(commandId);
+      }
+    } catch (cause) {
+      finishPendingCommand(
+        commandId,
+        false,
+        cause instanceof Error ? cause.message : "发送失败",
+      );
+    }
+  }
+
+  function updateConversationScrollIndicator() {
+    const conversation = conversationRef.current;
+    const track = scrollTrackRef.current;
+    const thumb = scrollThumbRef.current;
+    if (!conversation || !track || !thumb) return;
+    track.hidden = false;
+    const scrollRange = conversation.scrollHeight - conversation.clientHeight;
+    const trackHeight = track.clientHeight;
+    if (scrollRange <= 1 || trackHeight <= 0) {
+      track.hidden = true;
+      return;
+    }
+    const thumbHeight = Math.max(
+      30,
+      (conversation.clientHeight / conversation.scrollHeight) * trackHeight,
+    );
+    const top =
+      (conversation.scrollTop / scrollRange) * (trackHeight - thumbHeight);
+    thumb.style.height = `${thumbHeight}px`;
+    thumb.style.top = `${Math.max(0, top)}px`;
   }
 
   useEffect(() => {
     void loadSession();
   }, []);
+
+  useEffect(() => {
+    deviceIdRef.current = deviceId;
+  }, [deviceId]);
+
+  useEffect(() => {
+    let stopped = false;
+    let checking = false;
+    let lastCheckedAt = 0;
+    async function checkForWebUpdate() {
+      if (
+        stopped ||
+        checking ||
+        document.visibilityState === "hidden" ||
+        Date.now() - lastCheckedAt < 30_000
+      )
+        return;
+      checking = true;
+      lastCheckedAt = Date.now();
+      try {
+        const response = await fetch(`/?kcode-update=${Date.now()}`, {
+          cache: "no-store",
+          credentials: "same-origin",
+        });
+        if (!response.ok) return;
+        const nextDocument = new DOMParser().parseFromString(
+          await response.text(),
+          "text/html",
+        );
+        const currentBundle = mainBundleSource(document);
+        const nextBundle = mainBundleSource(nextDocument);
+        if (!currentBundle || !nextBundle || currentBundle === nextBundle)
+          return;
+        const composer = document.querySelector<HTMLTextAreaElement>(
+          ".mobile-composer textarea",
+        );
+        const busy = Boolean(
+          composer?.value.trim() ||
+          document.querySelector(
+            ".mobile-attachment-tray, .remote-message.optimistic",
+          ),
+        );
+        if (busy) setUpdateAvailable(true);
+        else location.reload();
+      } catch {
+        /* The normal reconnect loop handles temporary network failures. */
+      } finally {
+        checking = false;
+      }
+    }
+    const initial = window.setTimeout(() => void checkForWebUpdate(), 10_000);
+    const interval = window.setInterval(
+      () => void checkForWebUpdate(),
+      180_000,
+    );
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void checkForWebUpdate();
+    };
+    window.addEventListener("focus", checkForWebUpdate);
+    window.addEventListener("online", checkForWebUpdate);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      stopped = true;
+      window.clearTimeout(initial);
+      window.clearInterval(interval);
+      window.removeEventListener("focus", checkForWebUpdate);
+      window.removeEventListener("online", checkForWebUpdate);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, []);
+
+  useEffect(() => {
+    const update = () => updateConversationScrollIndicator();
+    window.addEventListener("resize", update);
+    window.visualViewport?.addEventListener("resize", update);
+    return () => {
+      window.removeEventListener("resize", update);
+      window.visualViewport?.removeEventListener("resize", update);
+      for (const timer of pendingTimersRef.current.values())
+        window.clearTimeout(timer);
+      for (const timer of pendingCleanupTimersRef.current.values())
+        window.clearTimeout(timer);
+      pendingTimersRef.current.clear();
+      pendingCleanupTimersRef.current.clear();
+      pendingCommandsRef.current.clear();
+      optimisticCommandIdsRef.current.clear();
+    };
+  }, []);
+
+  useEffect(() => {
+    const active = new Set(pendingMessages.map((message) => message.id));
+    for (const pendingId of new Set(pendingCommandsRef.current.values()))
+      if (!active.has(pendingId)) clearPendingTransports(pendingId);
+    for (const pendingId of pendingCleanupTimersRef.current.keys())
+      if (!active.has(pendingId)) clearPendingCleanup(pendingId);
+  }, [pendingMessages]);
 
   useEffect(() => {
     if (!user) return;
@@ -400,8 +757,10 @@ function App() {
         try {
           const message = JSON.parse(event.data) as {
             type: string;
+            id?: string;
             deviceId?: string;
             tasks?: Task[];
+            streams?: LiveStream[];
             devices?: Device[];
             ok?: boolean;
             error?: string;
@@ -412,18 +771,20 @@ function App() {
             reasoning?: string;
             progress?: string;
             updatedAt?: number;
+            message?: string;
           };
           if (
             message.type === "tasks.changed" &&
-            message.deviceId === deviceId &&
+            message.deviceId === deviceIdRef.current &&
             message.tasks
           ) {
-            applyTaskSnapshots(message.tasks);
+            applyTaskSnapshots(message.tasks, message.deviceId);
+            applyLiveStreams(message.streams || [], message.deviceId);
           }
           if (
             message.type === "task.event" &&
             message.event === "stream" &&
-            message.deviceId === deviceId &&
+            message.deviceId === deviceIdRef.current &&
             message.taskId &&
             message.requestId &&
             typeof message.content === "string" &&
@@ -437,28 +798,26 @@ function App() {
               progress: message.progress,
               updatedAt: message.updatedAt,
             };
-            const key = liveStreamKey(stream.taskId, stream.requestId);
-            setLiveStreams((current) =>
-              current[key]?.updatedAt > stream.updatedAt
-                ? current
-                : { ...current, [key]: stream },
-            );
-            setTasks((current) =>
-              current.map((task) =>
-                task.id === stream.taskId
-                  ? {
-                      ...task,
-                      runningId: stream.requestId,
-                      runStatus: "running",
-                      updatedAt: Math.max(task.updatedAt, stream.updatedAt),
-                    }
-                  : task,
-              ),
-            );
+            applyLiveStreams([stream], message.deviceId);
           }
           if (message.type === "devices.changed" && message.devices)
             setDevices(message.devices);
+          if (message.type === "command.accepted" && message.id) {
+            acceptPendingCommand(message.id);
+          }
           if (message.type === "command.result") {
+            const pendingResult = Boolean(
+              message.id &&
+              finishPendingCommand(
+                message.id,
+                message.ok === true,
+                message.error,
+              ),
+            );
+            if (pendingResult) {
+              void loadTasks();
+              return;
+            }
             setNotice(
               message.ok
                 ? "电脑已收到并完成操作"
@@ -467,6 +826,8 @@ function App() {
             window.setTimeout(() => setNotice(""), 3200);
             void loadTasks();
           }
+          if (message.type === "error" && message.message)
+            setError(message.message);
         } catch {
           /* Ignore malformed transient events. */
         }
@@ -530,19 +891,20 @@ function App() {
     setMobileFiles([]);
   }
 
-  async function submitMobileMessage(event: React.FormEvent) {
+  function submitMobileMessage(event: React.FormEvent) {
     event.preventDefault();
     const content = draft.trim();
     if (
       !selectedTask ||
-      !online ||
       (!content && !mobileImages.length && !mobileFiles.length)
     )
       return;
-    const sent = await sendCommand({
+    const id = clientId("mobile-message");
+    const command: Extract<RemoteCommand, { type: "task.send" }> = {
       type: "task.send",
       taskId: selectedTask.id,
       content,
+      clientMessageId: id,
       attachments:
         mobileImages.length || mobileFiles.length
           ? {
@@ -550,10 +912,26 @@ function App() {
               files: mobileFiles.length ? mobileFiles : undefined,
             }
           : undefined,
-    });
-    if (!sent) return;
+    };
+    const pending: PendingMobileMessage = {
+      id,
+      deviceId,
+      taskId: selectedTask.id,
+      content,
+      createdAt: Date.now(),
+      status: "sending",
+      command,
+    };
+    autoFollowRef.current = true;
+    setPendingMessages((current) => [...current, pending]);
     setDraft("");
     clearMobileAttachments();
+    window.setTimeout(() => void sendPendingMessage(pending), 0);
+  }
+
+  function retryPendingMessage(message: PendingMobileMessage) {
+    autoFollowRef.current = true;
+    window.setTimeout(() => void sendPendingMessage(message), 0);
   }
 
   async function logout() {
@@ -561,10 +939,19 @@ function App() {
       () => undefined,
     );
     socketRef.current?.close();
+    for (const timer of pendingTimersRef.current.values())
+      window.clearTimeout(timer);
+    for (const timer of pendingCleanupTimersRef.current.values())
+      window.clearTimeout(timer);
+    pendingTimersRef.current.clear();
+    pendingCleanupTimersRef.current.clear();
+    pendingCommandsRef.current.clear();
+    optimisticCommandIdsRef.current.clear();
     setUser(undefined);
     setDevices([]);
     setTasks([]);
     setLiveStreams({});
+    setPendingMessages([]);
     setSelectedTaskId("");
     setDraft("");
     clearMobileAttachments();
@@ -580,12 +967,17 @@ function App() {
     const frame = window.requestAnimationFrame(() => {
       const conversation = conversationRef.current;
       if (conversation) conversation.scrollTop = conversation.scrollHeight;
+      updateConversationScrollIndicator();
     });
     return () => window.cancelAnimationFrame(frame);
   }, [
+    mobileDetail,
     selectedTaskId,
     selectedTask?.messages.length,
-    selectedTask?.activities.length,
+    selectedPendingMessages.length,
+    mobileImages.length,
+    mobileFiles.length,
+    waitingActivity?.id,
     selectedLiveStream?.content.length,
     selectedLiveStream?.reasoning?.length,
     selectedLiveStream?.progress,
@@ -632,7 +1024,8 @@ function App() {
           <select
             value={deviceId}
             onChange={(event) => {
-              setDeviceId(event.target.value);
+              deviceIdRef.current = event.target.value;
+              setDeviceId(deviceIdRef.current);
               setMobileDetail(false);
               setDraft("");
               clearMobileAttachments();
@@ -726,6 +1119,15 @@ function App() {
             </p>
             <h1>{selectedTask?.name || "选择一个任务"}</h1>
           </div>
+          {updateAvailable && (
+            <button
+              className="icon-button update-available"
+              title="有新版本，点击更新"
+              onClick={() => location.reload()}
+            >
+              <RefreshCw size={15} />
+            </button>
+          )}
           <span className={`connection-pill ${online ? "online" : ""}`}>
             <CircleDot size={13} />
             {online ? "电脑在线" : "电脑离线"}
@@ -755,6 +1157,7 @@ function App() {
                     element.scrollTop -
                     element.clientHeight <
                   96;
+                updateConversationScrollIndicator();
               }}
             >
               {selectedTask.messages.map((message) => {
@@ -762,7 +1165,10 @@ function App() {
                   message.role === "assistant" &&
                   message.id === `assistant:${selectedTask.runningId}`;
                 const live = isLiveAssistant ? selectedLiveStream : undefined;
-                const content = `${message.content}${live?.content || ""}`;
+                const content = mergeLiveContent(
+                  message.content,
+                  live?.content,
+                );
                 return (
                   <article
                     key={message.id}
@@ -813,6 +1219,63 @@ function App() {
                   </article>
                 );
               })}
+              {selectedPendingMessages.map((message) => {
+                const images = message.command.attachments?.images || [];
+                const files = message.command.attachments?.files || [];
+                return (
+                  <article
+                    className={`remote-message user optimistic ${message.status}`}
+                    key={message.id}
+                  >
+                    <div className="message-meta">
+                      <span>你</span>
+                      <time>{formatTime(message.createdAt)}</time>
+                      {message.status === "sending" ? (
+                        <span
+                          className="delivery-state sending"
+                          title="正在发送"
+                          aria-label="正在发送"
+                        >
+                          <LoaderCircle className="spin" size={13} />
+                        </span>
+                      ) : message.status === "failed" ? (
+                        <button
+                          type="button"
+                          className="delivery-state failed"
+                          title={message.error || "发送失败，点击重试"}
+                          aria-label={message.error || "发送失败，点击重试"}
+                          onClick={() => retryPendingMessage(message)}
+                        >
+                          <CircleAlert size={15} />
+                        </button>
+                      ) : (
+                        <span
+                          className="delivery-state sent"
+                          title="已送达电脑"
+                          aria-label="已送达电脑"
+                        >
+                          <Check size={13} />
+                        </span>
+                      )}
+                    </div>
+                    <div className="message-body">
+                      {message.content || "已发送附件"}
+                      {images.length ? (
+                        <small className="attachment-summary">
+                          <ImagePlus size={12} />
+                          {images.length} 张图片
+                        </small>
+                      ) : null}
+                      {files.length ? (
+                        <small className="attachment-summary">
+                          <FileText size={12} />
+                          {files.map((file) => file.name).join("、")}
+                        </small>
+                      ) : null}
+                    </div>
+                  </article>
+                );
+              })}
               {selectedLiveStream &&
                 !selectedTask.messages.some(
                   (message) =>
@@ -837,53 +1300,6 @@ function App() {
                     </div>
                   </article>
                 )}
-              {!!selectedTask.activities.length && (
-                <section className="activity-section">
-                  <div className="section-label">
-                    <Terminal size={14} />
-                    执行记录
-                  </div>
-                  {[...selectedTask.activities].slice(-8).map((activity) => (
-                    <div
-                      className={`activity-row ${activity.status}`}
-                      key={activity.id}
-                    >
-                      <span className="activity-icon">
-                        {activity.status === "running" ? (
-                          <LoaderCircle className="spin" size={13} />
-                        ) : activity.status === "success" ||
-                          activity.status === "completed" ? (
-                          <Check size={13} />
-                        ) : (
-                          <Terminal size={13} />
-                        )}
-                      </span>
-                      <span>
-                        <strong>{activity.title}</strong>
-                        {activity.narrative && (
-                          <small>{activity.narrative}</small>
-                        )}
-                        {activity.liveStatus && (
-                          <small className="activity-attention">
-                            {activity.liveStatus}
-                          </small>
-                        )}
-                        {activity.path && <code>{activity.path}</code>}
-                        {activity.errorSummary && (
-                          <small className="activity-error">
-                            {activity.errorSummary}
-                          </small>
-                        )}
-                      </span>
-                      {typeof activity.additions === "number" && (
-                        <em>
-                          +{activity.additions} -{activity.deletions || 0}
-                        </em>
-                      )}
-                    </div>
-                  ))}
-                </section>
-              )}
               {waitingActivity && (
                 <div className="approval-panel">
                   <ShieldCheck size={18} />
@@ -922,6 +1338,14 @@ function App() {
                   </div>
                 </div>
               )}
+            </div>
+            <div
+              className="conversation-scroll-indicator"
+              ref={scrollTrackRef}
+              hidden
+              aria-hidden="true"
+            >
+              <i ref={scrollThumbRef} />
             </div>
             <form className="mobile-composer" onSubmit={submitMobileMessage}>
               <input
@@ -996,7 +1420,7 @@ function App() {
                   type="button"
                   className="attachment-button"
                   title={`添加图片（${mobileImages.length}/${MAX_MOBILE_IMAGES}）`}
-                  disabled={!online || mobileImages.length >= MAX_MOBILE_IMAGES}
+                  disabled={mobileImages.length >= MAX_MOBILE_IMAGES}
                   onClick={() => imageInputRef.current?.click()}
                 >
                   <ImagePlus size={17} />
@@ -1005,7 +1429,7 @@ function App() {
                   type="button"
                   className="attachment-button"
                   title={`添加文件（${mobileFiles.length}/${MAX_MOBILE_FILES}）`}
-                  disabled={!online || mobileFiles.length >= MAX_MOBILE_FILES}
+                  disabled={mobileFiles.length >= MAX_MOBILE_FILES}
                   onClick={() => fileInputRef.current?.click()}
                 >
                   <Paperclip size={17} />
@@ -1018,9 +1442,8 @@ function App() {
                       ? selectedTask.runningId
                         ? "发送后将排队执行"
                         : "给电脑上的 KCode 发消息"
-                      : "电脑离线，暂时不能发送"
+                      : "电脑离线，发送失败后可点按重试"
                   }
-                  disabled={!online}
                   rows={1}
                 />
                 {selectedTask.runningId && (
@@ -1043,10 +1466,7 @@ function App() {
                   className="send-button"
                   title="发送"
                   disabled={
-                    !online ||
-                    (!draft.trim() &&
-                      !mobileImages.length &&
-                      !mobileFiles.length)
+                    !draft.trim() && !mobileImages.length && !mobileFiles.length
                   }
                 >
                   <Send size={16} />
@@ -1058,7 +1478,7 @@ function App() {
           <div className="content-empty">
             <FileDiff size={30} />
             <strong>选择一个任务查看详情</strong>
-            <span>任务输出和执行记录会在这里实时同步。</span>
+            <span>任务消息和实时输出会在这里同步。</span>
           </div>
         )}
       </section>

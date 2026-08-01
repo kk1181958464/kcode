@@ -44,10 +44,9 @@ test("groups timeline activities in offset order while preserving insertion orde
   );
 });
 
-test("keeps a running tail visible between completed tools and the next step", () => {
-  assert.equal(shouldShowAssistantTailState(true, false), true);
-  assert.equal(shouldShowAssistantTailState(true, true), false);
-  assert.equal(shouldShowAssistantTailState(false, false), false);
+test("keeps live progress at the response tail while tools are active", () => {
+  assert.equal(shouldShowAssistantTailState(true), true);
+  assert.equal(shouldShowAssistantTailState(false), false);
 });
 
 test("keeps streaming reasoning DOM bounded and preserves surrogate pairs", () => {

@@ -757,7 +757,6 @@ const ExecutionSummary = memo(
     workspacePath,
     onActivityChange,
     reasoningNode,
-    progressNode,
   }: {
     activities: AgentActivity[];
     allActivities: AgentActivity[];
@@ -770,7 +769,6 @@ const ExecutionSummary = memo(
     workspacePath: string;
     onActivityChange(activity: AgentActivity): void;
     reasoningNode?: React.ReactNode;
-    progressNode?: React.ReactNode;
   }) {
     const [expanded, setExpanded] = useState(false);
     const [visibleActivityCount, setVisibleActivityCount] = useState(
@@ -958,7 +956,7 @@ const ExecutionSummary = memo(
         )}
         {running &&
           executionStats.active &&
-          (fallbackNarrative || reasoningNode || progressNode) && (
+          (fallbackNarrative || reasoningNode) && (
             <div
               className={`execution-summary-narrative ${fallbackNarrative ? "" : "live-only"}`}
               aria-live="polite"
@@ -968,7 +966,6 @@ const ExecutionSummary = memo(
               </span>
               <span className="execution-summary-narrative-copy">
                 {reasoningNode}
-                {progressNode}
                 {fallbackNarrative && (
                   <span className="execution-summary-narrative-fallback">
                     {fallbackNarrative}
@@ -1218,18 +1215,15 @@ const AssistantTimeline = memo(function AssistantTimeline({
                   ? streamingReasoning
                   : undefined
               }
-              progressNode={
-                latestGroup && hasActiveActivity ? streamingProgress : undefined
-              }
             />
           </div>
         );
       })}
       {renderText(message.content.slice(cursor))}
       {streamingTail}
-      {shouldShowAssistantTailState(running, hasActiveActivity) && (
+      {shouldShowAssistantTailState(running) && (
         <AssistantTailState
-          reasoningNode={streamingReasoning}
+          reasoningNode={hasActiveActivity ? undefined : streamingReasoning}
           progressNode={streamingProgress}
         />
       )}

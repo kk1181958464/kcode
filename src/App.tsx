@@ -41,6 +41,7 @@ import {
   GitCompareArrows,
   GripVertical,
   LockOpen,
+  LoaderCircle,
   Monitor,
   Minus,
   Minimize2,
@@ -540,6 +541,7 @@ export default function App() {
   const [gitDiffOpen, setGitDiffOpen] = useState(false);
   const [gitRefreshing, setGitRefreshing] = useState(false);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
+  const [scrollingToBottom, setScrollingToBottom] = useState(false);
   const [summaryOpen, setSummaryOpen] = useState(false);
   const [checkpoints, setCheckpoints] = useState<AgentCheckpoint[]>([]);
   const [summarizingTasks, setSummarizingTasks] = useState<Set<string>>(
@@ -577,6 +579,8 @@ export default function App() {
   const lastBottomFollowAtRef = useRef(0);
   const bottomSettleTimerRef = useRef<number | undefined>(undefined);
   const bottomSettleDeadlineRef = useRef(0);
+  const bottomIndicatorUntilRef = useRef(0);
+  const bottomSettlePassesRef = useRef(0);
   const pendingLatestScrollRef = useRef<ScrollBehavior | undefined>(undefined);
   const scrollFrameRef = useRef<number | undefined>(undefined);
   const scrollStateByTaskRef = useRef(
@@ -1148,9 +1152,24 @@ export default function App() {
     });
   }
 
-  function scrollToLatest(behavior: ScrollBehavior = "auto") {
+  function scrollToLatest(
+    behavior: ScrollBehavior = "auto",
+    showProgress = false,
+  ) {
     const conversation = conversationRef.current;
-    if (!conversation) return;
+    if (!conversation) {
+      setScrollingToBottom(false);
+      return;
+    }
+    if (scrollFrameRef.current) {
+      cancelAnimationFrame(scrollFrameRef.current);
+      scrollFrameRef.current = undefined;
+    }
+    scrollTargetRef.current = null;
+    if (showProgress) {
+      bottomIndicatorUntilRef.current = performance.now() + 450;
+      setScrollingToBottom(true);
+    }
     const latest = latestConversationWindow(
       conversationTurns.length,
       conversationPageSize,
@@ -1167,13 +1186,26 @@ export default function App() {
     setShowScrollToBottom(false);
     if (bottomSettleTimerRef.current)
       window.clearTimeout(bottomSettleTimerRef.current);
-    bottomSettleDeadlineRef.current = performance.now() + 2_500;
+    bottomSettlePassesRef.current = 0;
+    bottomSettleDeadlineRef.current = performance.now() + 3_000;
+
+    const finishBottomScroll = () => {
+      bottomSettleTimerRef.current = undefined;
+      bottomIndicatorUntilRef.current = 0;
+      bottomSettlePassesRef.current = 0;
+      programmaticScrollRef.current = false;
+      setScrollingToBottom(false);
+      setShowScrollToBottom(false);
+    };
 
     const alignToLatest = () => {
       const current = conversationRef.current;
       if (!current || !autoFollowRef.current) {
         programmaticScrollRef.current = false;
         bottomSettleTimerRef.current = undefined;
+        bottomIndicatorUntilRef.current = 0;
+        bottomSettlePassesRef.current = 0;
+        setScrollingToBottom(false);
         return;
       }
       current.scrollTop = current.scrollHeight;
@@ -1183,11 +1215,27 @@ export default function App() {
           top: current.scrollHeight,
           atBottom: true,
         });
-      if (performance.now() < bottomSettleDeadlineRef.current) {
+      const latestTurnId = conversationTurns.at(-1)?.id;
+      const latestTurn = latestTurnId
+        ? turnRefs.current.get(latestTurnId)
+        : undefined;
+      const latestMounted = !latestTurnId || Boolean(latestTurn?.isConnected);
+      const distanceFromBottom =
+        current.scrollHeight - current.scrollTop - current.clientHeight;
+      bottomSettlePassesRef.current =
+        latestMounted && distanceFromBottom <= 1
+          ? bottomSettlePassesRef.current + 1
+          : 0;
+      if (
+        bottomSettlePassesRef.current >= 4 &&
+        performance.now() >= bottomIndicatorUntilRef.current
+      ) {
+        finishBottomScroll();
+      } else if (performance.now() < bottomSettleDeadlineRef.current) {
         bottomSettleTimerRef.current = window.setTimeout(alignToLatest, 50);
       } else {
-        bottomSettleTimerRef.current = undefined;
-        programmaticScrollRef.current = false;
+        current.scrollTop = current.scrollHeight;
+        finishBottomScroll();
       }
     };
 
@@ -1211,8 +1259,11 @@ export default function App() {
       bottomSettleTimerRef.current = undefined;
     }
     bottomSettleDeadlineRef.current = 0;
+    bottomIndicatorUntilRef.current = 0;
+    bottomSettlePassesRef.current = 0;
     pendingLatestScrollRef.current = undefined;
     programmaticScrollRef.current = false;
+    setScrollingToBottom(false);
     if (autoFollowRef.current) {
       autoFollowRef.current = false;
       setShowScrollToBottom(true);
@@ -1813,6 +1864,17 @@ export default function App() {
       window.setTimeout(() => flushRemoteStreamSync(requestId), 180),
     );
   }
+
+  useEffect(() => {
+    if (!remoteControlState.connected) return;
+    const timer = window.setTimeout(() => {
+      for (const [requestId, taskId] of requestTasksRef.current) {
+        const task = tasksRef.current.find((item) => item.id === taskId);
+        if (task?.runningId === requestId) flushRemoteStreamSync(requestId);
+      }
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [remoteControlState.connected]);
 
   function flushPendingText(drainAll = false) {
     if (!pendingTextRef.current.size) return;
@@ -3574,7 +3636,21 @@ export default function App() {
               .map((item) => (item.id === task.id ? task : item))
               .map(remoteTaskSnapshot),
           );
+          if (task.runningId) flushRemoteStreamSync(task.runningId);
         } else if (command.type === "task.send") {
+          const messageId = command.clientMessageId || uid();
+          const alreadyQueued = tasksRef.current.some(
+            (item) =>
+              item.id === task.id &&
+              item.messages.some((message) => message.id === messageId),
+          );
+          if (alreadyQueued) {
+            await window.kcode.remote.syncTasks(
+              tasksRef.current.map(remoteTaskSnapshot),
+            );
+            await window.kcode.remote.commandResult(envelope.id, true);
+            return;
+          }
           const { images, files } = materializeRemoteAttachments(
             command.attachments,
           );
@@ -3584,7 +3660,7 @@ export default function App() {
             files.length,
           );
           const user: QueuedChatMessage = {
-            id: uid(),
+            id: messageId,
             role: "user",
             content,
             createdAt: Date.now(),
@@ -3595,19 +3671,23 @@ export default function App() {
             queued: true,
           };
           contextByMessageRef.current.set(user.id, files);
-          setTasks((all) =>
-            all.map((item) =>
-              item.id === task.id
-                ? {
-                    ...item,
-                    messages: [...item.messages, user],
-                    updatedAt: Date.now(),
-                  }
-                : item,
-            ),
+          const nextTasks = tasksRef.current.map((item) =>
+            item.id === task.id
+              ? {
+                  ...item,
+                  messages: [...item.messages, user],
+                  updatedAt: Date.now(),
+                }
+              : item,
           );
+          tasksRef.current = nextTasks;
+          setTasks(nextTasks);
           if (displayedTaskIdRef.current === task.id)
-            setMessages((all) => [...all, user]);
+            setMessages((all) =>
+              all.some((message) => message.id === user.id)
+                ? all
+                : [...all, user],
+            );
         } else if (command.type === "task.cancel") {
           if (!task.runningId) throw new Error("任务当前没有在运行");
           if (
@@ -3979,15 +4059,25 @@ export default function App() {
             agentReasoning=""
           />
           <div className="composer-wrap">
-            {showScrollToBottom && (
+            {(showScrollToBottom || scrollingToBottom) && (
               <button
                 type="button"
                 className="scroll-to-bottom"
-                title="滚动到最新消息"
-                aria-label="滚动到最新消息"
-                onClick={() => scrollToLatest("auto")}
+                title={
+                  scrollingToBottom ? "正在滚动到最新消息" : "滚动到最新消息"
+                }
+                aria-label={
+                  scrollingToBottom ? "正在滚动到最新消息" : "滚动到最新消息"
+                }
+                aria-busy={scrollingToBottom}
+                disabled={scrollingToBottom}
+                onClick={() => scrollToLatest("auto", true)}
               >
-                <ArrowDown size={17} />
+                {scrollingToBottom ? (
+                  <LoaderCircle className="spinning" size={17} />
+                ) : (
+                  <ArrowDown size={17} />
+                )}
               </button>
             )}
             <div

@@ -36,6 +36,7 @@ export type RemoteCommand =
       type: "task.send";
       taskId: string;
       content: string;
+      clientMessageId?: string;
       attachments?: RemoteAttachments;
     }
   | { type: "task.cancel"; taskId: string }
@@ -205,11 +206,19 @@ export function parseRemoteCommand(value: unknown): RemoteCommand {
   if (type === "task.load") return { type, taskId };
   if (type === "task.send") {
     const content = stringValue(value.content, "消息", 20_000, true);
+    const clientMessageId =
+      value.clientMessageId === undefined
+        ? undefined
+        : stringValue(value.clientMessageId, "消息 ID", 128);
     const attachments = parseRemoteAttachments(value.attachments);
     if (!content && !attachments) throw new Error("消息或附件不能为空");
-    return attachments
-      ? { type, taskId, content, attachments }
-      : { type, taskId, content };
+    return {
+      type,
+      taskId,
+      content,
+      ...(clientMessageId ? { clientMessageId } : {}),
+      ...(attachments ? { attachments } : {}),
+    };
   }
   if (type === "task.cancel") return { type, taskId };
   if (type === "task.approve") {

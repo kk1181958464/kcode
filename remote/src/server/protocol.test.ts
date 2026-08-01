@@ -17,8 +17,22 @@ test("accepts only the supported remote control commands", () => {
       type: "task.send",
       taskId: "task-1",
       content: "继续",
+      clientMessageId: "mobile-message-1",
     }),
-    { type: "task.send", taskId: "task-1", content: "继续" },
+    {
+      type: "task.send",
+      taskId: "task-1",
+      content: "继续",
+      clientMessageId: "mobile-message-1",
+    },
+  );
+  assert.throws(() =>
+    parseRemoteCommand({
+      type: "task.send",
+      taskId: "task-1",
+      content: "继续",
+      clientMessageId: " ",
+    }),
   );
   assert.throws(() =>
     parseRemoteCommand({ type: "run_command", taskId: "task-1" }),
