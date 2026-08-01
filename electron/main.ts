@@ -96,6 +96,7 @@ import { createSkillStore, type ListedSkill } from "./skill-store";
 import { clearAgentSkillCache, configureAgentSkills } from "./agent-skills";
 import { networkFetch } from "./network";
 import { existingDirectory } from "./dialog-path";
+import { countTextLines, parseGitNumstat } from "./git-workspace-state";
 import {
   CONTEXT_FILE_DIALOG_EXTENSIONS,
   MAX_CONTEXT_FILES,
@@ -821,16 +822,60 @@ app.whenReady().then(async () => {
           error: "当前工作区未初始化 Git",
         };
       const status = await git(["status", "--short", "--untracked-files=all"]);
-      const tracked = await git(["diff", "--numstat", "HEAD"]);
+      const tracked = await git(["diff", "--numstat", "-z", "HEAD"]);
       const untracked = status.output
         .split(/\r?\n/)
         .filter((line) => line.startsWith("?? "));
-      let additions = 0,
-        deletions = 0;
-      for (const line of tracked.output.split(/\r?\n/)) {
-        const [add, del] = line.split("\t");
-        additions += Number(add) || 0;
-        deletions += Number(del) || 0;
+      const trackedChanges = parseGitNumstat(tracked.output);
+      const fileChanges = new Map(
+        trackedChanges.map((change) => [change.path, change]),
+      );
+      let additions = trackedChanges.reduce(
+        (total, change) => total + change.additions,
+        0,
+      );
+      let deletions = trackedChanges.reduce(
+        (total, change) => total + change.deletions,
+        0,
+      );
+      const untrackedFiles = await git([
+        "ls-files",
+        "--others",
+        "--exclude-standard",
+        "-z",
+      ]);
+      for (const rawPath of untrackedFiles.output.split("\0")) {
+        if (!rawPath) continue;
+        const file = resolveWorkspaceFile(root, rawPath);
+        let fileAdditions = 0;
+        try {
+          const info = await stat(file.target);
+          if (info.isFile() && info.size <= 2_000_000)
+            fileAdditions = countTextLines(await readFile(file.target)) ?? 0;
+        } catch {
+          // The file may have changed between Git status and this read.
+        }
+        const change = {
+          path: file.relative,
+          additions: fileAdditions,
+          deletions: 0,
+        };
+        fileChanges.set(change.path, change);
+        additions += fileAdditions;
+      }
+      for (const line of status.output.split(/\r?\n/)) {
+        if (!line.trim()) continue;
+        const value = line.slice(3).trim();
+        const renamed = value.lastIndexOf(" -> ");
+        const filePath = (renamed >= 0 ? value.slice(renamed + 4) : value)
+          .replace(/^['"]|['"]$/g, "")
+          .replaceAll("\\", "/");
+        if (filePath && !fileChanges.has(filePath))
+          fileChanges.set(filePath, {
+            path: filePath,
+            additions: 0,
+            deletions: 0,
+          });
       }
       const diff = includeDiff
         ? await git(["diff", "--no-ext-diff", "HEAD"])
@@ -841,6 +886,7 @@ app.whenReady().then(async () => {
         files: status.output.split(/\r?\n/).filter(Boolean).length,
         additions,
         deletions,
+        fileChanges: [...fileChanges.values()],
         summary: status.output.trim(),
         diff: `${diff.output}${untracked.length ? `\n\n未跟踪文件：\n${untracked.join("\n")}` : ""}`.slice(
           0,

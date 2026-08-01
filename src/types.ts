@@ -223,6 +223,7 @@ export type GitWorkspaceState = {
   files: number;
   additions: number;
   deletions: number;
+  fileChanges?: AgentFileChange[];
   summary: string;
   diff: string;
   error?: string;

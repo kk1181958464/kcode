@@ -122,8 +122,14 @@ function FileChangeRow({
       <FileCode2 size={12} />
       <span>{fileName(change.path)}</span>
       <small>
-        <b>+{change.additions}</b>
-        <i>-{change.deletions}</i>
+        {change.additions || change.deletions ? (
+          <>
+            <b>+{change.additions}</b>
+            <i>-{change.deletions}</i>
+          </>
+        ) : (
+          "已变更"
+        )}
       </small>
       <ChevronRight size={12} />
     </button>
@@ -189,8 +195,18 @@ export function StatusPanel({
     [activities],
   );
   const fileChanges = useMemo(() => {
+    const hasGitFileChanges =
+      gitState.available && Array.isArray(gitState.fileChanges);
+    const sourceChanges: StatusFileChange[] = hasGitFileChanges
+      ? gitState.fileChanges!.map((change) => ({
+          path: change.path,
+          additions: change.additions,
+          deletions: change.deletions,
+          diffs: [],
+        }))
+      : activitySummary.fileChanges;
     const merged = new Map(
-      activitySummary.fileChanges.map((change) => [change.path, change]),
+      sourceChanges.map((change) => [change.path, change]),
     );
     if (gitState.available && gitState.summary) {
       for (const line of gitState.summary.split(/\r?\n/)) {
@@ -206,7 +222,12 @@ export function StatusPanel({
       }
     }
     return [...merged.values()];
-  }, [activitySummary.fileChanges, gitState.available, gitState.summary]);
+  }, [
+    activitySummary.fileChanges,
+    gitState.available,
+    gitState.fileChanges,
+    gitState.summary,
+  ]);
   const queuedCount = messages.filter((message) =>
     Boolean((message as ChatMessage & { queued?: boolean }).queued),
   ).length;
