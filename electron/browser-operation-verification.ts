@@ -41,6 +41,25 @@ export function requestedBrowserOperations(
 ) {
   const content = relevantRequestContent(history);
   const operations = new Set<BrowserOperation>();
+  const browserContext =
+    /(?:网页|网站|页面|浏览器|表单|按钮|链接|网址|地址栏|输入框|搜索框|菜单|下拉|选项|复选框|单选框|下一步|账号|密码|验证码|登录|购物车|订单|消息|https?:\/\/|www\.|[A-Za-z0-9.-]+\.(?:com|cn|net|org))|\b(?:web(?:site|page)?|browser|form|button|link|url|login|account|password|cart|checkout)\b/i.test(
+      content,
+    );
+  const implementationDescription =
+    /(?:修复|修改|开发|实现|优化|重构|排查|调试|代码|项目|组件|函数|逻辑|样式|bug|问题|卡住|卡顿|报错)/i.test(
+      content,
+    );
+  const startsWithBrowserAction =
+    /^\s*(?:(?:帮我|请|麻烦|替我|现在|直接|先|继续|开始)\s*)?(?:打开|访问|进入|导航到|前往|填写|输入|键入|点击|选择|提交|发送|登录|截图|open|visit|navigate|go to|fill|enter|type|click|select|submit|send|log in|screenshot)/i.test(
+      content,
+    );
+  const politeBrowserAction =
+    !implementationDescription &&
+    /(?:帮我|请|麻烦|替我|现在|直接).{0,40}(?:打开|访问|进入|导航到|前往|填写|输入|键入|点击|选择|提交|发送|登录|截图|open|visit|navigate|go to|fill|enter|type|click|select|submit|send|log in|screenshot)/i.test(
+      content,
+    );
+  if (!browserContext || (!startsWithBrowserAction && !politeBrowserAction))
+    return operations;
   const asksForInformation =
     /(?:是否|有没有|是不是|为什么|怎么|如何|能不能|能否|会不会|是什么|了吗|了没)[^。！!]*[？?]?|[吗么][？?]?$|\?$/i.test(
       content.trim(),

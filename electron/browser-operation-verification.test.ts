@@ -45,6 +45,35 @@ test("detects requested browser actions and ignores capability questions", () =>
   );
 });
 
+test("does not confuse Git commits or UI bug descriptions with browser actions", () => {
+  for (const content of [
+    "提交改动并推送 main，再打新版本标签触发打包",
+    "修复页面滚动卡顿和点击左侧节点的问题",
+    "选择模型后修改代码并提交到 GitHub",
+  ])
+    assert.deepEqual(
+      [
+        ...requestedBrowserOperations([
+          { kind: "message", role: "user", content },
+        ]),
+      ],
+      [],
+    );
+
+  assert.deepEqual(
+    [
+      ...requestedBrowserOperations([
+        {
+          kind: "message",
+          role: "user",
+          content: "提交网页表单并查看页面",
+        },
+      ]),
+    ],
+    ["click", "verify"],
+  );
+});
+
 test("continuation replies inherit the previous browser action", () => {
   assert.deepEqual(
     [
