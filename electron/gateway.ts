@@ -10,7 +10,7 @@ import { networkFetch } from "./network";
 const trim = (url: string) => url.replace(/\/+$/, "");
 const apiEndpoint = (baseUrl: string, resource: string) => {
   const base = trim(baseUrl);
-  return `${base}${/\/v1$/i.test(base) ? "" : "/v1"}/${resource}`;
+  return `${base}${/\/v\d+$/i.test(base) ? "" : "/v1"}/${resource}`;
 };
 
 function discoveredImageSupport(model: Record<string, unknown>) {
