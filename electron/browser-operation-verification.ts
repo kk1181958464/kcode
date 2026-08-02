@@ -1,3 +1,5 @@
+import { relevantVerificationRequestContent } from "./coding-operation-verification";
+
 export type BrowserOperation = "open" | "type" | "click" | "verify";
 
 export type BrowserVerificationHistoryItem =
@@ -12,34 +14,10 @@ export type BrowserVerificationHistoryItem =
     }
   | { kind: "result"; callId: string; content: string };
 
-type VerificationMessage = Extract<
-  BrowserVerificationHistoryItem,
-  { kind: "message" }
->;
-
-const CONTINUATION_REQUEST =
-  /^(?:好|好的|可以|行|继续|继续吧|开始|开始吧|执行吧|就这么做|按(?:你|上面|这个).{0,12}做|都弄|全部(?:做|弄))(?:了|吧|啊|呀)?[。！!，,\s]*$/i;
-
-function relevantRequestContent(history: BrowserVerificationHistoryItem[]) {
-  const messages = history.filter(
-    (item): item is VerificationMessage => item.kind === "message",
-  );
-  let latestIndex = messages.length - 1;
-  while (latestIndex >= 0 && messages[latestIndex].role !== "user")
-    latestIndex -= 1;
-  const latest = messages[latestIndex]?.content ?? "";
-  if (!CONTINUATION_REQUEST.test(latest.trim())) return latest;
-  const previous = messages
-    .slice(Math.max(0, latestIndex - 2), latestIndex)
-    .map((message) => message.content)
-    .join("\n");
-  return previous ? `${previous}\n${latest}` : latest;
-}
-
 export function requestedBrowserOperations(
   history: BrowserVerificationHistoryItem[],
 ) {
-  const content = relevantRequestContent(history);
+  const content = relevantVerificationRequestContent(history);
   const operations = new Set<BrowserOperation>();
   const browserContext =
     /(?:网页|网站|页面|浏览器|表单|按钮|链接|网址|地址栏|输入框|搜索框|菜单|下拉|选项|复选框|单选框|下一步|账号|密码|验证码|登录|购物车|订单|消息|https?:\/\/|www\.|[A-Za-z0-9.-]+\.(?:com|cn|net|org))|\b(?:web(?:site|page)?|browser|form|button|link|url|login|account|password|cart|checkout)\b/i.test(

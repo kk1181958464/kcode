@@ -79,6 +79,21 @@ test("continuation replies inherit the previous browser action", () => {
     [
       ...requestedBrowserOperations([
         { kind: "message", role: "user", content: "点击下一步并查看页面" },
+        { kind: "message", role: "assistant", content: "正在操作。" },
+        {
+          kind: "message",
+          role: "user",
+          content:
+            "<interrupted_turn_recovery>核对修改并验证后继续。</interrupted_turn_recovery>",
+        },
+      ]),
+    ],
+    ["click", "verify"],
+  );
+  assert.deepEqual(
+    [
+      ...requestedBrowserOperations([
+        { kind: "message", role: "user", content: "点击下一步并查看页面" },
         { kind: "message", role: "assistant", content: "准备执行。" },
         { kind: "message", role: "user", content: "继续" },
       ]),

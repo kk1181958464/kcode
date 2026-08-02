@@ -195,6 +195,25 @@ test("inherits an actionable Git request but ignores status questions", () => {
           role: "user",
           content: "提交到 GitHub 并触发打包",
         },
+        { kind: "message", role: "assistant", content: "正在推送。" },
+        {
+          kind: "message",
+          role: "user",
+          content:
+            "<interrupted_turn_recovery>核对修改并验证后继续。</interrupted_turn_recovery>",
+        },
+      ]),
+    ],
+    ["commit", "push", "release"],
+  );
+  assert.deepEqual(
+    [
+      ...requestedGitOperations([
+        {
+          kind: "message",
+          role: "user",
+          content: "提交到 GitHub 并触发打包",
+        },
         { kind: "message", role: "assistant", content: "可以开始。" },
         { kind: "message", role: "user", content: "开始吧" },
       ]),

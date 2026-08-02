@@ -77,10 +77,31 @@ export function isAdvisoryOnlyRequest(content: string) {
   );
 }
 
-function relevantRequestContent(history: CodingVerificationHistoryItem[]) {
-  const messages = history.filter(
-    (item): item is VerificationMessage => item.kind === "message",
-  );
+function userIntentContent(content: string) {
+  return content
+    .replace(
+      /<interrupted_turn_recovery>[\s\S]*?<\/interrupted_turn_recovery>/gi,
+      "",
+    )
+    .replace(/<runtime_verification>[\s\S]*?<\/runtime_verification>/gi, "")
+    .replace(/<context_file\b[^>]*>[\s\S]*?<\/context_file>/gi, "")
+    .replace(/<conversation_summary>[\s\S]*?<\/conversation_summary>/gi, "")
+    .trim();
+}
+
+export function relevantVerificationRequestContent(
+  history: CodingVerificationHistoryItem[],
+) {
+  const messages = history
+    .filter((item): item is VerificationMessage => item.kind === "message")
+    .map((message) => ({
+      ...message,
+      content:
+        message.role === "user"
+          ? userIntentContent(message.content)
+          : message.content,
+    }))
+    .filter((message) => message.role !== "user" || message.content);
   let latestIndex = messages.length - 1;
   while (latestIndex >= 0 && messages[latestIndex].role !== "user")
     latestIndex -= 1;
@@ -97,15 +118,21 @@ function relevantRequestContent(history: CodingVerificationHistoryItem[]) {
 export function requestedCodingOperations(
   history: CodingVerificationHistoryItem[],
 ) {
-  const content = relevantRequestContent(history);
+  const content = relevantVerificationRequestContent(history);
   if (isAdvisoryOnlyRequest(content)) return new Set<CodingOperation>();
-  const validationContent = content.replace(
-    /(?:触发|启动).{0,12}(?:打包|发布|Actions|工作流)|\btrigger.{0,12}(?:build|release|actions|workflow)\b/gi,
-    "",
-  );
+  const validationContent = content
+    .replace(/验证码|动态码|校验码|\b(?:otp|verification\s+codes?)\b/gi, "")
+    .replace(
+      /(?:触发|启动).{0,12}(?:打包|发布|Actions|工作流)|\btrigger.{0,12}(?:build|release|actions|workflow)\b/gi,
+      "",
+    );
   const asksForCodingInformation =
     /(?:是否|有没有|是不是|为什么|怎么|如何|能不能|能否|会不会|是什么|怎么回事|了吗|了没)[^。！!]*[？?]?|[吗么][？?]?$|\?$/i.test(
       content.trim(),
+    );
+  const describesObservedState =
+    /(?:我(?:看|看到|发现|注意到)|当前|现在|目前|看起来|好像).{0,80}(?:没有|未|找不到|看不到|不显示|不存在|缺少)/i.test(
+      content,
     );
   const explicitModifyRequest =
     /(?:帮我|请(?!问)|麻烦|要你|开始|继续|把|替我|重新).{0,50}(?:修改|修复|解决|优化|增加|新增|添加|删除|重构|实现|调整|替换|创建|生成|编写|开发|搭建|配置|接入|edit|change|fix|implement|add|remove|create|develop|configure)/i.test(
@@ -117,10 +144,13 @@ export function requestedCodingOperations(
     );
   const explicitValidationRequest =
     /(?:帮我|请|麻烦|要你|开始|继续|把|替我|重新|再次|并|然后).{0,40}(?:验证|测试|类型检查|构建|打包|verify|test|typecheck|lint|build)/i.test(
-      content,
+      validationContent,
     );
   const modifyContent =
-    asksForCodingInformation && !explicitModifyRequest ? "" : content;
+    (asksForCodingInformation || describesObservedState) &&
+    !explicitModifyRequest
+      ? ""
+      : content;
   const executeContent =
     asksForCodingInformation && !explicitExecuteRequest ? "" : content;
   const actionableValidationContent =
@@ -249,9 +279,7 @@ function parsedResults(history: CodingVerificationHistoryItem[]) {
   return results;
 }
 
-function verifiedNoChangeEvidence(
-  history: CodingVerificationHistoryItem[],
-) {
+function verifiedNoChangeEvidence(history: CodingVerificationHistoryItem[]) {
   const parsed = parsedResults(history);
   const noOpCapableTools = new Set([
     "apply_patch",

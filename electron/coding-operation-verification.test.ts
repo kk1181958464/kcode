@@ -8,6 +8,7 @@ import {
   hasVerifiedNoChangeReport,
   isAdvisoryOnlyRequest,
   missingRequestedCodingOperations,
+  relevantVerificationRequestContent,
   requestedCodingOperations,
   shouldRequireCodingTool,
   successfulCodingEvidence,
@@ -37,6 +38,54 @@ test("does not treat a scoped no-change clause as an advisory-only request", () 
       ]),
     ],
     ["modify"],
+  );
+});
+
+test("ignores recovery metadata when classifying an informational request", () => {
+  const observation = "我看配置-接码里面没有设置的地方";
+  const recovery =
+    "<interrupted_turn_recovery>先核对现状，再完成剩余步骤；不要重复已经完成的修改，也不要假定尚未验证的步骤已经完成。</interrupted_turn_recovery>";
+  const history = [
+    {
+      kind: "message" as const,
+      role: "user" as const,
+      content: "没有价格限制吗？最高验证码不能超过多少钱？",
+    },
+    {
+      kind: "message" as const,
+      role: "assistant" as const,
+      content: "我先检查。",
+    },
+    {
+      kind: "message" as const,
+      role: "user" as const,
+      content: `${observation}\n\n${recovery}`,
+    },
+  ];
+
+  assert.equal(relevantVerificationRequestContent(history), observation);
+  assert.deepEqual([...requestedCodingOperations(history)], []);
+  assert.deepEqual(
+    [
+      ...requestedCodingOperations([
+        ...history.slice(0, -1),
+        { kind: "message", role: "user", content: recovery } as const,
+      ]),
+    ],
+    [],
+  );
+});
+
+test("keeps explicit configuration changes actionable after sanitizing metadata", () => {
+  const content =
+    '把配置-接码页面增加最高价格输入框并运行测试\n\n<context_file name="notes.txt">这里只是附件内容，不要修改验证</context_file>';
+  assert.deepEqual(
+    [
+      ...requestedCodingOperations([
+        { kind: "message", role: "user", content },
+      ]),
+    ],
+    ["modify", "execute", "validate"],
   );
 });
 
@@ -239,8 +288,7 @@ test("accepts an explicit no-change report only after successful inspection", ()
     {
       kind: "result" as const,
       callId: "inspect",
-      content:
-        '{"success":true,"data":{"executed":true,"exitCode":0}}',
+      content: '{"success":true,"data":{"executed":true,"exitCode":0}}',
     },
     {
       kind: "calls" as const,
@@ -292,7 +340,8 @@ test("preserves an explicit no-change report in the compact evidence ledger", ()
           id: "no-change",
           name: "report_no_change",
           input: {
-            reason: "测试已执行，失败项仅依赖本机未配置的外部服务，工作区没有修改目标。",
+            reason:
+              "测试已执行，失败项仅依赖本机未配置的外部服务，工作区没有修改目标。",
           },
         },
       ],
@@ -338,10 +387,7 @@ test("rejects an unsupported no-change report and one made after mutation", () =
     content:
       '{"success":true,"data":{"changed":false,"noChangeReported":true}}',
   };
-  assert.equal(
-    hasVerifiedNoChangeEvidence([reportCall, reportResult]),
-    false,
-  );
+  assert.equal(hasVerifiedNoChangeEvidence([reportCall, reportResult]), false);
   assert.equal(
     hasVerifiedNoChangeEvidence([
       {

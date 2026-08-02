@@ -1,3 +1,5 @@
+import { relevantVerificationRequestContent } from "./coding-operation-verification";
+
 export type GitOperation = "commit" | "push" | "release";
 
 type VerificationHistoryItem =
@@ -12,13 +14,6 @@ type VerificationHistoryItem =
     }
   | { kind: "result"; callId: string; content: string };
 
-type VerificationMessage = Extract<
-  VerificationHistoryItem,
-  { kind: "message" }
->;
-
-const CONTINUATION_REQUEST =
-  /^(?:好|好的|可以|行|继续|继续吧|开始|开始吧|执行吧|就这么做|按(?:你|上面|这个).{0,12}做|都弄|都改|全部(?:做|弄|改|修改))(?:了|吧|啊|呀)?[。！!，,\s]*$/i;
 const COMMAND_TOOLS = new Set(["run_command", "ssh_run"]);
 
 export function isNotGitRepositoryOutput(value: string) {
@@ -27,24 +22,8 @@ export function isNotGitRepositoryOutput(value: string) {
   );
 }
 
-function relevantRequestContent(history: VerificationHistoryItem[]) {
-  const messages = history.filter(
-    (item): item is VerificationMessage => item.kind === "message",
-  );
-  let latestIndex = messages.length - 1;
-  while (latestIndex >= 0 && messages[latestIndex].role !== "user")
-    latestIndex -= 1;
-  const latest = messages[latestIndex]?.content ?? "";
-  if (!CONTINUATION_REQUEST.test(latest.trim())) return latest;
-  const previous = messages
-    .slice(Math.max(0, latestIndex - 2), latestIndex)
-    .map((message) => message.content)
-    .join("\n");
-  return previous ? `${previous}\n${latest}` : latest;
-}
-
 export function requestedGitOperations(history: VerificationHistoryItem[]) {
-  const content = relevantRequestContent(history);
+  const content = relevantVerificationRequestContent(history);
   const operations = new Set<GitOperation>();
   const asksForStatus =
     /(?:是否|有没有|是不是|成功了吗|完成了吗|提交了吗|推送了吗|发布了吗|触发了吗|了没|了吗)[？?]?|\?$/i.test(
