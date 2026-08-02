@@ -40,6 +40,8 @@ export function activityTarget(activity: AgentActivity) {
     String(activity.input.task || "") ||
     String(activity.input.agentId || "") ||
     String(activity.input.url || "") ||
+    String(activity.input.branch || "") ||
+    String(activity.input.remote || "") ||
     "";
   return clipWorkingText(String(raw));
 }
@@ -89,6 +91,11 @@ export function workingPhase(activities: AgentActivity[], elapsedMs: number) {
     };
   }
   if (last?.status === "failed") {
+    if (last.recoverable)
+      return {
+        phase: `访问受限：${activityFocus(last)}`,
+        detail: "正在切换到可用的本地或原生工具方案",
+      };
     return {
       phase: `刚失败：${activityFocus(last)}`,
       detail: "正在分析失败原因并调整下一步",

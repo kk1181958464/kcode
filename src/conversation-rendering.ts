@@ -1,3 +1,5 @@
+import type { AgentActivity } from "./types";
+
 export const STREAMING_REASONING_DOM_CHAR_LIMIT = 96_000;
 export const STREAMING_REASONING_DOM_TRIM_TARGET = 80_000;
 
@@ -10,6 +12,29 @@ export function visibleAssistantContent(value: string) {
 
 export function shouldShowAssistantTailState(running: boolean) {
   return running;
+}
+
+export type AssistantTimelineGroup = {
+  offset: number;
+  activities: AgentActivity[];
+};
+
+export function groupActivitiesByTextOffset(
+  activities: AgentActivity[],
+  textLength: number,
+): AssistantTimelineGroup[] {
+  const safeLength = Math.max(0, textLength);
+  const groups: AssistantTimelineGroup[] = [];
+  for (const activity of activities) {
+    const storedOffset = Number(activity.textOffset);
+    const offset = Number.isFinite(storedOffset)
+      ? Math.min(safeLength, Math.max(0, Math.floor(storedOffset)))
+      : safeLength;
+    const previous = groups.at(-1);
+    if (previous?.offset === offset) previous.activities.push(activity);
+    else groups.push({ offset, activities: [activity] });
+  }
+  return groups;
 }
 
 export function boundedStreamingReasoning(value: string): {

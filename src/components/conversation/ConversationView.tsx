@@ -53,6 +53,7 @@ import {
 } from "../../streaming-text-store";
 import {
   boundedStreamingReasoning,
+  groupActivitiesByTextOffset,
   shouldShowAssistantTailState,
   STREAMING_REASONING_DOM_CHAR_LIMIT,
   visibleAssistantContent,
@@ -362,7 +363,9 @@ const ActivityItem = memo(function ActivityItem({
     setUndoing(false);
   }
   return (
-    <article className={`agent-activity ${activity.status}`}>
+    <article
+      className={`agent-activity ${activity.status} ${activity.recoverable ? "recoverable" : ""}`}
+    >
       <div
         className="activity-head"
         role="button"
@@ -393,7 +396,9 @@ const ActivityItem = memo(function ActivityItem({
               String(activity.input.name || "") ||
               String(activity.input.task || "") ||
               String(activity.input.agentId || "") ||
-              String(activity.input.query || "")}
+              String(activity.input.query || "") ||
+              String(activity.input.branch || "") ||
+              String(activity.input.remote || "")}
           </small>
         </span>
         {activity.additions !== undefined && (
@@ -424,7 +429,9 @@ const ActivityItem = memo(function ActivityItem({
                   ? `退出码 ${activity.exitCode ?? "非0"}`
                   : activity.status === "denied"
                     ? "已阻止"
-                    : "失败"}
+                    : activity.recoverable
+                      ? "访问受限"
+                      : "失败"}
         </span>
         <ChevronDown size={14} />
       </div>
@@ -461,7 +468,9 @@ const ActivityItem = memo(function ActivityItem({
             <div className="activity-error-reason">
               <CircleAlert size={14} />
               <span>
-                <strong>失败原因</strong>
+                <strong>
+                  {activity.recoverable ? "访问受限" : "失败原因"}
+                </strong>
                 <small>{readableFailure}</small>
               </span>
             </div>
@@ -790,13 +799,15 @@ const ExecutionSummary = memo(
       let agents = 0;
       let completed = 0;
       let failures = 0;
+      let limited = 0;
       let active: AgentActivity | undefined;
       for (const activity of activities) {
         if (commandTools.includes(activity.tool)) commands += 1;
         if (activity.tool === "spawn_agent") agents += 1;
         if (activity.status === "success" || activity.status === "completed")
           completed += 1;
-        if (activity.status === "failed" || activity.status === "denied")
+        if (activity.status === "failed" && activity.recoverable) limited += 1;
+        else if (activity.status === "failed" || activity.status === "denied")
           failures += 1;
         if (activity.status === "running" || activity.status === "waiting")
           active = activity;
@@ -806,6 +817,7 @@ const ExecutionSummary = memo(
         agents,
         completed,
         failures,
+        limited,
         active,
         last: activities.at(-1),
         waiting: active?.status === "waiting",
@@ -830,6 +842,8 @@ const ExecutionSummary = memo(
         running && !hasTrailingNarration
           ? "步骤失败"
           : "执行完成，已记录失败项";
+    } else if (executionStats.limited) {
+      headline = running ? "访问受限，正在切换方案" : "已降级完成";
     } else if (executionStats.commands) {
       headline = `已执行 ${executionStats.commands} 个命令`;
     } else if (activities.length) {
@@ -858,7 +872,7 @@ const ExecutionSummary = memo(
     const narrativeLabel = "执行说明";
     return (
       <section
-        className={`execution-summary ${fileStats.files ? "has-file-stats" : ""} ${requestFailed ? "has-failures" : ""} ${executionInProgress ? "is-active" : ""} ${executionStats.waiting ? "is-waiting" : ""}`}
+        className={`execution-summary ${fileStats.files ? "has-file-stats" : ""} ${requestFailed ? "has-failures" : ""} ${executionStats.limited ? "has-limits" : ""} ${executionInProgress ? "is-active" : ""} ${executionStats.waiting ? "is-waiting" : ""}`}
       >
         <button
           className="execution-summary-head"
@@ -910,6 +924,11 @@ const ExecutionSummary = memo(
                   {executionStats.failures} 项失败
                 </span>
               )}
+              {executionStats.limited > 0 && (
+                <span className="execution-summary-limits">
+                  {executionStats.limited} 项访问受限
+                </span>
+              )}
             </small>
           </span>
           <ChevronDown size={14} />
@@ -920,7 +939,7 @@ const ExecutionSummary = memo(
               const target = activityTarget(activity);
               return (
                 <span
-                  className={`execution-summary-tool ${activity.status}`}
+                  className={`execution-summary-tool ${activity.status} ${activity.recoverable ? "recoverable" : ""}`}
                   key={activity.id}
                   title={target || activity.title}
                 >
@@ -1182,26 +1201,65 @@ const AssistantTimeline = memo(function AssistantTimeline({
         )}
       </>
     );
-  const hasNarration = Boolean(visibleAssistantContent(message.content).trim());
-  return (
-    <div className="assistant-timeline">
-      {renderText(message.content)}
-      {streamingTail}
-      <div className="assistant-timeline-group">
+  const timelineGroups = groupActivitiesByTextOffset(
+    activities,
+    message.content.length,
+  );
+  const timelineNodes: React.ReactNode[] = [];
+  let textCursor = 0;
+  timelineGroups.forEach((group, index) => {
+    const leadingText = message.content.slice(textCursor, group.offset);
+    const nextOffset =
+      timelineGroups[index + 1]?.offset ?? message.content.length;
+    const followingText = message.content.slice(group.offset, nextOffset);
+    const leadingNode = renderText(leadingText);
+    if (leadingNode)
+      timelineNodes.push(
+        <React.Fragment key={`text:${group.activities[0].id}`}>
+          {leadingNode}
+        </React.Fragment>,
+      );
+    timelineNodes.push(
+      <div
+        className="assistant-timeline-group"
+        key={`activities:${group.activities[0].id}`}
+      >
         <ExecutionSummary
-          activities={activities}
+          activities={group.activities}
           allActivities={activities}
           running={running}
-          isLatestGroup
-          requestFailed={Boolean(message.error)}
-          hasLeadingNarration={hasNarration}
-          hasTrailingNarration={false}
+          isLatestGroup={index === timelineGroups.length - 1}
+          requestFailed={
+            index === timelineGroups.length - 1 && Boolean(message.error)
+          }
+          hasLeadingNarration={Boolean(
+            visibleAssistantContent(leadingText).trim(),
+          )}
+          hasTrailingNarration={Boolean(
+            visibleAssistantContent(followingText).trim(),
+          )}
           requestId={requestId}
           workspacePath={workspacePath}
           onActivityChange={onActivityChange}
-          reasoningNode={hasActiveActivity ? streamingReasoning : undefined}
+          reasoningNode={
+            index === timelineGroups.length - 1 && hasActiveActivity
+              ? streamingReasoning
+              : undefined
+          }
         />
-      </div>
+      </div>,
+    );
+    textCursor = group.offset;
+  });
+  const trailingNode = renderText(message.content.slice(textCursor));
+  if (trailingNode)
+    timelineNodes.push(
+      <React.Fragment key="text:trailing">{trailingNode}</React.Fragment>,
+    );
+  return (
+    <div className="assistant-timeline">
+      {timelineNodes}
+      {streamingTail}
       {shouldShowAssistantTailState(running) && (
         <AssistantTailState
           reasoningNode={hasActiveActivity ? undefined : streamingReasoning}

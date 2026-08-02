@@ -5,22 +5,19 @@ import { resolveLatestUpdateSource } from "./update-source";
 test("resolves a stable GitHub release to a fixed, cache-safe feed", async () => {
   let requestedUrl = "";
   let requestedInit: RequestInit | undefined;
-  const source = await resolveLatestUpdateSource(
-    async (url, init) => {
-      requestedUrl = url;
-      requestedInit = init;
-      return {
-        ok: true,
-        status: 200,
-        json: async () => ({
-          tag_name: "v0.2.22",
-          draft: false,
-          prerelease: false,
-        }),
-      };
-    },
-    1234,
-  );
+  const source = await resolveLatestUpdateSource(async (url, init) => {
+    requestedUrl = url;
+    requestedInit = init;
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        tag_name: "v0.2.22",
+        draft: false,
+        prerelease: false,
+      }),
+    };
+  }, 1234);
 
   assert.equal(
     requestedUrl,
@@ -28,14 +25,13 @@ test("resolves a stable GitHub release to a fixed, cache-safe feed", async () =>
   );
   assert.equal(requestedInit?.cache, "no-store");
   assert.match(
-    String((requestedInit?.headers as Record<string, string>)["Cache-Control"]),
+    new Headers(requestedInit?.headers).get("cache-control") || "",
     /no-cache/,
   );
   assert.deepEqual(source, {
     tag: "v0.2.22",
     version: "0.2.22",
-    feedUrl:
-      "https://github.com/kk1181958464/kcode/releases/download/v0.2.22/",
+    feedUrl: "https://github.com/kk1181958464/kcode/releases/download/v0.2.22/",
   });
 });
 

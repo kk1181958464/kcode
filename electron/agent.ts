@@ -51,7 +51,19 @@ import {
 } from "./conversation-isolation";
 import { writeLog } from "./logger";
 import { networkFetch } from "./network";
+import {
+  assertGitHubRequestAllowed,
+  githubRequestHeaders,
+  githubResponseError,
+  isGitHubUrl,
+  isRecoverableGitHubError,
+} from "./github-http";
 import { resolveGitExecutable } from "./executables";
+import {
+  parseGitRemoteHead,
+  validateGitBranchName,
+  validateGitRemoteName,
+} from "./git-remote-status";
 import { conciseFailureOutput } from "./activity-errors";
 import { powershellCommand } from "./powershell-command";
 import {
@@ -483,6 +495,26 @@ async function validatePublicUrl(input: string) {
     throw new Error("禁止访问本机、内网或保留地址");
   return url;
 }
+type PublicPage = { url: string; contentType: string; text: string };
+type CachedPublicPage = PublicPage & {
+  etag: string;
+  lastModified: string;
+  expiresAt: number;
+};
+const publicPageCache = new Map<string, CachedPublicPage>();
+const PUBLIC_PAGE_CACHE_TTL_MS = 60_000;
+const PUBLIC_PAGE_CACHE_LIMIT = 24;
+
+function rememberPublicPage(key: string, page: CachedPublicPage) {
+  publicPageCache.delete(key);
+  publicPageCache.set(key, page);
+  while (publicPageCache.size > PUBLIC_PAGE_CACHE_LIMIT) {
+    const oldest = publicPageCache.keys().next().value as string | undefined;
+    if (!oldest) break;
+    publicPageCache.delete(oldest);
+  }
+}
+
 async function fetchPublic(
   input: string,
   signal: AbortSignal,
@@ -499,14 +531,22 @@ async function fetchPublic(
   signal.addEventListener("abort", abort, { once: true });
   try {
     for (let redirects = 0; redirects <= 5; redirects++) {
+      const cacheKey = url.href;
+      const cached = publicPageCache.get(cacheKey);
+      if (cached && cached.expiresAt > Date.now()) return cached;
+      assertGitHubRequestAllowed(url);
+      const headers = githubRequestHeaders(url, {
+        "User-Agent": "Mozilla/5.0 KCode/1.0",
+        Accept:
+          "text/html,application/xhtml+xml,application/xml,text/plain;q=0.9,*/*;q=0.5",
+      });
+      if (cached?.etag) headers.set("If-None-Match", cached.etag);
+      if (cached?.lastModified)
+        headers.set("If-Modified-Since", cached.lastModified);
       const response = await networkFetch(url, {
         redirect: "manual",
         signal: controller.signal,
-        headers: {
-          "User-Agent": "Mozilla/5.0 KCode/1.0",
-          Accept:
-            "text/html,application/xhtml+xml,application/xml,text/plain;q=0.9,*/*;q=0.5",
-        },
+        headers,
       });
       if (
         response.status >= 300 &&
@@ -518,17 +558,33 @@ async function fetchPublic(
         );
         continue;
       }
-      if (!response.ok) throw new Error(`网页请求失败 (${response.status})`);
+      if (response.status === 304 && cached) {
+        const refreshed = {
+          ...cached,
+          expiresAt: Date.now() + PUBLIC_PAGE_CACHE_TTL_MS,
+        };
+        rememberPublicPage(cacheKey, refreshed);
+        return refreshed;
+      }
+      if (!response.ok) {
+        if (isGitHubUrl(url)) throw await githubResponseError(response, url);
+        throw new Error(`网页请求失败 (${response.status})`);
+      }
       const length = Number(response.headers.get("content-length") || 0);
       if (length > 2 * 1024 * 1024) throw new Error("网页响应超过 2 MB");
       const bytes = new Uint8Array(await response.arrayBuffer());
       if (bytes.byteLength > 2 * 1024 * 1024)
         throw new Error("网页响应超过 2 MB");
-      return {
+      const page = {
         url: url.href,
         contentType: response.headers.get("content-type") || "",
         text: new TextDecoder("utf-8").decode(bytes),
+        etag: response.headers.get("etag") || "",
+        lastModified: response.headers.get("last-modified") || "",
+        expiresAt: Date.now() + PUBLIC_PAGE_CACHE_TTL_MS,
       };
+      rememberPublicPage(cacheKey, page);
+      return page;
     }
     throw new Error("网页重定向次数过多");
   } catch (error) {
@@ -682,6 +738,19 @@ const tools = [
     name: "git_status",
     description: "Show concise Git working tree status.",
     parameters: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    name: "git_remote_status",
+    description:
+      "Verify whether local HEAD is present on a remote branch using native Git. Prefer this over fetch_url or GitHub pages when checking whether a push succeeded.",
+    parameters: {
+      type: "object",
+      properties: {
+        remote: { type: "string" },
+        branch: { type: "string" },
+      },
+      additionalProperties: false,
+    },
   },
   {
     name: "git_diff",
@@ -1440,7 +1509,7 @@ function failureSummary(call: ToolCall, output: string, exitCode?: number) {
   }
   if (
     (call.name === "fetch_url" || call.name === "web_search") &&
-    /网页读取超时|任务已取消|网页请求失败/.test(output)
+    /网页读取超时|任务已取消|网页请求失败|GitHub/.test(output)
   )
     return output;
   if (call.name === "run_command") {
@@ -1964,6 +2033,61 @@ async function execute(
       throw new Error(result.output || "Git 状态读取失败");
     }
     return { output: result.output || "工作区无变更" };
+  }
+  if (call.name === "git_remote_status") {
+    const remote = validateGitRemoteName(String(call.input.remote || ""));
+    let branch = String(call.input.branch || "").trim();
+    if (!branch) {
+      const branchResult = await command(
+        root,
+        resolveGitExecutable(),
+        ["branch", "--show-current"],
+        signal,
+        10_000,
+      );
+      if (branchResult.exitCode)
+        throw new Error(branchResult.output || "Git 当前分支读取失败");
+      branch = branchResult.output.trim();
+      if (!branch)
+        throw new Error("当前处于 detached HEAD，请明确指定要校验的远端分支");
+    }
+    branch = validateGitBranchName(branch);
+    const localResult = await command(
+      root,
+      resolveGitExecutable(),
+      ["rev-parse", "HEAD"],
+      signal,
+      10_000,
+    );
+    if (localResult.exitCode)
+      throw new Error(localResult.output || "Git 本地提交读取失败");
+    const localHead = parseGitRemoteHead(localResult.output);
+    const remoteResult = await command(
+      root,
+      resolveGitExecutable(),
+      ["ls-remote", "--exit-code", "--refs", remote, `refs/heads/${branch}`],
+      signal,
+      30_000,
+    );
+    if (remoteResult.exitCode)
+      throw new Error(
+        remoteResult.output || `远端 ${remote} 未找到分支 ${branch}`,
+      );
+    const remoteHead = parseGitRemoteHead(remoteResult.output);
+    return {
+      output: JSON.stringify(
+        {
+          remote,
+          branch,
+          localHead,
+          remoteHead,
+          synchronized: localHead === remoteHead,
+        },
+        null,
+        2,
+      ),
+      executed: true,
+    };
   }
   if (call.name === "git_diff") {
     const args = ["diff", "--no-ext-diff"];
@@ -3624,6 +3748,7 @@ export async function* runAgent(
     kind: "message",
     ...m,
   }));
+  let timelineTextLength = 0;
   // Keep a compact, request-local proof ledger outside the model context.
   // Runtime history may be compacted during long tasks, but completion proof
   // must survive until the request actually finishes.
@@ -3711,6 +3836,7 @@ export async function* runAgent(
           startedAt: Date.now(),
           completedAt: Date.now(),
           input: {},
+          textOffset: timelineTextLength,
           narrative:
             "上下文接近预算，先压缩较早的运行记录，保留当前任务所需事实后继续执行。",
           output: `已将 ${before} 条运行记录压缩为 ${history.length} 条，Agent 将继续执行`,
@@ -3730,6 +3856,7 @@ export async function* runAgent(
     let turn: Turn | undefined,
       streamedText = "",
       streamedReasoning = "";
+    const turnTextStartOffset = timelineTextLength;
     const bufferModelText =
       browserIsOpen(browserSessionId) ||
       requestedBrowserOps.size > 0 ||
@@ -3775,10 +3902,16 @@ export async function* runAgent(
             // Upstream broke mid-answer and is being retried; drop what we streamed
             // so the fresh attempt does not append onto a truncated fragment.
             streamedText = "";
-            if (!bufferModelText) yield { type: "text_reset" };
+            if (!bufferModelText) {
+              timelineTextLength = turnTextStartOffset;
+              yield { type: "text_reset" };
+            }
           } else {
             streamedText += event.delta;
-            if (!bufferModelText) yield { type: "text", delta: event.delta };
+            if (!bufferModelText) {
+              timelineTextLength += event.delta.length;
+              yield { type: "text", delta: event.delta };
+            }
           }
         }
         break;
@@ -3896,7 +4029,7 @@ export async function* runAgent(
         history.push({
           kind: "message",
           role: "user",
-          content: `<runtime_verification>本次 Git/发布任务仍缺少成功工具结果：${missingGitEvidence.join(", ")}。不要总结为完成；请实际调用工具执行操作，并在结束前用 git_status/git_log 以及 gh run list/gh run view 验证本地提交、远端推送和 Actions 运行。若无法执行，请明确报告未完成及原因。</runtime_verification>`,
+          content: `<runtime_verification>本次 Git/发布任务仍缺少成功工具结果：${missingGitEvidence.join(", ")}。不要总结为完成；请实际调用工具执行操作。优先用 git_status/git_log 检查本地状态，用 git_remote_status 校验远端推送；不要抓取 GitHub HTML 页面验证提交。需要验证 Actions 时再使用 gh run list/gh run view。若无法执行，请明确报告未完成及原因。</runtime_verification>`,
         });
         continue;
       }
@@ -4009,10 +4142,13 @@ export async function* runAgent(
       // turn contains tools, the text is a progress update and belongs in the
       // visible timeline before those activities. The final no-tool turn is
       // still the verified conclusion.
-      if (turn.calls.length && bufferModelText)
+      if (turn.calls.length && bufferModelText) {
+        timelineTextLength += turn.text.length;
         yield { type: "text", delta: turn.text };
-      else if (!turn.calls.length && (bufferModelText || !streamedText))
+      } else if (!turn.calls.length && (bufferModelText || !streamedText)) {
+        timelineTextLength += turn.text.length;
         yield { type: "text", delta: turn.text };
+      }
     }
     if (!turn.calls.length) {
       // A round with no tool call normally means the model is done. But two
@@ -4068,6 +4204,7 @@ export async function* runAgent(
         move_path: "移动文件",
         delete_path: "删除路径",
         git_status: "Git 状态",
+        git_remote_status: "校验远端提交",
         git_diff: "Git 差异",
         git_log: "Git 日志",
         git_show: "Git 查看",
@@ -4131,6 +4268,7 @@ export async function* runAgent(
                   message: String(call.input.message || ""),
                 }
               : call.input,
+        textOffset: timelineTextLength,
         narrative: roundNarrative || undefined,
         planSteps,
         planStep,
@@ -4183,6 +4321,7 @@ export async function* runAgent(
       const category =
         call.name === "web_search" ||
         call.name === "fetch_url" ||
+        call.name === "git_remote_status" ||
         browserTool ||
         call.name === "ssh_connect" ||
         call.name === "ssh_list_directory" ||
@@ -4394,6 +4533,7 @@ export async function* runAgent(
             failureOutput,
           );
         activity.status = "failed";
+        activity.recoverable = isRecoverableGitHubError(error) || undefined;
         activity.completedAt = Date.now();
         activity.output = activity.output
           ? `${activity.output}\n\n${failureOutput}`

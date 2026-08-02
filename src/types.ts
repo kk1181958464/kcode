@@ -35,6 +35,7 @@ export type AgentToolName =
   | "move_path"
   | "delete_path"
   | "git_status"
+  | "git_remote_status"
   | "git_diff"
   | "git_log"
   | "git_show"
@@ -251,6 +252,10 @@ export type AgentActivity = {
   startedAt: number;
   completedAt?: number;
   input: Record<string, unknown>;
+  /** Character offset in the assistant output where this activity occurred. */
+  textOffset?: number;
+  /** The failure is an external, temporary limitation and can be retried later. */
+  recoverable?: boolean;
   /** Concise user-facing explanation for why this step is being executed. */
   narrative?: string;
   /** Numbered plan captured from the model's pre-tool narration. */

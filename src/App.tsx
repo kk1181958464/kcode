@@ -1998,6 +1998,16 @@ export default function App() {
             return next;
           });
         if (event.type === "activity") {
+          flushPendingText(true);
+          const settledText = consumeStreamingText(id);
+          const settleMessages = (all: ChatMessage[]) =>
+            settledText
+              ? all.map((message) =>
+                  message.id === `assistant:${id}`
+                    ? { ...message, content: message.content + settledText }
+                    : message,
+                )
+              : all;
           resetActivityOutput(event.activity.id);
           const updateActivities = (all: AgentActivity[]) => {
             const exists = all.some((item) => item.id === event.activity.id);
@@ -2013,13 +2023,17 @@ export default function App() {
                 task.id === taskId
                   ? {
                       ...task,
+                      messages: settleMessages(task.messages),
                       activities: updateActivities(task.activities),
                       updatedAt: Date.now(),
                     }
                   : task,
               ),
             );
-            if (isActive) setActivities(updateActivities);
+            if (isActive) {
+              if (settledText) setMessages(settleMessages);
+              setActivities(updateActivities);
+            }
           });
           return;
         }

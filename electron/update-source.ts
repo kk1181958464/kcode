@@ -1,3 +1,9 @@
+import {
+  assertGitHubRequestAllowed,
+  githubRequestHeaders,
+  githubResponseError,
+} from "./github-http";
+
 const LATEST_RELEASE_API =
   "https://api.github.com/repos/kk1181958464/kcode/releases/latest";
 const RELEASE_DOWNLOAD_ROOT =
@@ -6,7 +12,10 @@ const RELEASE_DOWNLOAD_ROOT =
 export type UpdateFetch = (
   url: string,
   init?: RequestInit,
-) => Promise<Pick<Response, "ok" | "status" | "json">>;
+) => Promise<
+  Pick<Response, "ok" | "status" | "json"> &
+    Partial<Pick<Response, "headers" | "text">>
+>;
 
 export type ResolvedUpdateSource = {
   tag: string;
@@ -21,18 +30,19 @@ export async function resolveLatestUpdateSource(
   fetchImpl: UpdateFetch,
   now = Date.now(),
 ): Promise<ResolvedUpdateSource> {
-  const response = await fetchImpl(`${LATEST_RELEASE_API}?t=${now}`, {
-    headers: {
+  const requestUrl = `${LATEST_RELEASE_API}?t=${now}`;
+  assertGitHubRequestAllowed(requestUrl, now);
+  const response = await fetchImpl(requestUrl, {
+    headers: githubRequestHeaders(requestUrl, {
       Accept: "application/vnd.github+json",
       "Cache-Control": "no-cache, no-store, max-age=0",
       Pragma: "no-cache",
       "User-Agent": "KCode-Updater",
       "X-GitHub-Api-Version": "2022-11-28",
-    },
+    }),
     cache: "no-store",
   });
-  if (!response.ok)
-    throw new Error(`GitHub Release API 返回 ${response.status}`);
+  if (!response.ok) throw await githubResponseError(response, requestUrl, now);
   const payload = (await response.json()) as {
     tag_name?: unknown;
     draft?: unknown;

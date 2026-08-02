@@ -8209,6 +8209,14 @@ button[aria-busy="true"] {
   color: var(--danger);
 }
 
+.execution-summary-limits {
+  color: var(--warning);
+}
+
+.execution-summary.has-limits:not(.is-active) .execution-summary-icon {
+  color: var(--warning);
+}
+
 .execution-summary-plan-count {
   color: var(--accent);
 }
@@ -8248,6 +8256,29 @@ button[aria-busy="true"] {
 .execution-summary-tool.failed > i,
 .execution-summary-tool.denied > i {
   background: var(--danger);
+}
+
+.execution-summary-tool.failed.recoverable > i {
+  background: var(--warning);
+}
+
+.agent-activity.failed.recoverable {
+  border-left-color: var(--warning);
+}
+
+.agent-activity.failed.recoverable .activity-title strong,
+.agent-activity.failed.recoverable .activity-status {
+  color: var(--warning);
+}
+
+.agent-activity.failed.recoverable .activity-error-reason {
+  border-color: color-mix(in srgb, var(--warning) 36%, var(--line));
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+
+.agent-activity.failed.recoverable .activity-error-reason small {
+  color: inherit;
 }
 
 .execution-summary-tool.running > i,

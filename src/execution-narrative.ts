@@ -8,6 +8,7 @@ const INSPECTION_TOOLS = new Set<AgentActivity["tool"]>([
   "read_many_files",
   "search_code",
   "git_status",
+  "git_remote_status",
   "git_diff",
   "git_log",
   "git_show",
@@ -94,6 +95,8 @@ export function nextExecutionNarrative(
 ) {
   if (failedActivity?.status === "denied")
     return `${activityLabel(failedActivity)}未获允许，正在改用当前权限范围内的方案。`;
+  if (failedActivity?.recoverable)
+    return `${activityLabel(failedActivity)}暂时受限，正在改用不依赖该服务的校验方案。`;
   if (failedActivity)
     return `${activityLabel(failedActivity)}未通过，正在分析错误输出并调整执行方案。`;
   if (lastActivity?.status === "completed")
