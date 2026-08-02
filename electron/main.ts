@@ -113,6 +113,7 @@ import {
   remoteRegister,
   remoteState,
   remoteShouldKeepRunning,
+  setRemoteDeviceName,
   syncRemoteTaskEvent,
   syncRemoteTasks,
   uploadProviderVault,
@@ -523,19 +524,18 @@ app.whenReady().then(async () => {
   );
   tray.on("click", showMainWindow);
   ipcMain.handle("remote:state", () => remoteState());
-  ipcMain.handle(
-    "remote:register",
-    (_e, serverUrl: string, username: string, password: string) =>
-      remoteRegister(serverUrl, username, password),
+  ipcMain.handle("remote:register", (_e, username: string, password: string) =>
+    remoteRegister(username, password),
   );
-  ipcMain.handle(
-    "remote:login",
-    (_e, serverUrl: string, username: string, password: string) =>
-      remoteLogin(serverUrl, username, password),
+  ipcMain.handle("remote:login", (_e, username: string, password: string) =>
+    remoteLogin(username, password),
   );
   ipcMain.handle("remote:logout", () => remoteLogout());
   ipcMain.handle("remote:set-enabled", (_e, enabled: boolean) =>
     setRemoteEnabled(Boolean(enabled)),
+  );
+  ipcMain.handle("remote:set-device-name", (_e, name: string) =>
+    setRemoteDeviceName(name),
   );
   ipcMain.handle("remote:sync-tasks", (_e, tasks: RemoteTaskSnapshot[]) =>
     syncRemoteTasks(tasks),

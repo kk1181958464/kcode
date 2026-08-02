@@ -3,10 +3,45 @@ import test from "node:test";
 import {
   appendConversationWindow,
   conversationTurnPreviews,
+  isConversationAtBottom,
   latestConversationWindow,
   prependConversationWindow,
   windowContainingTurn,
 } from "../src/conversation-window";
+
+test("detects whether the conversation is showing its real bottom", () => {
+  assert.equal(
+    isConversationAtBottom({
+      scrollHeight: 1_000,
+      scrollTop: 400,
+      clientHeight: 600,
+    }),
+    true,
+  );
+  assert.equal(
+    isConversationAtBottom({
+      scrollHeight: 1_000,
+      scrollTop: 328.5,
+      clientHeight: 600,
+    }),
+    true,
+  );
+  assert.equal(
+    isConversationAtBottom({
+      scrollHeight: 1_000,
+      scrollTop: 327,
+      clientHeight: 600,
+    }),
+    false,
+  );
+  assert.equal(
+    isConversationAtBottom(
+      { scrollHeight: 1_000, scrollTop: 400, clientHeight: 600 },
+      true,
+    ),
+    false,
+  );
+});
 
 test("conversation window starts on the latest page", () => {
   assert.deepEqual(latestConversationWindow(50, 10), { start: 40, end: 50 });

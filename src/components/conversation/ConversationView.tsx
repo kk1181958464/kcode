@@ -53,7 +53,6 @@ import {
 } from "../../streaming-text-store";
 import {
   boundedStreamingReasoning,
-  groupActivitiesByContentOffset,
   shouldShowAssistantTailState,
   STREAMING_REASONING_DOM_CHAR_LIMIT,
   visibleAssistantContent,
@@ -1164,15 +1163,11 @@ const AssistantTimeline = memo(function AssistantTimeline({
       <MarkdownMessage content={visible} />
     );
   };
-  const groups = groupActivitiesByContentOffset(
-    activities,
-    message.content.length,
-  );
   const hasActiveActivity = activities.some(
     (activity) =>
       activity.status === "running" || activity.status === "waiting",
   );
-  if (!groups.length)
+  if (!activities.length)
     return (
       <>
         {renderText(message.content)}
@@ -1187,40 +1182,26 @@ const AssistantTimeline = memo(function AssistantTimeline({
         )}
       </>
     );
-  let cursor = 0;
+  const hasNarration = Boolean(visibleAssistantContent(message.content).trim());
   return (
     <div className="assistant-timeline">
-      {groups.map(([offset, group], index) => {
-        const text = message.content.slice(cursor, offset);
-        cursor = offset;
-        const latestGroup = index === groups.length - 1;
-        const hasTrailingNarration =
-          latestGroup && Boolean(message.content.slice(offset).trim());
-        return (
-          <div className="assistant-timeline-group" key={`${offset}:${index}`}>
-            {renderText(text)}
-            <ExecutionSummary
-              activities={group}
-              allActivities={activities}
-              running={running && latestGroup}
-              isLatestGroup={latestGroup}
-              requestFailed={Boolean(message.error) && latestGroup}
-              hasLeadingNarration={Boolean(text.trim())}
-              hasTrailingNarration={hasTrailingNarration}
-              requestId={requestId}
-              workspacePath={workspacePath}
-              onActivityChange={onActivityChange}
-              reasoningNode={
-                latestGroup && hasActiveActivity
-                  ? streamingReasoning
-                  : undefined
-              }
-            />
-          </div>
-        );
-      })}
-      {renderText(message.content.slice(cursor))}
+      {renderText(message.content)}
       {streamingTail}
+      <div className="assistant-timeline-group">
+        <ExecutionSummary
+          activities={activities}
+          allActivities={activities}
+          running={running}
+          isLatestGroup
+          requestFailed={Boolean(message.error)}
+          hasLeadingNarration={hasNarration}
+          hasTrailingNarration={false}
+          requestId={requestId}
+          workspacePath={workspacePath}
+          onActivityChange={onActivityChange}
+          reasoningNode={hasActiveActivity ? streamingReasoning : undefined}
+        />
+      </div>
       {shouldShowAssistantTailState(running) && (
         <AssistantTailState
           reasoningNode={hasActiveActivity ? undefined : streamingReasoning}
@@ -1457,26 +1438,10 @@ const StreamingAssistantTimeline = memo(function StreamingAssistantTimeline({
         : message,
     [foldedStreamingContent, message, running, streamedSnapshot.totalLength],
   );
-  const displayActivities = useMemo(() => {
-    if (!omittedStreamingChars) return activities;
-    return activities.map((activity) => ({
-      ...activity,
-      contentOffset:
-        activity.contentOffset === undefined
-          ? undefined
-          : Math.max(
-              streamingFoldMarker.length,
-              activity.contentOffset -
-                omittedStreamingChars +
-                streamingFoldMarker.length,
-            ),
-    }));
-  }, [activities, omittedStreamingChars, streamingFoldMarker.length]);
-
   return (
     <AssistantTimeline
       message={displayMessage}
-      activities={displayActivities}
+      activities={activities}
       running={running}
       requestId={running ? requestId : undefined}
       workspacePath={workspacePath}

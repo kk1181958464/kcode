@@ -9555,9 +9555,36 @@ button[aria-busy="true"] {
   gap: 13px;
 }
 
-.remote-auth-settings .remote-field:first-child,
+.remote-fixed-service,
 .remote-auth-actions {
   grid-column: 1 / -1;
+}
+
+.remote-fixed-service {
+  min-width: 0;
+  height: 36px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-muted);
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.remote-fixed-service strong {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.remote-fixed-service > svg {
+  color: var(--success);
 }
 
 .remote-field {
@@ -9678,6 +9705,57 @@ button[aria-busy="true"] {
   white-space: nowrap;
 }
 
+.remote-account-details dd.remote-device-name-editor {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 30px;
+  gap: 6px;
+  overflow: visible;
+  white-space: normal;
+}
+
+.remote-device-name-editor input {
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  outline: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+}
+
+.remote-device-name-editor input:hover:not(:disabled) {
+  border-color: var(--line);
+  background: var(--surface-raised);
+}
+
+.remote-device-name-editor input:focus {
+  border-color: var(--accent);
+  background: var(--surface-raised);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+.remote-device-name-editor button {
+  width: 30px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--accent);
+}
+
+.remote-device-name-editor button:hover:not(:disabled) {
+  background: var(--surface-hover);
+}
+
+.remote-device-name-editor button:disabled {
+  opacity: 0.45;
+}
+
 .settings-inline-error {
   display: flex;
   align-items: flex-start;
@@ -9697,7 +9775,7 @@ button[aria-busy="true"] {
     grid-template-columns: 1fr;
   }
 
-  .remote-auth-settings .remote-field:first-child,
+  .remote-fixed-service,
   .remote-auth-actions {
     grid-column: auto;
   }

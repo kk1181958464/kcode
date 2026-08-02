@@ -273,7 +273,6 @@ export type AgentActivity = {
   liveStatus?: string;
   executed?: boolean;
   round?: number;
-  contentOffset?: number;
   childActivities?: AgentActivity[];
   subagentId?: string;
   subagentName?: string;
@@ -512,18 +511,11 @@ export type KCodeApi = {
   };
   remote: {
     state(): Promise<RemoteControlState>;
-    register(
-      serverUrl: string,
-      username: string,
-      password: string,
-    ): Promise<RemoteControlState>;
-    login(
-      serverUrl: string,
-      username: string,
-      password: string,
-    ): Promise<RemoteControlState>;
+    register(username: string, password: string): Promise<RemoteControlState>;
+    login(username: string, password: string): Promise<RemoteControlState>;
     logout(): Promise<void>;
     setEnabled(enabled: boolean): Promise<RemoteControlState>;
+    setDeviceName(name: string): Promise<RemoteControlState>;
     syncTasks(tasks: RemoteTaskSnapshot[]): Promise<void>;
     syncTaskEvent(event: RemoteTaskStreamEvent): Promise<void>;
     commandResult(id: string, ok: boolean, error?: string): Promise<void>;

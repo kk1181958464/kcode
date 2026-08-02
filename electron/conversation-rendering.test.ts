@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   boundedStreamingReasoning,
-  groupActivitiesByContentOffset,
   shouldShowAssistantTailState,
   STREAMING_REASONING_DOM_CHAR_LIMIT,
   STREAMING_REASONING_DOM_TRIM_TARGET,
@@ -23,24 +22,6 @@ test("hides inline reasoning blocks from persisted assistant messages", () => {
   assert.equal(
     visibleAssistantContent("普通文本 </thinking> 继续"),
     "普通文本  继续",
-  );
-});
-
-test("groups timeline activities in offset order while preserving insertion order", () => {
-  const first = { id: "first", contentOffset: 8 };
-  const second = { id: "second", contentOffset: 2 };
-  const third = { id: "third", contentOffset: 8 };
-  const before = { id: "before", contentOffset: -10 };
-  const after = { id: "after", contentOffset: 100 };
-
-  assert.deepEqual(
-    groupActivitiesByContentOffset([first, second, third, before, after], 10),
-    [
-      [0, [before]],
-      [2, [second]],
-      [8, [first, third]],
-      [10, [after]],
-    ],
   );
 });
 

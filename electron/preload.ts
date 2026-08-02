@@ -110,12 +110,13 @@ const api: KCodeApi = {
   },
   remote: {
     state: () => ipcRenderer.invoke("remote:state"),
-    register: (serverUrl, username, password) =>
-      ipcRenderer.invoke("remote:register", serverUrl, username, password),
-    login: (serverUrl, username, password) =>
-      ipcRenderer.invoke("remote:login", serverUrl, username, password),
+    register: (username, password) =>
+      ipcRenderer.invoke("remote:register", username, password),
+    login: (username, password) =>
+      ipcRenderer.invoke("remote:login", username, password),
     logout: () => ipcRenderer.invoke("remote:logout"),
     setEnabled: (enabled) => ipcRenderer.invoke("remote:set-enabled", enabled),
+    setDeviceName: (name) => ipcRenderer.invoke("remote:set-device-name", name),
     syncTasks: (tasks) => ipcRenderer.invoke("remote:sync-tasks", tasks),
     syncTaskEvent: (event) =>
       ipcRenderer.invoke("remote:sync-task-event", event),

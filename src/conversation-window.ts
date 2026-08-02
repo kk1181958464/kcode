@@ -3,6 +3,25 @@ import { visibleAssistantContent } from "./conversation-rendering";
 
 export type ConversationWindow = { start: number; end: number };
 
+export const CONVERSATION_BOTTOM_TOLERANCE = 72;
+
+type ConversationScrollMetrics = {
+  scrollHeight: number;
+  scrollTop: number;
+  clientHeight: number;
+};
+
+export function isConversationAtBottom(
+  metrics: ConversationScrollMetrics,
+  hasNewerMessages = false,
+  tolerance = CONVERSATION_BOTTOM_TOLERANCE,
+) {
+  if (hasNewerMessages) return false;
+  return (
+    metrics.scrollHeight - metrics.scrollTop - metrics.clientHeight <= tolerance
+  );
+}
+
 export type ConversationTurn = {
   id: string;
   question: string;

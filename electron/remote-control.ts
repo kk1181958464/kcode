@@ -1,6 +1,7 @@
 import { app, BrowserWindow, safeStorage } from "electron";
 import { randomUUID } from "node:crypto";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { hostname } from "node:os";
 import path from "node:path";
 import type {
   RemoteCommand,
@@ -10,6 +11,7 @@ import type {
   RemoteTaskStreamEvent,
   RemoteTaskSnapshot,
 } from "../src/remote-types";
+import { normalizeRemoteDeviceName } from "../src/remote-device";
 import { exportProviderVault, importProviderVault } from "./store";
 
 type RemotePersisted = {
@@ -33,7 +35,9 @@ const configPath = () =>
 const defaultPersisted = (): RemotePersisted => ({
   serverUrl: defaultServerUrl(),
   deviceId: randomUUID(),
-  deviceName: `${process.platform === "win32" ? "Windows" : process.platform} · KCode`,
+  deviceName:
+    hostname().trim() ||
+    `${process.platform === "win32" ? "Windows" : process.platform} · KCode`,
   enabled: false,
 });
 
@@ -75,7 +79,11 @@ async function readPersisted() {
     const value = JSON.parse(
       await readFile(configPath(), "utf8"),
     ) as Partial<RemotePersisted>;
-    persisted = { ...defaultPersisted(), ...value };
+    persisted = {
+      ...defaultPersisted(),
+      ...value,
+      serverUrl: validateServerUrl(defaultServerUrl()),
+    };
   } catch {
     persisted = defaultPersisted();
   }
@@ -237,13 +245,9 @@ export function remoteState() {
   return lastState;
 }
 
-export async function remoteRegister(
-  serverUrl: string,
-  username: string,
-  password: string,
-) {
+export async function remoteRegister(username: string, password: string) {
   await ensureLoaded();
-  persisted.serverUrl = validateServerUrl(serverUrl);
+  persisted.serverUrl = validateServerUrl(defaultServerUrl());
   const response = await fetch(`${persisted.serverUrl}/api/auth/register`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -252,13 +256,9 @@ export async function remoteRegister(
   return finishLogin(response, username);
 }
 
-export async function remoteLogin(
-  serverUrl: string,
-  username: string,
-  password: string,
-) {
+export async function remoteLogin(username: string, password: string) {
   await ensureLoaded();
-  persisted.serverUrl = validateServerUrl(serverUrl);
+  persisted.serverUrl = validateServerUrl(defaultServerUrl());
   const response = await fetch(`${persisted.serverUrl}/api/auth/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -317,6 +317,24 @@ export async function setRemoteEnabled(enabled: boolean) {
     void connect();
   } else closeRemoteConnection();
   publishState();
+}
+
+export async function setRemoteDeviceName(value: string) {
+  await ensureLoaded();
+  const deviceName = normalizeRemoteDeviceName(value);
+  if (deviceName === persisted.deviceName) return lastState;
+  persisted.deviceName = deviceName;
+  await writePersisted();
+
+  const shouldReconnect = persisted.enabled && Boolean(token());
+  closeRemoteConnection();
+  if (shouldReconnect) {
+    stopped = false;
+    reconnectDelay = 1_000;
+    scheduleReconnect();
+  }
+  publishState();
+  return lastState;
 }
 
 export function closeRemoteConnection() {

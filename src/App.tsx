@@ -112,6 +112,7 @@ import {
 import {
   appendConversationWindow,
   conversationTurnPreviews,
+  isConversationAtBottom,
   latestConversationWindow,
   prependConversationWindow,
   windowContainingTurn,
@@ -552,7 +553,6 @@ export default function App() {
   );
   const currentRequest = useRef<string | undefined>(undefined);
   const requestTasksRef = useRef(new Map<string, string>());
-  const assistantLengthsRef = useRef(new Map<string, number>());
   const pendingTextRef = useRef(new Map<string, StreamPacingBuffer>());
   const pendingTextSinceRef = useRef(new Map<string, number>());
   // Keep streaming responsive without asking React and layout to work at 60fps.
@@ -1136,7 +1136,10 @@ export default function App() {
         );
         return;
       }
-      const atBottom = distanceFromBottom < 72;
+      const atBottom = isConversationAtBottom(
+        { scrollTop, clientHeight, scrollHeight },
+        hasNewerMessages,
+      );
       const taskId = displayedTaskIdRef.current;
       if (taskId)
         scrollStateByTaskRef.current.set(taskId, {
@@ -1264,9 +1267,11 @@ export default function App() {
     pendingLatestScrollRef.current = undefined;
     programmaticScrollRef.current = false;
     setScrollingToBottom(false);
-    if (autoFollowRef.current) {
-      autoFollowRef.current = false;
-      setShowScrollToBottom(true);
+    const conversation = conversationRef.current;
+    if (conversation) {
+      const atBottom = isConversationAtBottom(conversation, hasNewerMessages);
+      autoFollowRef.current = atBottom;
+      setShowScrollToBottom(!atBottom);
     }
     if (bottomLayoutFrameRef.current) {
       cancelAnimationFrame(bottomLayoutFrameRef.current);
@@ -1994,29 +1999,13 @@ export default function App() {
           });
         if (event.type === "activity") {
           resetActivityOutput(event.activity.id);
-          const task = tasksRef.current.find((item) => item.id === taskId);
-          const previous = task?.activities.find(
-            (item) => item.id === event.activity.id,
-          );
-          const fallbackLength =
-            task?.messages.find((message) => message.id === `assistant:${id}`)
-              ?.content.length ?? 0;
-          const positionedActivity: AgentActivity = {
-            ...event.activity,
-            contentOffset:
-              previous?.contentOffset ??
-              assistantLengthsRef.current.get(id) ??
-              fallbackLength,
-          };
           const updateActivities = (all: AgentActivity[]) => {
-            const exists = all.some(
-              (item) => item.id === positionedActivity.id,
-            );
+            const exists = all.some((item) => item.id === event.activity.id);
             return exists
               ? all.map((item) =>
-                  item.id === positionedActivity.id ? positionedActivity : item,
+                  item.id === event.activity.id ? event.activity : item,
                 )
-              : [...all, positionedActivity];
+              : [...all, event.activity];
           };
           startTransition(() => {
             setTasks((all) =>
@@ -2058,17 +2047,12 @@ export default function App() {
           pendingTextRef.current.delete(id);
           pendingTextSinceRef.current.delete(id);
           resetStreamingText(id);
-          assistantLengthsRef.current.set(id, 0);
           scheduleRemoteStreamSync(id);
           return;
         }
         if (event.type === "text") {
           clearStreamingProgress(id);
           clearPendingReasoning(id);
-          assistantLengthsRef.current.set(
-            id,
-            (assistantLengthsRef.current.get(id) ?? 0) + event.delta.length,
-          );
           if (!isActive) {
             appendStreamingText(id, event.delta);
             scheduleRemoteStreamSync(id);
@@ -2193,7 +2177,6 @@ export default function App() {
           );
           if (isActive) setUsageResolved(true);
           requestTasksRef.current.delete(id);
-          assistantLengthsRef.current.delete(id);
         }
         if (event.type === "done") {
           clearStreamingProgress(id);
@@ -2255,7 +2238,6 @@ export default function App() {
             setUsageResolved(true);
           }
           requestTasksRef.current.delete(id);
-          assistantLengthsRef.current.delete(id);
         }
       }) ?? (() => undefined),
     [],
@@ -3429,7 +3411,6 @@ export default function App() {
     }
     const id = uid();
     requestTasksRef.current.set(id, taskId);
-    assistantLengthsRef.current.set(id, 0);
     const assistantMessage: ChatMessage = {
       id: `assistant:${id}`,
       role: "assistant",
@@ -3523,7 +3504,6 @@ export default function App() {
         ),
       );
       requestTasksRef.current.delete(id);
-      assistantLengthsRef.current.delete(id);
       if (taskIsCurrent()) scrollAfterSendRef.current = true;
       return;
     }
@@ -3617,7 +3597,6 @@ export default function App() {
           ),
         );
       requestTasksRef.current.delete(requestId);
-      assistantLengthsRef.current.delete(requestId);
     }
   }
 
@@ -3766,7 +3745,6 @@ export default function App() {
       contextWindow: selectedContextWindow,
     });
     requestTasksRef.current.set(id, taskId);
-    assistantLengthsRef.current.set(id, 0);
     const startedAt = Date.now();
     const assistant: ChatMessage = {
       id: `assistant:${id}`,

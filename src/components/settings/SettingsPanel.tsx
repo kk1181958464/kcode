@@ -48,6 +48,7 @@ import { errorMessage } from "../../lib/format";
 import { isPermissionPolicyCustomized } from "../../permissions";
 import { ProviderModal } from "./ProviderModal";
 import type { RemoteControlState } from "../../remote-types";
+import { MAX_REMOTE_DEVICE_NAME_LENGTH } from "../../remote-device";
 
 export function SettingsPanel({
   providers,
@@ -115,15 +116,15 @@ export function SettingsPanel({
   const [skillError, setSkillError] = useState("");
   const [contextDirectoryBusy, setContextDirectoryBusy] = useState(false);
   const [contextDirectoryError, setContextDirectoryError] = useState("");
-  const [remoteServerUrl, setRemoteServerUrl] = useState(
-    remoteControlState.serverUrl,
-  );
   const [remoteUsername, setRemoteUsername] = useState(
     remoteControlState.username ?? "",
   );
   const [remotePassword, setRemotePassword] = useState("");
+  const [remoteDeviceName, setRemoteDeviceName] = useState(
+    remoteControlState.deviceName,
+  );
   const [remoteBusy, setRemoteBusy] = useState<
-    "login" | "register" | "logout" | "toggle"
+    "login" | "register" | "logout" | "toggle" | "rename"
   >();
   const [remoteError, setRemoteError] = useState("");
   const [storage, setStorage] = useState<{
@@ -155,10 +156,12 @@ export function SettingsPanel({
       void window.kcode?.state.stats().then(setStorage);
   }, [section]);
   useEffect(() => {
-    setRemoteServerUrl(remoteControlState.serverUrl);
     if (remoteControlState.username)
       setRemoteUsername(remoteControlState.username);
-  }, [remoteControlState.serverUrl, remoteControlState.username]);
+  }, [remoteControlState.username]);
+  useEffect(() => {
+    setRemoteDeviceName(remoteControlState.deviceName);
+  }, [remoteControlState.deviceName]);
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) =>
       event.key === "Escape" && !adding && !editing && onClose();
@@ -204,11 +207,25 @@ export function SettingsPanel({
     setRemoteError("");
     try {
       const state = register
-        ? await remote.register(remoteServerUrl, remoteUsername, remotePassword)
-        : await remote.login(remoteServerUrl, remoteUsername, remotePassword);
+        ? await remote.register(remoteUsername, remotePassword)
+        : await remote.login(remoteUsername, remotePassword);
       onRemoteControlStateChange(state);
       setProviders(await window.kcode.providers.list());
       setRemotePassword("");
+    } catch (error) {
+      setRemoteError(errorMessage(error));
+    } finally {
+      setRemoteBusy(undefined);
+    }
+  }
+  async function renameRemoteDevice() {
+    const remote = window.kcode?.remote;
+    const name = remoteDeviceName.trim();
+    if (!remote || !name || name === remoteControlState.deviceName) return;
+    setRemoteBusy("rename");
+    setRemoteError("");
+    try {
+      onRemoteControlStateChange(await remote.setDeviceName(name));
     } catch (error) {
       setRemoteError(errorMessage(error));
     } finally {
@@ -462,16 +479,11 @@ export function SettingsPanel({
                 </div>
                 {!remoteControlState.configured ? (
                   <div className="settings-group remote-auth-settings">
-                    <label className="remote-field">
-                      <span>服务器地址</span>
-                      <input
-                        value={remoteServerUrl}
-                        onChange={(event) =>
-                          setRemoteServerUrl(event.target.value)
-                        }
-                        placeholder="https://remote.example.com"
-                      />
-                    </label>
+                    <div className="remote-fixed-service">
+                      <span>远程服务</span>
+                      <strong>{remoteControlState.serverUrl}</strong>
+                      <ShieldCheck size={15} />
+                    </div>
                     <label className="remote-field">
                       <span>账号</span>
                       <input
@@ -556,8 +568,49 @@ export function SettingsPanel({
                     </div>
                     <dl className="remote-account-details">
                       <div>
-                        <dt>电脑</dt>
-                        <dd>{remoteControlState.deviceName}</dd>
+                        <dt>电脑名称</dt>
+                        <dd className="remote-device-name-editor">
+                          <input
+                            value={remoteDeviceName}
+                            maxLength={MAX_REMOTE_DEVICE_NAME_LENGTH}
+                            disabled={Boolean(remoteBusy)}
+                            aria-label="电脑名称"
+                            onChange={(event) =>
+                              setRemoteDeviceName(event.target.value)
+                            }
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter") {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                void renameRemoteDevice();
+                              } else if (event.key === "Escape") {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                setRemoteDeviceName(
+                                  remoteControlState.deviceName,
+                                );
+                              }
+                            }}
+                          />
+                          <button
+                            type="button"
+                            title="保存电脑名称"
+                            aria-label="保存电脑名称"
+                            disabled={
+                              Boolean(remoteBusy) ||
+                              !remoteDeviceName.trim() ||
+                              remoteDeviceName.trim() ===
+                                remoteControlState.deviceName
+                            }
+                            onClick={() => void renameRemoteDevice()}
+                          >
+                            {remoteBusy === "rename" ? (
+                              <RefreshCw className="spin" size={14} />
+                            ) : (
+                              <Check size={14} />
+                            )}
+                          </button>
+                        </dd>
                       </div>
                       <div>
                         <dt>服务</dt>
