@@ -30,7 +30,10 @@ import type {
   ImageAttachment,
 } from "../../types";
 import { EMPTY_ACTIVITIES, type QueuedChatMessage } from "../../models";
-import { activityExecutionNarrative } from "../../execution-narrative";
+import {
+  activityExecutionNarrative,
+  executionNarrativePreview,
+} from "../../execution-narrative";
 import {
   summarizeExecutionPlan,
   type ExecutionPlanStepStatus,
@@ -664,6 +667,47 @@ function collectFileChangeStats(activities: AgentActivity[]) {
   };
 }
 
+function ExecutionFileBreakdown({
+  fileStats,
+  entries,
+  compact = false,
+}: {
+  fileStats: ReturnType<typeof collectFileChangeStats>;
+  entries: [string, FileChangeStats][];
+  compact?: boolean;
+}) {
+  if (!entries.length) return null;
+  return (
+    <div
+      className={`execution-summary-file-breakdown ${compact ? "compact" : ""}`}
+      aria-label="本轮文件改动"
+    >
+      <header>
+        <strong>文件改动</strong>
+        <small>
+          {fileStats.files} 个文件 · +{fileStats.additions} -
+          {fileStats.deletions}
+        </small>
+      </header>
+      {entries.map(([file, stats]) => (
+        <div key={file} title={file}>
+          <FileCode2 size={12} />
+          <code>{file}</code>
+          <span>
+            <b>+{stats.additions}</b>
+            <i>-{stats.deletions}</i>
+          </span>
+        </div>
+      ))}
+      {fileStats.files > entries.length && (
+        <footer>
+          还有 {fileStats.files - entries.length} 个文件，展开查看全部
+        </footer>
+      )}
+    </div>
+  );
+}
+
 function activeExecutionCopy(activity: AgentActivity) {
   const target =
     activity.command || activity.path || activityTarget(activity) || "";
@@ -752,7 +796,7 @@ function ExecutionPlanList({
   );
 }
 
-const ExecutionSummary = memo(
+export const ExecutionSummary = memo(
   function ExecutionSummary({
     activities,
     allActivities,
@@ -787,6 +831,7 @@ const ExecutionSummary = memo(
       [activities],
     );
     const previewFiles = fileStats.entries.slice(0, FILE_INITIAL_RENDER_LIMIT);
+    const compactPreviewFiles = fileStats.entries.slice(0, 4);
     const planInfo = useMemo(
       () => summarizeExecutionPlan(allActivities),
       [allActivities],
@@ -862,7 +907,9 @@ const ExecutionSummary = memo(
     );
     const visibleActivities = activities.slice(hiddenActivityCount);
     const showPlanList = Boolean(
-      isLatestGroup && planInfo && (Boolean(executionStats.active) || expanded),
+      isLatestGroup &&
+      planInfo &&
+      (running || Boolean(executionStats.active) || expanded),
     );
     const fallbackNarrative = executionStats.active
       ? hasLeadingNarration
@@ -992,6 +1039,13 @@ const ExecutionSummary = memo(
               </span>
             </div>
           )}
+        {!expanded && compactPreviewFiles.length > 0 && (
+          <ExecutionFileBreakdown
+            fileStats={fileStats}
+            entries={compactPreviewFiles}
+            compact
+          />
+        )}
         {expanded && (
           <div className="execution-summary-detail">
             <div className="execution-summary-detail-head">
@@ -1028,36 +1082,10 @@ const ExecutionSummary = memo(
                 onActivityChange={onActivityChange}
               />
             ))}
-            {previewFiles.length > 0 && (
-              <div
-                className="execution-summary-file-breakdown"
-                aria-label="本轮文件改动"
-              >
-                <header>
-                  <strong>文件改动</strong>
-                  <small>
-                    {fileStats.files} 个文件 · +{fileStats.additions} -
-                    {fileStats.deletions}
-                  </small>
-                </header>
-                {previewFiles.map(([file, stats]) => (
-                  <div key={file} title={file}>
-                    <FileCode2 size={12} />
-                    <code>{file}</code>
-                    <span>
-                      <b>+{stats.additions}</b>
-                      <i>-{stats.deletions}</i>
-                    </span>
-                  </div>
-                ))}
-                {fileStats.files > previewFiles.length && (
-                  <footer>
-                    还有 {fileStats.files - previewFiles.length}{" "}
-                    个文件，可在本轮 “文件改动”中查看
-                  </footer>
-                )}
-              </div>
-            )}
+            <ExecutionFileBreakdown
+              fileStats={fileStats}
+              entries={previewFiles}
+            />
           </div>
         )}
       </section>
@@ -1173,13 +1201,19 @@ const AssistantTimeline = memo(function AssistantTimeline({
   streamingReasoning?: React.ReactNode;
   streamingProgress?: React.ReactNode;
 }) {
-  const renderText = (text: string) => {
+  const renderText = (text: string, intermediate = false) => {
     const visible = visibleAssistantContent(text);
     if (!visible) return null;
+    const display = intermediate ? executionNarrativePreview(visible) : visible;
+    if (!display) return null;
     return running ? (
-      <div className="streaming-message-text">{visible}</div>
+      <div
+        className={`streaming-message-text ${intermediate ? "execution-narration-preview" : ""}`}
+      >
+        {display}
+      </div>
     ) : (
-      <MarkdownMessage content={visible} />
+      <MarkdownMessage content={display} />
     );
   };
   const hasActiveActivity = activities.some(
@@ -1212,7 +1246,7 @@ const AssistantTimeline = memo(function AssistantTimeline({
     const nextOffset =
       timelineGroups[index + 1]?.offset ?? message.content.length;
     const followingText = message.content.slice(group.offset, nextOffset);
-    const leadingNode = renderText(leadingText);
+    const leadingNode = renderText(leadingText, true);
     if (leadingNode)
       timelineNodes.push(
         <React.Fragment key={`text:${group.activities[0].id}`}>

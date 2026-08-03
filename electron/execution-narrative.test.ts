@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   activityExecutionNarrative,
+  dedupeExecutionNarrative,
+  executionNarrativePreview,
   nextExecutionNarrative,
   normalizeExecutionNarrative,
 } from "../src/execution-narrative";
@@ -59,4 +61,47 @@ test("makes recovery and next-step states explicit", () => {
 test("bounds streamed narrative text without losing its beginning", () => {
   const value = normalizeExecutionNarrative("a".repeat(40), 12);
   assert.equal(value, "aaaaaaaaaaa…");
+});
+
+test("keeps intermediate execution narration concise and removes duplicate plans", () => {
+  assert.equal(
+    executionNarrativePreview(
+      "我会先确认当前实现，再开始修改。\n1. 检查代码\n2. 修改文件\n3. 运行测试",
+    ),
+    "我会先确认当前实现，再开始修改。",
+  );
+  assert.equal(
+    executionNarrativePreview(`准备执行：${"细节".repeat(240)}`).length <= 320,
+    true,
+  );
+  assert.equal(
+    executionNarrativePreview(
+      "<thinking>private chain</thinking>\n1. 检查代码\n2. 修改文件",
+    ),
+    "已整理执行计划，开始落实具体步骤。",
+  );
+});
+
+test("keeps only new narration when an adjacent tool round replays its prefix", () => {
+  const previous =
+    "本地处理逻辑存在一个明确风险，需要先查询最近记录确认问题所在。";
+  assert.equal(
+    dedupeExecutionNarrative(
+      `${previous}确认问题后，我会修改对应文件并运行测试。`,
+      previous,
+    ),
+    "确认问题后，我会修改对应文件并运行测试。",
+  );
+  assert.equal(dedupeExecutionNarrative(previous, previous), "");
+});
+
+test("deduplicates before preview clipping so later narration stays visible", () => {
+  const previous = `先核对现状：${"已有说明".repeat(50)}`;
+  const next = "现在开始修改目标文件，并在完成后执行真实验证。";
+  assert.equal(
+    executionNarrativePreview(
+      dedupeExecutionNarrative(`${previous}${next}`, previous),
+    ),
+    next,
+  );
 });

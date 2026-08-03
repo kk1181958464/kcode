@@ -34,10 +34,16 @@ import {
 } from "../src/model-capabilities";
 import {
   activityExecutionNarrative,
+  dedupeExecutionNarrative,
+  executionNarrativePreview,
   nextExecutionNarrative,
-  normalizeExecutionNarrative,
 } from "../src/execution-narrative";
-import { extractExecutionPlan, sameExecutionPlan } from "../src/execution-plan";
+import {
+  defaultExecutionPlan,
+  extractExecutionPlan,
+  fallbackExecutionPlanStep,
+  sameExecutionPlan,
+} from "../src/execution-plan";
 import { isCasualGreeting } from "../src/intent";
 import {
   permissionCategoryForCommand,
@@ -3236,7 +3242,7 @@ async function modelTurn(
   const activeSkills = [
     runtime?.activeSkills ??
       (await loadActiveSkillInstructions(latestUserRequest)),
-    "When a task has multiple independent phases, begin with a short numbered plan (1., 2., 3. …). Before every tool-call group, write one or two concise user-facing progress sentences explaining which plan step you are executing and why. After a failed tool result, explain how you are adjusting the approach before the next tool call. Never claim success before a tool result confirms it.",
+    "When a task has multiple independent phases, begin with a short numbered plan (1., 2., 3. …). Before every tool-call group, write no more than two concise user-facing progress sentences explaining which plan step you are executing and why; keep this preamble under 240 characters. Never dump a full implementation monologue, speculative patch, or repeated plan into the chat. Put the structured plan in numbered steps, then call the relevant tools in the same turn. A non-final turn must include a tool call instead of only describing what you will do. After a failed tool result, briefly explain how you are adjusting the approach before the next tool call. Never claim success before a tool result confirms it.",
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -3800,7 +3806,9 @@ export async function* runAgent(
     emptyTurns = 0;
   let previousRoundActivity: AgentActivity | undefined;
   let previousRoundFailure: AgentActivity | undefined;
-  let activePlanSteps: string[] = [];
+  let previousToolNarrative = "";
+  let activePlanSteps = defaultExecutionPlan(requestedCodingOps);
+  let fallbackPlanActive = activePlanSteps.length > 0;
   let planCursor = 0;
   let imageFallbackNoticeSent = false;
   while (!signal.aborted) {
@@ -4114,20 +4122,37 @@ export async function* runAgent(
       }
     }
     const roundNarrative = turn.calls.length
-      ? normalizeExecutionNarrative(turn.text)
+      ? executionNarrativePreview(
+          dedupeExecutionNarrative(turn.text, previousToolNarrative),
+        )
       : "";
+    if (turn.calls.length && turn.text.trim())
+      previousToolNarrative = turn.text;
     const detectedPlan = extractExecutionPlan(turn.text);
     if (
       detectedPlan.length >= 2 &&
       !sameExecutionPlan(activePlanSteps, detectedPlan)
     ) {
       activePlanSteps = detectedPlan;
+      fallbackPlanActive = false;
       planCursor = 0;
     }
     const planSteps = activePlanSteps.length ? activePlanSteps : undefined;
     const planStep = planSteps
       ? Math.min(planCursor, planSteps.length - 1)
       : undefined;
+    const truncated =
+      !turn.calls.length &&
+      /^(length|max_tokens|max_output_tokens)$/i.test(turn.finishReason ?? "");
+    const intendsToContinue =
+      !turn.calls.length &&
+      /(接下来|下一步|现在(就)?(开始|来)|我(会|将|来|先|需要)[^。\n]{0,14}(检查|查看|修改|实现|继续|编辑|运行|执行|创建|添加|修复|验证|测试|读取|搜索|分析|处理|核对|补充)|继续(执行|处理|检查|实现|完成)|让我(先|来|继续)|马上|正在[^。\n]{0,10}(检查|实现|修改|处理)|then i['’]?ll|i['’]?ll (now|proceed|continue|check|start|go ahead|next|implement|fix|add|verify|run)|next,? i(['’]?ll| will| am)|let me (now|check|start|look|continue|implement))/i.test(
+        (turn.text || "").slice(-180),
+      );
+    const willAutoContinue =
+      !turn.calls.length &&
+      (truncated || intendsToContinue) &&
+      autoContinues < 4;
     if (turn.text) {
       history.push({
         kind: "message",
@@ -4139,10 +4164,14 @@ export async function* runAgent(
       // turn contains tools, the text is a progress update and belongs in the
       // visible timeline before those activities. The final no-tool turn is
       // still the verified conclusion.
-      if (turn.calls.length && bufferModelText) {
-        timelineTextLength += turn.text.length;
-        yield { type: "text", delta: turn.text };
-      } else if (!turn.calls.length && (bufferModelText || !streamedText)) {
+      if (turn.calls.length && bufferModelText && roundNarrative) {
+        timelineTextLength += roundNarrative.length;
+        yield { type: "text", delta: roundNarrative };
+      } else if (
+        !turn.calls.length &&
+        !willAutoContinue &&
+        (bufferModelText || !streamedText)
+      ) {
         timelineTextLength += turn.text.length;
         yield { type: "text", delta: turn.text };
       }
@@ -4155,15 +4184,16 @@ export async function* runAgent(
       // only a "接下来我会…/next I'll…" narration and no actual tool call.
       // Both would otherwise force the user to type "继续". Detect them and
       // auto-continue a bounded number of times.
-      const truncated = /^(length|max_tokens|max_output_tokens)$/i.test(
-        turn.finishReason ?? "",
-      );
-      const intendsToContinue =
-        /(接下来|下一步|现在(就)?(开始|来)|我(会|将|来|先|需要)[^。\n]{0,14}(检查|查看|修改|实现|继续|编辑|运行|执行|创建|添加|修复|验证|测试|读取|搜索|分析|处理|核对|补充)|继续(执行|处理|检查|实现|完成)|让我(先|来|继续)|马上|正在[^。\n]{0,10}(检查|实现|修改|处理)|then i['’]?ll|i['’]?ll (now|proceed|continue|check|start|go ahead|next|implement|fix|add|verify|run)|next,? i(['’]?ll| will| am)|let me (now|check|start|look|continue|implement))/i.test(
-          (turn.text || "").slice(-180),
-        );
-      if ((truncated || intendsToContinue) && autoContinues < 4) {
+      if (willAutoContinue) {
         autoContinues += 1;
+        yield {
+          type: "progress",
+          message: truncated
+            ? "上游说明被截断且未产生工具调用，正在要求模型直接继续执行…"
+            : detectedPlan.length >= 2
+              ? `已整理 ${detectedPlan.length} 个执行步骤，正在要求模型立即调用工具…`
+              : "模型只返回了执行说明，正在要求它立即调用具体工具…",
+        };
         history.push({
           kind: "message",
           role: "user",
@@ -4268,7 +4298,15 @@ export async function* runAgent(
         textOffset: timelineTextLength,
         narrative: roundNarrative || undefined,
         planSteps,
-        planStep,
+        planStep:
+          planSteps && fallbackPlanActive
+            ? fallbackExecutionPlanStep(
+                call.name,
+                call.input,
+                planSteps.length,
+                planStep ?? 0,
+              )
+            : planStep,
         path:
           typeof call.input.path === "string"
             ? call.input.path

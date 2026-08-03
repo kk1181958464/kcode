@@ -1,5 +1,11 @@
 import type { AgentActivity } from "./types";
 
+export const EXECUTION_NARRATIVE_VISIBLE_LIMIT = 320;
+const EXECUTION_NARRATIVE_DEDUP_MIN = 24;
+
+const NUMBERED_PLAN_LINE =
+  /^\s*(?:(?:\d{1,2})\s*[.)、:]|第\s*[一二三四五六七八九十\d]{1,3}\s*步)\s*.+$/;
+
 const INSPECTION_TOOLS = new Set<AgentActivity["tool"]>([
   "list_directory",
   "glob_files",
@@ -53,6 +59,70 @@ export function normalizeExecutionNarrative(value: string, max = 1_200) {
     .trim();
   if (normalized.length <= max) return normalized;
   return `${normalized.slice(0, Math.max(1, max - 1)).trimEnd()}…`;
+}
+
+function executionNarrativeSource(value: string) {
+  const visible = value
+    .replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, "")
+    .replace(/<think(?:ing)?>[\s\S]*$/gi, "")
+    .replace(/<\/?think(?:ing)?>/gi, "");
+  const lines = visible.split(/\r?\n/);
+  const planLineCount = lines.filter((line) =>
+    NUMBERED_PLAN_LINE.test(line),
+  ).length;
+  return {
+    planLineCount,
+    value: normalizeExecutionNarrative(
+      planLineCount >= 2
+        ? lines.filter((line) => !NUMBERED_PLAN_LINE.test(line)).join("\n")
+        : visible,
+      16_000,
+    ),
+  };
+}
+
+function trimNarrativeContinuation(value: string) {
+  return value.replace(/^[\s,，。；;:：、-]+/, "").trim();
+}
+
+/** Removes text replayed by the model at the start of an adjacent tool round. */
+export function dedupeExecutionNarrative(value: string, previous: string) {
+  const current = executionNarrativeSource(value).value;
+  const prior = executionNarrativeSource(previous).value;
+  if (!current || !prior) return current;
+
+  if (
+    current.length >= EXECUTION_NARRATIVE_DEDUP_MIN &&
+    prior.startsWith(current)
+  )
+    return "";
+  if (
+    prior.length >= EXECUTION_NARRATIVE_DEDUP_MIN &&
+    current.startsWith(prior)
+  )
+    return trimNarrativeContinuation(current.slice(prior.length));
+
+  const maxOverlap = Math.min(prior.length, current.length);
+  for (
+    let length = maxOverlap;
+    length >= EXECUTION_NARRATIVE_DEDUP_MIN;
+    length -= 1
+  ) {
+    if (prior.endsWith(current.slice(0, length)))
+      return trimNarrativeContinuation(current.slice(length));
+  }
+  return current;
+}
+
+/** Keeps tool-call narration useful without letting it replace the activity UI. */
+export function executionNarrativePreview(
+  value: string,
+  max = EXECUTION_NARRATIVE_VISIBLE_LIMIT,
+) {
+  const source = executionNarrativeSource(value);
+  const preview = normalizeExecutionNarrative(source.value, max);
+  if (preview) return preview;
+  return source.planLineCount >= 2 ? "已整理执行计划，开始落实具体步骤。" : "";
 }
 
 export function activityExecutionNarrative(activity: AgentActivity) {

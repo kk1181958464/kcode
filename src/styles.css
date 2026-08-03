@@ -2013,6 +2013,13 @@ select:focus-visible {
   font: inherit;
   line-height: 1.65;
 }
+
+.execution-narration-preview {
+  max-width: 760px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.55;
+}
 .streaming-message-text[data-truncated="true"]::before {
   content: "较早的流式内容已暂时折叠，任务完成后会恢复完整内容";
   display: block;
@@ -8600,6 +8607,23 @@ button[aria-busy="true"] {
 .execution-summary-file-breakdown {
   border-top: 1px solid var(--line);
   padding: 4px 0 5px;
+}
+
+.execution-summary-file-breakdown.compact {
+  margin: 2px 6px 8px 33px;
+  padding: 2px 0 3px;
+  border-top: 0;
+  border-left: 1px solid var(--line);
+}
+
+.execution-summary-file-breakdown.compact > header {
+  min-height: 25px;
+  padding: 3px 8px;
+}
+
+.execution-summary-file-breakdown.compact > div {
+  min-height: 24px;
+  padding: 2px 8px;
 }
 
 .execution-summary-file-breakdown > header {

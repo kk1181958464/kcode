@@ -34,6 +34,7 @@ test("status summary only selects the latest request", () => {
     latestRequestActivities(activities, "request-1").map((item) => item.id),
     ["old"],
   );
+  assert.deepEqual(latestRequestActivities(activities, "request-3"), []);
 });
 
 test("status summary aggregates successful file changes and command results", () => {

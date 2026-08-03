@@ -3865,7 +3865,7 @@ export default function App() {
     : (activeTask?.runStatus ?? "idle");
   const statusActivities = useMemo(
     () =>
-      latestRequestActivities(activities, activeTask?.runningId ?? runningId),
+      latestRequestActivities(activities, runningId ?? activeTask?.runningId),
     [activeTask?.runningId, activities, runningId],
   );
   function handleModelMenuKeyDown(event: React.KeyboardEvent) {

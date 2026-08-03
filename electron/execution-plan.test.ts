@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  defaultExecutionPlan,
   extractExecutionPlan,
+  fallbackExecutionPlanStep,
   sameExecutionPlan,
   summarizeExecutionPlan,
 } from "../src/execution-plan";
@@ -61,4 +63,23 @@ test("summarizes plan progress from activity results", () => {
 test("compares plan revisions without relying on object identity", () => {
   assert.equal(sameExecutionPlan(["检查", "验证"], ["检查", "验证"]), true);
   assert.equal(sameExecutionPlan(["检查"], ["检查", "验证"]), false);
+});
+
+test("builds a fallback coding plan and maps concrete tools to its phases", () => {
+  assert.deepEqual(defaultExecutionPlan(new Set(["inspect", "modify"])), [
+    "检查当前实现并确认处理范围",
+    "修改相关文件并记录实际差异",
+    "运行验证并核对最终结果",
+  ]);
+  assert.equal(fallbackExecutionPlanStep("read_file", {}, 3, 0), 0);
+  assert.equal(fallbackExecutionPlanStep("apply_patch", {}, 3, 0), 1);
+  assert.equal(
+    fallbackExecutionPlanStep(
+      "run_command",
+      { command: "npm run typecheck" },
+      3,
+      1,
+    ),
+    2,
+  );
 });

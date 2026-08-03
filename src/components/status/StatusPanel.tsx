@@ -136,13 +136,6 @@ function FileChangeRow({
   );
 }
 
-function parseGitStatusPath(line: string) {
-  const value = line.slice(3).trim();
-  const renamed = value.lastIndexOf(" -> ");
-  const path = renamed >= 0 ? value.slice(renamed + 4) : value;
-  return path.replace(/^['"]|['"]$/g, "");
-}
-
 export function StatusPanel({
   runStatus,
   activities,
@@ -194,40 +187,7 @@ export function StatusPanel({
     () => summarizeStatusActivities(activities),
     [activities],
   );
-  const fileChanges = useMemo(() => {
-    const hasGitFileChanges =
-      gitState.available && Array.isArray(gitState.fileChanges);
-    const sourceChanges: StatusFileChange[] = hasGitFileChanges
-      ? gitState.fileChanges!.map((change) => ({
-          path: change.path,
-          additions: change.additions,
-          deletions: change.deletions,
-          diffs: [],
-        }))
-      : activitySummary.fileChanges;
-    const merged = new Map(
-      sourceChanges.map((change) => [change.path, change]),
-    );
-    if (gitState.available && gitState.summary) {
-      for (const line of gitState.summary.split(/\r?\n/)) {
-        if (!line.trim()) continue;
-        const path = parseGitStatusPath(line);
-        if (!path || merged.has(path)) continue;
-        merged.set(path, {
-          path,
-          additions: 0,
-          deletions: 0,
-          diffs: [],
-        });
-      }
-    }
-    return [...merged.values()];
-  }, [
-    activitySummary.fileChanges,
-    gitState.available,
-    gitState.fileChanges,
-    gitState.summary,
-  ]);
+  const fileChanges = activitySummary.fileChanges;
   const queuedCount = messages.filter((message) =>
     Boolean((message as ChatMessage & { queued?: boolean }).queued),
   ).length;
@@ -258,18 +218,10 @@ export function StatusPanel({
   const taskCheckpoints = checkpoints.filter(
     (checkpoint) => checkpoint.taskId === activeTask?.id,
   );
-  const useGitChangeTotals = gitState.available && gitState.files > 0;
-  const displayChangeCount = useGitChangeTotals
-    ? gitState.files
-    : fileChanges.length;
-  const displayAdditions = useGitChangeTotals
-    ? gitState.additions
-    : activitySummary.additions;
-  const displayDeletions = useGitChangeTotals
-    ? gitState.deletions
-    : activitySummary.deletions;
-  const showChanges =
-    fileChanges.length > 0 || (gitState.available && gitState.files > 0);
+  const displayChangeCount = fileChanges.length;
+  const displayAdditions = activitySummary.additions;
+  const displayDeletions = activitySummary.deletions;
+  const showChanges = fileChanges.length > 0;
   const selectedDiffChange = fileChanges.find(
     (change) => change.path === selectedDiffPath,
   );
@@ -292,7 +244,7 @@ export function StatusPanel({
     setSelectedDiffPath(undefined);
     setLoadedFileDiff("");
     setFileDiffError("");
-  }, [activeTask?.id]);
+  }, [activeTask?.id, runningId]);
   useEffect(() => {
     if (
       !gitDiffOpen ||
@@ -409,11 +361,7 @@ export function StatusPanel({
           <div className="status-change-total">
             <span>
               <strong>{displayChangeCount} 个文件</strong>
-              <small>
-                {useGitChangeTotals
-                  ? `${gitState.branch || "Git 工作区"} · 工作区总计`
-                  : "本轮工具记录"}
-              </small>
+              <small>本轮改动</small>
             </span>
             <b>
               <i>+{displayAdditions}</i>
@@ -435,9 +383,9 @@ export function StatusPanel({
               </div>
             </div>
           )}
-          {gitState.available && gitState.files > 0 && (
+          {fileChanges.length > 0 && (
             <button className="git-diff-toggle" onClick={() => openDiff()}>
-              查看全部更新
+              查看本轮差异
               <ChevronRight size={13} />
             </button>
           )}
