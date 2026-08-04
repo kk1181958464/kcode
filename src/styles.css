@@ -2712,8 +2712,12 @@ select:focus-visible {
 }
 .model-picker {
   position: relative;
+  min-width: 0;
+  flex: 0 1 260px;
 }
 .model-trigger {
+  width: 100%;
+  min-width: 0;
   height: 30px;
   max-width: 260px;
   display: flex;
@@ -2771,6 +2775,178 @@ select:focus-visible {
 .model-trigger svg:last-child {
   flex: 0 0 auto;
   color: var(--muted);
+}
+
+.collaboration-picker {
+  position: relative;
+  min-width: 0;
+  flex: 0 1 160px;
+  margin-left: 2px;
+  padding-left: 3px;
+  border-left: 1px solid var(--line);
+}
+
+.collaboration-trigger {
+  width: 100%;
+  min-width: 72px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 7px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.collaboration-trigger:hover:not(:disabled),
+.collaboration-trigger[aria-expanded="true"] {
+  background: var(--surface-hover);
+  color: var(--ink);
+}
+
+.collaboration-trigger:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.collaboration-trigger > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.collaboration-trigger > svg {
+  flex: 0 0 auto;
+}
+
+.collaboration-menu {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 12px);
+  width: 310px;
+  max-height: min(430px, calc(100vh - 150px));
+  z-index: 14;
+  padding: 7px;
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-float);
+  animation: menu-in 0.12s ease-out;
+}
+
+.collaboration-mode-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-muted);
+}
+
+.collaboration-mode-tabs button {
+  min-height: 30px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.collaboration-mode-tabs button.active {
+  background: var(--surface-raised);
+  color: var(--ink);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--ink) 9%, transparent);
+}
+
+.collaboration-mode-tabs button:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+
+.collaboration-model-list {
+  max-height: 330px;
+  margin-top: 7px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.collaboration-model-list > header {
+  height: 27px;
+  display: flex;
+  align-items: center;
+  padding: 0 7px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.collaboration-model-list section + section {
+  margin-top: 5px;
+  padding-top: 5px;
+  border-top: 1px solid var(--line);
+}
+
+.collaboration-model-list section > small {
+  display: block;
+  padding: 4px 7px;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.collaboration-model-list section > button {
+  width: 100%;
+  min-height: 40px;
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) 18px;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 7px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+}
+
+.collaboration-model-list section > button:hover:not(:disabled),
+.collaboration-model-list section > button[aria-selected="true"] {
+  background: var(--surface-hover);
+}
+
+.collaboration-model-list section > button:disabled {
+  cursor: not-allowed;
+  opacity: 0.38;
+}
+
+.collaboration-model-list section > button > span {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.collaboration-model-list strong,
+.collaboration-model-list section > button small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.collaboration-model-list strong {
+  font-size: 11px;
+  font-weight: 550;
+}
+
+.collaboration-model-list section > button small {
+  color: var(--muted);
+  font-size: 9px;
 }
 .model-menu {
   position: absolute;
@@ -5021,6 +5197,22 @@ select:focus {
   .effort-trigger > svg:first-child {
     display: none;
   }
+  .collaboration-picker {
+    flex-basis: 34px;
+  }
+  .collaboration-trigger {
+    min-width: 30px;
+    padding-inline: 6px;
+  }
+  .collaboration-trigger > span,
+  .collaboration-trigger > svg:last-child {
+    display: none;
+  }
+  .collaboration-menu {
+    left: auto;
+    right: -80px;
+    width: min(310px, calc(100vw - 40px));
+  }
   .effort-trigger {
     min-width: 55px;
   }
@@ -5628,6 +5820,25 @@ select:focus-visible {
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 14%, transparent);
 }
 
+.task-blocked {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  color: var(--warning);
+}
+
+.task-blocked::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  flex: 0 0 6px;
+  margin-right: 5px;
+  border-radius: 50%;
+  background: var(--warning);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--warning) 14%, transparent);
+}
+
 .agent-working-reasoning:not([data-has-static="true"]):not(
     :has(.streaming-status-leaf:not([hidden]))
   ) {
@@ -5988,6 +6199,7 @@ select:focus-visible {
 
 .context-button,
 .model-trigger,
+.collaboration-trigger,
 .effort-trigger {
   min-height: 30px;
   border-color: transparent;
@@ -5998,6 +6210,7 @@ select:focus-visible {
 
 .context-button:hover:not(:disabled),
 .model-trigger:hover:not(:disabled),
+.collaboration-trigger:hover:not(:disabled),
 .effort-trigger:hover:not(:disabled) {
   border-color: transparent;
   background: var(--surface-hover);
@@ -8928,6 +9141,15 @@ button[aria-busy="true"] {
 .status-run-overview.is-success .status-section-heading > span,
 .status-run-overview.is-success .status-section-heading strong {
   color: var(--success);
+}
+
+.status-run-overview.is-blocked {
+  border-color: color-mix(in srgb, var(--warning) 32%, var(--line));
+}
+
+.status-run-overview.is-blocked .status-section-heading > span,
+.status-run-overview.is-blocked .status-section-heading strong {
+  color: var(--warning);
 }
 
 .status-run-overview.has-failures:not(.is-running)

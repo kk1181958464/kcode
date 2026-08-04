@@ -44,6 +44,7 @@ export type AgentToolName =
   | "stop_process"
   | "diagnostics"
   | "report_no_change"
+  | "request_user_input"
   | "web_search"
   | "fetch_url"
   | "browser_open"
@@ -202,6 +203,21 @@ export type ChatMessage = {
   contextAttachments?: Array<{ name: string; size: number }>;
 };
 
+export type AgentRole = "planner" | "executor";
+
+export type AgentModelTarget = {
+  providerId: string;
+  modelId: string;
+  displayName: string;
+  reasoningEffort?: ReasoningEffort;
+  contextWindow?: number;
+};
+
+export type AgentCollaborationConfig = {
+  mode: "planner-executor";
+  executor: AgentModelTarget;
+};
+
 export type ModelRequest = {
   requestId?: string;
   taskId?: string;
@@ -214,6 +230,8 @@ export type ModelRequest = {
   workspacePath: string;
   contextWindow?: number;
   agentDepth?: number;
+  agentRole?: AgentRole;
+  collaboration?: AgentCollaborationConfig;
   recoveryContext?: string;
 };
 
@@ -374,7 +392,7 @@ export type ModelEvent =
       promptTokens?: number;
     }
   | { type: "error"; message: string }
-  | { type: "done" };
+  | { type: "done"; outcome?: "completed" | "blocked" };
 
 export type AgentEvent =
   | ModelEvent

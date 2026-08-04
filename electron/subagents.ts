@@ -288,6 +288,14 @@ export function claimSubagentMutation(
   };
 }
 
+function releaseSubagentMutationClaims(agent: SubagentRecord) {
+  const owners = mutationOwners.get(agent.rootRequestId);
+  if (!owners) return;
+  for (const [target, owner] of owners)
+    if (owner === agent.id) owners.delete(target);
+  if (!owners.size) mutationOwners.delete(agent.rootRequestId);
+}
+
 export async function waitForSubagents(
   parentRequestId: string,
   agentIds?: string[],
@@ -309,6 +317,7 @@ export async function waitForSubagents(
     const result = { ...resultState(agent), usageDelta };
     agent.usageReported = true;
     compactCollectedRecord(agent);
+    releaseSubagentMutationClaims(agent);
     return result;
   });
 }
@@ -343,6 +352,7 @@ export async function stopSubagent(parentRequestId: string, agentId: string) {
   const result = { ...resultState(agent), usageDelta };
   agent.usageReported = true;
   compactCollectedRecord(agent);
+  if (agent.status !== "stopping") releaseSubagentMutationClaims(agent);
   return result;
 }
 

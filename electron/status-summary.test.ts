@@ -85,4 +85,5 @@ test("a completed run stays successful when one step failed and was recovered", 
   assert.equal(statusOverviewTone("completed"), "success");
   assert.equal(statusOverviewTone("failed"), "failure");
   assert.equal(statusOverviewTone("running"), "running");
+  assert.equal(statusOverviewTone("blocked"), "neutral");
 });

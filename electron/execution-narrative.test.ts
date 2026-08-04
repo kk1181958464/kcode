@@ -4,6 +4,7 @@ import {
   activityExecutionNarrative,
   dedupeExecutionNarrative,
   executionNarrativePreview,
+  isExecutionContinuationNarrative,
   nextExecutionNarrative,
   normalizeExecutionNarrative,
 } from "../src/execution-narrative";
@@ -103,5 +104,41 @@ test("deduplicates before preview clipping so later narration stays visible", ()
       dedupeExecutionNarrative(`${previous}${next}`, previous),
     ),
     next,
+  );
+});
+
+test("detects tool execution declarations that otherwise end the task early", () => {
+  assert.equal(
+    isExecutionContinuationNarrative(
+      "HAR 文件约 1.8MB，是 keelcode.ai 的抓包。我用 PowerShell 解析 JSON，汇总里面的请求列表。",
+    ),
+    true,
+  );
+  assert.equal(
+    isExecutionContinuationNarrative(
+      "我通过脚本继续检查请求头，再生成汇总报告。",
+    ),
+    true,
+  );
+  assert.equal(
+    isExecutionContinuationNarrative("接下来我会运行测试并核对输出。"),
+    true,
+  );
+});
+
+test("does not auto-continue completed or user-facing suggestions", () => {
+  assert.equal(
+    isExecutionContinuationNarrative(
+      "我用 PowerShell 解析了 JSON，最终确认共有 12 条请求。",
+    ),
+    false,
+  );
+  assert.equal(
+    isExecutionContinuationNarrative("你可以用 PowerShell 解析 JSON。"),
+    false,
+  );
+  assert.equal(
+    isExecutionContinuationNarrative("本次处理完成，测试与构建均已通过。"),
+    false,
   );
 });

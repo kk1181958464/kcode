@@ -164,7 +164,12 @@ export function summarizeExecutionPlan(
     const related = activities.filter(
       (activity) => activity.planStep === index,
     );
-    const last = related.at(-1);
+    const last = [...related]
+      .reverse()
+      .find(
+        (activity) =>
+          !["report_no_change", "request_user_input"].includes(activity.tool),
+      );
     if (last?.status === "running" || last?.status === "waiting")
       return "running";
     if (last?.status === "failed" || last?.status === "denied") return "failed";

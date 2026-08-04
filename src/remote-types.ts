@@ -69,6 +69,7 @@ export type RemoteTaskSnapshot = {
   runningId?: string;
   runStatus?: string;
   modelSelection?: string;
+  executorModelSelection?: string;
   messages: Array<{
     id: string;
     role: "user" | "assistant";

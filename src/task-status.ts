@@ -1,7 +1,13 @@
 import type { AgentActivity, ChatMessage } from "./types";
 
 export type TaskRunStatus =
-  "idle" | "running" | "completed" | "failed" | "cancelled" | "paused";
+  | "idle"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "paused"
+  | "blocked";
 
 export function nextQueuedMessageId(task: {
   runningId?: string;

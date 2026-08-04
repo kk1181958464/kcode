@@ -36,6 +36,7 @@ import {
   activityExecutionNarrative,
   dedupeExecutionNarrative,
   executionNarrativePreview,
+  isExecutionContinuationNarrative,
   nextExecutionNarrative,
 } from "../src/execution-narrative";
 import {
@@ -93,11 +94,14 @@ import {
 import {
   claimsNoChangeNeeded,
   compactOperationEvidenceResult,
+  hasRequestedUserInputEvidence,
   hasVerifiedNoChangeEvidence,
   hasVerifiedNoChangeReport,
   isAdvisoryOnlyRequest,
   missingRequestedCodingOperations,
   relevantVerificationRequestContent,
+  reportsBlockedCodingOperations,
+  reportsMissingRequiredUserInput,
   requestedCodingOperations,
   shouldRequireCodingTool,
   successfulCodingEvidence,
@@ -187,6 +191,12 @@ import {
   stopSubagent,
   waitForSubagents,
 } from "./subagents";
+import {
+  executorModelOverrides,
+  isPlannerCoordinator,
+  plannerCollaborationInstruction,
+  plannerToolAllowed,
+} from "./collaboration";
 
 type ToolCall = {
   id: string;
@@ -212,6 +222,7 @@ type ToolResult = Partial<
   executed?: boolean;
   mutationAttempted?: boolean;
   noChangeReported?: boolean;
+  userInputRequested?: boolean;
   operationEvidence?: CodingOperation[];
   browserOperationEvidence?: BrowserOperation[];
   subagentUsage?: { input: number; output: number; cached: number };
@@ -845,6 +856,25 @@ const tools = [
     },
   },
   {
+    name: "request_user_input",
+    description:
+      "Record that the task cannot continue until the user supplies specific missing information or completes a required human action. Use only when the information cannot be discovered with available tools. Ask one concise question and list the exact fields/actions required; never use this to avoid executable work.",
+    parameters: {
+      type: "object",
+      properties: {
+        question: { type: "string", minLength: 8, maxLength: 1000 },
+        fields: {
+          type: "array",
+          items: { type: "string", minLength: 1, maxLength: 120 },
+          minItems: 1,
+          maxItems: 12,
+        },
+      },
+      required: ["question", "fields"],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "web_search",
     description:
       "Search the public internet. Returns structured titles, URLs, and snippets. Use this for current facts and finding documentation.",
@@ -1262,12 +1292,13 @@ const tools = [
   {
     name: "spawn_agent",
     description:
-      "Start a background subagent for a self-contained task that can run independently. Subagents inherit the current model, workspace, reasoning, and permissions. Prefer separate files or research areas to avoid edit conflicts. Returns an agent id immediately.",
+      "Start a background subagent for a self-contained task that can run independently. In planner-executor collaboration, role executor uses the task's configured execution model; otherwise subagents inherit the current model. Workspace and permissions are inherited. Prefer separate files or research areas to avoid edit conflicts. Returns an agent id immediately.",
     parameters: {
       type: "object",
       properties: {
         task: { type: "string" },
         name: { type: "string" },
+        role: { type: "string", enum: ["executor"] },
       },
       required: ["task"],
       additionalProperties: false,
@@ -2723,9 +2754,50 @@ async function execute(
     const task = String(call.input.task || "").trim();
     if (!task) throw new Error("缺少子 Agent 任务目标。");
     const name = String(call.input.name || "").trim();
+    const role = String(call.input.role || "").trim();
+    if (role && role !== "executor") throw new Error("不支持的子 Agent 角色。");
+    const executorOverride = executorModelOverrides(request);
+    if (executorOverride) {
+      const executorProvider = await getProviderWithKey(
+        executorOverride.providerId,
+      );
+      if (!executorProvider.enabled) throw new Error("执行模型供应商已停用。");
+      if (
+        !executorProvider.models.some(
+          (model) => model.modelId === executorOverride.modelId,
+        )
+      )
+        throw new Error("执行模型已被移除或不属于所选供应商。");
+    }
+    const childName = executorOverride
+      ? `${name || "执行 Agent"} · ${executorOverride.displayName}`
+      : name;
+    const childModelOverride = executorOverride
+      ? {
+          providerId: executorOverride.providerId,
+          modelId: executorOverride.modelId,
+          reasoningEffort: executorOverride.reasoningEffort,
+          contextWindow: executorOverride.contextWindow,
+          agentRole: executorOverride.agentRole,
+          collaboration: executorOverride.collaboration,
+        }
+      : {};
+    const delegatedRequestContext = executorOverride
+      ? relevantVerificationRequestContent(
+          request.messages.map((message) => ({
+            kind: "message" as const,
+            ...message,
+          })),
+        ).slice(-12_000)
+      : "";
+    const delegatedImages = executorOverride
+      ? [...request.messages]
+          .reverse()
+          .find((message) => message.images?.length)?.images
+      : undefined;
     const state = spawnSubagent(
       requestId,
-      name,
+      childName,
       task,
       signal,
       (childRequestId, agentId, childSignal) =>
@@ -2733,6 +2805,7 @@ async function execute(
           childRequestId,
           {
             ...request,
+            ...childModelOverride,
             taskId: `${request.taskId || requestId}:subagent:${agentId}`,
             agentDepth: (request.agentDepth ?? 0) + 1,
             permissionPolicy: permissionPolicyForSubagent(
@@ -2742,7 +2815,8 @@ async function execute(
             messages: [
               {
                 role: "user",
-                content: `你是主 Agent 委派的子 Agent。请独立完成以下任务并向主 Agent 返回准确、简洁、可验证的结果。不要等待用户补充信息；遇到阻碍时说明已检查的内容和具体阻碍。避免修改其他子 Agent 可能负责的文件。\n\n任务：${task}`,
+                content: `${executorOverride ? `你是协作任务的执行 Agent，当前执行模型为 ${executorOverride.displayName}。严格落实规划 Agent 给出的步骤和验收条件，使用真实工具完成修改与验证，不要只重复规划。` : "你是主 Agent 委派的子 Agent。"}请独立完成以下任务并向主 Agent 返回准确、简洁、可验证的结果。不要等待用户补充信息；遇到阻碍时说明已检查的内容和具体阻碍。避免修改其他子 Agent 可能负责的文件。${delegatedRequestContext ? `\n\n原始用户目标：\n${delegatedRequestContext}` : ""}\n\n委派任务：\n${task}`,
+                images: delegatedImages,
               },
             ],
           },
@@ -2832,6 +2906,24 @@ async function execute(
       output: `无需修改：${reason}`,
       changed: false,
       noChangeReported: true,
+    };
+  }
+  if (call.name === "request_user_input") {
+    const question = String(call.input.question || "")
+      .replace(/\s+/g, " ")
+      .trim();
+    const fields = Array.isArray(call.input.fields)
+      ? call.input.fields
+          .map((field) => String(field).replace(/\s+/g, " ").trim())
+          .filter(Boolean)
+          .slice(0, 12)
+      : [];
+    if (question.length < 8 || !fields.length)
+      throw new Error("等待用户输入时必须说明问题并列出所需信息");
+    return {
+      output: `等待补充信息：${question}\n需要：${fields.join("、")}`,
+      changed: false,
+      userInputRequested: true,
     };
   }
   if (call.name === "diagnostics") {
@@ -3231,10 +3323,12 @@ async function modelTurn(
     xhigh: 32768,
     max: 65536,
   };
+  const plannerCoordinator = isPlannerCoordinator(request);
   const runtimeTools = toolsEnabled
     ? tools.filter(
         (tool) =>
-          !((request.agentDepth ?? 0) >= 2 && tool.name === "spawn_agent"),
+          !((request.agentDepth ?? 0) >= 2 && tool.name === "spawn_agent") &&
+          (!plannerCoordinator || plannerToolAllowed(tool.name)),
       )
     : [];
   const isolation = createConversationIsolation(request.taskId, requestId);
@@ -3242,11 +3336,12 @@ async function modelTurn(
   const activeSkills = [
     runtime?.activeSkills ??
       (await loadActiveSkillInstructions(latestUserRequest)),
+    plannerCollaborationInstruction(request),
     "When a task has multiple independent phases, begin with a short numbered plan (1., 2., 3. …). Before every tool-call group, write no more than two concise user-facing progress sentences explaining which plan step you are executing and why; keep this preamble under 240 characters. Never dump a full implementation monologue, speculative patch, or repeated plan into the chat. Put the structured plan in numbered steps, then call the relevant tools in the same turn. A non-final turn must include a tool call instead of only describing what you will do. After a failed tool result, briefly explain how you are adjusting the approach before the next tool call. Never claim success before a tool result confirms it.",
   ]
     .filter(Boolean)
     .join("\n\n");
-  const system = `${isolation.boundary}\nYou are a coding agent working in ${root}. Use the provided native tools to inspect and modify the project. Each run_command invocation uses a fresh PowerShell process, so environment variable changes do not persist to later commands; combine dependent setup and execution in one command. Prefer apply_patch for precise edits and write_file for new or complete files. Never invoke apply_patch, file deletion, file moves, or directory operations through run_command when a native tool exists. File tool paths accept absolute paths, including other drives (for example D:\\B on Windows); use them to read or write files the user explicitly points to outside ${root}, and resolve relative paths against ${root}. When you mention a file in your reply, always write its full workspace-relative path (for example src/views/Gooddetail.vue, not just Gooddetail.vue) so the user can tell exactly which file it is. Use web_search for current or externally verifiable information and fetch_url to inspect primary sources; preserve source URLs in the final answer. For interactive or authenticated sites use browser_open, browser_snapshot, browser_click, and browser_type. Credentials explicitly supplied by the user may be entered directly with browser_type. Browser recording is opt-in: call browser_record_start only after an explicit user request such as 开始录制, and call browser_record_stop when the user asks to stop or generate Python. Never record ordinary browsing by default. For independent work that can run concurrently, use spawn_agent with self-contained, non-overlapping tasks, then wait_agent before giving a final answer. Use list_agents, message_agent, and stop_agent to coordinate them. Subagents inherit this task's model, workspace, reasoning, and permissions. For remote servers, call ssh_connect with credentials explicitly supplied by the user, then use ssh_run and the SSH SFTP tools. Use ssh_upload_file to send a local file to the server and ssh_download_file to fetch a remote file to a local path; these transfer binary content directly, unlike ssh_write_file which only writes inline UTF-8 text. SSH exec sessions are non-interactive and may not load shell profiles; when a remote command depends on profile-defined PATH values, invoke the appropriate login shell explicitly. SSH host keys are not verified. Credentials supplied by the user may appear in commands, tool activity details, subagent tasks, and conversation text. For databases, use mysql_connect for direct MySQL access or mysql_connect_via_ssh for an SSH tunnel, then mysql_query; use ? placeholders and values for user-provided data when practical. Public direct MySQL connections use TLS by default and you must not retry with ssl=false unless the user explicitly approves. Never attempt to solve or bypass CAPTCHA, SMS, passkey, or two-factor verification. browser_snapshot waits while the user completes human verification in the visible browser and resumes automatically afterward, so do not end the task merely to ask the user to say continue. Do not claim an action succeeded until its tool result confirms it. Before finishing, compare every action requested by the user with successful tool results. A file task is complete only after a mutating tool produced an actual change; a validation is complete only after it really ran successfully after the latest change; a background service is started only after process_output confirms it is running. When the user explicitly requested a code or configuration change and successful inspection proves that change is unnecessary, call report_no_change with the specific evidence-based reason before the final response; do not manufacture a no-op edit. For informational or status questions, answer from successful read-only evidence without calling report_no_change. If an action could not be completed, state that explicitly instead of saying it was done.${activeSkills ? `\n\n${activeSkills}` : ""}${request.recoveryContext ? `\n\n<recovery_context>${request.recoveryContext}</recovery_context>\nThis task resumed after an interruption. Verify prior side effects before repeating them, and recreate any interrupted subagent work that is still needed.` : ""}`;
+  const system = `${isolation.boundary}\nYou are a coding agent working in ${root}. Use the provided native tools to inspect and modify the project. Each run_command invocation uses a fresh PowerShell process, so environment variable changes do not persist to later commands; combine dependent setup and execution in one command. Prefer apply_patch for precise edits and write_file for new or complete files. Never invoke apply_patch, file deletion, file moves, or directory operations through run_command when a native tool exists. File tool paths accept absolute paths, including other drives (for example D:\\B on Windows); use them to read or write files the user explicitly points to outside ${root}, and resolve relative paths against ${root}. When you mention a file in your reply, always write its full workspace-relative path (for example src/views/Gooddetail.vue, not just Gooddetail.vue) so the user can tell exactly which file it is. Use web_search for current or externally verifiable information and fetch_url to inspect primary sources; preserve source URLs in the final answer. For interactive or authenticated sites use browser_open, browser_snapshot, browser_click, and browser_type. Credentials explicitly supplied by the user may be entered directly with browser_type. Browser recording is opt-in: call browser_record_start only after an explicit user request such as 开始录制, and call browser_record_stop when the user asks to stop or generate Python. Never record ordinary browsing by default. For independent work that can run concurrently, use spawn_agent with self-contained, non-overlapping tasks, then wait_agent before giving a final answer. Use list_agents, message_agent, and stop_agent to coordinate them. Subagents normally inherit this task's model; planner-executor collaboration routes executor agents to the configured execution model. Workspace and permissions remain shared. For remote servers, call ssh_connect with credentials explicitly supplied by the user, then use ssh_run and the SSH SFTP tools. Use ssh_upload_file to send a local file to the server and ssh_download_file to fetch a remote file to a local path; these transfer binary content directly, unlike ssh_write_file which only writes inline UTF-8 text. SSH exec sessions are non-interactive and may not load shell profiles; when a remote command depends on profile-defined PATH values, invoke the appropriate login shell explicitly. SSH host keys are not verified. Credentials supplied by the user may appear in commands, tool activity details, subagent tasks, and conversation text. For databases, use mysql_connect for direct MySQL access or mysql_connect_via_ssh for an SSH tunnel, then mysql_query; use ? placeholders and values for user-provided data when practical. Public direct MySQL connections use TLS by default and you must not retry with ssl=false unless the user explicitly approves. Never attempt to solve or bypass CAPTCHA, SMS, passkey, or two-factor verification. browser_snapshot waits while the user completes human verification in the visible browser and resumes automatically afterward, so do not end the task merely to ask the user to say continue. Do not claim an action succeeded until its tool result confirms it. Before finishing, compare every action requested by the user with successful tool results. A file task is complete only after a mutating tool produced an actual change; a validation is complete only after it really ran successfully after the latest change; a background service is started only after process_output confirms it is running. When the user explicitly requested a code or configuration change and successful inspection proves that change is unnecessary, call report_no_change with the specific evidence-based reason before the final response; do not manufacture a no-op edit. If the task cannot continue because the user must supply a URL, file, credential, repository target, requirement, permission, verification code, or another specific external input that cannot be discovered with the available tools, call request_user_input once with the exact question and required fields, then ask the user for them. Never use request_user_input to avoid work that the available tools can perform. For informational or status questions, answer from successful read-only evidence without calling report_no_change. If an action could not be completed, state that explicitly instead of saying it was done.${activeSkills ? `\n\n${activeSkills}` : ""}${request.recoveryContext ? `\n\n<recovery_context>${request.recoveryContext}</recovery_context>\nThis task resumed after an interruption. Verify prior side effects before repeating them, and recreate any interrupted subagent work that is still needed.` : ""}`;
   const imageInputNotice =
     omitImageInputs && hasImageAttachments(history)
       ? "\n\n当前模型不支持图片输入，历史图片附件已被省略。请只依据文字、上下文文件和工作区继续，不要假装看到了图片。"
@@ -3765,6 +3860,7 @@ export async function* runAgent(
   const toolsEnabled = !isCasualGreeting(request.messages.at(-1));
   const latestUserRequest = relevantVerificationRequestContent(history);
   const advisoryOnly = isAdvisoryOnlyRequest(latestUserRequest);
+  const plannerCoordinator = isPlannerCoordinator(request);
   const activeSkillInstructions =
     await loadActiveSkillInstructions(latestUserRequest);
   const modelRuntime: ModelTurnRuntime = {
@@ -3975,12 +4071,22 @@ export async function* runAgent(
       return;
     }
     emptyTurns = 0;
+    const requestedUserInput = hasRequestedUserInputEvidence(evidenceHistory);
+    const reportsMissingInput = reportsMissingRequiredUserInput(turn.text);
     const browserEvidence = successfulBrowserEvidence(evidenceHistory);
     const missingBrowserEvidence = missingRequestedBrowserOperations(
       requestedBrowserOps,
       browserEvidence,
     );
-    if (!turn.calls.length && missingBrowserEvidence.length) {
+    const browserBlocked =
+      !turn.calls.length &&
+      missingBrowserEvidence.length > 0 &&
+      (requestedUserInput || reportsMissingInput);
+    if (
+      !turn.calls.length &&
+      missingBrowserEvidence.length &&
+      !browserBlocked
+    ) {
       if (unverifiedBrowserClaims < 2) {
         unverifiedBrowserClaims += 1;
         history.push({
@@ -3992,7 +4098,9 @@ export async function* runAgent(
         history.push({
           kind: "message",
           role: "user",
-          content: `<runtime_verification>本次网页任务仍缺少成功工具结果：${missingBrowserEvidence.join(", ")}。不要总结为完成；请立即调用对应的 browser_open/browser_click/browser_type 工具实际执行。填写或点击后必须再调用 browser_snapshot 验证新页面。若无法执行，请明确报告未完成及原因。</runtime_verification>`,
+          content: plannerCoordinator
+            ? `<runtime_verification>协作网页任务仍缺少执行模型的成功工具结果：${missingBrowserEvidence.join(", ")}。请调用 spawn_agent，把目标页面、交互步骤和验收条件交给 role=\"executor\" 的执行 Agent，再调用 wait_agent 复核页面快照；不要只描述操作。</runtime_verification>`
+            : `<runtime_verification>本次网页任务仍缺少成功工具结果：${missingBrowserEvidence.join(", ")}。不要总结为完成；请立即调用对应的 browser_open/browser_click/browser_type 工具实际执行。填写或点击后必须再调用 browser_snapshot 验证新页面。若确实缺少无法自行获取的网址、登录信息、验证码或必要人工操作，请调用 request_user_input，准确列出需要用户补充的内容；否则继续执行。</runtime_verification>`,
         });
         continue;
       }
@@ -4022,7 +4130,11 @@ export async function* runAgent(
           unavailableGitClaims.has(operation)
         ),
     );
-    if (!turn.calls.length && missingGitEvidence.length) {
+    const gitBlocked =
+      !turn.calls.length &&
+      missingGitEvidence.length > 0 &&
+      (requestedUserInput || reportsMissingInput);
+    if (!turn.calls.length && missingGitEvidence.length && !gitBlocked) {
       if (unverifiedGitClaims < 2) {
         unverifiedGitClaims += 1;
         history.push({
@@ -4034,7 +4146,9 @@ export async function* runAgent(
         history.push({
           kind: "message",
           role: "user",
-          content: `<runtime_verification>本次 Git/发布任务仍缺少成功工具结果：${missingGitEvidence.join(", ")}。不要总结为完成；请实际调用工具执行操作。优先用 git_status/git_log 检查本地状态，用 git_remote_status 校验远端推送；不要抓取 GitHub HTML 页面验证提交。需要验证 Actions 时再使用 gh run list/gh run view。若无法执行，请明确报告未完成及原因。</runtime_verification>`,
+          content: plannerCoordinator
+            ? `<runtime_verification>协作 Git/发布任务仍缺少执行模型的成功工具结果：${missingGitEvidence.join(", ")}。请调用 spawn_agent，把提交、推送、发布目标和验证要求交给 role=\"executor\" 的执行 Agent，再调用 wait_agent 复核远端结果；不要只总结计划。</runtime_verification>`
+            : `<runtime_verification>本次 Git/发布任务仍缺少成功工具结果：${missingGitEvidence.join(", ")}。不要总结为完成；请实际调用工具执行操作。优先用 git_status/git_log 检查本地状态，用 git_remote_status 校验远端推送；不要抓取 GitHub HTML 页面验证提交。需要验证 Actions 时再使用 gh run list/gh run view。若确实缺少无法自行确定的仓库、remote、分支、发布目标或授权信息，请调用 request_user_input，准确列出需要用户补充的内容；否则继续执行。</runtime_verification>`,
         });
         continue;
       }
@@ -4061,7 +4175,11 @@ export async function* runAgent(
           (operation === "validate" && verifiedNoChangeReport)
         ),
     );
-    if (!turn.calls.length && missingCodingEvidence.length) {
+    const codingBlocked =
+      !turn.calls.length &&
+      (requestedUserInput ||
+        reportsBlockedCodingOperations(turn.text, missingCodingEvidence));
+    if (!turn.calls.length && missingCodingEvidence.length && !codingBlocked) {
       if (unverifiedCodingClaims < 2) {
         unverifiedCodingClaims += 1;
         history.push({
@@ -4073,7 +4191,9 @@ export async function* runAgent(
         history.push({
           kind: "message",
           role: "user",
-          content: `<runtime_verification>本次编码任务仍缺少成功工具结果：${missingCodingEvidence.join(", ")}。不要继续总结或假设文件已经改变；请立即使用工作区工具实际检查和修改，并用 diagnostics 或真实命令验证。如果只读工具已经确认目标内容正确、问题位于工作区之外或没有可执行的修改目标，请调用 report_no_change 记录具体证据，再明确说明“无需修改”；不要制造无意义改动。若无法执行，请明确报告未完成及原因。</runtime_verification>`,
+          content: plannerCoordinator
+            ? `<runtime_verification>协作任务仍缺少执行模型的成功工具结果：${missingCodingEvidence.join(", ")}。你是规划与复核 Agent，不能直接修改或运行命令。请立即调用 spawn_agent，将完整计划、目标文件、约束和验收命令交给 role=\"executor\" 的执行 Agent，然后调用 wait_agent 收集并复核真实结果；不要只重复计划。</runtime_verification>`
+            : `<runtime_verification>本次编码任务仍缺少成功工具结果：${missingCodingEvidence.join(", ")}。不要继续总结或假设文件已经改变；请立即使用工作区工具实际检查和修改，并用 diagnostics 或真实命令验证。如果只读工具已经确认目标内容正确、问题位于工作区之外或没有可执行的修改目标，请调用 report_no_change 记录具体证据，再明确说明“无需修改”；不要制造无意义改动。若确实缺少无法自行获取的文件、需求、接口字段、外部环境、权限或连接信息，请调用 request_user_input，准确列出需要用户补充的内容；否则继续执行。</runtime_verification>`,
         });
         continue;
       }
@@ -4145,13 +4265,19 @@ export async function* runAgent(
       !turn.calls.length &&
       /^(length|max_tokens|max_output_tokens)$/i.test(turn.finishReason ?? "");
     const intendsToContinue =
+      !turn.calls.length && isExecutionContinuationNarrative(turn.text || "");
+    const collaborationPlanPending =
+      plannerCoordinator &&
       !turn.calls.length &&
-      /(接下来|下一步|现在(就)?(开始|来)|我(会|将|来|先|需要)[^。\n]{0,14}(检查|查看|修改|实现|继续|编辑|运行|执行|创建|添加|修复|验证|测试|读取|搜索|分析|处理|核对|补充)|继续(执行|处理|检查|实现|完成)|让我(先|来|继续)|马上|正在[^。\n]{0,10}(检查|实现|修改|处理)|then i['’]?ll|i['’]?ll (now|proceed|continue|check|start|go ahead|next|implement|fix|add|verify|run)|next,? i(['’]?ll| will| am)|let me (now|check|start|look|continue|implement))/i.test(
-        (turn.text || "").slice(-180),
+      detectedPlan.length >= 2 &&
+      Boolean(
+        missingBrowserEvidence.length ||
+        missingGitEvidence.length ||
+        missingCodingEvidence.length,
       );
     const willAutoContinue =
       !turn.calls.length &&
-      (truncated || intendsToContinue) &&
+      (truncated || intendsToContinue || collaborationPlanPending) &&
       autoContinues < 4;
     if (turn.text) {
       history.push({
@@ -4190,9 +4316,11 @@ export async function* runAgent(
           type: "progress",
           message: truncated
             ? "上游说明被截断且未产生工具调用，正在要求模型直接继续执行…"
-            : detectedPlan.length >= 2
-              ? `已整理 ${detectedPlan.length} 个执行步骤，正在要求模型立即调用工具…`
-              : "模型只返回了执行说明，正在要求它立即调用具体工具…",
+            : collaborationPlanPending
+              ? "协作规划已生成，正在要求规划模型启动执行模型…"
+              : detectedPlan.length >= 2
+                ? `已整理 ${detectedPlan.length} 个执行步骤，正在要求模型立即调用工具…`
+                : "模型只返回了执行说明，正在要求它立即调用具体工具…",
         };
         history.push({
           kind: "message",
@@ -4202,7 +4330,17 @@ export async function* runAgent(
         continue;
       }
       closeSubagentMessageQueue(requestId);
-      yield { type: "done" };
+      yield {
+        type: "done",
+        outcome:
+          requestedUserInput ||
+          reportsMissingInput ||
+          browserBlocked ||
+          gitBlocked ||
+          codingBlocked
+            ? "blocked"
+            : "completed",
+      };
       return;
     }
     // A productive round refreshes the auto-continue budget.
@@ -4240,6 +4378,7 @@ export async function* runAgent(
         stop_process: "停止进程",
         diagnostics: "项目诊断",
         report_no_change: "确认无需修改",
+        request_user_input: "等待补充信息",
         web_search: "搜索互联网",
         fetch_url: "读取网页",
         browser_open: "打开浏览器",
@@ -4288,6 +4427,10 @@ export async function* runAgent(
             ? {
                 name: String(call.input.name || ""),
                 task: String(call.input.task || ""),
+                role: String(call.input.role || ""),
+                model: isPlannerCoordinator(request)
+                  ? request.collaboration?.executor.displayName
+                  : undefined,
               }
             : call.name === "message_agent"
               ? {
@@ -4449,6 +4592,7 @@ export async function* runAgent(
         | "executed"
         | "mutationAttempted"
         | "noChangeReported"
+        | "userInputRequested"
         | "operationEvidence"
         | "browserOperationEvidence"
       > = {};
@@ -4518,6 +4662,7 @@ export async function* runAgent(
           executed: result.executed,
           mutationAttempted: result.mutationAttempted,
           noChangeReported: result.noChangeReported,
+          userInputRequested: result.userInputRequested,
           operationEvidence: result.operationEvidence,
           browserOperationEvidence: result.browserOperationEvidence,
         };
@@ -4619,6 +4764,7 @@ export async function* runAgent(
           executed: resultEvidence.executed,
           mutationAttempted: resultEvidence.mutationAttempted,
           noChangeReported: resultEvidence.noChangeReported,
+          userInputRequested: resultEvidence.userInputRequested,
           operationEvidence: resultEvidence.operationEvidence,
           browserOperationEvidence: resultEvidence.browserOperationEvidence,
         },
@@ -4655,7 +4801,14 @@ export async function* runAgent(
     }
     previousRoundActivity = roundLastActivity;
     previousRoundFailure = roundFailedActivity;
-    if (activePlanSteps.length && !roundFailedActivity && roundLastActivity)
+    if (
+      activePlanSteps.length &&
+      !roundFailedActivity &&
+      roundLastActivity &&
+      !["report_no_change", "request_user_input"].includes(
+        roundLastActivity.tool,
+      )
+    )
       planCursor = Math.min(planCursor + 1, activePlanSteps.length - 1);
     const roundFingerprint = roundFingerprints.join("|");
     const madeProgress = roundAdvanced || roundFingerprint !== lastFingerprint;

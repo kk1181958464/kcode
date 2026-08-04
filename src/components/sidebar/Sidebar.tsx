@@ -363,6 +363,9 @@ export const Sidebar = memo(function Sidebar({
               {(row.task.runningId || row.task.runStatus === "running") && (
                 <small className="task-running">运行中</small>
               )}
+              {!row.task.runningId && row.task.runStatus === "blocked" && (
+                <small className="task-blocked">待补充</small>
+              )}
               <button
                 className="task-archive"
                 title={row.task.archived ? "移出归档" : "归档对话"}

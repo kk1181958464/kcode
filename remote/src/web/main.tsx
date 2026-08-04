@@ -99,6 +99,7 @@ type Task = {
   runningId?: string;
   runStatus?: string;
   modelSelection?: string;
+  executorModelSelection?: string;
   messages: TaskMessage[];
   activities: TaskActivity[];
   usage?: { input: number; output: number; cached: number };
@@ -199,6 +200,7 @@ function statusText(task: Task) {
   if (task.runStatus === "failed") return "失败";
   if (task.runStatus === "cancelled") return "已停止";
   if (task.runStatus === "paused") return "已暂停";
+  if (task.runStatus === "blocked") return "等待信息";
   if (task.runStatus === "completed") return "已完成";
   return "待开始";
 }
@@ -206,6 +208,7 @@ function statusText(task: Task) {
 function statusClass(task: Task) {
   if (task.runStatus === "running" || task.runningId) return "running";
   if (task.runStatus === "failed") return "failed";
+  if (task.runStatus === "blocked") return "blocked";
   if (task.runStatus === "completed") return "completed";
   return "idle";
 }
@@ -314,6 +317,7 @@ function reconcileTasks(previous: Task[], next: Task[]) {
       existing.runningId === task.runningId &&
       existing.runStatus === task.runStatus &&
       existing.modelSelection === task.modelSelection &&
+      existing.executorModelSelection === task.executorModelSelection &&
       existing.durationMs === task.durationMs &&
       existing.archived === task.archived &&
       sameUsage(existing.usage, task.usage);
@@ -1562,7 +1566,12 @@ function App() {
               </span>
               <span>{selectedTask?.workspaceName || selectedDevice?.name}</span>
               {selectedTask?.modelSelection && (
-                <span>{selectedTask.modelSelection.split("|").at(-1)}</span>
+                <span>
+                  {selectedTask.modelSelection.split("|").at(-1)}
+                  {selectedTask.executorModelSelection
+                    ? ` → ${selectedTask.executorModelSelection.split("|").at(-1)}`
+                    : ""}
+                </span>
               )}
             </p>
           </div>

@@ -4,11 +4,14 @@ import {
   claimedCodingOperations,
   claimsNoChangeNeeded,
   compactOperationEvidenceResult,
+  hasRequestedUserInputEvidence,
   hasVerifiedNoChangeEvidence,
   hasVerifiedNoChangeReport,
   isAdvisoryOnlyRequest,
   missingRequestedCodingOperations,
   relevantVerificationRequestContent,
+  reportsBlockedCodingOperations,
+  reportsMissingRequiredUserInput,
   requestedCodingOperations,
   shouldRequireCodingTool,
   successfulCodingEvidence,
@@ -811,6 +814,104 @@ test("requires successful tools for remote connections and transfers", () => {
       ]),
     ],
     ["connect", "upload", "download"],
+  );
+});
+
+test("treats missing SSH details as a blocked remote deployment", () => {
+  const requested = requestedCodingOperations([
+    {
+      kind: "message",
+      role: "user",
+      content: "部署到服务器运行起来，用 IP 访问",
+    },
+  ]);
+  assert.deepEqual([...requested], ["execute", "connect"]);
+  const missing = missingRequestedCodingOperations(requested, new Set());
+  assert.equal(
+    reportsBlockedCodingOperations(
+      "尚未收到目标服务器的 SSH 地址、用户名和密钥，无法执行连接和部署，请提供这些信息。",
+      missing,
+    ),
+    true,
+  );
+  assert.equal(
+    reportsBlockedCodingOperations(
+      "服务器已经连接并部署完成，但还可以补充 SSH 信息。",
+      missing,
+    ),
+    false,
+  );
+  assert.equal(
+    reportsBlockedCodingOperations(
+      "由于没有 SSH 私钥，未能成功连接服务器，部署尚未执行。",
+      missing,
+    ),
+    true,
+  );
+  assert.equal(
+    reportsBlockedCodingOperations("缺少服务器 SSH 信息，无法继续。", [
+      "modify",
+      "execute",
+    ]),
+    false,
+  );
+  assert.equal(
+    reportsBlockedCodingOperations(
+      "缺少需要修改的接口字段，请提供字段名称和返回格式后我再继续。",
+      ["inspect", "modify", "validate"],
+    ),
+    true,
+  );
+});
+
+test("recognizes explicit requests for concrete missing user input", () => {
+  assert.equal(
+    reportsMissingRequiredUserInput(
+      "尚未提供登录网址和账号，请补充这些信息后我再继续操作。",
+    ),
+    true,
+  );
+  assert.equal(
+    reportsMissingRequiredUserInput(
+      "Please provide the repository URL and access token before I continue.",
+    ),
+    true,
+  );
+  assert.equal(
+    reportsMissingRequiredUserInput("我现在不能修改，之后再说。"),
+    false,
+  );
+});
+
+test("preserves a structured user-input request in the evidence ledger", () => {
+  const history = [
+    {
+      kind: "calls" as const,
+      calls: [
+        {
+          id: "need-input",
+          name: "request_user_input",
+          input: {
+            question: "请提供目标服务器的连接信息。",
+            fields: ["SSH 地址", "用户名", "密钥"],
+          },
+        },
+      ],
+    },
+    compactOperationEvidenceResult("need-input", "request_user_input", true, {
+      userInputRequested: true,
+    }),
+  ];
+
+  assert.equal(hasRequestedUserInputEvidence(history), true);
+  assert.equal(
+    hasRequestedUserInputEvidence([
+      history[0],
+      compactOperationEvidenceResult("need-input", "request_user_input", true, {
+        userInputRequested: false,
+      }),
+    ]),
+    false,
   );
 });
 

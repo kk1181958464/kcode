@@ -106,6 +106,10 @@ test("a finished request cannot clear a newer queued request", () => {
     runningId: undefined,
     runStatus: "failed",
   });
+  assert.deepEqual(finishTaskRequest(undefined, "request-a", "blocked"), {
+    runningId: undefined,
+    runStatus: "blocked",
+  });
 });
 
 test("finds queued work for an inactive task after its current request finishes", () => {

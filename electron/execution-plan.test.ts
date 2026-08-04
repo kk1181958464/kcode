@@ -60,6 +60,30 @@ test("summarizes plan progress from activity results", () => {
   });
 });
 
+test("waiting tools do not complete an unexecuted plan step", () => {
+  const planSteps = ["检查部署配置", "连接服务器", "启动并验证服务"];
+  const summary = summarizeExecutionPlan([
+    activity({ id: "inspect", tool: "read_file", planSteps, planStep: 0 }),
+    activity({
+      id: "blocked",
+      tool: "report_no_change",
+      planSteps,
+      planStep: 1,
+    }),
+    activity({
+      id: "waiting-input",
+      tool: "request_user_input",
+      planSteps,
+      planStep: 1,
+    }),
+  ]);
+  assert.deepEqual(summary, {
+    steps: planSteps,
+    current: 1,
+    statuses: ["completed", "pending", "pending"],
+  });
+});
+
 test("compares plan revisions without relying on object identity", () => {
   assert.equal(sameExecutionPlan(["检查", "验证"], ["检查", "验证"]), true);
   assert.equal(sameExecutionPlan(["检查"], ["检查", "验证"]), false);

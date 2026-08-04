@@ -13,6 +13,7 @@ import {
   RotateCcw,
   Terminal,
   TextWrap,
+  Workflow,
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -53,6 +54,7 @@ export interface StatusPanelProps {
   runStatus: TaskRunStatus;
   activities: AgentActivity[];
   selectedTarget: ModelEntry | undefined;
+  executorTarget?: ModelEntry;
   effortLabels: Record<ReasoningEffort, string>;
   reasoningEffort: ReasoningEffort;
   checkpoints: AgentCheckpoint[];
@@ -95,6 +97,7 @@ function statusHeadline(runStatus: TaskRunStatus, hasActivities: boolean) {
   if (runStatus === "failed") return "本轮执行失败";
   if (runStatus === "cancelled") return "本轮已停止";
   if (runStatus === "paused") return "任务可以恢复";
+  if (runStatus === "blocked") return "等待补充信息";
   if (runStatus === "completed") return "本轮执行完成";
   if (runStatus === "running") return "正在生成回复";
   return hasActivities ? "最近一轮" : "";
@@ -141,6 +144,7 @@ export function StatusPanel({
   runStatus,
   activities,
   selectedTarget,
+  executorTarget,
   effortLabels,
   reasoningEffort,
   checkpoints,
@@ -298,7 +302,7 @@ export function StatusPanel({
     <aside className="status-panel" aria-label="任务详情">
       {showRunOverview && (
         <section
-          className={`status-run-overview ${running ? "is-running" : ""} ${overviewTone === "success" ? "is-success" : ""} ${overviewTone === "failure" ? "has-failures" : ""}`}
+          className={`status-run-overview ${running ? "is-running" : ""} ${runStatus === "blocked" ? "is-blocked" : ""} ${overviewTone === "success" ? "is-success" : ""} ${overviewTone === "failure" ? "has-failures" : ""}`}
         >
           <div className="status-section-heading">
             <span>
@@ -306,6 +310,8 @@ export function StatusPanel({
                 <Activity size={14} />
               ) : overviewTone === "failure" ? (
                 <CircleAlert size={14} />
+              ) : runStatus === "blocked" ? (
+                <Clock3 size={14} />
               ) : (
                 <CheckCircle2 size={14} />
               )}
@@ -573,12 +579,21 @@ export function StatusPanel({
       {selectedTarget && (
         <footer
           className="status-model-line"
-          title={`${selectedTarget.provider.name} / ${selectedTarget.model.modelId}`}
+          title={
+            executorTarget
+              ? `规划：${selectedTarget.provider.name} / ${selectedTarget.model.modelId} · 执行：${executorTarget.provider.name} / ${executorTarget.model.modelId}`
+              : `${selectedTarget.provider.name} / ${selectedTarget.model.modelId}`
+          }
         >
-          <BrainCircuit size={13} />
+          {executorTarget ? <Workflow size={13} /> : <BrainCircuit size={13} />}
           <span>
-            <strong>{selectedTarget.model.displayName}</strong>
-            <small>{effortLabels[reasoningEffort]}</small>
+            <strong>
+              {selectedTarget.model.displayName}
+              {executorTarget ? ` → ${executorTarget.model.displayName}` : ""}
+            </strong>
+            <small>
+              {executorTarget ? "规划 / 执行" : effortLabels[reasoningEffort]}
+            </small>
           </span>
         </footer>
       )}

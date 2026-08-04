@@ -45,6 +45,7 @@ export function compactOperationEvidenceResult(
         executed: data.executed,
         mutationAttempted: data.mutationAttempted,
         noChangeReported: data.noChangeReported,
+        userInputRequested: data.userInputRequested,
         operationEvidence: data.operationEvidence,
         browserOperationEvidence: data.browserOperationEvidence,
         exitCode: data.exitCode,
@@ -193,7 +194,7 @@ export function requestedCodingOperations(
   )
     operations.add("validate");
   if (
-    /(?:连接|连上|登录到).{0,20}(?:SSH|服务器|主机|MySQL|SQL Server|MongoDB|数据库)|\bconnect(?:\s+to)?\s+(?:ssh|server|host|mysql|sql server|mongodb|database)\b/i.test(
+    /(?:连接|连上|登录到).{0,20}(?:SSH|服务器|主机|MySQL|SQL Server|MongoDB|数据库)|(?:部署|发布到).{0,20}(?:服务器|远程|主机)|\bconnect(?:\s+to)?\s+(?:ssh|server|host|mysql|sql server|mongodb|database)\b|\bdeploy(?:\s+to)?\s+(?:server|host|remote)\b/i.test(
       remoteActionContent,
     )
   )
@@ -277,6 +278,32 @@ function parsedResults(history: CodingVerificationHistoryItem[]) {
     }
   }
   return results;
+}
+
+export function hasRequestedUserInputEvidence(
+  history: CodingVerificationHistoryItem[],
+) {
+  const parsed = parsedResults(history);
+  const calls = new Map<
+    string,
+    { name: string; input: Record<string, unknown> }
+  >();
+  for (const item of history)
+    if (item.kind === "calls")
+      for (const call of item.calls) calls.set(call.id, call);
+  for (const [callId, result] of parsed) {
+    const call = calls.get(callId);
+    if (
+      call?.name === "request_user_input" &&
+      result.success === true &&
+      result.data?.userInputRequested === true &&
+      String(call.input.question ?? "").trim().length >= 8 &&
+      Array.isArray(call.input.fields) &&
+      call.input.fields.some((field) => String(field).trim())
+    )
+      return true;
+  }
+  return false;
 }
 
 function verifiedNoChangeEvidence(history: CodingVerificationHistoryItem[]) {
@@ -574,4 +601,77 @@ export function missingRequestedCodingOperations(
   evidence: ReadonlySet<CodingOperation>,
 ) {
   return [...requested].filter((operation) => !evidence.has(operation));
+}
+
+const BLOCKABLE_CODING_OPERATIONS = new Set<CodingOperation>([
+  "execute",
+  "validate",
+  "connect",
+  "upload",
+  "download",
+]);
+
+export function reportsMissingRequiredUserInput(text: string) {
+  const reportsUnavailable =
+    /(?:无法|不能|未能|尚未|暂时无法|不可执行|阻塞|缺少|欠缺|未(?:提供|收到|配置|选择|确认|上传|连接|执行|完成)|没有(?:可用|收到|提供|配置|选择|确认|上传|连接|执行|完成|可执行)|(?:请|需要(?:你|用户)?|等待(?:你|用户)?|麻烦).{0,32}(?:提供|补充|上传|选择|确认|登录|完成|允许|授权)|missing|required (?:input|information)|not (?:provided|available|configured)|(?:please|need you to) (?:provide|upload|select|confirm|sign in|complete|authorize))/i.test(
+      text,
+    );
+  const namesConcreteInput =
+    /(?:URL|网址|链接|SSH|服务器|server|主机|host|远程|IP(?:\s*地址)?|域名|端口|port|账号|用户名|username|密码|password|密钥|key|凭据|credential|token|验证码|动态码|OTP|2FA|人工验证|CAPTCHA|连接参数|登录信息|权限|permission|仓库|repository|remote|分支|branch|发布目标|文件|file|附件|图片|路径|path|目录|需求|requirement|规格|specification|字段|field|接口|API|数据库|database|外部服务|运行环境|测试环境|依赖|dependency)/i.test(
+      text,
+    );
+  const asksUser =
+    /(?:请|需要(?:你|用户)?|等待(?:你|用户)?|麻烦).{0,32}(?:提供|补充|上传|选择|确认|登录|完成|允许|授权)|(?:提供|补充|上传|选择|确认|登录|完成).{0,24}(?:后|之后|才能|即可).{0,18}(?:继续|执行|处理|开始)|(?:please|need you to) (?:provide|upload|select|confirm|sign in|complete|authorize)/i.test(
+      text,
+    );
+  return reportsUnavailable && namesConcreteInput && asksUser;
+}
+
+/**
+ * A truthful request for required user/external input is a blocked outcome,
+ * not a failed verification. Workspace inspection/modification still cannot
+ * be skipped through prose alone.
+ */
+export function reportsBlockedCodingOperations(
+  text: string,
+  missing: readonly CodingOperation[],
+) {
+  if (!text.trim() || !missing.length) return false;
+  const explicitlyRequestsInput = reportsMissingRequiredUserInput(text);
+  if (
+    !explicitlyRequestsInput &&
+    missing.some((operation) => !BLOCKABLE_CODING_OPERATIONS.has(operation))
+  )
+    return false;
+  const reportsUnavailable =
+    /(?:无法|不能|未能|尚未|暂时无法|不可执行|阻塞|缺少|欠缺|未(?:提供|收到|配置|连接|执行|完成|部署|上传|下载|验证|测试)|没有(?:可用|收到|提供|配置|连接|执行|完成|部署|上传|下载|验证|测试|可执行))/i.test(
+      text,
+    );
+  const namesRequiredInput =
+    /(?:SSH|服务器|主机|远程|IP(?:\s*地址)?|域名|端口|账号|用户名|密码|密钥|凭据|连接参数|登录信息|权限|数据库|外部服务|运行环境|测试环境|依赖)|(?:需要|请|等待).{0,24}(?:提供|补充|配置|确认)/i.test(
+      text,
+    );
+  if (!reportsUnavailable || !namesRequiredInput) return false;
+
+  const operationWords = missing
+    .map((operation) => {
+      if (operation === "execute") return "执行|运行|启动|安装|部署|发布";
+      if (operation === "validate") return "验证|校验|测试|构建|检查";
+      if (operation === "connect") return "连接|登录";
+      if (operation === "upload") return "上传|传输";
+      return "下载|拉取";
+    })
+    .join("|");
+  const claimsSuccess = new RegExp(
+    `(?:已|已经|成功).{0,20}(?:${operationWords})|(?:${operationWords}).{0,12}(?:成功|已完成|完成了|好了)`,
+    "i",
+  );
+  const withoutNegatedSuccess = text.replace(
+    new RegExp(
+      `(?:未能|没有|尚未|无法|不能|并未|未).{0,8}(?:成功|完成).{0,12}(?:${operationWords})`,
+      "gi",
+    ),
+    "",
+  );
+  return !claimsSuccess.test(withoutNegatedSuccess);
 }

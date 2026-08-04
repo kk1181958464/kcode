@@ -25,6 +25,11 @@ export const ACCENT_OPTIONS: {
 export type QueuedChatMessage = ChatMessage & { queued?: boolean };
 export type TaskDrafts = Record<string, string>;
 
+export type TaskCollaboration = {
+  mode: "planner-executor";
+  executorModelSelection: string;
+};
+
 export type TaskRecord = {
   id: string;
   name: string;
@@ -34,6 +39,7 @@ export type TaskRecord = {
   messages: ChatMessage[];
   activities: AgentActivity[];
   modelSelection?: string;
+  collaboration?: TaskCollaboration;
   reasoningEffort?: ReasoningEffort;
   contextDirectory?: string;
   runningId?: string;

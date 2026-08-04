@@ -10,6 +10,11 @@ test("builds a bounded remote task snapshot without absolute workspace paths", (
     workspacePath: "D:\\projects\\private\\kcode",
     createdAt: 1,
     updatedAt: 2,
+    modelSelection: "planner|sol",
+    collaboration: {
+      mode: "planner-executor",
+      executorModelSelection: "executor|luna",
+    },
     messages: [
       {
         id: "message-1",
@@ -53,6 +58,7 @@ test("builds a bounded remote task snapshot without absolute workspace paths", (
   const snapshot = remoteTaskSnapshot(task);
   const serialized = JSON.stringify(snapshot);
   assert.equal(snapshot.workspaceName, "kcode");
+  assert.equal(snapshot.executorModelSelection, "executor|luna");
   assert.equal(snapshot.messages[0].imageCount, 1);
   assert.deepEqual(snapshot.messages[0].files, [
     { name: "Component.vue", size: 120 },

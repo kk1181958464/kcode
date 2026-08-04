@@ -340,6 +340,9 @@ p {
 .status-dot.failed {
   background: var(--danger);
 }
+.status-dot.blocked {
+  background: var(--warning);
+}
 @keyframes breathe {
   50% {
     opacity: 0.4;
@@ -375,6 +378,9 @@ p {
 }
 .task-state.failed {
   color: var(--danger);
+}
+.task-state.blocked {
+  color: var(--warning);
 }
 .task-item-copy strong,
 .task-item-copy small,

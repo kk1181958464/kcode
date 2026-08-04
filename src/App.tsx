@@ -101,6 +101,7 @@ import {
   type ConversationScrollState,
   type QueuedChatMessage,
   type SettingsSection,
+  type TaskCollaboration,
   type TaskDrafts,
   type TaskRecord,
   type ThemePreference,
@@ -165,6 +166,7 @@ import {
   type ComposerTextareaHandle,
 } from "./components/composer/ComposerTextarea";
 import { PermissionPicker } from "./components/composer/PermissionPicker";
+import { CollaborationPicker } from "./components/composer/CollaborationPicker";
 const AppUpdateDialog = lazy(() =>
   import("./components/dialogs/AppUpdateDialog").then((m) => ({
     default: m.AppUpdateDialog,
@@ -1524,7 +1526,26 @@ export default function App() {
 
   function selectModel(value: string) {
     setSelected(value);
-    patchActiveTask({ modelSelection: value });
+    const currentCollaboration = activeTask?.collaboration;
+    const executorSelection = currentCollaboration?.executorModelSelection;
+    const fallbackExecutor = models.find(
+      ({ provider, model }) =>
+        provider.hasApiKey && `${provider.id}|${model.id}` !== value,
+    );
+    const collaboration =
+      currentCollaboration && executorSelection === value
+        ? fallbackExecutor
+          ? {
+              mode: "planner-executor" as const,
+              executorModelSelection: `${fallbackExecutor.provider.id}|${fallbackExecutor.model.id}`,
+            }
+          : undefined
+        : currentCollaboration;
+    patchActiveTask({ modelSelection: value, collaboration });
+  }
+
+  function selectCollaboration(value?: TaskCollaboration) {
+    patchActiveTask({ collaboration: value });
   }
 
   function selectReasoningEffort(value: ReasoningEffort) {
@@ -2193,6 +2214,8 @@ export default function App() {
           requestTasksRef.current.delete(id);
         }
         if (event.type === "done") {
+          const finishedStatus =
+            event.outcome === "blocked" ? "blocked" : "completed";
           clearStreamingProgress(id);
           clearPendingReasoning(id);
           if (textFlushTimerRef.current) {
@@ -2230,7 +2253,7 @@ export default function App() {
               return {
                 ...task,
                 messages: committedMessages,
-                ...finishTaskRequest(task.runningId, id, "completed"),
+                ...finishTaskRequest(task.runningId, id, finishedStatus),
                 usageResolved: true,
                 imageSemantics,
                 updatedAt: Date.now(),
@@ -2369,6 +2392,7 @@ export default function App() {
       messages: [],
       activities: [],
       modelSelection: selected,
+      collaboration: activeTask?.collaboration,
       reasoningEffort,
     };
     hydratedTaskIdsRef.current.add(task.id);
@@ -2492,6 +2516,7 @@ export default function App() {
       messages: [],
       activities: [],
       modelSelection: selected,
+      collaboration: activeTask?.collaboration,
       reasoningEffort,
     };
     hydratedTaskIdsRef.current.add(task.id);
@@ -3092,6 +3117,40 @@ export default function App() {
       taskSummaryBusy
     )
       return;
+    const requestedCollaboration = requestTask.collaboration;
+    const executorTarget = requestedCollaboration
+      ? models.find(
+          (item) =>
+            `${item.provider.id}|${item.model.id}` ===
+            requestedCollaboration.executorModelSelection,
+        )
+      : undefined;
+    if (
+      requestedCollaboration &&
+      (!executorTarget ||
+        !executorTarget.provider.hasApiKey ||
+        requestedCollaboration.executorModelSelection === taskSelection)
+    ) {
+      setContextError("协作模式的执行模型不可用，请重新选择执行模型");
+      return;
+    }
+    const collaboration = executorTarget
+      ? {
+          mode: "planner-executor" as const,
+          executor: {
+            providerId: executorTarget.provider.id,
+            modelId: executorTarget.model.modelId,
+            displayName: executorTarget.model.displayName,
+            reasoningEffort: normalizeEffort(
+              "auto",
+              reasoningEffortsForModel(executorTarget.model),
+            ),
+            contextWindow:
+              executorTarget.model.contextWindow ??
+              inferContextWindow(executorTarget.model.modelId),
+          },
+        }
+      : undefined;
     if (!queuedMessageId && !taskIsCurrent()) {
       setContextError("任务切换尚未完成，请重新发送");
       return;
@@ -3480,6 +3539,8 @@ export default function App() {
         permissionPolicy,
         workspacePath: requestTask.workspacePath,
         contextWindow: requestContextWindow,
+        agentRole: collaboration ? "planner" : undefined,
+        collaboration,
       });
     } catch (error) {
       const detail = errorMessage(error);
@@ -3802,6 +3863,15 @@ export default function App() {
         (item) => `${item.provider.id}|${item.model.id}` === selected,
       ),
     [models, selected],
+  );
+  const collaborationExecutorTarget = useMemo(
+    () =>
+      models.find(
+        (item) =>
+          `${item.provider.id}|${item.model.id}` ===
+          activeTask?.collaboration?.executorModelSelection,
+      ),
+    [activeTask?.collaboration?.executorModelSelection, models],
   );
   const selectedContextWindow =
     selectedTarget?.model.contextWindow ??
@@ -4349,6 +4419,13 @@ export default function App() {
                       </div>
                     )}
                   </div>
+                  <CollaborationPicker
+                    providers={providers}
+                    plannerSelection={selected}
+                    value={activeTask?.collaboration}
+                    disabled={Boolean(runningId) || summaryBusy}
+                    onChange={selectCollaboration}
+                  />
                   <div className="effort-picker" ref={effortPickerRef}>
                     <button
                       className="effort-trigger"
@@ -4440,6 +4517,7 @@ export default function App() {
             runStatus={runStatus}
             activities={statusActivities}
             selectedTarget={selectedTarget}
+            executorTarget={collaborationExecutorTarget}
             effortLabels={effortLabels}
             reasoningEffort={reasoningEffort}
             checkpoints={checkpoints}

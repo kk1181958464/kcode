@@ -51,6 +51,7 @@ export function remoteTaskSnapshot(task: TaskRecord): RemoteTaskSnapshot {
     runningId: task.runningId,
     runStatus: task.runStatus,
     modelSelection: task.modelSelection,
+    executorModelSelection: task.collaboration?.executorModelSelection,
     messages: task.messages.slice(-160).map((message) => ({
       id: message.id,
       role: message.role,

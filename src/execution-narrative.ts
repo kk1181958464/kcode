@@ -6,6 +6,12 @@ const EXECUTION_NARRATIVE_DEDUP_MIN = 24;
 const NUMBERED_PLAN_LINE =
   /^\s*(?:(?:\d{1,2})\s*[.)、:]|第\s*[一二三四五六七八九十\d]{1,3}\s*步)\s*.+$/;
 
+const EXPLICIT_EXECUTION_CONTINUATION =
+  /(?:接下来|下一步|现在(?:就)?(?:开始|来)|我(?:会|将|来|先|需要|准备|打算)[^。！？!?\n]{0,20}(?:检查|查看|修改|实现|继续|编辑|运行|执行|创建|添加|修复|验证|测试|读取|搜索|分析|解析|汇总|提取|处理|核对|补充|连接|上传|下载)|继续(?:执行|处理|检查|实现|完成)|让我(?:先|来|继续)|马上|正在[^。！？!?\n]{0,14}(?:检查|实现|修改|处理|解析|汇总)|then i['’]?ll|i['’]?ll (?:now|proceed|continue|check|start|go ahead|next|implement|fix|add|verify|run)|next,? i(?:['’]?ll| will| am)|let me (?:now|check|start|look|continue|implement))/i;
+
+const DECLARED_TOOL_EXECUTION =
+  /(?:^|[。！？!?\n])\s*我(?:现在|接着|随后|先)?(?:直接)?(?:用|通过|改用|准备使用|运行|执行|调用)\s*[^。！？!?\n]{0,56}(?:检查|查看|修改|实现|编辑|运行|执行|创建|添加|修复|验证|测试|读取|搜索|分析|解析|汇总|提取|转换|对比|处理|核对|生成|调用|打开|连接|上传|下载)(?!了|过)[^。！？!?\n]{0,100}[。！？!?]?\s*$/i;
+
 const INSPECTION_TOOLS = new Set<AgentActivity["tool"]>([
   "list_directory",
   "glob_files",
@@ -79,6 +85,16 @@ function executionNarrativeSource(value: string) {
       16_000,
     ),
   };
+}
+
+/** Detects a model turn that promises another executable step but calls no tool. */
+export function isExecutionContinuationNarrative(value: string) {
+  const tail = executionNarrativeSource(value).value.slice(-320).trim();
+  if (!tail) return false;
+  return (
+    EXPLICIT_EXECUTION_CONTINUATION.test(tail) ||
+    DECLARED_TOOL_EXECUTION.test(tail)
+  );
 }
 
 function trimNarrativeContinuation(value: string) {

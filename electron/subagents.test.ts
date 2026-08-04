@@ -279,6 +279,35 @@ test("prevents sibling subagents from modifying the same path", async () => {
   await waitForSubagents("parent");
 });
 
+test("releases file ownership after a completed subagent is collected", async () => {
+  const parentSignal = new AbortController().signal;
+  let secondClaimed = false;
+  const owner = spawnSubagent(
+    "sequential-parent",
+    "first executor",
+    "edit shared file",
+    parentSignal,
+    async function* (requestId) {
+      claimSubagentMutation(requestId, "D:\\project", ["shared.ts"]);
+      yield { type: "done" };
+    },
+  );
+  await waitForSubagents("sequential-parent", [owner.id]);
+  const followUp = spawnSubagent(
+    "sequential-parent",
+    "follow-up executor",
+    "fix shared file",
+    parentSignal,
+    async function* (requestId) {
+      claimSubagentMutation(requestId, "D:\\project", ["shared.ts"]);
+      secondClaimed = true;
+      yield { type: "done" };
+    },
+  );
+  await waitForSubagents("sequential-parent", [followUp.id]);
+  assert.equal(secondClaimed, true);
+});
+
 test("parent cancellation stops a child and stop returns partial output", async () => {
   const runner = async function* (
     _requestId: string,
