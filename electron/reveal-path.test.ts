@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 import { resolveRevealPath } from "./reveal-path";
 import { localPathFromMarkdownHref } from "../src/lib/reveal-path";
 
@@ -34,11 +35,16 @@ test("recognizes local markdown links without hijacking web links", () => {
 });
 
 test("resolves file URLs to local files", () => {
-  const target = resolveRevealPath(
-    "file:///D:/downloads/report%20final.txt",
-    "D:/project/kcode",
+  const expected = path.join(
+    path.parse(path.resolve(".")).root,
+    "downloads",
+    "report final.txt",
   );
-  assert.equal(target, path.resolve("D:/downloads/report final.txt"));
+  const target = resolveRevealPath(
+    pathToFileURL(expected).href,
+    path.resolve("."),
+  );
+  assert.equal(target, expected);
 });
 
 test("rejects non-file URI schemes in the main process", () => {
