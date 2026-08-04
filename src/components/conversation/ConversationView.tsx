@@ -19,6 +19,7 @@ import {
   LoaderCircle,
   RotateCcw,
   Terminal,
+  TextWrap,
   UserRound,
   X,
 } from "lucide-react";
@@ -93,16 +94,39 @@ const BoundedDiffView = memo(function BoundedDiffView({
 }: {
   text: string;
 }) {
-  const rendered = useMemo(() => renderedActivityDetail(text), [text]);
+  const [wrapLines, setWrapLines] = useState(true);
+  const [showFullDiff, setShowFullDiff] = useState(false);
+  const rendered = useMemo(
+    () => (showFullDiff ? { text, omitted: 0 } : renderedActivityDetail(text)),
+    [showFullDiff, text],
+  );
+  const lineCount = useMemo(() => text.split("\n").length, [text]);
   return (
     <>
       {rendered.omitted > 0 && (
         <div className="activity-output-truncated">
-          差异过大，页面仅渲染首尾内容，中间已省略{" "}
-          {rendered.omitted.toLocaleString()} 个字符。
+          <span>
+            差异过大，已省略中间 {rendered.omitted.toLocaleString()} 个字符。
+          </span>
+          <button type="button" onClick={() => setShowFullDiff(true)}>
+            显示完整差异
+          </button>
         </div>
       )}
-      <DiffView text={rendered.text} />
+      <div className="diff-view-controls">
+        <small>{lineCount.toLocaleString()} 行</small>
+        <button
+          type="button"
+          className={wrapLines ? "is-active" : ""}
+          title={wrapLines ? "关闭长行自动换行" : "开启长行自动换行"}
+          aria-label={wrapLines ? "关闭长行自动换行" : "开启长行自动换行"}
+          aria-pressed={wrapLines}
+          onClick={() => setWrapLines((value) => !value)}
+        >
+          <TextWrap size={13} />
+        </button>
+      </div>
+      <DiffView text={rendered.text} wrapLines={wrapLines} />
     </>
   );
 });

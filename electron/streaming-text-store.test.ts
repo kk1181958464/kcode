@@ -14,8 +14,10 @@ import {
 test("streaming text store appends text and notifies only its request", () => {
   let firstNotifications = 0;
   let secondNotifications = 0;
-  const unsubscribeFirst = subscribeStreamingText("first", () => {
+  const firstChanges: unknown[] = [];
+  const unsubscribeFirst = subscribeStreamingText("first", (change) => {
     firstNotifications += 1;
+    firstChanges.push(change);
   });
   const unsubscribeSecond = subscribeStreamingText("second", () => {
     secondNotifications += 1;
@@ -30,12 +32,13 @@ test("streaming text store appends text and notifies only its request", () => {
 
   assert.equal(consumeStreamingText("first"), "你好");
   assert.equal(getStreamingText("first"), "");
-  assert.equal(firstNotifications, 2);
+  assert.equal(firstNotifications, 3);
+  assert.deepEqual(firstChanges.at(-1), { type: "reset" });
 
   appendStreamingText("first", "重试文本");
   resetStreamingText("first");
   assert.equal(getStreamingText("first"), "");
-  assert.equal(firstNotifications, 4);
+  assert.equal(firstNotifications, 5);
 
   unsubscribeFirst();
   unsubscribeSecond();
@@ -55,6 +58,20 @@ test("streaming progress replaces the current status instead of appending histor
     value: "断流后正在重连",
   });
   resetStreamingText(key);
+  unsubscribe();
+});
+
+test("consuming settled text clears the mounted streaming tail", () => {
+  const changes: unknown[] = [];
+  const unsubscribe = subscribeStreamingText("settled", (change) =>
+    changes.push(change),
+  );
+
+  appendStreamingText("settled", "已经显示在步骤上方的正文");
+  assert.equal(consumeStreamingText("settled"), "已经显示在步骤上方的正文");
+  assert.deepEqual(changes.at(-1), { type: "reset" });
+  assert.equal(getStreamingText("settled"), "");
+
   unsubscribe();
 });
 

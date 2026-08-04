@@ -81,8 +81,9 @@ export function resetStreamingText(requestId: string) {
 
 export function consumeStreamingText(requestId: string) {
   const value = getStreamingText(requestId);
-  values.delete(requestId);
+  const consumed = values.delete(requestId);
   lengths.delete(requestId);
+  if (consumed) emit(requestId, { type: "reset" });
   return value;
 }
 

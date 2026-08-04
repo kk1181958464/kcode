@@ -1506,8 +1506,40 @@ select:focus-visible {
   transform: rotate(180deg);
 }
 .changed-file-block .diff-view {
-  border-top: 1px solid #eef0ec;
+  max-height: min(52vh, 520px);
+  margin: 0;
+  border-top: 0;
   border-radius: 0;
+}
+.diff-view-controls {
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 8px 0 12px;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  background: var(--code-surface);
+  color: var(--muted);
+}
+.diff-view-controls small {
+  font-size: 9px;
+}
+.diff-view-controls button {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+}
+.diff-view-controls button:hover,
+.diff-view-controls button.is-active {
+  background: var(--surface-hover);
+  color: var(--accent);
 }
 .file-history-more {
   border-top: 1px solid var(--line);
@@ -1840,6 +1872,24 @@ select:focus-visible {
   font-size: 10px;
   line-height: 1.5;
 }
+.activity-output-truncated:has(> button) {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.activity-output-truncated > button {
+  flex: 0 0 auto;
+  padding: 3px 7px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ink);
+  font-size: 9px;
+}
+.activity-output-truncated > button:hover {
+  background: var(--surface-hover);
+}
 .agent-activity:not(.running):not(.waiting) {
   content-visibility: auto;
   contain-intrinsic-size: auto 48px;
@@ -1849,11 +1899,29 @@ select:focus-visible {
 }
 .diff-view {
   display: block;
+  min-width: 0;
+  max-width: 100%;
+  overflow: auto;
   padding: 12px 0 !important;
+  white-space: pre;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 .diff-line {
   display: block;
+  width: max-content;
+  min-width: 100%;
   padding: 0 12px;
+}
+.diff-view.is-wrapped {
+  overflow-x: hidden;
+  white-space: pre-wrap;
+}
+.diff-view.is-wrapped .diff-line {
+  width: 100%;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .diff-add {
   background: var(--success-soft);
@@ -9103,6 +9171,17 @@ button[aria-busy="true"] {
   color: var(--ink);
 }
 
+.git-diff-dialog-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.git-diff-dialog-actions button.is-active {
+  background: var(--surface-hover);
+  color: var(--accent);
+}
+
 .git-diff-dialog-body {
   min-height: 0;
   display: grid;
@@ -9156,14 +9235,16 @@ button[aria-busy="true"] {
 .git-diff-dialog-content {
   min-width: 0;
   min-height: 0;
-  overflow: auto;
+  overflow: hidden;
   background: var(--code-surface);
 }
 
 .git-diff-dialog-content .diff-view {
-  min-height: 100%;
-  max-height: none;
+  height: 100%;
+  min-height: 0;
+  max-height: 100%;
   margin: 0;
+  overflow: auto;
   border: 0;
   border-radius: 0;
 }

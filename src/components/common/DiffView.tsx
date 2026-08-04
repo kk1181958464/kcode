@@ -3,13 +3,17 @@ import React from "react";
 export const DiffView = React.memo(function DiffView({
   text,
   className,
+  wrapLines = false,
 }: {
   text: string;
   className?: string;
+  wrapLines?: boolean;
 }) {
   const lines = text.split("\n");
   return (
-    <pre className={`diff-view${className ? ` ${className}` : ""}`}>
+    <pre
+      className={`diff-view${wrapLines ? " is-wrapped" : ""}${className ? ` ${className}` : ""}`}
+    >
       {lines.map((line, index) => {
         const kind =
           line.startsWith("+++") || line.startsWith("---")

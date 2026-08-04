@@ -12,6 +12,7 @@ import {
   RefreshCw,
   RotateCcw,
   Terminal,
+  TextWrap,
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -172,6 +173,7 @@ export function StatusPanel({
   const [loadedFileDiff, setLoadedFileDiff] = useState("");
   const [fileDiffError, setFileDiffError] = useState("");
   const [fileDiffLoading, setFileDiffLoading] = useState(false);
+  const [wrapDiffLines, setWrapDiffLines] = useState(true);
   useEffect(() => {
     if (!runningId || !activeTask?.startedAt) {
       setLiveDurationMs(durationMs);
@@ -599,14 +601,30 @@ export function StatusPanel({
                 <GitCompareArrows size={16} />
                 <strong>文件更新</strong>
               </span>
-              <button
-                type="button"
-                title="关闭"
-                aria-label="关闭文件更新"
-                onClick={() => setGitDiffOpen(() => false)}
-              >
-                <X size={16} />
-              </button>
+              <div className="git-diff-dialog-actions">
+                <button
+                  type="button"
+                  className={wrapDiffLines ? "is-active" : ""}
+                  title={
+                    wrapDiffLines ? "关闭长行自动换行" : "开启长行自动换行"
+                  }
+                  aria-label={
+                    wrapDiffLines ? "关闭长行自动换行" : "开启长行自动换行"
+                  }
+                  aria-pressed={wrapDiffLines}
+                  onClick={() => setWrapDiffLines((value) => !value)}
+                >
+                  <TextWrap size={15} />
+                </button>
+                <button
+                  type="button"
+                  title="关闭"
+                  aria-label="关闭文件更新"
+                  onClick={() => setGitDiffOpen(() => false)}
+                >
+                  <X size={16} />
+                </button>
+              </div>
             </header>
             <div className="git-diff-dialog-body">
               {fileChanges.length > 0 && (
@@ -653,7 +671,7 @@ export function StatusPanel({
                 ) : fileDiffError ? (
                   <pre className="git-diff-empty">{fileDiffError}</pre>
                 ) : selectedDiffText ? (
-                  <DiffView text={selectedDiffText} />
+                  <DiffView text={selectedDiffText} wrapLines={wrapDiffLines} />
                 ) : (
                   <pre className="git-diff-empty">
                     {selectedDiffPath
