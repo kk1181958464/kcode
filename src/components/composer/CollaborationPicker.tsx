@@ -1,5 +1,10 @@
 import { Check, ChevronDown, Cpu, Workflow } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  effortLabels,
+  normalizeEffort,
+  reasoningEffortsForModel,
+} from "../../lib/model-utils";
 import type { TaskCollaboration } from "../../models";
 import type { ProviderConfig } from "../../types";
 
@@ -43,6 +48,16 @@ export function CollaborationPicker({
       selection(provider.id, model.id) === value?.executorModelSelection,
   );
   const enabled = value?.mode === "planner-executor";
+  const executorEfforts = reasoningEffortsForModel(executor?.model);
+  const executorEffort = normalizeEffort(
+    value?.executorReasoningEffort ?? "auto",
+    executorEfforts,
+  );
+  const triggerLabel = enabled
+    ? `执行 · ${executor?.model.displayName || "选择模型"}${
+        executor ? ` · ${effortLabels[executorEffort]}` : ""
+      }`
+    : "单模型";
 
   useEffect(() => {
     const close = (event: MouseEvent) => {
@@ -66,7 +81,18 @@ export function CollaborationPicker({
           )
         : "";
     if (!executorModelSelection) return;
-    onChange({ mode: "planner-executor", executorModelSelection });
+    const nextExecutor = availableExecutors.find(
+      ({ provider, model }) =>
+        selection(provider.id, model.id) === executorModelSelection,
+    );
+    onChange({
+      mode: "planner-executor",
+      executorModelSelection,
+      executorReasoningEffort: normalizeEffort(
+        value?.executorReasoningEffort ?? "auto",
+        reasoningEffortsForModel(nextExecutor?.model),
+      ),
+    });
   }
 
   return (
@@ -76,19 +102,33 @@ export function CollaborationPicker({
         type="button"
         aria-haspopup="menu"
         aria-expanded={open}
+        aria-label={triggerLabel}
         disabled={disabled}
         title={
           enabled && executor
-            ? `规划：当前模型 · 执行：${executor.model.displayName}`
+            ? `规划：当前模型 · 执行：${executor.model.displayName}（${effortLabels[executorEffort]}）`
             : "多模型协作"
         }
         onClick={() => setOpen((current) => !current)}
       >
         <Workflow size={14} />
-        <span>
-          {enabled
-            ? `执行 · ${executor?.model.displayName || "选择模型"}`
-            : "单模型"}
+        <span className="collaboration-trigger-label">
+          {enabled ? (
+            <>
+              <span className="collaboration-trigger-role">执行 · </span>
+              <span className="collaboration-trigger-model">
+                {executor?.model.displayName || "选择模型"}
+              </span>
+              {executor && (
+                <span className="collaboration-trigger-effort">
+                  {" · "}
+                  {effortLabels[executorEffort]}
+                </span>
+              )}
+            </>
+          ) : (
+            "单模型"
+          )}
         </span>
         <ChevronDown size={13} />
       </button>
@@ -144,8 +184,11 @@ export function CollaborationPicker({
                             onChange({
                               mode: "planner-executor",
                               executorModelSelection: modelSelection,
+                              executorReasoningEffort: normalizeEffort(
+                                value.executorReasoningEffort ?? "auto",
+                                reasoningEffortsForModel(model),
+                              ),
                             });
-                            setOpen(false);
                           }}
                         >
                           <Cpu size={14} />
@@ -159,6 +202,33 @@ export function CollaborationPicker({
                     })}
                   </section>
                 ))}
+            </div>
+          )}
+          {enabled && executor && (
+            <div className="collaboration-effort">
+              <header>
+                <span>执行推理等级</span>
+                <small>{executor.model.displayName}</small>
+              </header>
+              <div role="group" aria-label="执行模型推理等级">
+                {executorEfforts.map((effort) => (
+                  <button
+                    key={effort}
+                    type="button"
+                    className={executorEffort === effort ? "active" : ""}
+                    aria-pressed={executorEffort === effort}
+                    onClick={() =>
+                      onChange({
+                        mode: "planner-executor",
+                        executorModelSelection: value.executorModelSelection,
+                        executorReasoningEffort: effort,
+                      })
+                    }
+                  >
+                    {effortLabels[effort]}
+                  </button>
+                ))}
+              </div>
             </div>
           )}
         </div>

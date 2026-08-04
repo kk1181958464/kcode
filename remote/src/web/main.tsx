@@ -14,6 +14,7 @@ import {
   Check,
   ChevronDown,
   ChevronLeft,
+  ChevronRight,
   ChevronUp,
   CircleAlert,
   CircleDot,
@@ -45,12 +46,16 @@ import {
 } from "./mobile-attachments";
 import {
   boundedLiveText,
+  completedProcessDuration,
+  completedProcessTextLength,
+  formatCompactDuration,
   mergeLiveContent,
   MOBILE_MESSAGE_BATCH,
   MOBILE_TASK_BATCH,
   reconcileById,
   visibleMessageWindow,
 } from "./mobile-ui";
+import { registerPwa, subscribePwaUpdate } from "./pwa";
 import "./styles.css";
 
 type User = { id: string; username: string };
@@ -68,6 +73,9 @@ type TaskMessage = {
   content: string;
   error?: string;
   createdAt: number;
+  completedAt?: number;
+  finalResponseOffset?: number;
+  finalResponseStartedAt?: number;
   model?: string;
   imageCount?: number;
   files?: Array<{ name: string; size: number }>;
@@ -79,6 +87,8 @@ type TaskActivity = {
   status: string;
   title: string;
   narrative?: string;
+  textOffset?: number;
+  subagentId?: string;
   liveStatus?: string;
   planSteps?: string[];
   planStep?: number;
@@ -243,6 +253,9 @@ function sameMessage(left: TaskMessage, right: TaskMessage) {
     left.content === right.content &&
     left.error === right.error &&
     left.createdAt === right.createdAt &&
+    left.completedAt === right.completedAt &&
+    left.finalResponseOffset === right.finalResponseOffset &&
+    left.finalResponseStartedAt === right.finalResponseStartedAt &&
     left.model === right.model &&
     left.imageCount === right.imageCount &&
     sameFiles(left.files, right.files)
@@ -256,6 +269,8 @@ function sameActivity(left: TaskActivity, right: TaskActivity) {
     left.status === right.status &&
     left.title === right.title &&
     left.narrative === right.narrative &&
+    left.textOffset === right.textOffset &&
+    left.subagentId === right.subagentId &&
     left.liveStatus === right.liveStatus &&
     left.planStep === right.planStep &&
     left.startedAt === right.startedAt &&
@@ -476,17 +491,46 @@ function MessageText({
 
 const RemoteMessageView = memo(function RemoteMessageView({
   message,
+  activities = [],
   live,
   liveLabel,
   running = false,
 }: {
   message: TaskMessage;
+  activities?: TaskActivity[];
   live?: LiveStream;
   liveLabel?: string;
   running?: boolean;
 }) {
+  const [processExpanded, setProcessExpanded] = useState(false);
   const content = mergeLiveContent(message.content, live?.content);
   const fallback = live?.reasoning?.slice(-1_200) || live?.progress || "";
+  const storedFinalResponseOffset = Number(message.finalResponseOffset);
+  const finalResponseOffset = Number.isFinite(storedFinalResponseOffset)
+    ? Math.min(
+        content.length,
+        Math.max(0, Math.floor(storedFinalResponseOffset)),
+      )
+    : undefined;
+  const showCompletedProcess =
+    message.role === "assistant" &&
+    activities.length > 0 &&
+    (!running || finalResponseOffset !== undefined);
+  const processTextLength = showCompletedProcess
+    ? (finalResponseOffset ??
+      completedProcessTextLength(activities, content.length))
+    : 0;
+  const processContent = showCompletedProcess
+    ? content.slice(0, processTextLength)
+    : "";
+  const finalContent = showCompletedProcess
+    ? content.slice(processTextLength)
+    : content;
+  const processDuration = completedProcessDuration(
+    message.createdAt,
+    message.completedAt ?? message.finalResponseStartedAt,
+    activities,
+  );
   return (
     <article className={`remote-message ${message.role}`}>
       <div className="message-meta">
@@ -497,10 +541,58 @@ const RemoteMessageView = memo(function RemoteMessageView({
         <time>{formatTime(message.createdAt)}</time>
       </div>
       <div className="message-body">
+        {showCompletedProcess && (
+          <section
+            className={`remote-completed-process ${
+              processExpanded ? "expanded" : ""
+            } ${message.error ? "failed" : ""}`}
+          >
+            <button
+              type="button"
+              className="remote-completed-process-trigger"
+              aria-expanded={processExpanded}
+              onClick={() => setProcessExpanded((current) => !current)}
+            >
+              <span>{message.error ? "处理未完成" : "已处理"}</span>
+              <time>{formatCompactDuration(processDuration)}</time>
+              <ChevronRight size={13} />
+            </button>
+            {processExpanded && (
+              <div className="remote-completed-process-body">
+                {processContent && <MessageText value={processContent} />}
+                <div className="remote-process-activities">
+                  {activities.map((activity) => (
+                    <div
+                      className={`remote-process-activity ${activity.status}`}
+                      key={activity.id}
+                    >
+                      <i />
+                      <span>
+                        <strong>{activity.title}</strong>
+                        <small>
+                          {activity.path ||
+                            activity.liveStatus ||
+                            activity.errorSummary ||
+                            activity.status}
+                        </small>
+                      </span>
+                      {(activity.additions !== undefined ||
+                        activity.deletions !== undefined) && (
+                        <em>
+                          +{activity.additions ?? 0} -{activity.deletions ?? 0}
+                        </em>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </section>
+        )}
         {message.error ? (
           <span className="message-error">{message.error}</span>
-        ) : content ? (
-          <MessageText value={content} live={running} />
+        ) : finalContent ? (
+          <MessageText value={finalContent} live={running} />
         ) : fallback ? (
           <span className="live-reasoning">{fallback}</span>
         ) : null}
@@ -631,6 +723,15 @@ function App() {
       visibleMessageWindow(selectedTask?.messages || [], visibleMessageCount),
     [selectedTask?.messages, visibleMessageCount],
   );
+  const activitiesByRequest = useMemo(() => {
+    const grouped = new Map<string, TaskActivity[]>();
+    for (const activity of selectedTask?.activities || []) {
+      const current = grouped.get(activity.requestId);
+      if (current) current.push(activity);
+      else grouped.set(activity.requestId, [activity]);
+    }
+    return grouped;
+  }, [selectedTask?.activities]);
   const currentRunActivities = useMemo(() => {
     if (!selectedTask?.runningId) return [];
     return selectedTask.activities.filter(
@@ -1063,6 +1164,21 @@ function App() {
     let stopped = false;
     let checking = false;
     let lastCheckedAt = 0;
+
+    function applyWebUpdate() {
+      const composer = document.querySelector<HTMLTextAreaElement>(
+        ".mobile-composer textarea",
+      );
+      const busy = Boolean(
+        composer?.value.trim() ||
+        document.querySelector(
+          ".mobile-attachment-tray, .remote-message.optimistic",
+        ),
+      );
+      if (busy) setUpdateAvailable(true);
+      else location.reload();
+    }
+
     async function checkForWebUpdate() {
       if (
         stopped ||
@@ -1087,17 +1203,7 @@ function App() {
         const nextBundle = mainBundleSource(nextDocument);
         if (!currentBundle || !nextBundle || currentBundle === nextBundle)
           return;
-        const composer = document.querySelector<HTMLTextAreaElement>(
-          ".mobile-composer textarea",
-        );
-        const busy = Boolean(
-          composer?.value.trim() ||
-          document.querySelector(
-            ".mobile-attachment-tray, .remote-message.optimistic",
-          ),
-        );
-        if (busy) setUpdateAvailable(true);
-        else location.reload();
+        applyWebUpdate();
       } catch {
         /* The normal reconnect loop handles temporary network failures. */
       } finally {
@@ -1115,6 +1221,7 @@ function App() {
     window.addEventListener("focus", checkForWebUpdate);
     window.addEventListener("online", checkForWebUpdate);
     document.addEventListener("visibilitychange", onVisible);
+    const unsubscribePwaUpdate = subscribePwaUpdate(applyWebUpdate);
     return () => {
       stopped = true;
       window.clearTimeout(initial);
@@ -1122,6 +1229,7 @@ function App() {
       window.removeEventListener("focus", checkForWebUpdate);
       window.removeEventListener("online", checkForWebUpdate);
       document.removeEventListener("visibilitychange", onVisible);
+      unsubscribePwaUpdate();
     };
   }, []);
 
@@ -1629,10 +1737,16 @@ function App() {
                 const isLiveAssistant =
                   message.role === "assistant" &&
                   message.id === `assistant:${selectedTask.runningId}`;
+                const requestId = message.id.startsWith("assistant:")
+                  ? message.id.slice("assistant:".length)
+                  : undefined;
                 return (
                   <RemoteMessageView
                     key={message.id}
                     message={message}
+                    activities={
+                      requestId ? activitiesByRequest.get(requestId) : undefined
+                    }
                     live={isLiveAssistant ? selectedLiveStream : undefined}
                     running={isLiveAssistant}
                     liveLabel={liveStatusLabel}
@@ -1909,6 +2023,8 @@ function App() {
     </main>
   );
 }
+
+registerPwa();
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

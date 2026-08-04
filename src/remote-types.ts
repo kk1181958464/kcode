@@ -76,6 +76,9 @@ export type RemoteTaskSnapshot = {
     content: string;
     error?: string;
     createdAt: number;
+    completedAt?: number;
+    finalResponseOffset?: number;
+    finalResponseStartedAt?: number;
     model?: string;
     imageCount?: number;
     files?: Array<{ name: string; size: number }>;
@@ -88,6 +91,7 @@ export type RemoteTaskSnapshot = {
     title: string;
     narrative?: string;
     textOffset?: number;
+    subagentId?: string;
     recoverable?: boolean;
     liveStatus?: string;
     planSteps?: string[];

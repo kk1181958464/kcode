@@ -571,6 +571,95 @@ p {
   font-size: 13px;
   line-height: 1.7;
 }
+.remote-completed-process {
+  margin: 0 0 12px;
+  border-bottom: 1px solid var(--line);
+}
+.remote-completed-process-trigger {
+  width: 100%;
+  min-height: 30px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 0 7px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  text-align: left;
+}
+.remote-completed-process-trigger span {
+  font-weight: 600;
+}
+.remote-completed-process-trigger time {
+  font-variant-numeric: tabular-nums;
+}
+.remote-completed-process-trigger svg {
+  flex: none;
+  transition: transform 160ms ease;
+}
+.remote-completed-process.expanded .remote-completed-process-trigger svg {
+  transform: rotate(90deg);
+}
+.remote-completed-process.failed .remote-completed-process-trigger span {
+  color: var(--danger);
+}
+.remote-completed-process-body {
+  padding: 2px 0 10px;
+  color: var(--muted);
+}
+.remote-process-activities {
+  display: grid;
+  gap: 5px;
+  margin-top: 9px;
+}
+.remote-process-activity {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 7px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  min-height: 28px;
+}
+.remote-process-activity > i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+.remote-process-activity.success > i,
+.remote-process-activity.completed > i {
+  background: var(--success);
+}
+.remote-process-activity.failed > i,
+.remote-process-activity.denied > i {
+  background: var(--danger);
+}
+.remote-process-activity > span {
+  min-width: 0;
+  display: grid;
+  line-height: 1.35;
+}
+.remote-process-activity strong,
+.remote-process-activity small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.remote-process-activity strong {
+  color: var(--ink);
+  font-size: 11px;
+}
+.remote-process-activity small {
+  color: var(--muted);
+  font-size: 9.5px;
+}
+.remote-process-activity em {
+  color: var(--muted);
+  font-size: 9.5px;
+  font-style: normal;
+  white-space: nowrap;
+}
 .message-copy {
   display: block;
   white-space: pre-wrap;

@@ -1413,6 +1413,48 @@ select:focus-visible {
 .assistant-timeline {
   min-width: 0;
 }
+.completed-process {
+  margin: 1px 0 13px;
+  border-bottom: 1px solid var(--line);
+}
+.completed-process-trigger {
+  width: 100%;
+  min-height: 30px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 0 7px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 10.5px;
+  text-align: left;
+}
+.completed-process-trigger:hover {
+  color: var(--ink);
+}
+.completed-process-trigger span {
+  font-weight: 560;
+}
+.completed-process-trigger time {
+  font-variant-numeric: tabular-nums;
+}
+.completed-process-trigger svg {
+  flex: none;
+  transition: transform 160ms ease;
+}
+.completed-process.expanded .completed-process-trigger svg {
+  transform: rotate(90deg);
+}
+.completed-process.failed .completed-process-trigger span {
+  color: var(--danger);
+}
+.completed-process-body {
+  padding: 3px 0 10px;
+}
+.completed-process + .markdown-block {
+  margin-top: 0;
+}
 .assistant-timeline-group {
   content-visibility: auto;
   contain-intrinsic-size: auto 96px;
@@ -1607,6 +1649,23 @@ select:focus-visible {
   color: #788078;
   cursor: default;
 }
+.activity-reveal {
+  width: 27px;
+  height: 27px;
+  flex: 0 0 27px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+}
+.activity-reveal:hover,
+.activity-reveal:focus-visible {
+  background: var(--surface-hover);
+  color: var(--ink);
+}
 .restore-backdrop {
   position: fixed;
   inset: 0;
@@ -1696,10 +1755,41 @@ select:focus-visible {
   gap: 1px;
   flex: 1;
 }
+.activity-title-line {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
 .activity-title strong {
   color: var(--ink);
   font-size: 11px;
   font-weight: 650;
+}
+.activity-title-line > strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.activity-model-badge {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-height: 18px;
+  padding: 1px 5px;
+  border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--line));
+  border-radius: 4px;
+  color: var(--accent-strong);
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  font-size: 9px;
+  font-weight: 600;
+}
+.activity-model-badge em {
+  color: var(--muted);
+  font-style: normal;
+  font-weight: 500;
 }
 .agent-activity.failed .activity-title strong,
 .agent-activity.denied .activity-title strong {
@@ -2820,6 +2910,22 @@ select:focus-visible {
   white-space: nowrap;
 }
 
+.collaboration-trigger-label {
+  display: flex;
+  align-items: center;
+}
+
+.collaboration-trigger-model {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.collaboration-trigger-role,
+.collaboration-trigger-effort {
+  flex: none;
+}
+
 .collaboration-trigger > svg {
   flex: 0 0 auto;
 }
@@ -2872,7 +2978,7 @@ select:focus-visible {
 }
 
 .collaboration-model-list {
-  max-height: 330px;
+  max-height: 270px;
   margin-top: 7px;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -2947,6 +3053,61 @@ select:focus-visible {
 .collaboration-model-list section > button small {
   color: var(--muted);
   font-size: 9px;
+}
+
+.collaboration-effort {
+  margin-top: 7px;
+  padding: 8px 7px 4px;
+  border-top: 1px solid var(--line);
+}
+
+.collaboration-effort > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 7px;
+  color: var(--ink);
+  font-size: 10px;
+}
+
+.collaboration-effort > header small {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.collaboration-effort > div {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(45px, 1fr));
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-muted);
+}
+
+.collaboration-effort button {
+  min-height: 27px;
+  padding: 0 5px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.collaboration-effort button:hover,
+.collaboration-effort button.active {
+  background: var(--surface-raised);
+  color: var(--ink);
+}
+
+.collaboration-effort button.active {
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--ink) 9%, transparent);
 }
 .model-menu {
   position: absolute;
@@ -5101,6 +5262,12 @@ select:focus {
   .model-menu {
     left: -40px;
   }
+  .collaboration-trigger-role {
+    display: none;
+  }
+  .collaboration-trigger > svg:last-child {
+    display: none;
+  }
 }
 @media (max-width: 860px) {
   .app-shell,
@@ -6035,6 +6202,18 @@ select:focus-visible {
 .message-body a {
   color: var(--link);
   text-decoration-color: color-mix(in srgb, var(--link) 35%, transparent);
+}
+
+.message-body a.local-file-link {
+  cursor: pointer;
+  text-decoration-style: dashed;
+  text-decoration-thickness: 1px;
+}
+
+.message-body a.local-file-link:hover,
+.message-body a.local-file-link:focus-visible {
+  color: var(--accent);
+  text-decoration-color: currentColor;
 }
 
 .message-body blockquote {
@@ -8475,6 +8654,15 @@ button[aria-busy="true"] {
   margin: 0 6px;
   color: color-mix(in srgb, var(--muted) 58%, transparent);
 }
+.execution-summary-executor {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--accent-strong);
+}
+.execution-summary-executor.verified {
+  color: var(--success);
+}
 
 .execution-summary-diff {
   gap: 5px;
@@ -8580,6 +8768,16 @@ button[aria-busy="true"] {
   color: var(--muted);
   font-size: 9.5px;
   font-weight: 550;
+}
+
+.execution-summary-tool-model {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--accent-strong);
+  font-size: 8.5px;
+  font-style: normal;
+  white-space: nowrap;
 }
 
 .execution-summary-tool code {
@@ -8902,7 +9100,9 @@ button[aria-busy="true"] {
   padding: 3px 8px;
 }
 
-.execution-summary-file-breakdown.compact > div {
+.execution-summary-file-breakdown.compact
+  > .execution-summary-file-item
+  > button {
   min-height: 24px;
   padding: 2px 8px;
 }
@@ -8928,22 +9128,52 @@ button[aria-busy="true"] {
   font-size: 9px;
 }
 
-.execution-summary-file-breakdown > div {
+.execution-summary-file-item {
+  min-width: 0;
+}
+
+.execution-summary-file-row-wrap.revealable {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 28px;
+  align-items: center;
+  gap: 2px;
+}
+
+.execution-summary-file-row {
+  width: 100%;
   min-height: 28px;
   display: grid;
   grid-template-columns: 16px minmax(0, 1fr) auto;
   align-items: center;
   gap: 6px;
   padding: 4px 10px;
+  border: 0;
+  border-radius: 3px;
   color: var(--muted);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
 }
 
-.execution-summary-file-breakdown > div:hover {
+.execution-summary-file-row:hover,
+.execution-summary-file-row:focus-visible {
   background: var(--surface-hover);
 }
 
-.execution-summary-file-breakdown > div > svg {
+.execution-summary-file-row.no-diff {
+  cursor: default;
+}
+
+.execution-summary-file-row > svg {
   color: var(--muted);
+}
+
+.execution-summary-file-chevron {
+  transition: transform 160ms ease;
+}
+
+.execution-summary-file-item.open .execution-summary-file-chevron {
+  transform: rotate(180deg);
 }
 
 .execution-summary-file-breakdown code {
@@ -8956,10 +9186,37 @@ button[aria-busy="true"] {
   white-space: nowrap;
 }
 
-.execution-summary-file-breakdown > div > span {
+.execution-summary-file-row > span {
   display: inline-flex;
   gap: 6px;
   font-size: 9.5px;
+}
+
+.execution-summary-file-reveal {
+  width: 28px;
+  height: 28px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--muted);
+}
+
+.execution-summary-file-reveal:hover,
+.execution-summary-file-reveal:focus-visible {
+  background: var(--surface-hover);
+  color: var(--ink);
+}
+
+.execution-summary-file-diff {
+  max-height: min(52vh, 520px);
+  margin: 2px 8px 8px 24px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--surface-raised);
 }
 
 .execution-summary-file-breakdown > footer {

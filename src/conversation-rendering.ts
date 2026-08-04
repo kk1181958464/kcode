@@ -27,14 +27,41 @@ export function groupActivitiesByTextOffset(
   const groups: AssistantTimelineGroup[] = [];
   for (const activity of activities) {
     const storedOffset = Number(activity.textOffset);
-    const offset = Number.isFinite(storedOffset)
+    const clampedOffset = Number.isFinite(storedOffset)
       ? Math.min(safeLength, Math.max(0, Math.floor(storedOffset)))
       : safeLength;
     const previous = groups.at(-1);
+    const offset = Math.max(previous?.offset ?? 0, clampedOffset);
     if (previous?.offset === offset) previous.activities.push(activity);
     else groups.push({ offset, activities: [activity] });
   }
   return groups;
+}
+
+export function completedProcessTextLength(
+  activities: AgentActivity[],
+  textLength: number,
+) {
+  const safeLength = Math.max(0, textLength);
+  const rootOffsets = activities
+    .filter((activity) => !activity.subagentId)
+    .map((activity) => Number(activity.textOffset))
+    .filter(Number.isFinite)
+    .map((offset) => Math.min(safeLength, Math.max(0, Math.floor(offset))));
+  return rootOffsets.length ? Math.max(...rootOffsets) : 0;
+}
+
+export function completedProcessDuration(
+  createdAt: number,
+  completedAt: number | undefined,
+  activities: AgentActivity[],
+) {
+  const activityEnd = activities.reduce(
+    (latest, activity) =>
+      Math.max(latest, activity.completedAt ?? activity.startedAt),
+    createdAt,
+  );
+  return Math.max(0, (completedAt ?? activityEnd) - createdAt);
 }
 
 export function boundedStreamingReasoning(value: string): {

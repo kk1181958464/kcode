@@ -198,6 +198,9 @@ export type ChatMessage = {
   content: string;
   error?: string;
   createdAt: number;
+  completedAt?: number;
+  finalResponseOffset?: number;
+  finalResponseStartedAt?: number;
   model?: string;
   images?: ImageAttachment[];
   contextAttachments?: Array<{ name: string; size: number }>;
@@ -299,6 +302,11 @@ export type AgentActivity = {
   childActivities?: AgentActivity[];
   subagentId?: string;
   subagentName?: string;
+  agentRole?: AgentRole;
+  providerId?: string;
+  modelId?: string;
+  modelDisplayName?: string;
+  reasoningEffort?: ReasoningEffort;
   progress?: "advanced" | "unchanged" | "stalled";
 };
 
@@ -382,6 +390,7 @@ export type SkillStoreItem = {
 export type ModelEvent =
   | { type: "text"; delta: string }
   | { type: "text_reset" }
+  | { type: "final_response"; textOffset: number; startedAt: number }
   | { type: "reasoning"; delta: string }
   | { type: "progress"; message: string }
   | {
@@ -438,7 +447,13 @@ export type KCodeApi = {
     onState(callback: (state: AppUpdateState) => void): () => void;
   };
   logs: { reveal(): Promise<void> };
-  shell: { openExternal(url: string): Promise<void> };
+  shell: {
+    openExternal(url: string): Promise<void>;
+    revealPath(
+      targetPath: string,
+      workspacePath: string,
+    ): Promise<{ path: string; kind: "file" | "directory" }>;
+  };
   state: {
     load(key: string): Promise<unknown | null>;
     save(key: string, value: unknown): Promise<void>;

@@ -28,6 +28,23 @@ test("flushes streamed text before a structural event", () => {
   batcher.close();
 });
 
+test("keeps the final response boundary ordered before buffered final text", () => {
+  const sent: AgentEvent[] = [];
+  const batcher = new RendererEventBatcher((event) => sent.push(event));
+  batcher.push({
+    type: "final_response",
+    textOffset: 12,
+    startedAt: 2_000,
+  });
+  batcher.push({ type: "text", delta: "最终结果" });
+  batcher.flush();
+  assert.deepEqual(sent, [
+    { type: "final_response", textOffset: 12, startedAt: 2_000 },
+    { type: "text", delta: "最终结果" },
+  ]);
+  batcher.close();
+});
+
 test("coalesces activity output without delaying structural activity events", () => {
   const sent: AgentEvent[] = [];
   const batcher = new RendererEventBatcher((event) => sent.push(event));

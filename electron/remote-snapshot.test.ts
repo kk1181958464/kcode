@@ -4,6 +4,9 @@ import { remoteTaskSnapshot } from "../src/remote-snapshot";
 import type { TaskRecord } from "../src/models";
 
 test("builds a bounded remote task snapshot without absolute workspace paths", () => {
+  const assistantContent =
+    "<thinking>private chain of thought</thinking>已检查。远程可见结论";
+  const finalResponseOffset = assistantContent.indexOf("远程可见结论");
   const task: TaskRecord = {
     id: "task-1",
     name: "远程任务",
@@ -35,8 +38,11 @@ test("builds a bounded remote task snapshot without absolute workspace paths", (
       {
         id: "message-2",
         role: "assistant",
-        content: "<thinking>private chain of thought</thinking>远程可见结论",
+        content: assistantContent,
         createdAt: 2,
+        completedAt: 9,
+        finalResponseOffset,
+        finalResponseStartedAt: 8,
       },
     ],
     activities: [
@@ -51,6 +57,8 @@ test("builds a bounded remote task snapshot without absolute workspace paths", (
         command: "deploy --token must-not-sync",
         path: "D:\\projects\\private\\kcode\\src\\App.tsx",
         startedAt: 1,
+        textOffset: 6,
+        subagentId: "agent-1",
       },
     ],
   };
@@ -63,8 +71,13 @@ test("builds a bounded remote task snapshot without absolute workspace paths", (
   assert.deepEqual(snapshot.messages[0].files, [
     { name: "Component.vue", size: 120 },
   ]);
-  assert.equal(snapshot.messages[1].content, "远程可见结论");
+  assert.equal(snapshot.messages[1].content, "已检查。远程可见结论");
+  assert.equal(snapshot.messages[1].completedAt, 9);
+  assert.equal(snapshot.messages[1].finalResponseOffset, "已检查。".length);
+  assert.equal(snapshot.messages[1].finalResponseStartedAt, 8);
   assert.equal(snapshot.activities[0].path, "kcode/src/App.tsx");
+  assert.equal(snapshot.activities[0].textOffset, 6);
+  assert.equal(snapshot.activities[0].subagentId, "agent-1");
   assert.equal(
     snapshot.activities[0].liveStatus,
     "等待人工验证：请完成人机验证",

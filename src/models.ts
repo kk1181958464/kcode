@@ -28,6 +28,7 @@ export type TaskDrafts = Record<string, string>;
 export type TaskCollaboration = {
   mode: "planner-executor";
   executorModelSelection: string;
+  executorReasoningEffort?: ReasoningEffort;
 };
 
 export type TaskRecord = {

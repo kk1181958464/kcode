@@ -163,6 +163,13 @@ test("forwards child permission activities to the root task", async () => {
     "修改文件",
     new AbortController().signal,
     runner,
+    {
+      agentRole: "executor",
+      providerId: "kaka",
+      modelId: "gpt-5.6-luna",
+      modelDisplayName: "GPT-5.6 Luna",
+      reasoningEffort: "high",
+    },
   );
   await waitForSubagents("parent", [child.id]);
   removeSink();
@@ -172,6 +179,10 @@ test("forwards child permission activities to the root task", async () => {
     assert.equal(forwarded[0].activity.requestId, "parent");
     assert.equal(forwarded[0].activity.subagentId, child.id);
     assert.match(forwarded[0].activity.title, /^代码检查 · /);
+    assert.equal(forwarded[0].activity.agentRole, "executor");
+    assert.equal(forwarded[0].activity.modelId, "gpt-5.6-luna");
+    assert.equal(forwarded[0].activity.modelDisplayName, "GPT-5.6 Luna");
+    assert.equal(forwarded[0].activity.reasoningEffort, "high");
   }
 });
 

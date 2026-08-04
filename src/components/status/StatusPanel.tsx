@@ -20,6 +20,10 @@ import { useEffect, useMemo, useState } from "react";
 import { CONTEXT_AUTO_COMPACT_RATIO } from "../../context";
 import { extractGitFileDiff } from "../../git-diff";
 import { activityTarget, formatDuration, workingPhase } from "../../lib/format";
+import {
+  normalizeEffort,
+  reasoningEffortsForModel,
+} from "../../lib/model-utils";
 import type { TaskRecord } from "../../models";
 import {
   summarizeStatusActivities,
@@ -194,6 +198,10 @@ export function StatusPanel({
     [activities],
   );
   const fileChanges = activitySummary.fileChanges;
+  const executorReasoningEffort = normalizeEffort(
+    activeTask?.collaboration?.executorReasoningEffort ?? "auto",
+    reasoningEffortsForModel(executorTarget?.model),
+  );
   const queuedCount = messages.filter((message) =>
     Boolean((message as ChatMessage & { queued?: boolean }).queued),
   ).length;
@@ -581,7 +589,7 @@ export function StatusPanel({
           className="status-model-line"
           title={
             executorTarget
-              ? `规划：${selectedTarget.provider.name} / ${selectedTarget.model.modelId} · 执行：${executorTarget.provider.name} / ${executorTarget.model.modelId}`
+              ? `规划：${selectedTarget.provider.name} / ${selectedTarget.model.modelId}（${effortLabels[reasoningEffort]}）· 执行：${executorTarget.provider.name} / ${executorTarget.model.modelId}（${effortLabels[executorReasoningEffort]}）`
               : `${selectedTarget.provider.name} / ${selectedTarget.model.modelId}`
           }
         >
@@ -592,7 +600,9 @@ export function StatusPanel({
               {executorTarget ? ` → ${executorTarget.model.displayName}` : ""}
             </strong>
             <small>
-              {executorTarget ? "规划 / 执行" : effortLabels[reasoningEffort]}
+              {executorTarget
+                ? `规划 ${effortLabels[reasoningEffort]} / 执行 ${effortLabels[executorReasoningEffort]}`
+                : effortLabels[reasoningEffort]}
             </small>
           </span>
         </footer>

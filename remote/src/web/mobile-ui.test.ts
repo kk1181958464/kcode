@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   boundedLiveText,
+  completedProcessDuration,
+  completedProcessTextLength,
+  formatCompactDuration,
   mergeLiveContent,
   reconcileById,
   visibleMessageWindow,
@@ -29,6 +32,21 @@ test("bounds live text while preserving its newest Unicode content", () => {
   const result = boundedLiveText(value, 6);
   assert.equal(result.truncated, true);
   assert.equal(result.text, "😀最新结果");
+});
+
+test("splits completed mobile output after the last root activity", () => {
+  const activities = [
+    { textOffset: 12, startedAt: 2_000, completedAt: 3_000 },
+    {
+      textOffset: 30,
+      subagentId: "child-1",
+      startedAt: 2_500,
+      completedAt: 4_000,
+    },
+  ];
+  assert.equal(completedProcessTextLength(activities, 40), 12);
+  assert.equal(completedProcessDuration(1_000, 6_000, activities), 5_000);
+  assert.equal(formatCompactDuration(2_521_000), "42m 1s");
 });
 
 test("reuses unchanged snapshot items by id", () => {

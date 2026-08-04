@@ -1538,6 +1538,10 @@ export default function App() {
           ? {
               mode: "planner-executor" as const,
               executorModelSelection: `${fallbackExecutor.provider.id}|${fallbackExecutor.model.id}`,
+              executorReasoningEffort: normalizeEffort(
+                currentCollaboration.executorReasoningEffort ?? "auto",
+                reasoningEffortsForModel(fallbackExecutor.model),
+              ),
             }
           : undefined
         : currentCollaboration;
@@ -1999,6 +2003,7 @@ export default function App() {
           event.type !== "done" &&
           event.type !== "error" &&
           event.type !== "text" &&
+          event.type !== "final_response" &&
           event.type !== "reasoning" &&
           event.type !== "progress"
         )
@@ -2018,6 +2023,44 @@ export default function App() {
             };
             return next;
           });
+        if (event.type === "final_response") {
+          clearStreamingProgress(id);
+          clearPendingReasoning(id);
+          if (textFlushTimerRef.current) {
+            window.clearTimeout(textFlushTimerRef.current);
+            textFlushTimerRef.current = undefined;
+          }
+          flushPendingText(true);
+          const settledText = consumeStreamingText(id);
+          const markFinalResponse = (all: ChatMessage[]) =>
+            all.map((message) => {
+              if (message.id !== `assistant:${id}`) return message;
+              const content = message.content + settledText;
+              return {
+                ...message,
+                content,
+                finalResponseOffset: Math.min(
+                  content.length,
+                  Math.max(0, Math.floor(event.textOffset)),
+                ),
+                finalResponseStartedAt: event.startedAt,
+              };
+            });
+          setTasks((all) =>
+            all.map((task) =>
+              task.id === taskId
+                ? {
+                    ...task,
+                    messages: markFinalResponse(task.messages),
+                    updatedAt: Math.max(task.updatedAt, event.startedAt),
+                  }
+                : task,
+            ),
+          );
+          if (isActive) setMessages(markFinalResponse);
+          flushRemoteStreamSync(id);
+          return;
+        }
         if (event.type === "activity") {
           flushPendingText(true);
           const settledText = consumeStreamingText(id);
@@ -2164,6 +2207,7 @@ export default function App() {
           flushPendingText(true);
           flushRemoteStreamSync(id);
           const finalText = consumeStreamingText(id);
+          const completedAt = Date.now();
           const commitFinalText = (all: ChatMessage[]) =>
             all.map((message) =>
               message.id === `assistant:${id}`
@@ -2171,6 +2215,7 @@ export default function App() {
                     ...message,
                     content: message.content + finalText,
                     error: event.message,
+                    completedAt,
                   }
                 : message,
             );
@@ -2186,14 +2231,14 @@ export default function App() {
                       id,
                       task.runStatus === "cancelled" ? "cancelled" : "failed",
                     ),
-                    updatedAt: Date.now(),
+                    updatedAt: completedAt,
                   }
                 : task,
             ),
           );
           if (isActive) setMessages(updateMessages);
           if (isActive && requestStartedRef.current) {
-            const value = Date.now() - requestStartedRef.current;
+            const value = completedAt - requestStartedRef.current;
             setDurationMs(value);
             setTasks((all) =>
               all.map((task) =>
@@ -2225,10 +2270,15 @@ export default function App() {
           flushPendingText(true);
           flushRemoteStreamSync(id);
           const finalText = consumeStreamingText(id);
+          const completedAt = Date.now();
           const commitFinalText = (all: ChatMessage[]) =>
             all.map((message) =>
               message.id === `assistant:${id}`
-                ? { ...message, content: message.content + finalText }
+                ? {
+                    ...message,
+                    content: message.content + finalText,
+                    completedAt,
+                  }
                 : message,
             );
           if (isActive) setMessages(commitFinalText);
@@ -2256,12 +2306,12 @@ export default function App() {
                 ...finishTaskRequest(task.runningId, id, finishedStatus),
                 usageResolved: true,
                 imageSemantics,
-                updatedAt: Date.now(),
+                updatedAt: completedAt,
               };
             }),
           );
           if (isActive && requestStartedRef.current) {
-            const value = Date.now() - requestStartedRef.current;
+            const value = completedAt - requestStartedRef.current;
             setDurationMs(value);
             setTasks((all) =>
               all.map((task) =>
@@ -3142,7 +3192,7 @@ export default function App() {
             modelId: executorTarget.model.modelId,
             displayName: executorTarget.model.displayName,
             reasoningEffort: normalizeEffort(
-              "auto",
+              requestedCollaboration?.executorReasoningEffort ?? "auto",
               reasoningEffortsForModel(executorTarget.model),
             ),
             contextWindow:
@@ -3460,6 +3510,14 @@ export default function App() {
           if (previewTimerRef.current)
             window.clearInterval(previewTimerRef.current);
           previewTimerRef.current = undefined;
+          const completedAt = Date.now();
+          setMessages((all) =>
+            all.map((message) =>
+              message.id === `assistant:${id}`
+                ? { ...message, completedAt }
+                : message,
+            ),
+          );
           currentRequest.current = undefined;
           setRunningId(undefined);
           setTasks((all) =>
@@ -3469,7 +3527,7 @@ export default function App() {
                     ...task,
                     runningId: undefined,
                     runStatus: "completed",
-                    updatedAt: Date.now(),
+                    updatedAt: completedAt,
                   }
                 : task,
             ),
@@ -3477,7 +3535,7 @@ export default function App() {
           setUsage({ input: 312, output: 168, cached: 0 });
           setUsageResolved(true);
           if (requestStartedRef.current)
-            setDurationMs(Date.now() - requestStartedRef.current);
+            setDurationMs(completedAt - requestStartedRef.current);
         }
       }, 45);
       return;
@@ -3547,13 +3605,14 @@ export default function App() {
       const failure = detail
         ? `生成失败：模型请求未能启动。${detail}`
         : "生成失败：模型请求未能启动，请稍后重试或切换模型/供应商。";
+      const completedAt = Date.now();
       const markFailed = (all: ChatMessage[]) =>
         all.map((message) =>
           message.id === assistantMessage.id
-            ? { ...message, error: failure }
+            ? { ...message, error: failure, completedAt }
             : message,
         );
-      const elapsed = Date.now() - requestStartedAt;
+      const elapsed = completedAt - requestStartedAt;
       if (taskIsCurrent()) {
         setMessages(markFailed);
         currentRequest.current = undefined;
@@ -3573,7 +3632,7 @@ export default function App() {
                 usageResolved: true,
                 pendingTokenEstimate: undefined,
                 pendingCalibrationKey: undefined,
-                updatedAt: Date.now(),
+                updatedAt: completedAt,
               }
             : task,
         ),
@@ -3616,27 +3675,30 @@ export default function App() {
       flushPendingText(true);
       flushRemoteStreamSync(requestId);
       const partialText = consumeStreamingText(requestId);
-      if (partialText) {
-        const commitPartialText = (all: ChatMessage[]) =>
-          all.map((message) =>
-            message.id === `assistant:${requestId}`
-              ? { ...message, content: message.content + partialText }
-              : message,
-          );
-        setMessages(commitPartialText);
-        setTasks((all) =>
-          all.map((task) =>
-            task.id === activeTask?.id
-              ? { ...task, messages: commitPartialText(task.messages) }
-              : task,
-          ),
+      const completedAt = Date.now();
+      const commitStoppedText = (all: ChatMessage[]) =>
+        all.map((message) =>
+          message.id === `assistant:${requestId}`
+            ? {
+                ...message,
+                content: message.content + partialText,
+                completedAt,
+              }
+            : message,
         );
-      }
+      setMessages(commitStoppedText);
+      setTasks((all) =>
+        all.map((task) =>
+          task.id === activeTask?.id
+            ? { ...task, messages: commitStoppedText(task.messages) }
+            : task,
+        ),
+      );
       if (previewTimerRef.current)
         window.clearInterval(previewTimerRef.current);
       previewTimerRef.current = undefined;
       if (requestStartedRef.current)
-        setDurationMs(Date.now() - requestStartedRef.current);
+        setDurationMs(completedAt - requestStartedRef.current);
       currentRequest.current = undefined;
       setRunningId(undefined);
       clearPendingReasoning(requestId);
@@ -3648,7 +3710,7 @@ export default function App() {
             ? {
                 ...activity,
                 status: "failed" as const,
-                completedAt: Date.now(),
+                completedAt,
                 errorSummary: "操作已停止",
                 output: activity.output
                   ? `${activity.output}\n\n操作已停止`
@@ -3666,7 +3728,7 @@ export default function App() {
                   activities: stopActivities(task.activities),
                   runningId: undefined,
                   runStatus: "cancelled",
-                  updatedAt: Date.now(),
+                  updatedAt: completedAt,
                 }
               : task,
           ),
@@ -3760,6 +3822,11 @@ export default function App() {
                       runningId: undefined,
                       runStatus: "cancelled",
                       updatedAt: completedAt,
+                      messages: item.messages.map((message) =>
+                        message.id === `assistant:${task.runningId}`
+                          ? { ...message, completedAt }
+                          : message,
+                      ),
                       activities: item.activities.map((activity) =>
                         activity.requestId === task.runningId &&
                         (activity.status === "running" ||
@@ -4436,20 +4503,36 @@ export default function App() {
                         summaryBusy ||
                         efforts.length === 1
                       }
-                      title="推理强度"
+                      title={
+                        activeTask?.collaboration
+                          ? "规划模型推理强度"
+                          : "推理强度"
+                      }
                       onClick={() => setEffortMenuOpen((open) => !open)}
                     >
                       <BrainCircuit size={14} />
-                      <span>{effortLabels[reasoningEffort]}</span>
+                      <span>
+                        {activeTask?.collaboration
+                          ? `规划 · ${effortLabels[reasoningEffort]}`
+                          : effortLabels[reasoningEffort]}
+                      </span>
                       <ChevronDown size={13} />
                     </button>
                     {effortMenuOpen && (
                       <div
                         className="effort-menu"
                         role="menu"
-                        aria-label="推理强度"
+                        aria-label={
+                          activeTask?.collaboration
+                            ? "规划模型推理强度"
+                            : "推理强度"
+                        }
                       >
-                        <header>推理强度</header>
+                        <header>
+                          {activeTask?.collaboration
+                            ? "规划模型推理强度"
+                            : "推理强度"}
+                        </header>
                         {efforts.map((effort) => (
                           <button
                             key={effort}

@@ -1,10 +1,12 @@
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type {
+  AgentRole,
   AgentActivity,
   AgentEvent,
   PermissionMode,
   PermissionPolicy,
+  ReasoningEffort,
   SubagentCheckpoint,
 } from "../src/types";
 
@@ -13,6 +15,14 @@ const MAX_TRANSCRIPT_CHARS = 10_000;
 const MAX_RETAINED_TRANSCRIPT_CHARS = 2_000;
 const MAX_RESULT_ACTIVITIES = 25;
 const STOP_GRACE_MS = 10_000;
+
+export type SubagentExecutionTarget = {
+  agentRole: AgentRole;
+  providerId: string;
+  modelId: string;
+  modelDisplayName: string;
+  reasoningEffort: ReasoningEffort;
+};
 
 export type SubagentStatus =
   "running" | "stopping" | "completed" | "failed" | "stopped";
@@ -36,6 +46,7 @@ type SubagentRecord = {
   usageReported: boolean;
   activities: Map<string, AgentActivity>;
   instructions: string[];
+  executionTarget?: SubagentExecutionTarget;
 };
 
 export type SubagentRunner = (
@@ -71,6 +82,9 @@ function publicState(agent: SubagentRecord) {
     usage: { ...agent.usage },
     collected: agent.usageReported,
     error: agent.error,
+    executionTarget: agent.executionTarget
+      ? { ...agent.executionTarget }
+      : undefined,
   };
 }
 
@@ -80,6 +94,7 @@ function resultState(agent: SubagentRecord) {
     title: `${agent.name} · ${activity.title}`,
     subagentId: agent.id,
     subagentName: agent.name,
+    ...agent.executionTarget,
   }));
   const activities = activityRecords
     .slice(-MAX_RESULT_ACTIVITIES)
@@ -139,6 +154,7 @@ export function spawnSubagent(
   task: string,
   parentSignal: AbortSignal,
   runner: SubagentRunner,
+  executionTarget?: SubagentExecutionTarget,
 ) {
   const parent = recordByRequestId(parentRequestId);
   const rootRequestId = parent?.rootRequestId ?? parentRequestId;
@@ -172,6 +188,7 @@ export function spawnSubagent(
     usageReported: false,
     activities: new Map(),
     instructions: [],
+    executionTarget,
   };
   messageQueues.set(requestId, []);
   agents.set(id, record);
@@ -205,7 +222,13 @@ export function spawnSubagent(
               title: `${record.name} · ${event.activity.title}`,
               subagentId: record.id,
               subagentName: record.name,
+              ...record.executionTarget,
             },
+          });
+        } else if (event.type === "progress" && record.executionTarget) {
+          eventSinks.get(record.rootRequestId)?.({
+            type: "progress",
+            message: `${record.executionTarget.modelDisplayName} · ${event.message}`,
           });
         } else if (event.type === "error") throw new Error(event.message);
       }

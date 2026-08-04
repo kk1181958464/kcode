@@ -85,12 +85,14 @@ import {
 import {
   browserWidthSchema,
   idSchema,
+  localPathSchema,
   modelRequestSchema,
   optionalIdSchema,
   stateKeySchema,
   urlSchema,
   workspacePathSchema,
 } from "./ipc-validation";
+import { resolveRevealPath } from "./reveal-path";
 import { initializeAppUpdater, scheduleUpdateChecks } from "./app-updater";
 import { createSkillStore, type ListedSkill } from "./skill-store";
 import { clearAgentSkillCache, configureAgentSkills } from "./agent-skills";
@@ -586,6 +588,27 @@ app.whenReady().then(async () => {
       throw new Error("只能打开 http/https 链接");
     return shell.openExternal(target);
   });
+  ipcMain.handle(
+    "shell:reveal-path",
+    async (_e, rawPath: string, rawWorkspacePath: string) => {
+      const target = resolveRevealPath(
+        localPathSchema.parse(rawPath),
+        workspacePathSchema.parse(rawWorkspacePath),
+      );
+      const info = await stat(target).catch(() => undefined);
+      if (!info) throw new Error("文件或文件夹不存在");
+      if (info.isFile()) {
+        shell.showItemInFolder(target);
+        return { path: target, kind: "file" as const };
+      }
+      if (info.isDirectory()) {
+        const error = await shell.openPath(target);
+        if (error) throw new Error(error);
+        return { path: target, kind: "directory" as const };
+      }
+      throw new Error("目标不是普通文件或文件夹");
+    },
+  );
   ipcMain.handle("window:minimize", (event) =>
     BrowserWindow.fromWebContents(event.sender)?.minimize(),
   );

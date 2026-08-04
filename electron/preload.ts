@@ -18,6 +18,8 @@ const api: KCodeApi = {
   logs: { reveal: () => ipcRenderer.invoke("log:reveal") },
   shell: {
     openExternal: (url) => ipcRenderer.invoke("shell:open-external", url),
+    revealPath: (targetPath, workspacePath) =>
+      ipcRenderer.invoke("shell:reveal-path", targetPath, workspacePath),
   },
   state: {
     load: (key) => ipcRenderer.invoke("state:load", key),

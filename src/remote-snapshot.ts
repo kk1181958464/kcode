@@ -25,6 +25,7 @@ function snapshotActivity(
     title: activity.title.slice(0, 240),
     narrative: activity.narrative?.slice(0, 2_000),
     textOffset: activity.textOffset,
+    subagentId: activity.subagentId,
     recoverable: activity.recoverable,
     liveStatus: activity.liveStatus?.slice(0, 500),
     planSteps: activity.planSteps
@@ -41,6 +42,56 @@ function snapshotActivity(
   };
 }
 
+const REMOTE_MESSAGE_CONTENT_LIMIT = 120_000;
+
+function snapshotMessage(message: TaskRecord["messages"][number]) {
+  const visibleContent =
+    message.role === "assistant"
+      ? visibleAssistantContent(message.content)
+      : message.content;
+  const contentStart = Math.max(
+    0,
+    visibleContent.length - REMOTE_MESSAGE_CONTENT_LIMIT,
+  );
+  const content = visibleContent.slice(contentStart);
+  const storedFinalResponseOffset = Number(message.finalResponseOffset);
+  const visibleFinalResponseOffset = Number.isFinite(storedFinalResponseOffset)
+    ? visibleAssistantContent(
+        message.content.slice(
+          0,
+          Math.min(
+            message.content.length,
+            Math.max(0, Math.floor(storedFinalResponseOffset)),
+          ),
+        ),
+      ).length
+    : undefined;
+  return {
+    id: message.id,
+    role: message.role,
+    content,
+    error: message.error?.slice(0, 2_000),
+    createdAt: message.createdAt,
+    completedAt: message.completedAt,
+    finalResponseOffset:
+      visibleFinalResponseOffset === undefined
+        ? undefined
+        : Math.min(
+            content.length,
+            Math.max(0, visibleFinalResponseOffset - contentStart),
+          ),
+    finalResponseStartedAt: message.finalResponseStartedAt,
+    model: message.model,
+    imageCount: message.images?.length || undefined,
+    files: message.contextAttachments?.length
+      ? message.contextAttachments.slice(0, 9).map((file) => ({
+          name: file.name.slice(0, 240),
+          size: file.size,
+        }))
+      : undefined,
+  };
+}
+
 export function remoteTaskSnapshot(task: TaskRecord): RemoteTaskSnapshot {
   return {
     id: task.id,
@@ -52,24 +103,7 @@ export function remoteTaskSnapshot(task: TaskRecord): RemoteTaskSnapshot {
     runStatus: task.runStatus,
     modelSelection: task.modelSelection,
     executorModelSelection: task.collaboration?.executorModelSelection,
-    messages: task.messages.slice(-160).map((message) => ({
-      id: message.id,
-      role: message.role,
-      content: (message.role === "assistant"
-        ? visibleAssistantContent(message.content)
-        : message.content
-      ).slice(-120_000),
-      error: message.error?.slice(0, 2_000),
-      createdAt: message.createdAt,
-      model: message.model,
-      imageCount: message.images?.length || undefined,
-      files: message.contextAttachments?.length
-        ? message.contextAttachments.slice(0, 9).map((file) => ({
-            name: file.name.slice(0, 240),
-            size: file.size,
-          }))
-        : undefined,
-    })),
+    messages: task.messages.slice(-160).map(snapshotMessage),
     activities: task.activities.slice(-160).map(snapshotActivity),
     usage: task.usage
       ? {

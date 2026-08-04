@@ -37,6 +37,7 @@ const providers: ProviderConfig[] = [
         modelId: "gpt-5.6-luna",
         displayName: "GPT-5.6 Luna",
         protocol: "openai-chat",
+        reasoningEfforts: ["auto", "low", "medium", "high"],
       },
     ],
   },
@@ -50,12 +51,14 @@ test("composer shows the configured execution model", () => {
       value: {
         mode: "planner-executor",
         executorModelSelection: "executor|luna",
+        executorReasoningEffort: "high",
       },
       onChange() {},
     }),
   );
 
   assert.match(markup, /GPT-5\.6 Luna/);
+  assert.match(markup, /aria-label="执行 · GPT-5\.6 Luna · 高"/);
   assert.match(markup, /规划：当前模型 · 执行：GPT-5\.6 Luna/);
 });
 

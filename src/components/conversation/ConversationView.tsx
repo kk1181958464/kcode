@@ -12,9 +12,12 @@ import {
   BrainCircuit,
   CheckCircle2,
   ChevronDown,
+  ChevronRight,
   CircleAlert,
   Copy,
+  Cpu,
   FileCode2,
+  FolderOpen,
   ListChecks,
   LoaderCircle,
   RotateCcw,
@@ -42,9 +45,12 @@ import {
 import {
   activityFocus,
   activityTarget,
+  formatCompactDuration,
   formatDuration,
 } from "../../lib/format";
 import { copyWithToast } from "../../lib/toast";
+import { revealLocalPath } from "../../lib/reveal-path";
+import { effortLabels } from "../../lib/model-utils";
 import { MarkdownMessage } from "../common/MarkdownMessage";
 import { DiffView } from "../common/DiffView";
 import { LinkifiedText } from "../common/LinkifiedText";
@@ -57,6 +63,8 @@ import {
 } from "../../streaming-text-store";
 import {
   boundedStreamingReasoning,
+  completedProcessDuration,
+  completedProcessTextLength,
   groupActivitiesByTextOffset,
   shouldShowAssistantTailState,
   STREAMING_REASONING_DOM_CHAR_LIMIT,
@@ -71,7 +79,6 @@ import {
 const ACTIVITY_INITIAL_RENDER_LIMIT = 32;
 const ACTIVITY_RENDER_PAGE_SIZE = 48;
 const FILE_INITIAL_RENDER_LIMIT = 8;
-const FILE_RENDER_PAGE_SIZE = 16;
 const ACTIVITY_DETAIL_RENDER_LIMIT = 24_000;
 const ACTIVITY_DETAIL_HEAD_CHARS = 4_000;
 const STREAMING_DOM_CHAR_LIMIT = 96_000;
@@ -134,12 +141,14 @@ const BoundedDiffView = memo(function BoundedDiffView({
 function MessageItem({
   message,
   running,
+  workspacePath,
   onRetry,
   attachments = [],
   assistantBody,
 }: {
   message: ChatMessage;
   running: boolean;
+  workspacePath: string;
   onRetry(): void;
   attachments?: ContextFile[];
   assistantBody?: React.ReactNode;
@@ -238,7 +247,10 @@ function MessageItem({
             assistantBody
           ) : visibleContent ? (
             message.role === "assistant" && !legacyError ? (
-              <MarkdownMessage content={visibleContent} />
+              <MarkdownMessage
+                content={visibleContent}
+                workspacePath={workspacePath}
+              />
             ) : (
               !legacyError && visibleContent
             )
@@ -350,6 +362,11 @@ const ActivityItem = memo(function ActivityItem({
     expanded && detail ? renderedActivityDetail(detail) : undefined;
   const executionNarrative = activityExecutionNarrative(activity);
   const liveOutput = activity.status === "running" && !detail;
+  const executionModel =
+    activity.agentRole === "executor"
+      ? activity.modelDisplayName || activity.modelId
+      : undefined;
+  const revealPath = activityRevealPath(activity);
   useEffect(() => {
     if (activity.status === "failed") setExpanded(true);
     // Keep long-running commands expanded so heartbeats/live output stay visible.
@@ -416,7 +433,25 @@ const ActivityItem = memo(function ActivityItem({
           )}
         </span>
         <span className="activity-title">
-          <strong>{activity.title}</strong>
+          <span className="activity-title-line">
+            <strong>{activity.title}</strong>
+            {executionModel && (
+              <span
+                className="activity-model-badge"
+                title={`由执行模型 ${executionModel} 执行${
+                  activity.reasoningEffort
+                    ? `，推理等级：${effortLabels[activity.reasoningEffort]}`
+                    : ""
+                }`}
+              >
+                <Cpu size={10} />
+                {executionModel}
+                {activity.reasoningEffort && (
+                  <em>{effortLabels[activity.reasoningEffort]}</em>
+                )}
+              </span>
+            )}
+          </span>
           <small>
             {activity.command ||
               activity.path ||
@@ -433,6 +468,20 @@ const ActivityItem = memo(function ActivityItem({
             <b>+{activity.additions}</b>
             <i>-{activity.deletions}</i>
           </span>
+        )}
+        {revealPath && (
+          <button
+            type="button"
+            className="activity-reveal"
+            title="在文件资源管理器中显示"
+            aria-label={`在文件资源管理器中显示 ${revealPath}`}
+            onClick={(event) => {
+              event.stopPropagation();
+              void revealLocalPath(revealPath, workspacePath);
+            }}
+          >
+            <FolderOpen size={13} />
+          </button>
         )}
         {activity.undoable && activity.status === "success" && (
           <button
@@ -629,7 +678,23 @@ const fileTools: AgentToolName[] = [
   "move_path",
   "delete_path",
   "ssh_write_file",
+  "ssh_download_file",
 ];
+const localPathTools = new Set<AgentToolName>([
+  "list_directory",
+  "glob_files",
+  "read_many_files",
+  "path_info",
+  "read_file",
+  "apply_patch",
+  "write_file",
+  "make_directory",
+  "move_path",
+  "git_diff",
+  "git_show",
+  "browser_screenshot",
+  "ssh_download_file",
+]);
 const commandTools: AgentToolName[] = [
   "run_command",
   "ssh_run",
@@ -640,6 +705,16 @@ const commandTools: AgentToolName[] = [
   "stop_process",
   "diagnostics",
 ];
+
+function activityRevealPath(activity: AgentActivity) {
+  if (
+    !activity.path ||
+    !localPathTools.has(activity.tool) ||
+    (activity.status !== "success" && activity.status !== "completed")
+  )
+    return undefined;
+  return activity.path;
+}
 
 function activityFileChanges(activity: AgentActivity) {
   if (activity.fileChanges?.length) return activity.fileChanges;
@@ -658,6 +733,7 @@ type FileChangeStats = {
   additions: number;
   deletions: number;
   diffs: string[];
+  revealable: boolean;
 };
 
 function collectFileChangeStats(activities: AgentActivity[]) {
@@ -674,10 +750,12 @@ function collectFileChangeStats(activities: AgentActivity[]) {
         additions: 0,
         deletions: 0,
         diffs: [],
+        revealable: false,
       };
       current.additions += change.additions;
       current.deletions += change.deletions;
       if (change.diff) current.diffs.push(change.diff);
+      current.revealable ||= Boolean(activityRevealPath(activity));
       grouped.set(change.path, current);
     }
   }
@@ -694,12 +772,15 @@ function collectFileChangeStats(activities: AgentActivity[]) {
 function ExecutionFileBreakdown({
   fileStats,
   entries,
+  workspacePath,
   compact = false,
 }: {
   fileStats: ReturnType<typeof collectFileChangeStats>;
   entries: [string, FileChangeStats][];
+  workspacePath: string;
   compact?: boolean;
 }) {
+  const [expandedFile, setExpandedFile] = useState<string>();
   if (!entries.length) return null;
   return (
     <div
@@ -713,16 +794,64 @@ function ExecutionFileBreakdown({
           {fileStats.deletions}
         </small>
       </header>
-      {entries.map(([file, stats]) => (
-        <div key={file} title={file}>
-          <FileCode2 size={12} />
-          <code>{file}</code>
-          <span>
-            <b>+{stats.additions}</b>
-            <i>-{stats.deletions}</i>
-          </span>
-        </div>
-      ))}
+      {entries.map(([file, stats]) => {
+        const diff = stats.diffs.join("\n\n");
+        const hasDiff = Boolean(diff);
+        const open = expandedFile === file;
+        return (
+          <div
+            className={`execution-summary-file-item ${open ? "open" : ""}`}
+            key={file}
+          >
+            <div
+              className={`execution-summary-file-row-wrap ${stats.revealable ? "revealable" : ""}`}
+            >
+              <button
+                type="button"
+                className={`execution-summary-file-row ${hasDiff ? "" : "no-diff"}`}
+                aria-expanded={hasDiff ? open : undefined}
+                aria-label={
+                  hasDiff ? `查看 ${file} 的改动` : `${file} 没有差异详情`
+                }
+                title={hasDiff ? "点击查看改动" : "此改动没有可显示的差异"}
+                onClick={() =>
+                  hasDiff && setExpandedFile(open ? undefined : file)
+                }
+              >
+                {hasDiff ? (
+                  <ChevronDown
+                    size={12}
+                    className="execution-summary-file-chevron"
+                  />
+                ) : (
+                  <FileCode2 size={12} />
+                )}
+                <code title={file}>{file}</code>
+                <span>
+                  <b>+{stats.additions}</b>
+                  <i>-{stats.deletions}</i>
+                </span>
+              </button>
+              {stats.revealable && (
+                <button
+                  type="button"
+                  className="execution-summary-file-reveal"
+                  title="在文件资源管理器中显示"
+                  aria-label={`在文件资源管理器中显示 ${file}`}
+                  onClick={() => void revealLocalPath(file, workspacePath)}
+                >
+                  <FolderOpen size={12} />
+                </button>
+              )}
+            </div>
+            {open && hasDiff && (
+              <div className="execution-summary-file-diff">
+                <BoundedDiffView text={diff} />
+              </div>
+            )}
+          </div>
+        );
+      })}
       {fileStats.files > entries.length && (
         <footer>
           还有 {fileStats.files - entries.length} 个文件，展开查看全部
@@ -892,6 +1021,35 @@ export const ExecutionSummary = memo(
         waiting: active?.status === "waiting",
       };
     }, [activities]);
+    const executorEvidence = useMemo(() => {
+      const executed = [...activities]
+        .reverse()
+        .find(
+          (activity) =>
+            activity.agentRole === "executor" &&
+            Boolean(activity.modelDisplayName || activity.modelId),
+        );
+      if (executed)
+        return {
+          model: executed.modelDisplayName || executed.modelId || "执行模型",
+          effort: executed.reasoningEffort,
+          executed: true,
+        };
+      const dispatched = [...activities]
+        .reverse()
+        .find(
+          (activity) =>
+            activity.tool === "spawn_agent" &&
+            typeof activity.input.model === "string" &&
+            activity.input.model,
+        );
+      if (!dispatched) return undefined;
+      return {
+        model: String(dispatched.input.model),
+        effort: undefined,
+        executed: false,
+      };
+    }, [activities]);
     const activeRunning =
       running && executionStats.active?.status === "running";
     const executionInProgress = activeRunning;
@@ -975,6 +1133,24 @@ export const ExecutionSummary = memo(
               {executionStats.agents > 0 && (
                 <span>{executionStats.agents} 个子 Agent</span>
               )}
+              {executorEvidence && (
+                <span
+                  className={`execution-summary-executor ${
+                    executorEvidence.executed ? "verified" : "dispatched"
+                  }`}
+                  title={
+                    executorEvidence.executed
+                      ? "已收到该执行模型的真实工具活动"
+                      : "执行模型已派发，正在等待工具活动"
+                  }
+                >
+                  <Cpu size={10} />
+                  {executorEvidence.model}
+                  {executorEvidence.effort &&
+                    ` · ${effortLabels[executorEvidence.effort]}`}
+                  {executorEvidence.executed ? " 执行" : " 已派发"}
+                </span>
+              )}
               {isLatestGroup && planInfo && (
                 <span className="execution-summary-plan-count">
                   第 {planInfo.current + 1} / {planInfo.steps.length} 步
@@ -1016,6 +1192,15 @@ export const ExecutionSummary = memo(
                 >
                   <i />
                   <b>{activity.title}</b>
+                  {activity.agentRole === "executor" &&
+                    (activity.modelDisplayName || activity.modelId) && (
+                      <em className="execution-summary-tool-model">
+                        <Cpu size={9} />
+                        {activity.modelDisplayName || activity.modelId}
+                        {activity.reasoningEffort &&
+                          ` · ${effortLabels[activity.reasoningEffort]}`}
+                      </em>
+                    )}
                   {target && <code>{target}</code>}
                 </span>
               );
@@ -1067,6 +1252,7 @@ export const ExecutionSummary = memo(
           <ExecutionFileBreakdown
             fileStats={fileStats}
             entries={compactPreviewFiles}
+            workspacePath={workspacePath}
             compact
           />
         )}
@@ -1109,6 +1295,7 @@ export const ExecutionSummary = memo(
             <ExecutionFileBreakdown
               fileStats={fileStats}
               entries={previewFiles}
+              workspacePath={workspacePath}
             />
           </div>
         )}
@@ -1202,6 +1389,37 @@ function AssistantTailState({
   );
 }
 
+function CompletedProcessDisclosure({
+  durationMs,
+  failed,
+  children,
+}: {
+  durationMs: number;
+  failed: boolean;
+  children: React.ReactNode;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <section
+      className={`completed-process ${expanded ? "expanded" : ""} ${
+        failed ? "failed" : ""
+      }`}
+    >
+      <button
+        type="button"
+        className="completed-process-trigger"
+        aria-expanded={expanded}
+        onClick={() => setExpanded((value) => !value)}
+      >
+        <span>{failed ? "处理未完成" : "已处理"}</span>
+        <time>{formatCompactDuration(durationMs)}</time>
+        <ChevronRight size={13} />
+      </button>
+      {expanded && <div className="completed-process-body">{children}</div>}
+    </section>
+  );
+}
+
 const AssistantTimeline = memo(function AssistantTimeline({
   message,
   activities,
@@ -1237,7 +1455,7 @@ const AssistantTimeline = memo(function AssistantTimeline({
         {display}
       </div>
     ) : (
-      <MarkdownMessage content={display} />
+      <MarkdownMessage content={display} workspacePath={workspacePath} />
     );
   };
   const hasActiveActivity = activities.some(
@@ -1259,16 +1477,28 @@ const AssistantTimeline = memo(function AssistantTimeline({
         )}
       </>
     );
+  const storedFinalResponseOffset = Number(message.finalResponseOffset);
+  const finalResponseOffset = Number.isFinite(storedFinalResponseOffset)
+    ? Math.min(
+        message.content.length,
+        Math.max(0, Math.floor(storedFinalResponseOffset)),
+      )
+    : undefined;
+  const processFinished = !running || finalResponseOffset !== undefined;
+  const processRunning = running && !processFinished;
+  const processTextLength = processFinished
+    ? (finalResponseOffset ??
+      completedProcessTextLength(activities, message.content.length))
+    : message.content.length;
   const timelineGroups = groupActivitiesByTextOffset(
     activities,
-    message.content.length,
+    processTextLength,
   );
   const timelineNodes: React.ReactNode[] = [];
   let textCursor = 0;
   timelineGroups.forEach((group, index) => {
     const leadingText = message.content.slice(textCursor, group.offset);
-    const nextOffset =
-      timelineGroups[index + 1]?.offset ?? message.content.length;
+    const nextOffset = timelineGroups[index + 1]?.offset ?? processTextLength;
     const followingText = message.content.slice(group.offset, nextOffset);
     const leadingNode = renderText(leadingText, true);
     if (leadingNode)
@@ -1285,7 +1515,7 @@ const AssistantTimeline = memo(function AssistantTimeline({
         <ExecutionSummary
           activities={group.activities}
           allActivities={activities}
-          running={running}
+          running={processRunning}
           isLatestGroup={index === timelineGroups.length - 1}
           requestFailed={
             index === timelineGroups.length - 1 && Boolean(message.error)
@@ -1296,11 +1526,13 @@ const AssistantTimeline = memo(function AssistantTimeline({
           hasTrailingNarration={Boolean(
             visibleAssistantContent(followingText).trim(),
           )}
-          requestId={requestId}
+          requestId={processRunning ? requestId : undefined}
           workspacePath={workspacePath}
           onActivityChange={onActivityChange}
           reasoningNode={
-            index === timelineGroups.length - 1 && hasActiveActivity
+            index === timelineGroups.length - 1 &&
+            processRunning &&
+            hasActiveActivity
               ? streamingReasoning
               : undefined
           }
@@ -1309,7 +1541,26 @@ const AssistantTimeline = memo(function AssistantTimeline({
     );
     textCursor = group.offset;
   });
-  const trailingNode = renderText(message.content.slice(textCursor));
+  const trailingNode = renderText(
+    message.content.slice(processFinished ? processTextLength : textCursor),
+  );
+  if (processFinished)
+    return (
+      <div className="assistant-timeline">
+        <CompletedProcessDisclosure
+          durationMs={completedProcessDuration(
+            message.createdAt,
+            message.completedAt ?? message.finalResponseStartedAt,
+            activities,
+          )}
+          failed={Boolean(message.error)}
+        >
+          {timelineNodes}
+        </CompletedProcessDisclosure>
+        {trailingNode}
+        {streamingTail}
+      </div>
+    );
   if (trailingNode)
     timelineNodes.push(
       <React.Fragment key="text:trailing">{trailingNode}</React.Fragment>,
@@ -1547,12 +1798,48 @@ const StreamingAssistantTimeline = memo(function StreamingAssistantTimeline({
   const foldedStreamingContent = omittedStreamingChars
     ? streamingFoldMarker + visibleStreamingContent
     : visibleStreamingContent;
+  const storedFinalResponseOffset = Number(message.finalResponseOffset);
+  const finalResponseOffset = Number.isFinite(storedFinalResponseOffset)
+    ? Math.min(
+        message.content.length,
+        Math.max(0, Math.floor(storedFinalResponseOffset)),
+      )
+    : undefined;
+  const finalResponseContent =
+    running && finalResponseOffset !== undefined
+      ? (() => {
+          const processContent = message.content.slice(0, finalResponseOffset);
+          const persistedFinal = message.content.slice(finalResponseOffset);
+          const fullFinalLength =
+            persistedFinal.length + streamedSnapshot.totalLength;
+          const omittedFinalChars = Math.max(
+            0,
+            fullFinalLength - STREAMING_DOM_CHAR_LIMIT,
+          );
+          const visibleFinal = (persistedFinal + streamedSnapshot.text).slice(
+            -STREAMING_DOM_CHAR_LIMIT,
+          );
+          const marker = omittedFinalChars
+            ? `[较早的 ${omittedFinalChars.toLocaleString()} 个流式字符已暂时折叠，任务完成后会恢复完整内容]\n\n`
+            : "";
+          return processContent + marker + visibleFinal;
+        })()
+      : undefined;
   const displayMessage = useMemo(
     () =>
       running && streamedSnapshot.totalLength
-        ? { ...message, content: foldedStreamingContent }
+        ? {
+            ...message,
+            content: finalResponseContent ?? foldedStreamingContent,
+          }
         : message,
-    [foldedStreamingContent, message, running, streamedSnapshot.totalLength],
+    [
+      finalResponseContent,
+      foldedStreamingContent,
+      message,
+      running,
+      streamedSnapshot.totalLength,
+    ],
   );
   return (
     <AssistantTimeline
@@ -1578,89 +1865,6 @@ const StreamingAssistantTimeline = memo(function StreamingAssistantTimeline({
         ) : undefined
       }
     />
-  );
-});
-
-const FileChangesSummary = memo(function FileChangesSummary({
-  activities,
-}: {
-  activities: AgentActivity[];
-}) {
-  const [expandedFile, setExpandedFile] = useState<string>();
-  const [visibleFileCount, setVisibleFileCount] = useState(
-    FILE_INITIAL_RENDER_LIMIT,
-  );
-  const {
-    grouped,
-    entries: fileEntries,
-    additions,
-    deletions,
-  } = useMemo(() => collectFileChangeStats(activities), [activities]);
-  if (!grouped.size) return null;
-  const visibleFileEntries = fileEntries.slice(0, visibleFileCount);
-  const hiddenFileCount = Math.max(0, fileEntries.length - visibleFileCount);
-  return (
-    <section className="file-changes-summary">
-      <header>
-        <span className="file-changes-icon">
-          <FileCode2 size={15} />
-        </span>
-        <span>
-          <strong>已编辑 {grouped.size} 个文件</strong>
-          <small>
-            共 <b>+{additions}</b> <i>-{deletions}</i>
-          </small>
-        </span>
-      </header>
-      <div>
-        {visibleFileEntries.map(([file, stats]) => {
-          const open = expandedFile === file;
-          const hasDiff = stats.diffs.length > 0;
-          return (
-            <div className="changed-file-block" key={file}>
-              <button
-                type="button"
-                className={`changed-file-row ${hasDiff ? "" : "no-diff"}`}
-                aria-expanded={open}
-                title={hasDiff ? "点击查看改动" : "此改动没有可显示的差异"}
-                onClick={() =>
-                  hasDiff && setExpandedFile(open ? undefined : file)
-                }
-              >
-                {hasDiff && (
-                  <ChevronDown
-                    size={13}
-                    className={`changed-file-chevron ${open ? "open" : ""}`}
-                  />
-                )}
-                <span title={file}>{file}</span>
-                <small>
-                  <b>+{stats.additions}</b> <i>-{stats.deletions}</i>
-                  <em>{hasDiff ? "查看改动" : "无差异详情"}</em>
-                </small>
-              </button>
-              {open && hasDiff && (
-                <BoundedDiffView text={stats.diffs.join("\n\n")} />
-              )}
-            </div>
-          );
-        })}
-        {hiddenFileCount > 0 && (
-          <button
-            type="button"
-            className="file-history-more"
-            onClick={() =>
-              setVisibleFileCount((count) =>
-                Math.min(fileEntries.length, count + FILE_RENDER_PAGE_SIZE),
-              )
-            }
-          >
-            再显示 {Math.min(FILE_RENDER_PAGE_SIZE, hiddenFileCount)} 个文件
-            <small>还有 {hiddenFileCount} 个</small>
-          </button>
-        )}
-      </div>
-    </section>
   );
 });
 
@@ -1703,6 +1907,7 @@ const ConversationMessage = memo(
         <MessageItem
           message={message}
           running={running}
+          workspacePath={workspacePath}
           attachments={attachments}
           onRetry={() => retryContent && onRetry(retryContent)}
           assistantBody={
@@ -1719,9 +1924,6 @@ const ConversationMessage = memo(
             ) : undefined
           }
         />
-        {requestId && !running && (
-          <FileChangesSummary activities={activities} />
-        )}
       </div>
     );
   },

@@ -199,7 +199,7 @@ function AdminLogin({
   return (
     <main className="admin-auth-shell">
       <section className="admin-auth-panel">
-        <img src="/kcode-icon.png" alt="KCode" />
+        <img src="/pwa-512x512.png" alt="KCode" />
         <div className="admin-auth-heading">
           <p className="eyebrow">KCODE SERVER</p>
           <h1>{registrationOpen ? "创建管理员账号" : "登录管理后台"}</h1>
@@ -788,7 +788,7 @@ export function AdminApp() {
     <main className="admin-shell">
       <aside className="admin-sidebar">
         <a className="admin-brand" href="/admin" aria-label="KCode 管理后台">
-          <img src="/kcode-icon.png" alt="" />
+          <img src="/pwa-512x512.png" alt="" />
           <span>
             <strong>KCode</strong>
             <small>Server Console</small>

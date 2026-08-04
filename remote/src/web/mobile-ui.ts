@@ -2,6 +2,13 @@ export const MOBILE_MESSAGE_BATCH = 36;
 export const MOBILE_TASK_BATCH = 60;
 export const MOBILE_LIVE_TEXT_LIMIT = 24_000;
 
+type ProcessActivity = {
+  textOffset?: number;
+  subagentId?: string;
+  startedAt: number;
+  completedAt?: number;
+};
+
 export function visibleMessageWindow<T>(items: T[], visibleCount: number) {
   const count = Math.max(1, Math.floor(visibleCount));
   const start = Math.max(0, items.length - count);
@@ -44,6 +51,40 @@ export function boundedLiveText(value: string, limit = MOBILE_LIVE_TEXT_LIMIT) {
   )
     start -= 1;
   return { text: value.slice(start), truncated: true };
+}
+
+export function completedProcessTextLength(
+  activities: ProcessActivity[],
+  textLength: number,
+) {
+  const safeLength = Math.max(0, textLength);
+  const rootOffsets = activities
+    .filter((activity) => !activity.subagentId)
+    .map((activity) => Number(activity.textOffset))
+    .filter(Number.isFinite)
+    .map((offset) => Math.min(safeLength, Math.max(0, Math.floor(offset))));
+  return rootOffsets.length ? Math.max(...rootOffsets) : 0;
+}
+
+export function completedProcessDuration(
+  createdAt: number,
+  completedAt: number | undefined,
+  activities: ProcessActivity[],
+) {
+  const activityEnd = activities.reduce(
+    (latest, activity) =>
+      Math.max(latest, activity.completedAt ?? activity.startedAt),
+    createdAt,
+  );
+  return Math.max(0, (completedAt ?? activityEnd) - createdAt);
+}
+
+export function formatCompactDuration(milliseconds: number) {
+  if (milliseconds < 1000) return "<1s";
+  const totalSeconds = Math.floor(milliseconds / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return minutes ? `${minutes}m ${seconds}s` : `${seconds}s`;
 }
 
 export function reconcileById<T extends { id: string }>(

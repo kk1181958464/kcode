@@ -340,13 +340,17 @@ function staticFile(
   const immutableAsset =
     relativeFile.startsWith("assets/") &&
     /-[A-Za-z0-9_-]{8,}\.[A-Za-z0-9]+$/.test(relativeFile);
+  const updateSensitiveAsset =
+    relativeFile === "sw.js" || relativeFile === "manifest.webmanifest";
   response.writeHead(200, {
     "Content-Type": contentType(file),
-    "Cache-Control": file.endsWith("index.html")
-      ? "no-store, must-revalidate"
-      : immutableAsset
-        ? "public, max-age=31536000, immutable"
-        : "public, max-age=3600, must-revalidate",
+    "Cache-Control":
+      file.endsWith("index.html") || updateSensitiveAsset
+        ? "no-store, must-revalidate"
+        : immutableAsset
+          ? "public, max-age=31536000, immutable"
+          : "public, max-age=3600, must-revalidate",
+    ...(relativeFile === "sw.js" ? { "Service-Worker-Allowed": "/" } : {}),
   });
   if (request.method === "HEAD") response.end();
   else createReadStream(file).pipe(response);

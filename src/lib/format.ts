@@ -13,6 +13,14 @@ export const formatDuration = (milliseconds: number) =>
     ? "<1 秒"
     : `${Math.floor(milliseconds / 60000) ? `${Math.floor(milliseconds / 60000)} 分 ` : ""}${Math.floor((milliseconds % 60000) / 1000)} 秒`;
 
+export const formatCompactDuration = (milliseconds: number) => {
+  if (milliseconds < 1000) return "<1s";
+  const totalSeconds = Math.floor(milliseconds / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return minutes ? `${minutes}m ${seconds}s` : `${seconds}s`;
+};
+
 export function clipWorkingText(text: string, max = 48) {
   const value = text.replace(/\s+/g, " ").trim();
   if (!value) return "";

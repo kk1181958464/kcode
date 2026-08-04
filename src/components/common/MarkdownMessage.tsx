@@ -1,26 +1,18 @@
 import React, { memo, useMemo, useState } from "react";
-import ReactMarkdown, { type Components } from "react-markdown";
+import ReactMarkdown, {
+  defaultUrlTransform,
+  type Components,
+} from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Code2, Copy } from "lucide-react";
 import { copyWithToast } from "../../lib/toast";
+import {
+  localPathFromMarkdownHref,
+  revealLocalPath,
+} from "../../lib/reveal-path";
 import { openExternalUrl } from "./external";
 
-const markdownComponents: Components = {
-  a: ({ children, href, ...props }) => (
-    <a
-      {...props}
-      href={href}
-      target="_blank"
-      rel="noreferrer"
-      onClick={(event: React.MouseEvent<HTMLAnchorElement>) => {
-        if (!href || !/^https?:\/\//i.test(href)) return;
-        event.preventDefault();
-        openExternalUrl(href);
-      }}
-    >
-      {children}
-    </a>
-  ),
+const baseMarkdownComponents: Components = {
   pre: ({ children }) => {
     const code = String(
       (children as { props?: { children?: unknown } })?.props?.children ?? "",
@@ -76,14 +68,50 @@ function splitMarkdownBlocks(src: string): string[] {
 
 const MarkdownBlock = memo(function MarkdownBlock({
   content,
+  workspacePath,
 }: {
   content: string;
+  workspacePath: string;
 }) {
+  const components = useMemo<Components>(
+    () => ({
+      ...baseMarkdownComponents,
+      a: ({ children, href, ...props }) => {
+        const localPath = localPathFromMarkdownHref(href);
+        const external = Boolean(href && /^https?:\/\//i.test(href));
+        return (
+          <a
+            {...props}
+            href={href}
+            className={localPath ? "local-file-link" : undefined}
+            target={external ? "_blank" : undefined}
+            rel={external ? "noreferrer" : undefined}
+            title={localPath ? "在文件资源管理器中显示" : props.title}
+            onClick={(event: React.MouseEvent<HTMLAnchorElement>) => {
+              if (localPath) {
+                event.preventDefault();
+                void revealLocalPath(localPath, workspacePath);
+              } else if (external && href) {
+                event.preventDefault();
+                openExternalUrl(href);
+              }
+            }}
+          >
+            {children}
+          </a>
+        );
+      },
+    }),
+    [workspacePath],
+  );
   return (
     <div className="markdown-block">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
-        components={markdownComponents}
+        components={components}
+        urlTransform={(url) =>
+          localPathFromMarkdownHref(url) ? url : defaultUrlTransform(url)
+        }
       >
         {content}
       </ReactMarkdown>
@@ -96,8 +124,10 @@ const INITIAL_TAIL_BLOCKS = 24;
 
 export const MarkdownMessage = memo(function MarkdownMessage({
   content,
+  workspacePath,
 }: {
   content: string;
+  workspacePath: string;
 }) {
   const blocks = useMemo(() => splitMarkdownBlocks(content), [content]);
   const [expanded, setExpanded] = useState(false);
@@ -113,7 +143,11 @@ export const MarkdownMessage = memo(function MarkdownMessage({
   return (
     <>
       {visibleBlocks.map((block, index) => (
-        <MarkdownBlock key={index} content={block} />
+        <MarkdownBlock
+          key={index}
+          content={block}
+          workspacePath={workspacePath}
+        />
       ))}
       {hiddenCount > 0 && (
         <button

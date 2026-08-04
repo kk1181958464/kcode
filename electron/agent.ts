@@ -2769,9 +2769,7 @@ async function execute(
       )
         throw new Error("执行模型已被移除或不属于所选供应商。");
     }
-    const childName = executorOverride
-      ? `${name || "执行 Agent"} · ${executorOverride.displayName}`
-      : name;
+    const childName = executorOverride ? name || "执行 Agent" : name;
     const childModelOverride = executorOverride
       ? {
           providerId: executorOverride.providerId,
@@ -2822,6 +2820,15 @@ async function execute(
           },
           childSignal,
         ),
+      executorOverride
+        ? {
+            agentRole: "executor",
+            providerId: executorOverride.providerId,
+            modelId: executorOverride.modelId,
+            modelDisplayName: executorOverride.displayName,
+            reasoningEffort: executorOverride.reasoningEffort,
+          }
+        : undefined,
     );
     return { output: JSON.stringify(state, null, 2) };
   }
@@ -3338,6 +3345,7 @@ async function modelTurn(
       (await loadActiveSkillInstructions(latestUserRequest)),
     plannerCollaborationInstruction(request),
     "When a task has multiple independent phases, begin with a short numbered plan (1., 2., 3. …). Before every tool-call group, write no more than two concise user-facing progress sentences explaining which plan step you are executing and why; keep this preamble under 240 characters. Never dump a full implementation monologue, speculative patch, or repeated plan into the chat. Put the structured plan in numbered steps, then call the relevant tools in the same turn. A non-final turn must include a tool call instead of only describing what you will do. After a failed tool result, briefly explain how you are adjusting the approach before the next tool call. Never claim success before a tool result confirms it.",
+    "When you create, generate, or download a local file for the user, include a clickable Markdown link to it in the final reply. For a file inside the workspace, make the href its workspace-relative path with forward slashes, for example [report.txt](output/report.txt). Use an absolute local path only for files outside the workspace. Do not present a remote-server-only path as a local file link.",
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -4279,6 +4287,12 @@ export async function* runAgent(
       !turn.calls.length &&
       (truncated || intendsToContinue || collaborationPlanPending) &&
       autoContinues < 4;
+    if (!turn.calls.length && !willAutoContinue)
+      yield {
+        type: "final_response",
+        textOffset: turnTextStartOffset,
+        startedAt: Date.now(),
+      };
     if (turn.text) {
       history.push({
         kind: "message",
@@ -4420,7 +4434,10 @@ export async function* runAgent(
         requestId,
         tool: call.name,
         status: "running",
-        title: titles[call.name],
+        title:
+          call.name === "spawn_agent" && isPlannerCoordinator(request)
+            ? `启动执行模型 · ${request.collaboration?.executor.displayName}`
+            : titles[call.name],
         startedAt: Date.now(),
         input:
           call.name === "spawn_agent"
@@ -4438,6 +4455,10 @@ export async function* runAgent(
                   message: String(call.input.message || ""),
                 }
               : call.input,
+        agentRole: request.agentRole,
+        providerId: request.providerId,
+        modelId: request.modelId,
+        reasoningEffort: request.reasoningEffort,
         textOffset: timelineTextLength,
         narrative: roundNarrative || undefined,
         planSteps,
