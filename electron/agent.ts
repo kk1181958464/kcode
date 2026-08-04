@@ -197,6 +197,11 @@ import {
   plannerCollaborationInstruction,
   plannerToolAllowed,
 } from "./collaboration";
+import { executorFinalizationMode } from "./agent-run-budget";
+import {
+  effectiveCommandExitCode,
+  windowsCommandIssue,
+} from "./command-guidance";
 
 type ToolCall = {
   id: string;
@@ -944,8 +949,18 @@ const tools = [
   },
   {
     name: "browser_screenshot",
-    description: "Capture the current browser page to a local PNG.",
-    parameters: { type: "object", properties: {}, additionalProperties: false },
+    description:
+      "Capture the current browser page to a local PNG. For responsive validation, provide width and height together (for example 1280x720 desktop or 390x844 mobile). Use fullPage to capture beyond the visible viewport.",
+    parameters: {
+      type: "object",
+      properties: {
+        width: { type: "number", minimum: 320, maximum: 2560 },
+        height: { type: "number", minimum: 320, maximum: 2000 },
+        mobile: { type: "boolean" },
+        fullPage: { type: "boolean" },
+      },
+      additionalProperties: false,
+    },
   },
   {
     name: "browser_record_start",
@@ -1349,7 +1364,8 @@ const tools = [
   },
   {
     name: "run_command",
-    description: "Run a PowerShell command in the workspace.",
+    description:
+      "Run a Windows PowerShell 5.1 command in the workspace. This is not Bash: do not use <<EOF heredocs or &&/|| chains. Prefer browser tools for page interaction, responsive screenshots, and DOM inspection; do not launch Chrome/Edge from this tool. Use start_process for background services.",
     parameters: {
       type: "object",
       properties: {
@@ -2343,7 +2359,15 @@ async function execute(
       ),
     };
   if (call.name === "browser_screenshot") {
-    const result = await screenshotBrowser(browserSessionId);
+    const result = await screenshotBrowser(browserSessionId, {
+      width:
+        call.input.width === undefined ? undefined : Number(call.input.width),
+      height:
+        call.input.height === undefined ? undefined : Number(call.input.height),
+      mobile:
+        typeof call.input.mobile === "boolean" ? call.input.mobile : undefined,
+      fullPage: call.input.fullPage === true,
+    });
     return { output: JSON.stringify(result, null, 2), path: result.path };
   }
   if (call.name === "browser_record_start")
@@ -2968,6 +2992,15 @@ async function execute(
   }
   const script = String(call.input.command || "");
   if (!script) throw new Error("缺少命令");
+  if (process.platform === "win32") {
+    const commandIssue = windowsCommandIssue(script);
+    if (commandIssue)
+      return {
+        output: commandIssue,
+        command: script,
+        executed: false,
+      };
+  }
   const timeoutMs = Math.min(
     600_000,
     Math.max(1_000, Number(call.input.timeoutMs) || 120_000),
@@ -2989,7 +3022,7 @@ async function execute(
   return {
     output: result.output || "命令未产生输出",
     command: script,
-    exitCode: result.exitCode,
+    exitCode: effectiveCommandExitCode(result.exitCode, result.output),
     executed: true,
   };
 }
@@ -3345,6 +3378,7 @@ async function modelTurn(
       (await loadActiveSkillInstructions(latestUserRequest)),
     plannerCollaborationInstruction(request),
     "When a task has multiple independent phases, begin with a short numbered plan (1., 2., 3. …). Before every tool-call group, write no more than two concise user-facing progress sentences explaining which plan step you are executing and why; keep this preamble under 240 characters. Never dump a full implementation monologue, speculative patch, or repeated plan into the chat. Put the structured plan in numbered steps, then call the relevant tools in the same turn. A non-final turn must include a tool call instead of only describing what you will do. After a failed tool result, briefly explain how you are adjusting the approach before the next tool call. Never claim success before a tool result confirms it.",
+    "run_command uses Windows PowerShell 5.1, not Bash. Never use <<EOF heredocs or &&/|| chains; use a PowerShell here-string for multiline stdin and check $LASTEXITCODE explicitly when chaining native commands. Use browser_open, browser_snapshot, browser_click, browser_type, and browser_screenshot for browser work. For responsive validation, pass explicit width and height to browser_screenshot. Never launch Chrome or Edge through run_command for browsing, DOM inspection, version checks, or screenshots.",
     "When you create, generate, or download a local file for the user, include a clickable Markdown link to it in the final reply. For a file inside the workspace, make the href its workspace-relative path with forward slashes, for example [report.txt](output/report.txt). Use an absolute local path only for files outside the workspace. Do not present a remote-server-only path as a local file link.",
   ]
     .filter(Boolean)
@@ -3840,6 +3874,7 @@ export async function* runAgent(
   request: ModelRequest,
   signal: AbortSignal,
 ): AsyncGenerator<AgentEvent> {
+  const runStartedAt = Date.now();
   const root = path.resolve(request.workspacePath);
   const browserSessionId = request.taskId || requestId;
   bindBrowserRequest(browserSessionId, requestId);
@@ -3916,13 +3951,47 @@ export async function* runAgent(
   let planCursor = 0;
   let imageFallbackNoticeSent = false;
   while (!signal.aborted) {
+    const pendingParentInstructions = drainSubagentMessages(requestId);
+    const codingEvidenceAtRoundStart =
+      successfulCodingEvidence(evidenceHistory);
+    const browserEvidenceAtRoundStart =
+      successfulBrowserEvidence(evidenceHistory);
+    const gitEvidenceAtRoundStart = successfulGitEvidence(evidenceHistory);
+    const unavailableGitAtRoundStart =
+      unavailableGitOperations(evidenceHistory);
+    const evidenceComplete =
+      missingRequestedCodingOperations(
+        requestedCodingOps,
+        codingEvidenceAtRoundStart,
+      ).length === 0 &&
+      missingRequestedBrowserOperations(
+        requestedBrowserOps,
+        browserEvidenceAtRoundStart,
+      ).length === 0 &&
+      missingRequestedGitOperations(
+        requestedGitOps,
+        gitEvidenceAtRoundStart,
+      ).every((operation) => unavailableGitAtRoundStart.has(operation)) &&
+      !listSubagents(requestId).some((agent) => !agent.collected);
+    const finalizationMode = executorFinalizationMode({
+      agentRole: request.agentRole,
+      completedRounds: round,
+      elapsedMs: Date.now() - runStartedAt,
+      evidenceComplete,
+      hasPendingInstructions: pendingParentInstructions.length > 0,
+    });
     round += 1;
     yield {
       type: "progress",
-      message: nextExecutionNarrative(
-        previousRoundActivity,
-        previousRoundFailure,
-      ),
+      message:
+        finalizationMode === "evidence-complete"
+          ? "执行模型已完成主要修改和验证，正在收尾总结…"
+          : finalizationMode === "limit-reached"
+            ? "执行模型已达到运行上限，正在汇总已有结果和未完成项…"
+            : nextExecutionNarrative(
+                previousRoundActivity,
+                previousRoundFailure,
+              ),
     };
     if (
       request.contextWindow &&
@@ -3956,11 +4025,20 @@ export async function* runAgent(
         lastPromptTokens = 0;
       }
     }
-    for (const message of drainSubagentMessages(requestId))
+    for (const message of pendingParentInstructions)
       history.push({
         kind: "message",
         role: "user",
         content: `<parent_instruction>${message}</parent_instruction>`,
+      });
+    if (finalizationMode)
+      history.push({
+        kind: "message",
+        role: "user",
+        content:
+          finalizationMode === "evidence-complete"
+            ? "<runtime_finalization>已有成功工具记录覆盖本次要求，执行预算现在进入收尾阶段。不要再调用工具、不要继续修改，也不要追加重复验证。请仅依据现有工具结果给出简洁最终总结：完成内容、修改文件、验证结果、可用地址和真实残留问题。不得声称未验证的事项。</runtime_finalization>"
+            : "<runtime_finalization>执行 Agent 已达到运行预算上限。不要再调用工具或继续修改。请根据现有工具结果立即汇总：已完成内容、修改文件、成功和失败的验证、可用地址，以及尚未完成或无法确认的事项。必须如实区分完成项与残留项。</runtime_finalization>",
       });
     let turn: Turn | undefined,
       streamedText = "",
@@ -3993,12 +4071,14 @@ export async function* runAgent(
           request,
           history,
           signal,
-          toolsEnabled,
-          shouldRequireCodingTool(
-            request.modelId,
-            requestedCodingOps,
-            successfulCodingEvidence(evidenceHistory),
-          ),
+          finalizationMode ? false : toolsEnabled,
+          finalizationMode
+            ? false
+            : shouldRequireCodingTool(
+                request.modelId,
+                requestedCodingOps,
+                successfulCodingEvidence(evidenceHistory),
+              ),
           modelRuntime,
         )) {
           if (event.type === "complete") turn = event.turn;
@@ -4056,6 +4136,38 @@ export async function* runAgent(
     // input/output/cached accumulate across rounds for billing; promptTokens is
     // the latest round's prompt size, i.e. the real current context occupancy.
     yield { type: "usage", ...usage, promptTokens: lastPromptTokens };
+    if (finalizationMode) {
+      if (!turn.text.trim()) {
+        closeSubagentMessageQueue(requestId);
+        yield {
+          type: "error",
+          message: "执行模型达到收尾阶段，但没有返回可用的结果总结。",
+        };
+        return;
+      }
+      yield {
+        type: "final_response",
+        textOffset: turnTextStartOffset,
+        startedAt: Date.now(),
+      };
+      history.push({
+        kind: "message",
+        role: "assistant",
+        content: turn.text,
+        reasoningContent: turn.reasoningContent,
+      });
+      if (bufferModelText || !streamedText) {
+        timelineTextLength += turn.text.length;
+        yield { type: "text", delta: turn.text };
+      }
+      closeSubagentMessageQueue(requestId);
+      yield {
+        type: "done",
+        outcome:
+          finalizationMode === "evidence-complete" ? "completed" : "blocked",
+      };
+      return;
+    }
     if (!turn.text.trim() && !turn.calls.length) {
       if (emptyTurns < 2) {
         emptyTurns += 1;

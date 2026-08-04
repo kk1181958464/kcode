@@ -6,6 +6,7 @@ import {
   extractAccessibilityFrame,
   hasUserSuppliedVerificationCode,
   isLikelyHumanVerification,
+  normalizeBrowserScreenshotOptions,
 } from "./browser-cdp";
 
 test("extracts semantic and focusable controls from a CDP accessibility tree", () => {
@@ -86,6 +87,39 @@ test("computes a compositor click point from a CDP box model", () => {
     { x: 30, y: 40 },
   );
   assert.throws(() => boxModelCenter({}), /没有可点击区域/);
+});
+
+test("normalizes desktop and mobile screenshot viewports", () => {
+  assert.deepEqual(
+    normalizeBrowserScreenshotOptions({ width: 1280, height: 720 }),
+    { width: 1280, height: 720, mobile: false, fullPage: false },
+  );
+  assert.deepEqual(
+    normalizeBrowserScreenshotOptions({
+      width: 390.4,
+      height: 844.4,
+      fullPage: true,
+    }),
+    { width: 390, height: 844, mobile: true, fullPage: true },
+  );
+  assert.deepEqual(normalizeBrowserScreenshotOptions({ fullPage: true }), {
+    fullPage: true,
+  });
+});
+
+test("rejects incomplete or unsafe screenshot viewport values", () => {
+  assert.throws(
+    () => normalizeBrowserScreenshotOptions({ width: 390 }),
+    /同时提供/,
+  );
+  assert.throws(
+    () => normalizeBrowserScreenshotOptions({ width: 200, height: 844 }),
+    /宽度/,
+  );
+  assert.throws(
+    () => normalizeBrowserScreenshotOptions({ mobile: true }),
+    /同时提供/,
+  );
 });
 
 test("recognizes verification pages that require the user", () => {

@@ -4314,6 +4314,7 @@ export default function App() {
                     className="context-button"
                     onClick={() => void pickContextFiles()}
                     disabled={Boolean(runningId) || summaryBusy}
+                    aria-label="添加上下文文件"
                     title={
                       effectiveContextDirectory
                         ? `添加文本或代码文件 · ${effectiveContextDirectory}`
@@ -4321,7 +4322,6 @@ export default function App() {
                     }
                   >
                     <Paperclip size={15} />
-                    <span>上下文</span>
                     {attachedFiles.length > 0 && <b>{attachedFiles.length}</b>}
                   </button>
                   <div className="model-picker" ref={modelPickerRef}>

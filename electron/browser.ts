@@ -13,7 +13,9 @@ import {
   boxModelCenter,
   detectHumanVerification,
   extractAccessibilityFrame,
+  normalizeBrowserScreenshotOptions,
   type BrowserAccessibilityEntry,
+  type BrowserScreenshotOptions,
   type BrowserVerification,
   type CdpAxNode,
 } from "./browser-cdp";
@@ -138,6 +140,25 @@ const cdp = (
     params,
     debuggerSessionId,
   ) as Promise<any>;
+
+function browserOperationTimeout<T>(
+  operation: Promise<T>,
+  label: string,
+  timeoutMs = 15_000,
+) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(
+      () =>
+        reject(
+          new Error(`${label}超时（${Math.round(timeoutMs / 1_000)} 秒）`),
+        ),
+      timeoutMs,
+    );
+    timer.unref?.();
+  });
+  return Promise.race([operation, timeout]).finally(() => clearTimeout(timer));
+}
 
 function automationState(sessionId: string, view: WebContentsView) {
   const existing = automationStates.get(sessionId);
@@ -1690,14 +1711,101 @@ export async function removeBrowserRecording(id: string) {
   ]);
   return listBrowserRecordings();
 }
-export async function screenshotBrowser(requestId: string) {
+export async function screenshotBrowser(
+  requestId: string,
+  input: BrowserScreenshotOptions = {},
+) {
   const view = page(requestId),
-    image = await view.webContents.capturePage(),
+    options = normalizeBrowserScreenshotOptions(input),
     dir = path.join(app.getPath("userData"), "browser-screenshots");
-  await mkdir(dir, { recursive: true });
-  const file = path.join(dir, `${Date.now()}.png`);
-  await writeFile(file, image.toPNG());
-  return { path: file, url: view.webContents.getURL() };
+  const session = sessions.get(requestId)!;
+  let temporarySurface = false;
+  if (!session.attached) {
+    if (!host || host.isDestroyed()) throw new Error("主窗口不可用");
+    const hostBounds = host.getContentBounds();
+    view.setBounds({
+      x: hostBounds.width + 16,
+      y: 0,
+      width: options.width ?? 1280,
+      height: options.height ?? 800,
+    });
+    host.contentView.addChildView(view);
+    session.attached = true;
+    temporarySurface = true;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+
+  try {
+    let png: Buffer;
+    if (!options.width && !options.fullPage) {
+      const image = await browserOperationTimeout(
+        view.webContents.capturePage(),
+        "浏览器截图",
+      );
+      png = image.toPNG();
+    } else {
+      await browserOperationTimeout(
+        ensureBrowserDebugger(requestId, view),
+        "浏览器调试器连接",
+      );
+      let emulated = false;
+      try {
+        if (options.width && options.height) {
+          await browserOperationTimeout(
+            cdp(view, "Emulation.setDeviceMetricsOverride", {
+              width: options.width,
+              height: options.height,
+              screenWidth: options.width,
+              screenHeight: options.height,
+              deviceScaleFactor: 1,
+              mobile: Boolean(options.mobile),
+            }),
+            "浏览器视口设置",
+          );
+          emulated = true;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        const capture = await browserOperationTimeout(
+          cdp(view, "Page.captureScreenshot", {
+            format: "png",
+            fromSurface: true,
+            captureBeyondViewport: Boolean(options.fullPage),
+          }),
+          "浏览器截图",
+        );
+        png = Buffer.from(String(capture?.data || ""), "base64");
+        if (!png.length) throw new Error("浏览器没有返回截图数据");
+      } finally {
+        if (emulated)
+          await browserOperationTimeout(
+            cdp(view, "Emulation.clearDeviceMetricsOverride"),
+            "浏览器视口恢复",
+            3_000,
+          ).catch(() => undefined);
+        forceBrowserRepaint(requestId);
+      }
+    }
+    await mkdir(dir, { recursive: true });
+    const file = path.join(dir, `${Date.now()}.png`);
+    await writeFile(file, png);
+    return {
+      path: file,
+      url: view.webContents.getURL(),
+      width: options.width,
+      height: options.height,
+      mobile: options.mobile,
+      fullPage: Boolean(options.fullPage),
+    };
+  } finally {
+    if (temporarySurface) {
+      try {
+        host?.contentView.removeChildView(view);
+      } catch {
+        /* Host may close while a background screenshot is finishing. */
+      }
+      session.attached = false;
+    }
+  }
 }
 export function cleanupBrowsers(sessionIds: string[]) {
   for (const [sessionId, session] of sessions)

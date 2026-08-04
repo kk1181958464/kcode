@@ -33,6 +33,46 @@ export type BrowserVerification = {
   message: string;
 };
 
+export type BrowserScreenshotOptions = {
+  width?: number;
+  height?: number;
+  mobile?: boolean;
+  fullPage?: boolean;
+};
+
+export function normalizeBrowserScreenshotOptions(
+  input: Record<string, unknown> = {},
+): BrowserScreenshotOptions {
+  const hasWidth = input.width !== undefined && input.width !== null;
+  const hasHeight = input.height !== undefined && input.height !== null;
+  if (hasWidth !== hasHeight)
+    throw new Error("指定截图视口时必须同时提供 width 和 height");
+  if (!hasWidth) {
+    if (input.mobile !== undefined)
+      throw new Error("指定 mobile 时必须同时提供 width 和 height");
+    return { fullPage: input.fullPage === true };
+  }
+
+  const width = Number(input.width);
+  const height = Number(input.height);
+  if (!Number.isFinite(width) || !Number.isFinite(height))
+    throw new Error("截图视口宽高必须是有效数字");
+  if (width < 320 || width > 2560)
+    throw new Error("截图视口宽度必须在 320 到 2560 之间");
+  if (height < 320 || height > 2000)
+    throw new Error("截图视口高度必须在 320 到 2000 之间");
+
+  const roundedWidth = Math.round(width);
+  const roundedHeight = Math.round(height);
+  return {
+    width: roundedWidth,
+    height: roundedHeight,
+    mobile:
+      typeof input.mobile === "boolean" ? input.mobile : roundedWidth <= 600,
+    fullPage: input.fullPage === true,
+  };
+}
+
 const INTERACTIVE_ROLES = new Set([
   "button",
   "checkbox",

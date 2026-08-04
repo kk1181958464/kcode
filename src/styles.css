@@ -1994,7 +1994,8 @@ select:focus-visible {
   overflow: auto;
   padding: 12px 0 !important;
   white-space: pre;
-  overscroll-behavior: contain;
+  overscroll-behavior-x: contain;
+  overscroll-behavior-y: auto;
   scrollbar-gutter: stable;
 }
 .diff-line {
@@ -9991,7 +9992,27 @@ button[aria-busy="true"] {
 }
 
 .composer-tools > .context-button {
-  flex: 0 1 auto;
+  position: relative;
+  width: 30px;
+  min-width: 30px;
+  flex: 0 0 30px;
+  justify-content: center;
+  gap: 0;
+  padding-inline: 0;
+  white-space: nowrap;
+}
+
+.composer-tools > .context-button b {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border: 1px solid var(--surface-raised);
+  border-radius: 7px;
+  font-size: 8px;
+  line-height: 12px;
 }
 
 .model-picker {
