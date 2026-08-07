@@ -218,6 +218,13 @@ import {
   resetActivityOutput,
 } from "./activity-output-store";
 import { selectActivityGroups, upsertActivity } from "./activity-index";
+import {
+  completePageMetadata,
+  prependPageMetadata,
+  prependUniqueItems,
+  TASK_MESSAGE_PAGE_SIZE,
+  windowAfterPrepend,
+} from "./task-history-paging";
 import { registerAppToastHandler, type AppToast } from "./lib/toast";
 import { useEventCallback } from "./lib/use-event-callback";
 import {
@@ -247,7 +254,10 @@ import type {
   ImageAttachment,
   ReasoningMode,
   SkillStoreItem,
+  TaskWindow,
 } from "./types";
+
+type TaskPagingState = TaskWindow["paging"];
 
 function estimateRequestContextTokens({
   messages,
@@ -318,6 +328,9 @@ export default function App() {
     taskRuntimeStore.getSnapshot,
   );
   const [taskStorageReady, setTaskStorageReady] = useState(false);
+  const [taskPagingById, setTaskPagingById] = useState<
+    Record<string, TaskPagingState>
+  >({});
   const [activeTaskId, setActiveTaskId] = useState(
     () => localStorage.getItem("kcode.activeTaskId") || "",
   );
@@ -326,8 +339,8 @@ export default function App() {
   );
   const [sshRemoteDialogTaskId, setSshRemoteDialogTaskId] = useState<string>();
   const [sshRemoteState, setSshRemoteState] = useState<SshRemoteState>();
-  const [workspaceView, setWorkspaceView] = useState<"chat" | "editor">(
-    () => (storedActiveTask()?.remoteWorkspace ? "editor" : "chat"),
+  const [workspaceView, setWorkspaceView] = useState<"chat" | "editor">(() =>
+    storedActiveTask()?.remoteWorkspace ? "editor" : "chat",
   );
   const [deleteTarget, setDeleteTarget] = useState<
     | { kind: "workspace"; path: string; name: string; count: number }
@@ -616,6 +629,7 @@ export default function App() {
   const [gitRefreshing, setGitRefreshing] = useState(false);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [scrollingToBottom, setScrollingToBottom] = useState(false);
+  const [historyLoadingTaskId, setHistoryLoadingTaskId] = useState<string>();
   const [summaryOpen, setSummaryOpen] = useState(false);
   const [checkpoints, setCheckpoints] = useState<AgentCheckpoint[]>([]);
   const [summarizingTasks, setSummarizingTasks] = useState<Set<string>>(
@@ -643,6 +657,8 @@ export default function App() {
   const remoteStreamSequencesRef = useRef(new Map<string, number>());
   const agentEventSequencesRef = useRef(new Map<string, number>());
   const hydratedTaskIdsRef = useRef(new Set(tasks.map((task) => task.id)));
+  const taskPagingRef = useRef(new Map<string, TaskPagingState>());
+  const fullHistoryLoadsRef = useRef(new Map<string, Promise<TaskRecord>>());
   const persistedTaskRefsRef = useRef(new Map<string, TaskRecord>());
   const persistedTaskOrderRef = useRef("");
   const taskSwitchSequenceRef = useRef(0);
@@ -786,6 +802,22 @@ export default function App() {
   const retryMessage = useCallback((content: string) => {
     void sendRef.current?.(content);
   }, []);
+  function rememberTaskPaging(taskId: string, paging: TaskPagingState) {
+    taskPagingRef.current.set(taskId, paging);
+    setTaskPagingById((current) =>
+      current[taskId] === paging ? current : { ...current, [taskId]: paging },
+    );
+  }
+  function forgetTaskPaging(taskId: string) {
+    taskPagingRef.current.delete(taskId);
+    fullHistoryLoadsRef.current.delete(taskId);
+    setTaskPagingById((current) => {
+      if (!(taskId in current)) return current;
+      const next = { ...current };
+      delete next[taskId];
+      return next;
+    });
+  }
   const claimTaskView = (taskId: string) => {
     activeTaskIdRef.current = taskId;
     displayedTaskIdRef.current = taskId;
@@ -803,7 +835,8 @@ export default function App() {
     let active = true;
     setSshRemoteState((current) => ({
       taskId: activeTask.id,
-      connected: current?.taskId === activeTask.id && Boolean(current.connected),
+      connected:
+        current?.taskId === activeTask.id && Boolean(current.connected),
       connecting: true,
       profile: remote,
       cachePath: activeTask.workspacePath,
@@ -853,10 +886,13 @@ export default function App() {
             headers.find(
               (task) => task.id === localStorage.getItem("kcode.activeTaskId"),
             ) ?? headers[0];
-          const storedTask = selectedHeader
-            ? await window.kcode.state.loadTask(selectedHeader.id)
+          const storedWindow = selectedHeader
+            ? await window.kcode.state.loadTaskWindow(selectedHeader.id)
             : null;
+          const storedTask = storedWindow?.task ?? null;
           if (cancelled) return;
+          if (selectedHeader && storedWindow)
+            rememberTaskPaging(selectedHeader.id, storedWindow.paging);
           const selectedTask = storedTask
             ? normalizeStoredTask(storedTask as TaskRecord)
             : selectedHeader;
@@ -939,7 +975,9 @@ export default function App() {
     visibleTurnWindow,
   ]);
   const hasOlderMessages =
-    !conversationSearchOpen && visibleTurnWindow.start > 0;
+    !conversationSearchOpen &&
+    (visibleTurnWindow.start > 0 ||
+      Boolean(taskPagingById[activeTaskId]?.messages.hasMoreBefore));
   const hasNewerMessages =
     !conversationSearchOpen && visibleTurnWindow.end < conversationTurns.length;
   const activitiesByRequest = useMemo(() => {
@@ -1196,6 +1234,114 @@ export default function App() {
     };
   }
 
+  async function loadOlderTaskHistory(
+    taskId: string,
+    currentWindow: ConversationWindow,
+  ) {
+    const state = window.kcode?.state;
+    const initialPaging = taskPagingRef.current.get(taskId);
+    const messageCursor = initialPaging?.messages.oldestCursor;
+    if (!state || !initialPaging?.messages.hasMoreBefore || !messageCursor) {
+      loadingOlderTurnsRef.current = false;
+      windowScrollAnchorRef.current = undefined;
+      setHistoryLoadingTaskId((current) =>
+        current === taskId ? undefined : current,
+      );
+      return;
+    }
+
+    try {
+      const messagePage = await state.taskMessagePage(taskId, {
+        before: messageCursor,
+        limit: TASK_MESSAGE_PAGE_SIZE,
+      });
+      const requestIds = messagePage.items
+        .map((message) => message.id)
+        .filter((messageId) => messageId.startsWith("assistant:"))
+        .map((messageId) => messageId.slice("assistant:".length));
+      const olderActivities = await state.taskActivitiesForRequests(
+        taskId,
+        requestIds,
+      );
+
+      const latestTask = tasksRef.current.find((task) => task.id === taskId);
+      if (!latestTask) {
+        loadingOlderTurnsRef.current = false;
+        windowScrollAnchorRef.current = undefined;
+        return;
+      }
+      const nextMessages = prependUniqueItems(
+        messagePage.items,
+        latestTask.messages,
+      );
+      const nextActivities = prependUniqueItems(
+        olderActivities,
+        latestTask.activities,
+      );
+      const latestPaging = taskPagingRef.current.get(taskId) ?? initialPaging;
+      rememberTaskPaging(taskId, {
+        messages: prependPageMetadata(latestPaging.messages, messagePage),
+        activities: {
+          oldestCursor: nextActivities[0]?.id,
+          newestCursor: nextActivities.at(-1)?.id,
+          hasMoreBefore: messagePage.hasMoreBefore,
+          hasMoreAfter: false,
+        },
+      });
+      const nextTask = {
+        ...latestTask,
+        messages: nextMessages,
+        activities: nextActivities,
+      };
+      const nextTasks = tasksRef.current.map((task) =>
+        task.id === taskId ? nextTask : task,
+      );
+      tasksRef.current = nextTasks;
+      setTasks(nextTasks);
+
+      const addedTurns = messagePage.items.filter(
+        (message) =>
+          message.role === "user" &&
+          !latestTask.messages.some((current) => current.id === message.id),
+      ).length;
+      if (
+        isTaskViewCurrent(
+          activeTaskIdRef.current,
+          displayedTaskIdRef.current,
+          taskId,
+        )
+      ) {
+        setMessages(nextMessages);
+        setActivities(nextActivities);
+        if (addedTurns > 0) {
+          const totalTurns = nextMessages.reduce(
+            (count, message) => count + (message.role === "user" ? 1 : 0),
+            0,
+          );
+          setVisibleTurnWindow(
+            windowAfterPrepend(
+              currentWindow,
+              addedTurns,
+              totalTurns,
+              conversationPageSize,
+            ),
+          );
+          return;
+        }
+      }
+      loadingOlderTurnsRef.current = false;
+      windowScrollAnchorRef.current = undefined;
+    } catch (error) {
+      loadingOlderTurnsRef.current = false;
+      windowScrollAnchorRef.current = undefined;
+      setContextError(`加载历史记录失败：${errorMessage(error)}`);
+    } finally {
+      setHistoryLoadingTaskId((current) =>
+        current === taskId ? undefined : current,
+      );
+    }
+  }
+
   function handleConversationScroll(container: HTMLElement) {
     scrollTargetRef.current = container;
     // Programmatic bottom alignment also emits scroll events. Do not treat the
@@ -1215,15 +1361,23 @@ export default function App() {
       if (
         !conversationSearchOpen &&
         scrollTop <= 48 &&
-        visibleTurnWindow.start > 0 &&
         !loadingOlderTurnsRef.current
       ) {
-        loadingOlderTurnsRef.current = true;
-        preserveWindowAnchor(visibleTurnWindow.start);
-        setVisibleTurnWindow((current) =>
-          prependConversationWindow(current, conversationPageSize),
-        );
-        return;
+        if (visibleTurnWindow.start > 0) {
+          loadingOlderTurnsRef.current = true;
+          preserveWindowAnchor(visibleTurnWindow.start);
+          setVisibleTurnWindow((current) =>
+            prependConversationWindow(current, conversationPageSize),
+          );
+          return;
+        }
+        if (taskPagingRef.current.get(activeTaskId)?.messages.hasMoreBefore) {
+          loadingOlderTurnsRef.current = true;
+          setHistoryLoadingTaskId(activeTaskId);
+          preserveWindowAnchor(0);
+          void loadOlderTaskHistory(activeTaskId, visibleTurnWindow);
+          return;
+        }
       }
       if (
         !conversationSearchOpen &&
@@ -1614,7 +1768,15 @@ export default function App() {
     if (!dirty.length && !orderChanged) return;
     const timer = window.setTimeout(() => {
       void Promise.all([
-        ...dirty.map((task) => window.kcode.state.saveTask(task.id, task)),
+        ...dirty.map((task) =>
+          window.kcode.state.saveTask(
+            task.id,
+            task,
+            taskPagingRef.current.has(task.id)
+              ? { preserveUnloadedItems: true }
+              : undefined,
+          ),
+        ),
         ...(orderChanged
           ? [window.kcode.state.saveTaskOrder(tasks.map((task) => task.id))]
           : []),
@@ -1885,6 +2047,7 @@ export default function App() {
       taskRuntimeStore.clear(task.id);
       attachmentDraftsRef.current.delete(task.id);
       hydratedTaskIdsRef.current.delete(task.id);
+      forgetTaskPaging(task.id);
       persistedTaskRefsRef.current.delete(task.id);
       scrollStateByTaskRef.current.delete(task.id);
       conversationWindowByTaskRef.current.delete(task.id);
@@ -2032,6 +2195,13 @@ export default function App() {
 
   const revealAllConversationMessages = useCallback(() => {
     searchPreviousTurnWindowRef.current = visibleTurnWindow;
+    const task = tasksRef.current.find(
+      (item) => item.id === displayedTaskIdRef.current,
+    );
+    if (task && taskHistoryIsPartial(task.id))
+      void ensureFullTaskHistory(task).catch((error) =>
+        setContextError(`加载完整对话失败：${errorMessage(error)}`),
+      );
   }, [visibleTurnWindow]);
 
   const closeConversationSearch = useCallback(() => {
@@ -2151,10 +2321,7 @@ export default function App() {
     scheduleRemoteStreamSync(requestId);
   }
 
-  function adoptActivitySshWorkspace(
-    taskId: string,
-    activity: AgentActivity,
-  ) {
+  function adoptActivitySshWorkspace(taskId: string, activity: AgentActivity) {
     const rootPath = sshWorkspaceRootFromActivity(activity);
     if (!window.kcode?.sshRemote || !rootPath) return;
     const adoptionKey = `${taskId}:${activity.id}:${rootPath}`;
@@ -2801,15 +2968,79 @@ export default function App() {
   async function ensureTaskLoaded(task: TaskRecord) {
     if (hydratedTaskIdsRef.current.has(task.id) || !window.kcode?.state)
       return task;
-    const stored = await window.kcode.state.loadTask(task.id);
+    const stored = await window.kcode.state.loadTaskWindow(task.id);
     if (!stored) throw new Error(`找不到任务记录：${task.name}`);
-    const loaded = normalizeStoredTask(stored as TaskRecord);
+    const loaded = normalizeStoredTask(stored.task as TaskRecord);
+    rememberTaskPaging(task.id, stored.paging);
     hydratedTaskIdsRef.current.add(task.id);
     persistedTaskRefsRef.current.set(task.id, loaded);
     setTasks((current) =>
       current.map((item) => (item.id === loaded.id ? loaded : item)),
     );
     return loaded;
+  }
+
+  function taskHistoryIsPartial(taskId: string) {
+    const paging = taskPagingRef.current.get(taskId);
+    return Boolean(
+      paging &&
+      (paging.messages.hasMoreBefore ||
+        paging.messages.hasMoreAfter ||
+        paging.activities.hasMoreBefore ||
+        paging.activities.hasMoreAfter),
+    );
+  }
+
+  async function ensureFullTaskHistory(task: TaskRecord) {
+    if (!window.kcode?.state || !taskHistoryIsPartial(task.id)) return task;
+    const pending = fullHistoryLoadsRef.current.get(task.id);
+    if (pending) return pending;
+    const load = (async () => {
+      const snapshot =
+        tasksRef.current.find((item) => item.id === task.id) ?? task;
+      await window.kcode.state.saveTask(snapshot.id, snapshot, {
+        preserveUnloadedItems: true,
+      });
+      const stored = await window.kcode.state.loadTask(snapshot.id);
+      if (!stored) throw new Error(`找不到任务记录：${snapshot.name}`);
+      const persisted = normalizeStoredTask(stored as TaskRecord);
+      const latest =
+        tasksRef.current.find((item) => item.id === snapshot.id) ?? snapshot;
+      const loaded: TaskRecord = {
+        ...persisted,
+        ...latest,
+        messages: prependUniqueItems(persisted.messages, latest.messages),
+        activities: prependUniqueItems(persisted.activities, latest.activities),
+      };
+      rememberTaskPaging(snapshot.id, {
+        messages: completePageMetadata(loaded.messages),
+        activities: completePageMetadata(loaded.activities),
+      });
+      const nextTasks = tasksRef.current.map((item) =>
+        item.id === loaded.id ? loaded : item,
+      );
+      tasksRef.current = nextTasks;
+      setTasks(nextTasks);
+      if (latest === snapshot)
+        persistedTaskRefsRef.current.set(loaded.id, loaded);
+      if (
+        isTaskViewCurrent(
+          activeTaskIdRef.current,
+          displayedTaskIdRef.current,
+          loaded.id,
+        )
+      ) {
+        setMessages(loaded.messages);
+        setActivities(loaded.activities);
+      }
+      return loaded;
+    })();
+    fullHistoryLoadsRef.current.set(task.id, load);
+    try {
+      return await load;
+    } finally {
+      fullHistoryLoadsRef.current.delete(task.id);
+    }
   }
 
   async function switchTask(task: TaskRecord) {
@@ -2955,6 +3186,7 @@ export default function App() {
     delete initialDrafts.current[task.id];
     attachmentDraftsRef.current.delete(task.id);
     hydratedTaskIdsRef.current.delete(task.id);
+    forgetTaskPaging(task.id);
     persistedTaskRefsRef.current.delete(task.id);
     scrollStateByTaskRef.current.delete(task.id);
     conversationWindowByTaskRef.current.delete(task.id);
@@ -3252,34 +3484,44 @@ export default function App() {
       setContextError("请先为当前模型配置上下文窗口");
       return;
     }
-    const compacted = compactConversation(
-      activeTask,
-      selectedContextWindow,
-      true,
-    );
+    let task: TaskRecord;
+    try {
+      task = await ensureFullTaskHistory(activeTask);
+    } catch (error) {
+      setContextError(`加载完整对话失败：${errorMessage(error)}`);
+      return;
+    }
+    const compacted = compactConversation(task, selectedContextWindow, true);
     if (!compacted) {
       setContextError("当前对话较短，保留最近一轮后暂无可压缩内容");
       return;
     }
-    const beforeTokens = localContextTokens;
-    setSummarizingTasks((current) => new Set(current).add(activeTask.id));
+    const beforeTokens = estimateRequestContextTokens({
+      messages: task.messages,
+      compactedMessageCount: task.compactedMessageCount ?? 0,
+      contextSummary: task.contextSummary,
+      attachmentTokens: 0,
+      outputReserve: 0,
+      calibrationFactor,
+    });
+    setSummarizingTasks((current) => new Set(current).add(task.id));
     let finalCompacted = compacted;
     try {
-      finalCompacted = await improveSummaryWithModel(activeTask, compacted);
+      finalCompacted = await improveSummaryWithModel(task, compacted);
     } finally {
       setSummarizingTasks((current) => {
         const next = new Set(current);
-        next.delete(activeTask.id);
+        next.delete(task.id);
         return next;
       });
     }
     setTasks((all) =>
-      all.map((task) =>
-        task.id === activeTask.id
+      all.map((item) =>
+        item.id === task.id
           ? {
-              ...task,
+              ...item,
               ...finalCompacted,
-              usage: clearPromptTokenSnapshot(task.usage),
+              usage: clearPromptTokenSnapshot(item.usage),
               summarySnapshots: summarySnapshot(task),
               summaryMeta:
                 "summaryMeta" in finalCompacted
@@ -3287,11 +3529,11 @@ export default function App() {
                   : { modelGenerated: false, durationMs: 0 },
               updatedAt: Date.now(),
             }
-          : task,
+          : item,
       ),
     );
     const afterTokens = estimateRequestContextTokens({
-      messages,
+      messages: task.messages,
       compactedMessageCount:
         finalCompacted.compactedMessageCount ?? compacted.compactedMessageCount,
       contextSummary: finalCompacted.contextSummary,
@@ -3372,10 +3614,17 @@ export default function App() {
 
   async function rebuildActiveSummary() {
     if (!activeTask || !selectedContextWindow) return;
-    const taskId = activeTask.id;
+    let task: TaskRecord;
+    try {
+      task = await ensureFullTaskHistory(activeTask);
+    } catch (error) {
+      setContextError(`加载完整对话失败：${errorMessage(error)}`);
+      return;
+    }
+    const taskId = task.id;
     const local = compactConversation(
       {
-        ...activeTask,
+        ...task,
         contextSummary: undefined,
         contextLedger: undefined,
         compactedMessageCount: 0,
@@ -3386,7 +3635,7 @@ export default function App() {
     if (!local) return setContextError("当前对话暂无足够内容用于生成摘要");
     setSummarizingTasks((current) => new Set(current).add(taskId));
     try {
-      const compacted = await improveSummaryWithModel(activeTask, local);
+      const compacted = await improveSummaryWithModel(task, local);
       setTasks((all) =>
         all.map((task) =>
           task.id === taskId
@@ -3508,7 +3757,7 @@ export default function App() {
     queuedMessageId?: string,
     queuedTaskId?: string,
   ) {
-    const requestTask = queuedTaskId
+    let requestTask = queuedTaskId
       ? tasksRef.current.find((task) => task.id === queuedTaskId)
       : activeTask;
     const taskId = requestTask?.id ?? "";
@@ -3518,6 +3767,15 @@ export default function App() {
         displayedTaskIdRef.current,
         taskId,
       );
+    if (requestTask && taskHistoryIsPartial(requestTask.id)) {
+      try {
+        requestTask = await ensureFullTaskHistory(requestTask);
+      } catch (error) {
+        if (taskIsCurrent())
+          setContextError(`加载完整对话失败：${errorMessage(error)}`);
+        return;
+      }
+    }
     const taskMessages = requestTask
       ? taskIsCurrent()
         ? messages
@@ -4260,7 +4518,14 @@ export default function App() {
 
   async function resumeCheckpoint(checkpoint: AgentCheckpoint) {
     if (!activeTask || runningId || summaryBusy) return;
-    const taskId = activeTask.id;
+    let task: TaskRecord;
+    try {
+      task = await ensureFullTaskHistory(activeTask);
+    } catch (error) {
+      setContextError(`加载完整对话失败：${errorMessage(error)}`);
+      return;
+    }
+    const taskId = task.id;
     await window.kcode.chat.removeCheckpoint(checkpoint.id);
     const id = await window.kcode.chat.start({
       ...checkpoint.request,
@@ -4273,8 +4538,8 @@ export default function App() {
             .join("\n")}`
         : checkpoint.request.recoveryContext,
       taskId,
-      connectionSessionId: activeTask.remoteWorkspace ? taskId : undefined,
-      messages: activeTask.messages.map(({ role, content, images }) => ({
+      connectionSessionId: task.remoteWorkspace ? taskId : undefined,
+      messages: task.messages.map(({ role, content, images }) => ({
         role,
         content,
         images,
@@ -4282,7 +4547,7 @@ export default function App() {
       permissionMode,
       permissionPolicy,
       contextWindow: selectedContextWindow,
-      remoteWorkspace: activeTask.remoteWorkspace,
+      remoteWorkspace: task.remoteWorkspace,
     });
     requestTasksRef.current.set(id, taskId);
     const startedAt = Date.now();
@@ -4368,7 +4633,11 @@ export default function App() {
   // prompt and balloons far past the window in a multi-round agentic run.
   const contextTokens = usage.promptTokens ?? localContextTokens;
   const contextTokenSource =
-    usage.promptTokens === undefined ? "estimated" : "reported";
+    usage.promptTokens !== undefined
+      ? "reported"
+      : taskPagingById[activeTaskId]?.messages.hasMoreBefore
+        ? "partial"
+        : "estimated";
   const selectedConnected = Boolean(selectedTarget?.provider.hasApiKey);
   const efforts = reasoningEffortsForModel(selectedTarget?.model);
   const supportsReasoning = efforts.some((effort) => effort !== "auto");
@@ -4386,29 +4655,29 @@ export default function App() {
       ),
     [attachedFiles, attachedImages],
   );
-  const nextRequestTokens = useMemo(
-    () =>
-      estimateRequestContextTokens({
-        messages: deferredMessages,
-        compactedMessageCount: activeTask?.compactedMessageCount ?? 0,
-        contextSummary: activeTask?.contextSummary,
-        attachmentTokens: draftAttachmentTokens,
-        outputReserve: outputTokenReserve(
-          selectedContextWindow,
-          supportsReasoning,
-        ),
-        calibrationFactor,
-      }),
-    [
-      activeTask?.compactedMessageCount,
-      activeTask?.contextSummary,
+  const nextRequestTokens = useMemo(() => {
+    const estimated = estimateRequestContextTokens({
+      messages: deferredMessages,
+      compactedMessageCount: activeTask?.compactedMessageCount ?? 0,
+      contextSummary: activeTask?.contextSummary,
+      attachmentTokens: draftAttachmentTokens,
+      outputReserve: outputTokenReserve(
+        selectedContextWindow,
+        supportsReasoning,
+      ),
       calibrationFactor,
-      deferredMessages,
-      draftAttachmentTokens,
-      selectedContextWindow,
-      supportsReasoning,
-    ],
-  );
+    });
+    return Math.max(estimated, usage.promptTokens ?? 0);
+  }, [
+    activeTask?.compactedMessageCount,
+    activeTask?.contextSummary,
+    calibrationFactor,
+    deferredMessages,
+    draftAttachmentTokens,
+    selectedContextWindow,
+    supportsReasoning,
+    usage.promptTokens,
+  ]);
   useEffect(() => {
     setReasoningEffort((current) => {
       const next = normalizeEffort(current, efforts);
@@ -4520,13 +4789,11 @@ export default function App() {
   });
   const onOpenSettings = useEventCallback(openSettings);
   const onStartSidebarResize = useEventCallback(startSidebarResize);
-  const onWorkspaceViewChange = useEventCallback(
-    (view: "chat" | "editor") => {
-      setWorkspaceView(view);
-      setConversationSearchOpen(false);
-      if (view === "editor") setStatusOpen(false);
-    },
-  );
+  const onWorkspaceViewChange = useEventCallback((view: "chat" | "editor") => {
+    setWorkspaceView(view);
+    setConversationSearchOpen(false);
+    if (view === "editor") setStatusOpen(false);
+  });
   const onUpdateStatusPanel = useEventCallback(updateStatusPanel);
   const onSetSidebarDeleteTarget = useEventCallback(
     (
@@ -4645,6 +4912,7 @@ export default function App() {
             scrollToTurn={scrollToTurn}
             messages={visibleMessages}
             hasOlderMessages={hasOlderMessages}
+            olderMessagesLoading={historyLoadingTaskId === activeTaskId}
             hasNewerMessages={hasNewerMessages}
             models={models}
             writeInput={setInput}

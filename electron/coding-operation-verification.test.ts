@@ -12,6 +12,7 @@ import {
   isAdvisoryOnlyRequest,
   isUnsupportedTaskCompletionClaim,
   missingRequestedCodingOperations,
+  missingVerifiedCodingOperations,
   relevantVerificationRequestContent,
   reportsBlockedCodingOperations,
   reportsMissingRequiredUserInput,
@@ -296,6 +297,29 @@ test("detects execution requests and inherits the previous request for continuat
     ],
     ["modify"],
   );
+
+  assert.deepEqual(
+    [
+      ...requestedCodingOperations([
+        {
+          kind: "message",
+          role: "user",
+          content: "把项目提交后的已提交数量和列表修好",
+        },
+        {
+          kind: "message",
+          role: "assistant",
+          content: "我已经调整统计刷新逻辑。",
+        },
+        {
+          kind: "message",
+          role: "user",
+          content: "还是不对，提交了一个项目，上面已提交显示还是0，列表也没有",
+        },
+      ]),
+    ],
+    ["inspect", "modify"],
+  );
 });
 
 test("continuation can accept the concrete edits proposed by the assistant", () => {
@@ -446,6 +470,15 @@ test("accepts an explicit no-change report only after successful inspection", ()
       if (operation === "validate") return !hasVerifiedNoChangeReport(history);
       return true;
     }),
+    [],
+  );
+  assert.deepEqual(
+    missingVerifiedCodingOperations(
+      new Set(["inspect", "modify", "validate"]),
+      new Set(),
+      evidence,
+      history,
+    ),
     [],
   );
 });

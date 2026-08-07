@@ -98,34 +98,54 @@ export function claimedBrowserOperations(text: string) {
     /(?:已|已经)(?:成功)?登录(?!页|页面|界面)|登录成功|\blogged in\b/i.test(
       assertedText,
     );
+  const directActionLead =
+    /(?:我|我们)?(?:已|已经)(?:成功)?(?:打开|访问|进入|导航到|填写|输入|键入|点击|选择|提交|发送|登录)|(?:我|我们)(?:已经|已)?(?:打开|访问|进入|导航到|填写|输入|键入|点击|选择|提交|发送|登录)(?:了|过)|\b(?:i|we)(?:'ve| have)?\s+(?:opened|visited|navigated|filled|entered|typed|clicked|selected|submitted|sent|logged in)\b/i.test(
+      assertedText,
+    );
   if (
-    /(?:已|已经|成功).{0,14}(?:打开|访问|进入|导航到).{0,28}(?:网页|网站|页面|浏览器|https?:\/\/)|(?:网页|网站|页面).{0,14}(?:已打开|打开成功|已进入)|\b(?:opened|visited|navigated to)\s+(?:the\s+)?(?:web(?:site|page)?|browser|https?:\/\/)/i.test(
+    /(?:我|我们)?(?:已|已经)(?:成功)?(?:打开|访问|进入|导航到).{0,28}(?:网页|网站|页面|浏览器|https?:\/\/)|(?:我|我们)(?:已经|已)?(?:打开|访问|进入|导航到)(?:了|过).{0,28}(?:网页|网站|页面|浏览器|https?:\/\/)|(?:网页|网站|页面).{0,14}(?:已打开|打开成功|已进入)|\b(?:opened|visited|navigated to)\s+(?:the\s+)?(?:web(?:site|page)?|browser|https?:\/\/)/i.test(
       assertedText,
     )
   )
     operations.add("open");
   if (
-    /(?:已|已经|成功).{0,14}(?:填写|输入|键入)|(?:表单|账号|密码|输入框).{0,14}(?:已填写|已输入|填写完成)|\b(?:filled|entered|typed)\b/i.test(
+    /(?:我|我们)?(?:已|已经)(?:成功)?(?:填写|输入|键入)|(?:我|我们)(?:已经|已)?(?:填写|输入|键入)(?:了|过)|(?:表单|账号|密码|输入框).{0,14}(?:已填写|已输入|填写完成)|\b(?:filled|entered|typed)\b/i.test(
       assertedText,
     ) ||
+    (directActionLead &&
+      /(?:填写|输入|键入)|\b(?:fill|enter|type)\b/i.test(assertedText)) ||
     loginCompleted
   )
     operations.add("type");
   if (
-    /(?:已|已经|成功).{0,14}(?:点击|选择|提交|发送)|(?:按钮|菜单|选项|表单).{0,14}(?:已点击|已选择|已提交)|\b(?:clicked|selected|submitted|sent)\b/i.test(
+    /(?:我|我们)?(?:已|已经)(?:成功)?(?:点击|选择|提交|发送)|(?:我|我们)(?:已经|已)?(?:点击|选择|提交|发送)(?:了|过)|(?:按钮|菜单|选项|表单).{0,14}(?:已点击|已选择|已提交)|\b(?:clicked|selected|submitted|sent)\b/i.test(
       assertedText,
     ) ||
+    (directActionLead &&
+      /(?:点击|选择|提交|发送)|\b(?:click|select|submit|send)\b/i.test(
+        assertedText,
+      )) ||
     loginCompleted
   )
     operations.add("click");
   if (
-    /(?:已|已经|成功).{0,16}(?:验证|确认|检查|刷新|截图).{0,20}(?:网页|网站|页面|结果|状态)|(?:网页|网站|页面).{0,16}(?:验证通过|确认正常|截图完成|显示正常)|\b(?:verified|confirmed|captured)\s+(?:the\s+)?(?:page|result|state|screenshot)\b/i.test(
+    /(?:我|我们)?(?:已|已经)(?:成功)?(?:验证|确认|检查|刷新|截图).{0,20}(?:网页|网站|页面|结果|状态)|(?:网页|网站|页面).{0,16}(?:验证通过|确认正常|截图完成|显示正常)|\b(?:verified|confirmed|captured)\s+(?:the\s+)?(?:page|result|state|screenshot)\b/i.test(
       assertedText,
-    )
+    ) ||
+    (directActionLead &&
+      /(?:最后|随后|然后|并)?(?:验证|确认|检查|刷新|截图).{0,20}(?:网页|网站|页面|结果|状态)|(?:页面|结果|状态).{0,12}(?:正常|成功|通过)/i.test(
+        assertedText,
+      ))
   )
     operations.add("verify");
   if (loginCompleted) operations.add("verify");
   return operations;
+}
+
+export function reportsMissingBrowserTarget(text: string) {
+  return /(?:未|没有|缺少|未提供|没有提供|找不到|无法确定).{0,28}(?:URL|网址|网页地址|页面地址|网页链接|页面链接|目标页面|点击目标)|(?:URL|网址|网页地址|页面地址|网页链接|页面链接|目标页面|点击目标).{0,20}(?:未|没有|缺少|未提供|不明确|无法确定)/i.test(
+    text,
+  );
 }
 
 export function successfulBrowserEvidence(

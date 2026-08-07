@@ -3,6 +3,19 @@ import { z } from "zod";
 export const stateKeySchema = z.literal("tasks");
 export const idSchema = z.string().trim().min(1).max(256);
 export const optionalIdSchema = idSchema.optional();
+export const taskItemPageOptionsSchema = z
+  .object({
+    limit: z.number().int().min(1).max(200).optional(),
+    before: idSchema.optional(),
+    after: idSchema.optional(),
+  })
+  .refine((value) => !(value.before && value.after), {
+    message: "分页游标不能同时指定 before 和 after",
+  });
+export const saveTaskOptionsSchema = z.object({
+  preserveUnloadedItems: z.boolean().optional(),
+});
+export const taskRequestIdsSchema = z.array(idSchema).max(100);
 export const urlSchema = z.string().trim().min(1).max(8192);
 export const workspacePathSchema = z.string().trim().min(1).max(32767);
 export const localPathSchema = z.string().trim().min(1).max(32767);

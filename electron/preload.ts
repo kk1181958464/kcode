@@ -28,9 +28,17 @@ const api: KCodeApi = {
     compact: () => ipcRenderer.invoke("state:compact"),
     taskHeaders: () => ipcRenderer.invoke("state:task-headers"),
     loadTask: (id) => ipcRenderer.invoke("state:load-task", id),
+    loadTaskWindow: (id) => ipcRenderer.invoke("state:load-task-window", id),
+    taskMessagePage: (id, options) =>
+      ipcRenderer.invoke("state:task-message-page", id, options),
+    taskActivityPage: (id, options) =>
+      ipcRenderer.invoke("state:task-activity-page", id, options),
+    taskActivitiesForRequests: (id, requestIds) =>
+      ipcRenderer.invoke("state:task-activities-for-requests", id, requestIds),
     loadActivityPayload: (activityId) =>
       ipcRenderer.invoke("state:load-activity-payload", activityId),
-    saveTask: (id, value) => ipcRenderer.invoke("state:save-task", id, value),
+    saveTask: (id, value, options) =>
+      ipcRenderer.invoke("state:save-task", id, value, options),
     saveTaskOrder: (ids) => ipcRenderer.invoke("state:save-task-order", ids),
     deleteTask: (id) => ipcRenderer.invoke("state:delete-task", id),
   },
@@ -102,8 +110,7 @@ const api: KCodeApi = {
       ipcRenderer.invoke("ssh-remote:connect-saved", taskId, profileId),
     state: (taskId, profileId) =>
       ipcRenderer.invoke("ssh-remote:state", taskId, profileId),
-    disconnect: (taskId) =>
-      ipcRenderer.invoke("ssh-remote:disconnect", taskId),
+    disconnect: (taskId) => ipcRenderer.invoke("ssh-remote:disconnect", taskId),
     forget: (profileId) => ipcRenderer.invoke("ssh-remote:forget", profileId),
     list: (taskId, profileId, remotePath) =>
       ipcRenderer.invoke("ssh-remote:list", taskId, profileId, remotePath),

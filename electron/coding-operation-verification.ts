@@ -65,6 +65,9 @@ type VerificationMessage = Extract<
 const CONTINUATION_REQUEST =
   /^(?:好|好的|可以|行|继续|继续吧|开始|开始吧|开始弄吧|开始改吧|改吧|修吧|做吧|弄吧|执行吧|就这么做|按(?:你|上面|这个).{0,12}做|都弄|都改|全部(?:做|弄|改|修改)|上面(?:的)?全部(?:做|弄|改|修改))(?:了|吧|啊|呀)?[。！!，,\s]*$/i;
 
+const CORRECTIVE_CONTINUATION_REQUEST =
+  /(?:^|\n)\s*(?:还是|仍然|依然|仍旧|又|现在还是|目前还是)(?:不对|不行|有问题|没好|没有好|未解决|不正常|不生效|看不到|不显示|显示错误|报错|卡住)|(?:^|\n)\s*(?:问题|故障|错误|这个问题)(?:还在|仍在|依然存在|没有解决|没解决)/i;
+
 export function isAdvisoryOnlyRequest(content: string) {
   const normalized = content.replace(/\s+/g, "");
   if (
@@ -107,6 +110,12 @@ export function relevantVerificationRequestContent(
   while (latestIndex >= 0 && messages[latestIndex].role !== "user")
     latestIndex -= 1;
   const latest = messages[latestIndex]?.content ?? "";
+  if (CORRECTIVE_CONTINUATION_REQUEST.test(latest.trim())) {
+    const previousUser = [...messages.slice(0, latestIndex)]
+      .reverse()
+      .find((message) => message.role === "user");
+    return previousUser ? `${previousUser.content}\n${latest}` : latest;
+  }
   if (!CONTINUATION_REQUEST.test(latest.trim())) return latest;
   const previous = messages
     .slice(Math.max(0, latestIndex - 2), latestIndex)
@@ -168,6 +177,11 @@ export function requestedCodingOperations(
     );
   const remoteActionContent =
     asksForRemoteStatus && !explicitRemoteRequest ? "" : content;
+  const correctiveImplementationRequest =
+    CORRECTIVE_CONTINUATION_REQUEST.test(content) &&
+    /(?:项目|代码|文件|配置|页面|界面|列表|显示|统计|组件|功能|按钮|输入框|字段|数据|接口|服务|应用|客户端|前端|后端)/i.test(
+      content,
+    );
   const operations = new Set<CodingOperation>();
   if (
     /(?:看下|查看|检查|排查|审查|分析|定位|找出|读取|搜索|确认|过一下|为什么|怎么回事)|\b(?:inspect|check|review|analy[sz]e|read|search|investigate|why)\b/i.test(
@@ -175,12 +189,14 @@ export function requestedCodingOperations(
     )
   )
     operations.add("inspect");
+  if (correctiveImplementationRequest) operations.add("inspect");
   if (
     /(?:改一下|修改|改为|改成|修改成|切换为|替换为|修改|修复|解决|优化|适配|增加|新增|添加|加上|删除|移除|重构|实现|落地|调整|替换|换成|设计一下|开始改|弄一下|弄好|做一个|做个|创建|新建|生成|写入|编写|开发|搭建|制作|配置|接入|集成|迁移|美化|弹窗|页面交互|处理一下|完善|补齐|补上|收尾)|\b(?:edit|change|modify|fix|implement|add|remove|refactor|optimi[sz]e|update|create|write|develop|configure|integrate|migrate)\b|\bbuild\s+(?:(?:a|an|the|this|new)\s+)?(?:app|application|page|site|feature|component|tool|service|project)\b/i.test(
       modifyContent,
     )
   )
     operations.add("modify");
+  if (correctiveImplementationRequest) operations.add("modify");
   if (
     /(?:运行|执行|启动|安装|部署|发布到|跑|跑一下|跑起来)|\b(?:run|execute|start|launch|install|deploy)\b/i.test(
       executeContent,
@@ -680,6 +696,25 @@ export function missingRequestedCodingOperations(
   evidence: ReadonlySet<CodingOperation>,
 ) {
   return [...requested].filter((operation) => !evidence.has(operation));
+}
+
+export function missingVerifiedCodingOperations(
+  required: ReadonlySet<CodingOperation>,
+  claimed: ReadonlySet<CodingOperation>,
+  evidence: ReadonlySet<CodingOperation>,
+  history: CodingVerificationHistoryItem[],
+) {
+  const noChangeEvidence = hasVerifiedNoChangeEvidence(history);
+  const noChangeReport = hasVerifiedNoChangeReport(history);
+  return missingRequestedCodingOperations(required, evidence).filter(
+    (operation) =>
+      !(
+        (operation === "modify" &&
+          noChangeEvidence &&
+          !claimed.has("modify")) ||
+        (operation === "validate" && noChangeReport && !claimed.has("validate"))
+      ),
+  );
 }
 
 const BLOCKABLE_CODING_OPERATIONS = new Set<CodingOperation>([

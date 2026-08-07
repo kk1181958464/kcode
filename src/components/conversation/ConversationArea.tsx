@@ -41,6 +41,7 @@ export interface ConversationAreaProps {
   scrollToTurn(id: string, index: number): void;
   messages: ChatMessage[];
   hasOlderMessages?: boolean;
+  olderMessagesLoading?: boolean;
   hasNewerMessages?: boolean;
   models: ModelEntry[];
   writeInput(value: string): void;
@@ -74,6 +75,7 @@ export const ConversationArea = memo(function ConversationArea({
   scrollToTurn,
   messages,
   hasOlderMessages = false,
+  olderMessagesLoading = false,
   hasNewerMessages = false,
   models,
   writeInput,
@@ -312,6 +314,7 @@ export const ConversationArea = memo(function ConversationArea({
         <ConversationHistory
           messages={messages}
           hasOlderMessages={hasOlderMessages}
+          olderMessagesLoading={olderMessagesLoading}
           hasNewerMessages={hasNewerMessages}
           activitiesByRequest={activitiesByRequest}
           runningId={runningId}

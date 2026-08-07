@@ -79,7 +79,7 @@ export interface StatusPanelProps {
   usedContextCount: number;
   selectedContextWindow?: number;
   contextTokens: number;
-  contextTokenSource: "reported" | "estimated";
+  contextTokenSource: "reported" | "estimated" | "partial";
   nextRequestTokens: number;
   contextWindowEstimated: boolean;
   calibrationFactor: number;
@@ -542,7 +542,9 @@ export function StatusPanel({
                   <em className="context-source-label">
                     {contextTokenSource === "reported"
                       ? "渠道实测"
-                      : "本地估算"}
+                      : contextTokenSource === "partial"
+                        ? "近期记录估算"
+                        : "本地估算"}
                   </em>
                 </span>
                 <strong>{contextPercent}%</strong>

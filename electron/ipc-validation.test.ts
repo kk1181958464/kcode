@@ -4,7 +4,10 @@ import type { ModelRequest } from "../src/types";
 import { executorModelOverrides, isPlannerCoordinator } from "./collaboration";
 import {
   modelRequestSchema,
+  saveTaskOptionsSchema,
   sshRemoteExpectedContentSchema,
+  taskItemPageOptionsSchema,
+  taskRequestIdsSchema,
 } from "./ipc-validation";
 
 test("preserves planner-executor routing through IPC validation", () => {
@@ -99,5 +102,45 @@ test("distinguishes a new SSH Remote file from an unchecked overwrite", () => {
   assert.equal(
     sshRemoteExpectedContentSchema.parse("old content"),
     "old content",
+  );
+});
+
+test("validates bounded task item paging", () => {
+  assert.deepEqual(taskItemPageOptionsSchema.parse({ limit: 80 }), {
+    limit: 80,
+  });
+  assert.deepEqual(
+    taskItemPageOptionsSchema.parse({ before: "message-20", limit: 50 }),
+    { before: "message-20", limit: 50 },
+  );
+  assert.equal(
+    taskItemPageOptionsSchema.safeParse({ before: "a", after: "b" }).success,
+    false,
+  );
+  assert.equal(
+    taskItemPageOptionsSchema.safeParse({ limit: 201 }).success,
+    false,
+  );
+});
+
+test("validates partial task save options", () => {
+  assert.deepEqual(saveTaskOptionsSchema.parse({}), {});
+  assert.deepEqual(
+    saveTaskOptionsSchema.parse({ preserveUnloadedItems: true }),
+    { preserveUnloadedItems: true },
+  );
+  assert.equal(
+    saveTaskOptionsSchema.safeParse({ preserveUnloadedItems: "yes" }).success,
+    false,
+  );
+});
+
+test("bounds activity request lookups", () => {
+  assert.deepEqual(taskRequestIdsSchema.parse(["r1", "r2"]), ["r1", "r2"]);
+  assert.equal(
+    taskRequestIdsSchema.safeParse(
+      Array.from({ length: 101 }, (_, i) => `r${i}`),
+    ).success,
+    false,
   );
 });

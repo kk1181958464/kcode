@@ -6,6 +6,7 @@ import {
   compactTaskActivityPayloads,
   type DeferredActivityPayload,
 } from "../src/activity-payload";
+import { TASK_MESSAGE_PAGE_SIZE } from "../src/task-history-paging";
 
 let database: DatabaseSync | undefined;
 const databasePath = () => path.join(app.getPath("userData"), "kcode.sqlite");
@@ -36,12 +37,193 @@ function db() {
         updated_at INTEGER NOT NULL,
         FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
       );
+      CREATE TABLE IF NOT EXISTS task_messages (
+        task_id TEXT NOT NULL,
+        id TEXT NOT NULL,
+        position INTEGER NOT NULL,
+        value TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY(task_id, id),
+        FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS task_messages_position
+        ON task_messages(task_id, position);
+      CREATE TABLE IF NOT EXISTS task_activities (
+        task_id TEXT NOT NULL,
+        id TEXT NOT NULL,
+        position INTEGER NOT NULL,
+        value TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY(task_id, id),
+        FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS task_activities_position
+        ON task_activities(task_id, position);
+      CREATE INDEX IF NOT EXISTS task_activities_request
+        ON task_activities(task_id, json_extract(value, '$.requestId'));
     `);
     ensureTaskHeaderColumn(database);
     migrateLegacyTasks(database);
+    migrateTaskItems(database);
     backfillTaskHeaders(database);
   }
   return database;
+}
+
+const TASK_ITEMS_STORAGE_VERSION = 2;
+
+type StoredTask = Record<string, unknown> & {
+  id: string;
+  messages?: unknown[];
+  activities?: unknown[];
+  _taskItemsStorageVersion?: number;
+};
+
+export type TaskItemTable = "task_messages" | "task_activities";
+export type TaskItemSyncMode = "replace" | "merge";
+
+function storedTask(value: unknown): StoredTask {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    typeof (value as any).id !== "string"
+  )
+    throw new Error("任务数据缺少有效 ID");
+  return value as StoredTask;
+}
+
+function taskCore(value: unknown) {
+  const task = storedTask(value);
+  const {
+    messages: _messages,
+    activities: _activities,
+    _taskItemsStorageVersion: _version,
+    ...core
+  } = task;
+  return { ...core, _taskItemsStorageVersion: TASK_ITEMS_STORAGE_VERSION };
+}
+
+function taskItems(value: unknown, key: "messages" | "activities") {
+  const items = storedTask(value)[key];
+  return Array.isArray(items) ? items : [];
+}
+
+export function syncTaskItems(
+  connection: DatabaseSync,
+  table: TaskItemTable,
+  taskId: string,
+  items: unknown[],
+  mode: TaskItemSyncMode = "replace",
+) {
+  const upsert = connection.prepare(
+    `INSERT INTO ${table}(task_id,id,position,value,updated_at) VALUES(?,?,?,?,?)
+     ON CONFLICT(task_id,id) DO UPDATE SET
+       position=excluded.position,
+       value=excluded.value,
+       updated_at=excluded.updated_at
+     WHERE ${table}.position <> excluded.position OR ${table}.value <> excluded.value`,
+  );
+  const ids = new Set<string>();
+  const now = Date.now();
+  const existing = connection
+    .prepare(`SELECT id,position FROM ${table} WHERE task_id = ?`)
+    .all(taskId) as { id: string; position: number }[];
+  const existingPositions = new Map(
+    existing.map((row) => [row.id, row.position] as const),
+  );
+  let nextPosition = existing.reduce(
+    (maximum, row) => Math.max(maximum, row.position + 1),
+    0,
+  );
+  items.forEach((item, position) => {
+    if (
+      !item ||
+      typeof item !== "object" ||
+      typeof (item as any).id !== "string"
+    )
+      throw new Error(`${table} 项缺少有效 ID`);
+    const id = (item as any).id as string;
+    ids.add(id);
+    const storedPosition =
+      mode === "merge"
+        ? (existingPositions.get(id) ?? nextPosition++)
+        : position;
+    upsert.run(taskId, id, storedPosition, JSON.stringify(item), now);
+  });
+  if (mode === "merge") return;
+  const remove = connection.prepare(
+    `DELETE FROM ${table} WHERE task_id = ? AND id = ?`,
+  );
+  for (const row of existing) if (!ids.has(row.id)) remove.run(taskId, row.id);
+}
+
+function loadTaskItems(
+  connection: DatabaseSync,
+  table: TaskItemTable,
+  taskId: string,
+) {
+  return (
+    connection
+      .prepare(`SELECT value FROM ${table} WHERE task_id = ? ORDER BY position`)
+      .all(taskId) as { value: string }[]
+  ).map((row) => JSON.parse(row.value));
+}
+
+function hydrateTask(connection: DatabaseSync, value: string) {
+  const parsed = JSON.parse(value) as StoredTask;
+  if (parsed._taskItemsStorageVersion !== TASK_ITEMS_STORAGE_VERSION)
+    return parsed;
+  const { _taskItemsStorageVersion: _version, ...core } = parsed;
+  return {
+    ...core,
+    messages: loadTaskItems(connection, "task_messages", parsed.id),
+    activities: loadTaskItems(connection, "task_activities", parsed.id),
+  };
+}
+
+function migrateTaskItems(connection: DatabaseSync) {
+  const rows = connection.prepare("SELECT id,value FROM tasks").all() as {
+    id: string;
+    value: string;
+  }[];
+  const pending = rows
+    .map((row) => ({ ...row, task: JSON.parse(row.value) as StoredTask }))
+    .filter(
+      (row) => row.task._taskItemsStorageVersion !== TASK_ITEMS_STORAGE_VERSION,
+    );
+  if (!pending.length) return;
+  const update = connection.prepare(
+    "UPDATE tasks SET value = ?, header = ?, updated_at = ? WHERE id = ?",
+  );
+  connection.exec("BEGIN IMMEDIATE");
+  try {
+    for (const row of pending) {
+      const compacted = compactTaskActivityPayloads(row.task);
+      syncTaskItems(
+        connection,
+        "task_messages",
+        row.id,
+        taskItems(compacted.task, "messages"),
+      );
+      syncTaskItems(
+        connection,
+        "task_activities",
+        row.id,
+        taskItems(compacted.task, "activities"),
+      );
+      saveActivityPayloads(connection, row.id, compacted.payloads);
+      update.run(
+        JSON.stringify(taskCore(compacted.task)),
+        JSON.stringify(taskHeader(compacted.task)),
+        Date.now(),
+        row.id,
+      );
+    }
+    connection.exec("COMMIT");
+  } catch (error) {
+    connection.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 function ensureTaskHeaderColumn(connection: DatabaseSync) {
@@ -59,6 +241,7 @@ function taskHeader(task: unknown) {
   const {
     messages: _messages,
     activities: _activities,
+    _taskItemsStorageVersion: _taskItemsStorageVersion,
     contextSummary: _contextSummary,
     contextLedger: _contextLedger,
     summarySnapshots: _summarySnapshots,
@@ -123,10 +306,22 @@ function saveTasks(connection: DatabaseSync, value: unknown[]) {
       const compacted = compactTaskActivityPayloads(task);
       upsert.run(
         id,
-        JSON.stringify(compacted.task),
+        JSON.stringify(taskCore(compacted.task)),
         JSON.stringify(taskHeader(compacted.task)),
         position,
         Date.now(),
+      );
+      syncTaskItems(
+        connection,
+        "task_messages",
+        id,
+        taskItems(compacted.task, "messages"),
+      );
+      syncTaskItems(
+        connection,
+        "task_activities",
+        id,
+        taskItems(compacted.task, "activities"),
       );
       saveActivityPayloads(connection, id, compacted.payloads);
     });
@@ -164,9 +359,197 @@ export function listTaskHeaders() {
 }
 
 export function loadTask(id: string): unknown | null {
-  const row = db().prepare("SELECT value FROM tasks WHERE id = ?").get(id) as
-    { value: string } | undefined;
-  return row?.value ? JSON.parse(row.value) : null;
+  const connection = db();
+  const row = connection
+    .prepare("SELECT value FROM tasks WHERE id = ?")
+    .get(id) as { value: string } | undefined;
+  return row?.value ? hydrateTask(connection, row.value) : null;
+}
+
+export type TaskItemPageOptions = {
+  limit?: number;
+  before?: string;
+  after?: string;
+};
+
+export type TaskItemPage<T = unknown> = {
+  items: T[];
+  oldestCursor?: string;
+  newestCursor?: string;
+  hasMoreBefore: boolean;
+  hasMoreAfter: boolean;
+};
+
+export type TaskWindow = {
+  task: unknown;
+  paging: {
+    messages: Omit<TaskItemPage, "items">;
+    activities: Omit<TaskItemPage, "items">;
+  };
+};
+
+export function loadTaskItemPage(
+  connection: DatabaseSync,
+  table: TaskItemTable,
+  taskId: string,
+  options: TaskItemPageOptions = {},
+): TaskItemPage {
+  const limit = Math.min(200, Math.max(1, options.limit ?? 50));
+  if (options.before && options.after)
+    throw new Error("分页游标不能同时指定 before 和 after");
+  const cursor = options.before ?? options.after;
+  let cursorPosition: number | undefined;
+  if (cursor) {
+    const row = connection
+      .prepare(`SELECT position FROM ${table} WHERE task_id = ? AND id = ?`)
+      .get(taskId, cursor) as { position: number } | undefined;
+    if (!row) throw new Error("分页游标不存在");
+    cursorPosition = row.position;
+  }
+
+  let rows: { id: string; position: number; value: string }[];
+  if (options.after) {
+    rows = connection
+      .prepare(
+        `SELECT id,position,value FROM ${table}
+         WHERE task_id = ? AND position > ? ORDER BY position ASC LIMIT ?`,
+      )
+      .all(taskId, cursorPosition as number, limit) as typeof rows;
+  } else {
+    rows = connection
+      .prepare(
+        `SELECT id,position,value FROM ${table}
+         WHERE task_id = ?${options.before ? " AND position < ?" : ""}
+         ORDER BY position DESC LIMIT ?`,
+      )
+      .all(
+        ...(options.before
+          ? [taskId, cursorPosition as number, limit]
+          : [taskId, limit]),
+      ) as typeof rows;
+    rows.reverse();
+  }
+
+  const oldest = rows[0];
+  const newest = rows.at(-1);
+  const hasMoreBefore = oldest
+    ? Boolean(
+        connection
+          .prepare(
+            `SELECT 1 FROM ${table} WHERE task_id = ? AND position < ? LIMIT 1`,
+          )
+          .get(taskId, oldest.position),
+      )
+    : false;
+  const hasMoreAfter = newest
+    ? Boolean(
+        connection
+          .prepare(
+            `SELECT 1 FROM ${table} WHERE task_id = ? AND position > ? LIMIT 1`,
+          )
+          .get(taskId, newest.position),
+      )
+    : false;
+  return {
+    items: rows.map((row) => JSON.parse(row.value)),
+    oldestCursor: oldest?.id,
+    newestCursor: newest?.id,
+    hasMoreBefore,
+    hasMoreAfter,
+  };
+}
+
+export function loadTaskMessagePage(
+  taskId: string,
+  options?: TaskItemPageOptions,
+) {
+  return loadTaskItemPage(db(), "task_messages", taskId, options);
+}
+
+export function loadTaskActivityPage(
+  taskId: string,
+  options?: TaskItemPageOptions,
+) {
+  return loadTaskItemPage(db(), "task_activities", taskId, options);
+}
+
+export function loadTaskActivitiesForRequestsFromDatabase(
+  connection: DatabaseSync,
+  taskId: string,
+  requestIds: string[],
+) {
+  const uniqueIds = [...new Set(requestIds.filter(Boolean))].slice(0, 100);
+  if (!uniqueIds.length) return [];
+  const placeholders = uniqueIds.map(() => "?").join(",");
+  return (
+    connection
+      .prepare(
+        `SELECT value FROM task_activities
+         WHERE task_id = ?
+           AND json_extract(value, '$.requestId') IN (${placeholders})
+         ORDER BY position ASC`,
+      )
+      .all(taskId, ...uniqueIds) as { value: string }[]
+  ).map((row) => JSON.parse(row.value));
+}
+
+export function loadTaskActivitiesForRequests(
+  taskId: string,
+  requestIds: string[],
+) {
+  return loadTaskActivitiesForRequestsFromDatabase(db(), taskId, requestIds);
+}
+
+function pageMetadata(page: TaskItemPage): Omit<TaskItemPage, "items"> {
+  const { items: _items, ...metadata } = page;
+  return metadata;
+}
+
+export function loadTaskWindow(id: string): TaskWindow | null {
+  const connection = db();
+  const row = connection
+    .prepare("SELECT value FROM tasks WHERE id = ?")
+    .get(id) as { value: string } | undefined;
+  if (!row?.value) return null;
+  const stored = storedTask(JSON.parse(row.value));
+  const { _taskItemsStorageVersion: _version, ...core } = stored;
+  const messages = loadTaskItemPage(connection, "task_messages", id, {
+    limit: TASK_MESSAGE_PAGE_SIZE,
+  });
+  const requestIds = messages.items
+    .map((message: any) => String(message?.id ?? ""))
+    .filter((messageId) => messageId.startsWith("assistant:"))
+    .map((messageId) => messageId.slice("assistant:".length));
+  const activityItems = loadTaskActivitiesForRequestsFromDatabase(
+    connection,
+    id,
+    requestIds,
+  );
+  const activityCount = Number(
+    (
+      connection
+        .prepare(
+          "SELECT COUNT(*) AS total FROM task_activities WHERE task_id = ?",
+        )
+        .get(id) as { total: number }
+    ).total,
+  );
+  return {
+    task: {
+      ...core,
+      messages: messages.items,
+      activities: activityItems,
+    },
+    paging: {
+      messages: pageMetadata(messages),
+      activities: {
+        oldestCursor: activityItems[0]?.id,
+        newestCursor: activityItems.at(-1)?.id,
+        hasMoreBefore: activityCount > activityItems.length,
+        hasMoreAfter: false,
+      },
+    },
+  };
 }
 
 export function loadActivityPayload(activityId: string): unknown | null {
@@ -176,7 +559,13 @@ export function loadActivityPayload(activityId: string): unknown | null {
   return row?.value ? JSON.parse(row.value) : null;
 }
 
-export function saveTask(id: string, value: unknown) {
+export type SaveTaskOptions = { preserveUnloadedItems?: boolean };
+
+export function saveTask(
+  id: string,
+  value: unknown,
+  options: SaveTaskOptions = {},
+) {
   if (
     !value ||
     typeof value !== "object" ||
@@ -199,18 +588,39 @@ export function saveTask(id: string, value: unknown) {
         }
       ).next,
     );
-  connection
-    .prepare(
-      "INSERT INTO tasks(id,value,header,position,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value, header=excluded.header, updated_at=excluded.updated_at",
-    )
-    .run(
+  connection.exec("BEGIN IMMEDIATE");
+  try {
+    connection
+      .prepare(
+        "INSERT INTO tasks(id,value,header,position,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value, header=excluded.header, updated_at=excluded.updated_at",
+      )
+      .run(
+        id,
+        JSON.stringify(taskCore(compacted.task)),
+        JSON.stringify(taskHeader(compacted.task)),
+        position,
+        Date.now(),
+      );
+    syncTaskItems(
+      connection,
+      "task_messages",
       id,
-      JSON.stringify(compacted.task),
-      JSON.stringify(taskHeader(compacted.task)),
-      position,
-      Date.now(),
+      taskItems(compacted.task, "messages"),
+      options.preserveUnloadedItems ? "merge" : "replace",
     );
-  saveActivityPayloads(connection, id, compacted.payloads);
+    syncTaskItems(
+      connection,
+      "task_activities",
+      id,
+      taskItems(compacted.task, "activities"),
+      options.preserveUnloadedItems ? "merge" : "replace",
+    );
+    saveActivityPayloads(connection, id, compacted.payloads);
+    connection.exec("COMMIT");
+  } catch (error) {
+    connection.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 export function saveTaskOrder(ids: string[]) {
@@ -234,12 +644,13 @@ export function deleteTask(id: string) {
 
 export function loadState(key: string): unknown | null {
   if (key === "tasks") {
-    const rows = db()
+    const connection = db();
+    const rows = connection
       .prepare("SELECT value FROM tasks ORDER BY position")
       .all() as {
       value: string;
     }[];
-    return rows.map((row) => JSON.parse(row.value));
+    return rows.map((row) => hydrateTask(connection, row.value));
   }
   const row = db()
     .prepare("SELECT value FROM app_state WHERE key = ?")

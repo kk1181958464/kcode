@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   claimedBrowserOperations,
   missingRequestedBrowserOperations,
+  reportsMissingBrowserTarget,
   requestedBrowserOperations,
   successfulBrowserEvidence,
 } from "./browser-operation-verification";
@@ -97,6 +98,45 @@ test("does not confuse Git commits or UI bug descriptions with browser actions",
       ]),
     ],
     ["click", "verify"],
+  );
+
+  for (const implementationSummary of [
+    "已实现登录弹窗，输入账号密码并点击提交后切换账号。",
+    "已修改页面，支持点击按钮、输入账号密码并提交。",
+    "已经完成门店切换功能，点击后弹窗并输入账号密码。",
+  ])
+    assert.deepEqual([...claimedBrowserOperations(implementationSummary)], []);
+
+  assert.deepEqual(
+    [
+      ...requestedBrowserOperations([
+        {
+          kind: "message",
+          role: "user",
+          content: "把项目提交后的已提交数量和列表修好",
+        },
+        { kind: "message", role: "assistant", content: "已经修改。" },
+        {
+          kind: "message",
+          role: "user",
+          content: "还是不对，提交了一个项目，上面已提交显示还是0，列表也没有",
+        },
+      ]),
+    ],
+    [],
+  );
+});
+
+test("recognizes a stale missing-URL reply while a browser session can be reused", () => {
+  assert.equal(
+    reportsMissingBrowserTarget(
+      "当前消息没有提供可操作的网页地址或点击目标，因此无法继续。",
+    ),
+    true,
+  );
+  assert.equal(
+    reportsMissingBrowserTarget("页面已打开，但还需要用户提供短信验证码。"),
+    false,
   );
 });
 

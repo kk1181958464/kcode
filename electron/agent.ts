@@ -5,6 +5,11 @@ import {
   runSpawnedCommand,
   terminateChildProcess,
 } from "./process-command";
+import {
+  registerManagedProcess,
+  terminateAllManagedProcesses,
+  unregisterManagedProcess,
+} from "./process-registry";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import {
@@ -94,14 +99,12 @@ import {
 } from "./git-operation-verification";
 import {
   claimedCodingOperations,
-  claimsNoChangeNeeded,
   compactOperationEvidenceResult,
   hasRequestedUserInputEvidence,
-  hasVerifiedNoChangeEvidence,
-  hasVerifiedNoChangeReport,
   isAdvisoryOnlyRequest,
   isUnsupportedTaskCompletionClaim,
   missingRequestedCodingOperations,
+  missingVerifiedCodingOperations,
   relevantVerificationRequestContent,
   reportsBlockedCodingOperations,
   reportsMissingRequiredUserInput,
@@ -113,6 +116,7 @@ import {
 import {
   claimedBrowserOperations,
   missingRequestedBrowserOperations,
+  reportsMissingBrowserTarget,
   requestedBrowserOperations,
   successfulBrowserEvidence,
   type BrowserOperation,
@@ -1452,12 +1456,15 @@ export async function cleanupAgentRecords(
       approvals.delete(key);
     }
   }
-  for (const [id, process] of backgroundProcesses) {
-    if (requests.has(process.requestId)) {
-      terminateChildProcess(process.child);
+  const removedProcessIds: string[] = [];
+  for (const [id, backgroundProcess] of backgroundProcesses) {
+    if (requests.has(backgroundProcess.requestId)) {
+      terminateChildProcess(backgroundProcess.child);
       backgroundProcesses.delete(id);
+      removedProcessIds.push(id);
     }
   }
+  await Promise.allSettled(removedProcessIds.map(unregisterManagedProcess));
   const allRequestIds = [...requests];
   cleanupBrowsers(allRequestIds);
   cleanupMysqlSessions(allRequestIds);
@@ -1465,6 +1472,13 @@ export async function cleanupAgentRecords(
   cleanupMongoSessions(allRequestIds);
   cleanupSshSessions(allRequestIds, activityIds);
   await subagentCleanup.settle();
+}
+
+export async function cleanupAllBackgroundProcesses() {
+  for (const backgroundProcess of backgroundProcesses.values())
+    terminateChildProcess(backgroundProcess.child);
+  backgroundProcesses.clear();
+  await terminateAllManagedProcesses();
 }
 export function resolveApproval(
   requestId: string,
@@ -2221,9 +2235,14 @@ async function execute(
     const child = spawn(
       "powershell.exe",
       ["-NoProfile", "-NonInteractive", "-Command", powershellCommand(script)],
-      { cwd: root, windowsHide: true, shell: false },
+      {
+        cwd: root,
+        windowsHide: true,
+        shell: false,
+        detached: process.platform !== "win32",
+      },
     );
-    const process = { root, requestId, child, output: "" } as {
+    const backgroundProcess = { root, requestId, child, output: "" } as {
       root: string;
       requestId: string;
       child: ReturnType<typeof spawn>;
@@ -2231,16 +2250,42 @@ async function execute(
       exitCode?: number;
     };
     const append = (chunk: Buffer) => {
-      process.output = (
-        process.output + new TextDecoder("utf-8").decode(chunk)
+      backgroundProcess.output = (
+        backgroundProcess.output + new TextDecoder("utf-8").decode(chunk)
       ).slice(-100_000);
     };
     child.stdout.on("data", append);
     child.stderr.on("data", append);
     child.on("close", (code) => {
-      process.exitCode = code ?? -1;
+      backgroundProcess.exitCode = code ?? -1;
+      void unregisterManagedProcess(id);
     });
-    backgroundProcesses.set(id, process);
+    child.on("error", (error) => {
+      backgroundProcess.exitCode = -1;
+      backgroundProcess.output =
+        `${backgroundProcess.output}\n${error.message}`.trim();
+      void unregisterManagedProcess(id);
+    });
+    if (!child.pid) {
+      terminateChildProcess(child);
+      throw new Error("后台进程启动失败：未获得进程 ID");
+    }
+    try {
+      await registerManagedProcess({
+        id,
+        pid: child.pid,
+        processGroupId: process.platform === "win32" ? undefined : child.pid,
+        requestId,
+        workspacePath: root,
+        startedAt: Date.now(),
+      });
+    } catch (error) {
+      terminateChildProcess(child);
+      throw new Error(
+        `后台进程登记失败：${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    backgroundProcesses.set(id, backgroundProcess);
     return {
       command: script,
       output: `后台进程已创建，需读取进程输出确认运行状态\nprocessId: ${id}`,
@@ -2265,6 +2310,7 @@ async function execute(
       throw new Error("后台进程不存在或不属于当前工作区");
     terminateChildProcess(process.child);
     backgroundProcesses.delete(id);
+    await unregisterManagedProcess(id);
     return { output: `后台进程 ${id} 已停止` };
   }
   if (call.name === "web_search") {
@@ -4022,6 +4068,9 @@ export async function* runAgent(
     provider: await getProviderWithKey(request.providerId),
     activeSkills: [
       activeSkillInstructions,
+      browserIsOpen(browserSessionId)
+        ? "This task already has a live browser session. Start browser work with browser_snapshot to inspect the current page and obtain fresh element references. Do not ask the user for a URL or click target until browser_snapshot reports that the session is unavailable; the current page is the target unless the user explicitly says otherwise."
+        : "",
       advisoryOnly
         ? "本轮用户明确要求只咨询、不改动。可以使用只读工具核对信息，但不得修改文件、运行会产生副作用的命令，也不得执行 Git 或发布操作；直接给出方案、步骤和取舍。"
         : "",
@@ -4054,6 +4103,7 @@ export async function* runAgent(
     unverifiedBrowserClaims = 0,
     unverifiedGitClaims = 0,
     unverifiedCodingClaims = 0,
+    staleBrowserContextReplies = 0,
     autoContinues = 0,
     emptyTurns = 0;
   let previousRoundActivity: AgentActivity | undefined;
@@ -4288,6 +4338,32 @@ export async function* runAgent(
       evidenceHistory,
     );
     const browserEvidence = successfulBrowserEvidence(evidenceHistory);
+    const staleBrowserContextReply =
+      !turn.calls.length &&
+      browserIsOpen(browserSessionId) &&
+      !browserEvidence.has("verify") &&
+      reportsMissingBrowserTarget(turn.text);
+    if (staleBrowserContextReply && staleBrowserContextReplies < 2) {
+      staleBrowserContextReplies += 1;
+      if (!bufferModelText && streamedText) {
+        timelineTextLength = turnTextStartOffset;
+        streamedText = "";
+        yield { type: "text_reset" };
+      }
+      history.push({
+        kind: "message",
+        role: "assistant",
+        content: turn.text,
+        reasoningContent: turn.reasoningContent,
+      });
+      history.push({
+        kind: "message",
+        role: "user",
+        content:
+          "<runtime_verification>当前任务已有仍在运行的浏览器页面，不缺少 URL 或点击目标。请立即调用 browser_snapshot 读取当前页面并取得最新元素引用，再根据页面状态继续；只有 browser_snapshot 明确报告页面已关闭后，才可以请求用户补充网址。</runtime_verification>",
+      });
+      continue;
+    }
     const claimedBrowserOps = claimedBrowserOperations(turn.text);
     const requiredBrowserOps = new Set<BrowserOperation>([
       ...requestedBrowserOps,
@@ -4433,24 +4509,11 @@ export async function* runAgent(
       ...requestedCodingOps,
       ...claimedCodingOps,
     ]);
-    const verifiedNoChange =
-      hasVerifiedNoChangeEvidence(evidenceHistory) &&
-      claimsNoChangeNeeded(turn.text);
-    const verifiedNoChangeReport =
-      verifiedNoChange && hasVerifiedNoChangeReport(evidenceHistory);
-    const missingCodingEvidence = missingRequestedCodingOperations(
+    const missingCodingEvidence = missingVerifiedCodingOperations(
       requiredCodingOps,
+      claimedCodingOps,
       codingEvidence,
-    ).filter(
-      (operation) =>
-        !(
-          (operation === "modify" &&
-            verifiedNoChange &&
-            !claimedCodingOps.has("modify")) ||
-          (operation === "validate" &&
-            verifiedNoChangeReport &&
-            !claimedCodingOps.has("validate"))
-        ),
+      evidenceHistory,
     );
     const unsupportedCodingClaims = missingCodingEvidence.filter((operation) =>
       claimedCodingOps.has(operation),

@@ -38,11 +38,13 @@ import {
   summarizeContext,
 } from "./gateway";
 import {
+  cleanupAllBackgroundProcesses,
   cleanupAgentRecords,
   resolveApproval,
   runAgent,
   undoActivity,
 } from "./agent";
+import { initializeManagedProcessRegistry } from "./process-registry";
 import { closeAllSshSessions } from "./ssh";
 import { closeAllMysqlSessions } from "./mysql";
 import { closeAllSqlServerSessions } from "./sqlserver";
@@ -62,7 +64,11 @@ import {
   deleteTask,
   listTaskHeaders,
   loadActivityPayload,
+  loadTaskActivitiesForRequests,
+  loadTaskActivityPage,
   loadTask,
+  loadTaskMessagePage,
+  loadTaskWindow,
   loadState,
   saveTask,
   saveTaskOrder,
@@ -90,7 +96,10 @@ import {
   localPathSchema,
   modelRequestSchema,
   optionalIdSchema,
+  saveTaskOptionsSchema,
   stateKeySchema,
+  taskItemPageOptionsSchema,
+  taskRequestIdsSchema,
   sshRemoteConnectSchema,
   sshRemoteContentSchema,
   sshRemoteExpectedContentSchema,
@@ -501,6 +510,11 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  const recoveredProcesses = await initializeManagedProcessRegistry(
+    app.getPath("userData"),
+  );
+  if (recoveredProcesses)
+    writeLog("warn", "process.recovered", { count: recoveredProcesses });
   await removeLegacyDevelopmentShortcut();
   await repairWindowsShortcuts();
   const bundledSkillsRoot = app.isPackaged
@@ -587,11 +601,44 @@ app.whenReady().then(async () => {
   ipcMain.handle("state:load-task", (_e, id: string) =>
     loadTask(idSchema.parse(id)),
   );
+  ipcMain.handle("state:load-task-window", (_e, id: string) =>
+    loadTaskWindow(idSchema.parse(id)),
+  );
+  ipcMain.handle(
+    "state:task-message-page",
+    (_e, id: string, options: unknown) =>
+      loadTaskMessagePage(
+        idSchema.parse(id),
+        taskItemPageOptionsSchema.parse(options ?? {}),
+      ),
+  );
+  ipcMain.handle(
+    "state:task-activity-page",
+    (_e, id: string, options: unknown) =>
+      loadTaskActivityPage(
+        idSchema.parse(id),
+        taskItemPageOptionsSchema.parse(options ?? {}),
+      ),
+  );
+  ipcMain.handle(
+    "state:task-activities-for-requests",
+    (_e, id: string, requestIds: unknown) =>
+      loadTaskActivitiesForRequests(
+        idSchema.parse(id),
+        taskRequestIdsSchema.parse(requestIds),
+      ),
+  );
   ipcMain.handle("state:load-activity-payload", (_e, activityId: string) =>
     loadActivityPayload(idSchema.parse(activityId)),
   );
-  ipcMain.handle("state:save-task", (_e, id: string, value: unknown) =>
-    saveTask(idSchema.parse(id), value),
+  ipcMain.handle(
+    "state:save-task",
+    (_e, id: string, value: unknown, options: unknown) =>
+      saveTask(
+        idSchema.parse(id),
+        value,
+        saveTaskOptionsSchema.parse(options ?? {}),
+      ),
   );
   ipcMain.handle("state:save-task-order", (_e, ids: string[]) =>
     saveTaskOrder(ids.map((id) => idSchema.parse(id))),
@@ -757,29 +804,22 @@ app.whenReady().then(async () => {
   ipcMain.handle("ssh-remote:connect", (_e, input: unknown) =>
     connectSshRemote(sshRemoteConnectSchema.parse(input)),
   );
-  ipcMain.handle(
-    "ssh-remote:adopt",
-    (_e, taskId: string, rootPath: string) =>
-      adoptActiveSshRemote(
-        idSchema.parse(taskId),
-        sshRemotePathSchema.parse(rootPath),
-      ),
+  ipcMain.handle("ssh-remote:adopt", (_e, taskId: string, rootPath: string) =>
+    adoptActiveSshRemote(
+      idSchema.parse(taskId),
+      sshRemotePathSchema.parse(rootPath),
+    ),
   );
   ipcMain.handle(
     "ssh-remote:connect-saved",
     (_e, taskId: string, profileId: string) =>
-      connectSavedSshRemote(
-        idSchema.parse(taskId),
-        idSchema.parse(profileId),
-      ),
+      connectSavedSshRemote(idSchema.parse(taskId), idSchema.parse(profileId)),
   );
-  ipcMain.handle(
-    "ssh-remote:state",
-    (_e, taskId: string, profileId?: string) =>
-      sshRemoteState(
-        idSchema.parse(taskId),
-        profileId ? idSchema.parse(profileId) : undefined,
-      ),
+  ipcMain.handle("ssh-remote:state", (_e, taskId: string, profileId?: string) =>
+    sshRemoteState(
+      idSchema.parse(taskId),
+      profileId ? idSchema.parse(profileId) : undefined,
+    ),
   );
   ipcMain.handle("ssh-remote:disconnect", (_e, taskId: string) =>
     disconnectSshRemote(idSchema.parse(taskId)),
@@ -1324,6 +1364,10 @@ app.whenReady().then(async () => {
 });
 app.on("before-quit", () => {
   quitting = true;
+  for (const controller of controllers.values()) controller.abort();
+  void cleanupAllBackgroundProcesses().catch((error) =>
+    writeLog("error", "process.cleanup.failed", error),
+  );
   closeRemoteConnection();
 });
 app.on("window-all-closed", () => {

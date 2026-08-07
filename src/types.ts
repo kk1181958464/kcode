@@ -237,6 +237,34 @@ export type ChatMessage = {
   contextAttachments?: Array<{ name: string; size: number }>;
 };
 
+export type TaskItemPageOptions = {
+  limit?: number;
+  before?: string;
+  after?: string;
+};
+
+export type TaskItemPage<T> = {
+  items: T[];
+  oldestCursor?: string;
+  newestCursor?: string;
+  hasMoreBefore: boolean;
+  hasMoreAfter: boolean;
+};
+
+export type TaskItemPageMetadata = Omit<TaskItemPage<never>, "items">;
+
+export type TaskWindow = {
+  task: unknown;
+  paging: {
+    messages: TaskItemPageMetadata;
+    activities: TaskItemPageMetadata;
+  };
+};
+
+export type SaveTaskOptions = {
+  preserveUnloadedItems?: boolean;
+};
+
 export type AgentRole = "planner" | "executor";
 
 export type AgentModelTarget = {
@@ -498,8 +526,25 @@ export type KCodeApi = {
     compact(): Promise<{ tasks: number; bytes: number; path: string }>;
     taskHeaders(): Promise<unknown[]>;
     loadTask(id: string): Promise<unknown | null>;
+    loadTaskWindow(id: string): Promise<TaskWindow | null>;
+    taskMessagePage(
+      id: string,
+      options?: TaskItemPageOptions,
+    ): Promise<TaskItemPage<ChatMessage>>;
+    taskActivityPage(
+      id: string,
+      options?: TaskItemPageOptions,
+    ): Promise<TaskItemPage<AgentActivity>>;
+    taskActivitiesForRequests(
+      id: string,
+      requestIds: string[],
+    ): Promise<AgentActivity[]>;
     loadActivityPayload(activityId: string): Promise<unknown | null>;
-    saveTask(id: string, value: unknown): Promise<void>;
+    saveTask(
+      id: string,
+      value: unknown,
+      options?: SaveTaskOptions,
+    ): Promise<void>;
     saveTaskOrder(ids: string[]): Promise<void>;
     deleteTask(id: string): Promise<void>;
   };

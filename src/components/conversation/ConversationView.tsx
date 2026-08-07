@@ -1967,6 +1967,7 @@ export const ConversationHistory = memo(
   function ConversationHistoryInner({
     messages,
     hasOlderMessages,
+    olderMessagesLoading,
     hasNewerMessages,
     activitiesByRequest,
     runningId,
@@ -1981,6 +1982,7 @@ export const ConversationHistory = memo(
   }: {
     messages: ChatMessage[];
     hasOlderMessages: boolean;
+    olderMessagesLoading: boolean;
     hasNewerMessages: boolean;
     activitiesByRequest: Map<string, AgentActivity[]>;
     runningId?: string;
@@ -1996,9 +1998,12 @@ export const ConversationHistory = memo(
     return (
       <div className="message-list" aria-live="polite">
         {hasOlderMessages && (
-          <div className="conversation-history-loader" aria-hidden="true">
+          <div
+            className={`conversation-history-loader ${olderMessagesLoading ? "loading" : ""}`}
+            aria-live="polite"
+          >
             <span />
-            向上滚动加载更早对话
+            {olderMessagesLoading ? "正在加载更早对话" : "向上滚动加载更早对话"}
           </div>
         )}
         {messages.map((message) => {
@@ -2044,6 +2049,7 @@ export const ConversationHistory = memo(
     if (prev.runningId !== next.runningId) return false;
     if (prev.reasoning !== next.reasoning) return false;
     if (prev.hasOlderMessages !== next.hasOlderMessages) return false;
+    if (prev.olderMessagesLoading !== next.olderMessagesLoading) return false;
     if (prev.hasNewerMessages !== next.hasNewerMessages) return false;
     if (prev.retryContent !== next.retryContent) return false;
     if (prev.workspacePath !== next.workspacePath) return false;
