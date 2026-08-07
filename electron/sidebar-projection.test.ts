@@ -99,3 +99,26 @@ test("filters cached sidebar metadata without rebuilding task records", () => {
     ["task-b"],
   );
 });
+
+test("groups SSH Remote tasks by profile and exposes the remote label", () => {
+  const remoteWorkspace = {
+    id: "profile-a",
+    name: "生产服务器",
+    host: "203.0.113.8",
+    port: 22,
+    username: "deploy",
+    rootPath: "/srv/app",
+    authType: "private-key" as const,
+    remembered: true,
+  };
+  const tasks = [
+    { ...task("task-a", "部署", "C:\\cache\\profile-a"), remoteWorkspace },
+    { ...task("task-b", "检查日志", "C:\\cache\\profile-a"), remoteWorkspace },
+  ];
+  const projection = projectSidebarWorkspaceGroups(tasks, "", false);
+
+  assert.equal(projection.workspaceGroups.length, 1);
+  assert.equal(projection.workspaceGroups[0].name, "生产服务器");
+  assert.equal(projection.workspaceGroups[0].remote, true);
+  assert.equal(projection.workspaceGroups[0].conversations.length, 2);
+});

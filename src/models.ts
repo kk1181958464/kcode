@@ -1,6 +1,7 @@
 import type { AgentActivity, ChatMessage, ReasoningEffort } from "./types";
 import type { ContextLedger } from "./context";
 import type { TaskRunStatus } from "./task-status";
+import type { SshRemoteWorkspace } from "./ssh-remote-types";
 
 export const uid = () => crypto.randomUUID();
 export const EMPTY_ACTIVITIES: AgentActivity[] = [];
@@ -35,6 +36,7 @@ export type TaskRecord = {
   id: string;
   name: string;
   workspacePath: string;
+  remoteWorkspace?: SshRemoteWorkspace;
   createdAt: number;
   updatedAt: number;
   messages: ChatMessage[];
@@ -63,6 +65,7 @@ export type TaskRecord = {
     createdAt: number;
     summary: string;
     ledger: ContextLedger;
+    compactedMessageCount?: number;
     modelGenerated: boolean;
     durationMs?: number;
     usage?: { input: number; output: number };
@@ -80,13 +83,20 @@ export type TaskRecord = {
 
 export type SidebarTask = Pick<
   TaskRecord,
-  "id" | "name" | "workspacePath" | "archived" | "runningId" | "runStatus"
+  | "id"
+  | "name"
+  | "workspacePath"
+  | "remoteWorkspace"
+  | "archived"
+  | "runningId"
+  | "runStatus"
 >;
 
 export type SidebarWorkspaceGroup = {
   workspacePath: string;
   name: string;
   conversations: SidebarTask[];
+  remote?: boolean;
 };
 
 export type ConversationScrollState = { top: number; atBottom: boolean };

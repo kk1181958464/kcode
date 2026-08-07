@@ -84,6 +84,7 @@ import {
   shouldFallbackResponses,
 } from "./protocol-fallback";
 import {
+  claimedGitOperations,
   claimedUnavailableGitOperations,
   isNotGitRepositoryOutput,
   missingRequestedGitOperations,
@@ -92,12 +93,14 @@ import {
   unavailableGitOperations,
 } from "./git-operation-verification";
 import {
+  claimedCodingOperations,
   claimsNoChangeNeeded,
   compactOperationEvidenceResult,
   hasRequestedUserInputEvidence,
   hasVerifiedNoChangeEvidence,
   hasVerifiedNoChangeReport,
   isAdvisoryOnlyRequest,
+  isUnsupportedTaskCompletionClaim,
   missingRequestedCodingOperations,
   relevantVerificationRequestContent,
   reportsBlockedCodingOperations,
@@ -108,6 +111,7 @@ import {
   type CodingOperation,
 } from "./coding-operation-verification";
 import {
+  claimedBrowserOperations,
   missingRequestedBrowserOperations,
   requestedBrowserOperations,
   successfulBrowserEvidence,
@@ -116,10 +120,13 @@ import {
 import { loadActiveSkillInstructions } from "./agent-skills";
 import { AsyncQueue } from "./async-queue";
 import { readSseJson } from "./sse-stream";
+import { resolveModelCompatibility } from "./model-compatibility";
+import { ModelAttemptBudget } from "./model-attempt-budget";
+import { providerApiEndpoint } from "./provider-url";
 import { mutationChangedFromOutput } from "./mutation-evidence";
 import { hasUserSuppliedVerificationCode } from "./browser-cdp";
 import { applyUpdatePatch, normalizeLineEndings } from "./text-patch";
-import { getProviderWithKey } from "./store";
+import { getProviderWithKey, updateModelCapabilities } from "./store";
 import {
   bindBrowserRequest,
   browserIsOpen,
@@ -140,11 +147,16 @@ import {
   downloadSshFile,
   listSshDirectory,
   readSshFile,
+  resolveSshRoot,
   runSshCommand,
   undoSshActivity,
   uploadSshFile,
   writeSshFile,
 } from "./ssh";
+import {
+  resolveSshWorkspacePath,
+  sshWorkspaceCommand,
+} from "./ssh-remote-path";
 import {
   adoptMysqlSession,
   cleanupMysqlSessions,
@@ -196,6 +208,7 @@ import {
   isPlannerCoordinator,
   plannerCollaborationInstruction,
   plannerToolAllowed,
+  remoteWorkspaceToolAllowed,
 } from "./collaboration";
 import { executorFinalizationMode } from "./agent-run-budget";
 import {
@@ -472,11 +485,6 @@ function updateActiveConnectionFacts(
     active.set(family, `${call.name} ${JSON.stringify(call.input)}`);
 }
 
-const trim = (value: string) => value.replace(/\/+$/, "");
-const apiEndpoint = (baseUrl: string, resource: string) => {
-  const base = trim(baseUrl);
-  return `${base}${/\/v1$/i.test(base) ? "" : "/v1"}/${resource}`;
-};
 const base64Data = (dataUrl: string) => dataUrl.slice(dataUrl.indexOf(",") + 1);
 const decodeHtml = (value: string) =>
   value
@@ -981,7 +989,7 @@ const tools = [
   {
     name: "ssh_connect",
     description:
-      "Connect this task to an SSH server using credentials explicitly supplied by the user. The privateKey value must be the key content, not a local path. Host keys are not verified. The connection remains available while switching tasks.",
+      "Connect this task to an SSH server using credentials explicitly supplied by the user and attach an editable remote workspace. The privateKey value must be the key content, not a local path. Set rootPath to the remote project directory when it is known; otherwise the server home directory is used. Host keys are not verified. The connection remains available while switching tasks.",
     parameters: {
       type: "object",
       properties: {
@@ -991,8 +999,23 @@ const tools = [
         password: { type: "string" },
         privateKey: { type: "string" },
         passphrase: { type: "string" },
+        rootPath: {
+          type: "string",
+          description: "Remote project directory to open in the editor.",
+        },
       },
       required: ["host", "username"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "ssh_set_workspace",
+    description:
+      "Set or change the editable project root for the SSH server already connected to this task. Call this when the project directory becomes known after ssh_connect.",
+    parameters: {
+      type: "object",
+      properties: { path: { type: "string" } },
+      required: ["path"],
       additionalProperties: false,
     },
   },
@@ -1822,6 +1845,11 @@ async function execute(
   signal: AbortSignal,
   onProgress: (output: string) => void = () => undefined,
 ): Promise<ToolResult> {
+  const resolveRemoteToolPath = (value: unknown, fallback = "") => {
+    const raw = String(value || fallback);
+    if (!request.remoteWorkspace || !raw) return raw;
+    return resolveSshWorkspacePath(request.remoteWorkspace.rootPath, raw);
+  };
   if (call.name === "list_directory") {
     const directory = workspacePath(root, call.input.path);
     const recursive = Boolean(call.input.recursive);
@@ -2412,10 +2440,43 @@ async function execute(
       },
       signal,
     );
-    return { output: JSON.stringify(result, null, 2) };
+    const requestedRootPath = String(call.input.rootPath || "~");
+    let rootPath: string;
+    let rootPathWarning: string | undefined;
+    try {
+      rootPath = await resolveSshRoot(
+        browserSessionId,
+        requestId,
+        requestedRootPath,
+        signal,
+      );
+    } catch (error) {
+      if (requestedRootPath === "~") throw error;
+      rootPathWarning = `无法打开指定目录 ${requestedRootPath}：${error instanceof Error ? error.message : String(error)}`;
+      rootPath = await resolveSshRoot(browserSessionId, requestId, "~", signal);
+    }
+    return {
+      output: JSON.stringify({ ...result, rootPath, rootPathWarning }, null, 2),
+      path: rootPath,
+    };
+  }
+  if (call.name === "ssh_set_workspace") {
+    const rootPath = await resolveSshRoot(
+      browserSessionId,
+      requestId,
+      String(call.input.path || ""),
+      signal,
+    );
+    return {
+      output: JSON.stringify({ connected: true, rootPath }, null, 2),
+      path: rootPath,
+    };
   }
   if (call.name === "ssh_run") {
-    const remoteCommand = String(call.input.command || "");
+    const requestedCommand = String(call.input.command || "");
+    const remoteCommand = request.remoteWorkspace
+      ? sshWorkspaceCommand(request.remoteWorkspace.rootPath, requestedCommand)
+      : requestedCommand;
     const result = await runSshCommand(
       browserSessionId,
       requestId,
@@ -2435,49 +2496,54 @@ async function execute(
     return { ...result, command: remoteCommand, executed: true };
   }
   if (call.name === "ssh_list_directory") {
-    const remotePath = String(call.input.path || ".");
+    const requestedPath = resolveRemoteToolPath(call.input.path, ".");
     return {
-      path: remotePath,
+      path: requestedPath,
       output: JSON.stringify(
-        await listSshDirectory(browserSessionId, requestId, remotePath, signal),
+        await listSshDirectory(
+          browserSessionId,
+          requestId,
+          requestedPath,
+          signal,
+        ),
         null,
         2,
       ),
     };
   }
   if (call.name === "ssh_read_file") {
-    const remotePath = String(call.input.path || "");
+    const requestedPath = resolveRemoteToolPath(call.input.path);
     return {
-      path: remotePath,
+      path: requestedPath,
       output: await readSshFile(
         browserSessionId,
         requestId,
-        remotePath,
+        requestedPath,
         signal,
       ),
     };
   }
   if (call.name === "ssh_write_file") {
-    const remotePath = String(call.input.path || "");
+    const requestedPath = resolveRemoteToolPath(call.input.path);
     const result = await writeSshFile(
       browserSessionId,
       requestId,
       activityId,
-      remotePath,
+      requestedPath,
       String(call.input.content ?? ""),
       signal,
     );
     return {
-      path: remotePath,
+      path: requestedPath,
       output: `已原子写入远程文件，共 ${result.bytes} 字节`,
       changed: result.before !== result.after,
       undoable: true,
-      ...diffFor(remotePath, result.before, result.after),
+      ...diffFor(requestedPath, result.before, result.after),
     };
   }
   if (call.name === "ssh_upload_file") {
     const localPath = path.resolve(String(call.input.localPath || ""));
-    const remotePath = String(call.input.remotePath || "");
+    const remotePath = resolveRemoteToolPath(call.input.remotePath);
     const result = await uploadSshFile(
       browserSessionId,
       requestId,
@@ -2493,7 +2559,7 @@ async function execute(
     };
   }
   if (call.name === "ssh_download_file") {
-    const remotePath = String(call.input.remotePath || "");
+    const remotePath = resolveRemoteToolPath(call.input.remotePath);
     const localPath = path.resolve(String(call.input.localPath || ""));
     const result = await downloadSshFile(
       browserSessionId,
@@ -3044,14 +3110,14 @@ async function parseStreamedTurn(
   onReasoning?: (delta: string) => void,
   onProgress?: (message: string) => void,
   idleTimeoutMs?: number,
-  normalizeCumulativeChatChunks = false,
+  chatChunkMode: "delta" | "cumulative" | "auto" = "delta",
 ): Promise<Turn> {
   if (response.body) {
     const assembler = new AgentStreamAssembler(
       protocol as any,
       onText,
       onReasoning,
-      { normalizeCumulativeChatChunks },
+      { chatChunkMode },
     );
     for await (const event of sseJson(
       response,
@@ -3231,6 +3297,7 @@ async function parseStreamedTurn(
 type TurnStreamEvent =
   | { type: "text"; delta: string }
   | { type: "text_reset" }
+  | { type: "reasoning_reset" }
   | { type: "reasoning"; delta: string }
   | { type: "progress"; message: string }
   | { type: "complete"; turn: Turn };
@@ -3243,10 +3310,12 @@ async function* streamModelTurn(
   toolsEnabled: boolean,
   requireToolCall: boolean,
   runtime: ModelTurnRuntime,
+  attemptBudget: ModelAttemptBudget,
 ): AsyncGenerator<TurnStreamEvent> {
   const queue = new AsyncQueue<TurnStreamEvent>();
   let turn: Turn | undefined;
   const reconciler = new RetryTextReconciler();
+  const reasoningReconciler = new RetryTextReconciler();
   const enqueue = (event: TurnStreamEvent) => {
     queue.push(event);
   };
@@ -3259,7 +3328,11 @@ async function* streamModelTurn(
     }
   };
   const pushReasoning = (delta: string) => {
-    if (delta) enqueue({ type: "reasoning", delta });
+    if (!delta) return;
+    const reconciled = reasoningReconciler.push(delta);
+    if (reconciled.reset) enqueue({ type: "reasoning_reset" });
+    if (reconciled.delta)
+      enqueue({ type: "reasoning", delta: reconciled.delta });
   };
   const pushProgress = (message: string) => {
     if (message) enqueue({ type: "progress", message });
@@ -3273,12 +3346,12 @@ async function* streamModelTurn(
       }
       signal.addEventListener("abort", finish, { once: true });
     });
-  // Retry a mid-stream failure only while nothing visible has been emitted yet,
-  // so a retry can never duplicate answer text. Reasoning-only progress is safe
-  // to replay. Up to two backoff retries before giving up.
+  // Reconcile restarted streams with text already shown to the user. The same
+  // request budget also covers first-byte retries and protocol fallbacks.
   const run = async () => {
     for (let attempt = 1; ; attempt += 1) {
       reconciler.beginAttempt();
+      reasoningReconciler.beginAttempt();
       try {
         turn = await modelTurn(
           root,
@@ -3293,10 +3366,16 @@ async function* streamModelTurn(
           pushProgress,
           undefined,
           runtime,
+          attemptBudget,
         );
         return;
       } catch (error) {
-        if (signal.aborted || attempt >= 3 || !isRetryableStreamError(error))
+        if (
+          signal.aborted ||
+          attempt >= 3 ||
+          !attemptBudget.canAttempt() ||
+          !isRetryableStreamError(error)
+        )
           throw error;
         // Keep already visible text. The next attempt is reconciled against
         // that prefix, so replayed output is suppressed without a visual reset.
@@ -3332,6 +3411,7 @@ async function modelTurn(
   onProgress?: (message: string) => void,
   protocolOverride?: Protocol,
   runtime?: ModelTurnRuntime,
+  attemptBudget?: ModelAttemptBudget,
 ): Promise<Turn> {
   const provider =
     runtime?.provider ?? (await getProviderWithKey(request.providerId));
@@ -3342,7 +3422,20 @@ async function modelTurn(
     (model) => model.modelId === request.modelId,
   )!;
   const protocol =
-    protocolOverride ?? effectiveOpenAiProtocol(provider.id, provider.protocol);
+    protocolOverride ??
+    (provider.protocol === "openai-responses" &&
+    selectedModel.supportsResponses === false
+      ? "openai-chat"
+      : effectiveOpenAiProtocol(
+          provider.id,
+          provider.protocol,
+          request.modelId,
+        ));
+  const compatibility = resolveModelCompatibility(
+    provider,
+    selectedModel,
+    protocol,
+  );
   const imageSupport = imageInputSupport(selectedModel, protocol);
   const omitImageInputs =
     runtime?.omitImageInputs === true || imageSupport === "unsupported";
@@ -3368,7 +3461,9 @@ async function modelTurn(
     ? tools.filter(
         (tool) =>
           !((request.agentDepth ?? 0) >= 2 && tool.name === "spawn_agent") &&
-          (!plannerCoordinator || plannerToolAllowed(tool.name)),
+          (!request.remoteWorkspace || remoteWorkspaceToolAllowed(tool.name)) &&
+          (!plannerCoordinator ||
+            plannerToolAllowed(tool.name, Boolean(request.remoteWorkspace))),
       )
     : [];
   const isolation = createConversationIsolation(request.taskId, requestId);
@@ -3378,12 +3473,22 @@ async function modelTurn(
       (await loadActiveSkillInstructions(latestUserRequest)),
     plannerCollaborationInstruction(request),
     "When a task has multiple independent phases, begin with a short numbered plan (1., 2., 3. …). Before every tool-call group, write no more than two concise user-facing progress sentences explaining which plan step you are executing and why; keep this preamble under 240 characters. Never dump a full implementation monologue, speculative patch, or repeated plan into the chat. Put the structured plan in numbered steps, then call the relevant tools in the same turn. A non-final turn must include a tool call instead of only describing what you will do. After a failed tool result, briefly explain how you are adjusting the approach before the next tool call. Never claim success before a tool result confirms it.",
-    "run_command uses Windows PowerShell 5.1, not Bash. Never use <<EOF heredocs or &&/|| chains; use a PowerShell here-string for multiline stdin and check $LASTEXITCODE explicitly when chaining native commands. Use browser_open, browser_snapshot, browser_click, browser_type, and browser_screenshot for browser work. For responsive validation, pass explicit width and height to browser_screenshot. Never launch Chrome or Edge through run_command for browsing, DOM inspection, version checks, or screenshots.",
+    "Past-tense claims about real workspace or external actions are checked against successful structured tool results. Do not say that a file was changed, a command ran, a test passed, a remote connection or transfer completed, a browser action happened, or a Git action completed unless the corresponding tool evidence exists in this run. Informational answers, explanations, planning, and content generation that require no real action may finish without calling a tool; do not invent an action claim merely to create evidence. If an earlier statement was wrong, retract it explicitly instead of inventing evidence.",
+    request.remoteWorkspace
+      ? "This is a managed SSH Remote task. Use ssh_run for shell work; its shell and operating system are determined by the remote server. Do not use local workspace tools or reconnect/disconnect the managed SSH session."
+      : "run_command uses Windows PowerShell 5.1, not Bash. Never use <<EOF heredocs or &&/|| chains; use a PowerShell here-string for multiline stdin and check $LASTEXITCODE explicitly when chaining native commands. Use browser_open, browser_snapshot, browser_click, browser_type, and browser_screenshot for browser work. For responsive validation, pass explicit width and height to browser_screenshot. Never launch Chrome or Edge through run_command for browsing, DOM inspection, version checks, or screenshots.",
+    !request.remoteWorkspace
+      ? "When connecting to a remote project, pass its project directory as rootPath to ssh_connect so KCode opens the editable SSH Remote workspace immediately. If you learn the project directory only after connecting, call ssh_set_workspace once with that directory. Do not leave the editor rooted at the server home when a more specific project root is known, and do not call ssh_disconnect after finishing unless the user explicitly asks to disconnect."
+      : "",
+    "Never create a Git commit, push a branch or tag, or trigger a release/build workflow unless the latest user request explicitly asks for that Git action. Business-domain phrases such as submitting an order, pushing a message, publishing content, or running a local package/build are not Git authorization. Read-only Git status or diff checks may be used only when relevant to workspace safety and must not turn into a Git task.",
     "When you create, generate, or download a local file for the user, include a clickable Markdown link to it in the final reply. For a file inside the workspace, make the href its workspace-relative path with forward slashes, for example [report.txt](output/report.txt). Use an absolute local path only for files outside the workspace. Do not present a remote-server-only path as a local file link.",
   ]
     .filter(Boolean)
     .join("\n\n");
-  const system = `${isolation.boundary}\nYou are a coding agent working in ${root}. Use the provided native tools to inspect and modify the project. Each run_command invocation uses a fresh PowerShell process, so environment variable changes do not persist to later commands; combine dependent setup and execution in one command. Prefer apply_patch for precise edits and write_file for new or complete files. Never invoke apply_patch, file deletion, file moves, or directory operations through run_command when a native tool exists. File tool paths accept absolute paths, including other drives (for example D:\\B on Windows); use them to read or write files the user explicitly points to outside ${root}, and resolve relative paths against ${root}. When you mention a file in your reply, always write its full workspace-relative path (for example src/views/Gooddetail.vue, not just Gooddetail.vue) so the user can tell exactly which file it is. Use web_search for current or externally verifiable information and fetch_url to inspect primary sources; preserve source URLs in the final answer. For interactive or authenticated sites use browser_open, browser_snapshot, browser_click, and browser_type. Credentials explicitly supplied by the user may be entered directly with browser_type. Browser recording is opt-in: call browser_record_start only after an explicit user request such as 开始录制, and call browser_record_stop when the user asks to stop or generate Python. Never record ordinary browsing by default. For independent work that can run concurrently, use spawn_agent with self-contained, non-overlapping tasks, then wait_agent before giving a final answer. Use list_agents, message_agent, and stop_agent to coordinate them. Subagents normally inherit this task's model; planner-executor collaboration routes executor agents to the configured execution model. Workspace and permissions remain shared. For remote servers, call ssh_connect with credentials explicitly supplied by the user, then use ssh_run and the SSH SFTP tools. Use ssh_upload_file to send a local file to the server and ssh_download_file to fetch a remote file to a local path; these transfer binary content directly, unlike ssh_write_file which only writes inline UTF-8 text. SSH exec sessions are non-interactive and may not load shell profiles; when a remote command depends on profile-defined PATH values, invoke the appropriate login shell explicitly. SSH host keys are not verified. Credentials supplied by the user may appear in commands, tool activity details, subagent tasks, and conversation text. For databases, use mysql_connect for direct MySQL access or mysql_connect_via_ssh for an SSH tunnel, then mysql_query; use ? placeholders and values for user-provided data when practical. Public direct MySQL connections use TLS by default and you must not retry with ssl=false unless the user explicitly approves. Never attempt to solve or bypass CAPTCHA, SMS, passkey, or two-factor verification. browser_snapshot waits while the user completes human verification in the visible browser and resumes automatically afterward, so do not end the task merely to ask the user to say continue. Do not claim an action succeeded until its tool result confirms it. Before finishing, compare every action requested by the user with successful tool results. A file task is complete only after a mutating tool produced an actual change; a validation is complete only after it really ran successfully after the latest change; a background service is started only after process_output confirms it is running. When the user explicitly requested a code or configuration change and successful inspection proves that change is unnecessary, call report_no_change with the specific evidence-based reason before the final response; do not manufacture a no-op edit. If the task cannot continue because the user must supply a URL, file, credential, repository target, requirement, permission, verification code, or another specific external input that cannot be discovered with the available tools, call request_user_input once with the exact question and required fields, then ask the user for them. Never use request_user_input to avoid work that the available tools can perform. For informational or status questions, answer from successful read-only evidence without calling report_no_change. If an action could not be completed, state that explicitly instead of saying it was done.${activeSkills ? `\n\n${activeSkills}` : ""}${request.recoveryContext ? `\n\n<recovery_context>${request.recoveryContext}</recovery_context>\nThis task resumed after an interruption. Verify prior side effects before repeating them, and recreate any interrupted subagent work that is still needed.` : ""}`;
+  const remoteWorkspaceInstruction = request.remoteWorkspace
+    ? `\n\n<ssh_remote_workspace>\nThis task is attached to an already authenticated SSH Remote workspace. Do not call ssh_connect unless an SSH tool explicitly reports that the session was lost. The project source of truth is on ${request.remoteWorkspace.username}@${request.remoteWorkspace.host}:${request.remoteWorkspace.port} under ${request.remoteWorkspace.rootPath}. Use ssh_list_directory, ssh_read_file, ssh_write_file, ssh_run, ssh_upload_file, and ssh_download_file for project work. Relative SSH file paths are automatically resolved under the remote root. Every ssh_run command starts in the remote root. The local directory ${root} is only KCode metadata/cache and must not be inspected or modified as if it were the project.\n</ssh_remote_workspace>`
+    : "";
+  const system = `${isolation.boundary}\nYou are a coding agent working in ${root}. Use the provided native tools to inspect and modify the project. Each run_command invocation uses a fresh PowerShell process, so environment variable changes do not persist to later commands; combine dependent setup and execution in one command. Prefer apply_patch for precise edits and write_file for new or complete files. Never invoke apply_patch, file deletion, file moves, or directory operations through run_command when a native tool exists. File tool paths accept absolute paths, including other drives (for example D:\\B on Windows); use them to read or write files the user explicitly points to outside ${root}, and resolve relative paths against ${root}. When you mention a file in your reply, always write its full workspace-relative path (for example src/views/Gooddetail.vue, not just Gooddetail.vue) so the user can tell exactly which file it is. Use web_search for current or externally verifiable information and fetch_url to inspect primary sources; preserve source URLs in the final answer. For interactive or authenticated sites use browser_open, browser_snapshot, browser_click, and browser_type. Credentials explicitly supplied by the user may be entered directly with browser_type. Browser recording is opt-in: call browser_record_start only after an explicit user request such as 开始录制, and call browser_record_stop when the user asks to stop or generate Python. Never record ordinary browsing by default. For independent work that can run concurrently, use spawn_agent with self-contained, non-overlapping tasks, then wait_agent before giving a final answer. Use list_agents, message_agent, and stop_agent to coordinate them. Subagents normally inherit this task's model; planner-executor collaboration routes executor agents to the configured execution model. Workspace and permissions remain shared. For remote servers, call ssh_connect with credentials explicitly supplied by the user, then use ssh_run and the SSH SFTP tools. Use ssh_upload_file to send a local file to the server and ssh_download_file to fetch a remote file to a local path; these transfer binary content directly, unlike ssh_write_file which only writes inline UTF-8 text. SSH exec sessions are non-interactive and may not load shell profiles; when a remote command depends on profile-defined PATH values, invoke the appropriate login shell explicitly. SSH host keys are not verified. Credentials supplied by the user may appear in commands, tool activity details, subagent tasks, and conversation text. For databases, use mysql_connect for direct MySQL access or mysql_connect_via_ssh for an SSH tunnel, then mysql_query; use ? placeholders and values for user-provided data when practical. Public direct MySQL connections use TLS by default and you must not retry with ssl=false unless the user explicitly approves. Never attempt to solve or bypass CAPTCHA, SMS, passkey, or two-factor verification. browser_snapshot waits while the user completes human verification in the visible browser and resumes automatically afterward, so do not end the task merely to ask the user to say continue. Do not claim an action succeeded until its tool result confirms it. Before finishing, compare every action requested by the user with successful tool results. A file task is complete only after a mutating tool produced an actual change; a validation is complete only after it really ran successfully after the latest change; a background service is started only after process_output confirms it is running. When the user explicitly requested a code or configuration change and successful inspection proves that change is unnecessary, call report_no_change with the specific evidence-based reason before the final response; do not manufacture a no-op edit. If the task cannot continue because the user must supply a URL, file, credential, repository target, requirement, permission, verification code, or another specific external input that cannot be discovered with the available tools, call request_user_input once with the exact question and required fields, then ask the user for them. Never use request_user_input to avoid work that the available tools can perform. For informational or status questions, answer from successful read-only evidence without calling report_no_change. If an action could not be completed, state that explicitly instead of saying it was done.${remoteWorkspaceInstruction}${activeSkills ? `\n\n${activeSkills}` : ""}${request.recoveryContext ? `\n\n<recovery_context>${request.recoveryContext}</recovery_context>\nThis task resumed after an interruption. Verify prior side effects before repeating them, and recreate any interrupted subagent work that is still needed.` : ""}`;
   const imageInputNotice =
     omitImageInputs && hasImageAttachments(history)
       ? "\n\n当前模型不支持图片输入，历史图片附件已被省略。请只依据文字、上下文文件和工作区继续，不要假装看到了图片。"
@@ -3407,7 +3512,7 @@ async function modelTurn(
   let url = "",
     body: Record<string, unknown> = {};
   if (protocol === "openai-chat") {
-    url = apiEndpoint(provider.baseUrl, "chat/completions");
+    url = providerApiEndpoint(provider.baseUrl, protocol, "chat/completions");
     const messages: unknown[] = [{ role: "system", content: payloadSystem }];
     for (const item of payloadHistory) {
       if (item.kind === "message") {
@@ -3480,12 +3585,10 @@ async function modelTurn(
           : reasoning.reasoningMode === "toggle"
             ? { type: effort === "thinking" ? "enabled" : "disabled" }
             : undefined,
-      reasoning_split: /api\.minimaxi\.com/i.test(provider.baseUrl)
-        ? true
-        : undefined,
+      reasoning_split: compatibility.splitReasoning ? true : undefined,
     };
   } else if (protocol === "openai-responses") {
-    url = apiEndpoint(provider.baseUrl, "responses");
+    url = providerApiEndpoint(provider.baseUrl, protocol, "responses");
     const input: unknown[] = [{ role: "developer", content: payloadSystem }];
     for (const item of payloadHistory) {
       if (item.kind === "message")
@@ -3533,7 +3636,7 @@ async function modelTurn(
           : undefined,
     };
   } else if (protocol === "anthropic-messages") {
-    url = apiEndpoint(provider.baseUrl, "messages");
+    url = providerApiEndpoint(provider.baseUrl, protocol, "messages");
     const messages: { role: string; content: unknown }[] = [];
     for (const item of payloadHistory) {
       if (item.kind === "message")
@@ -3598,7 +3701,7 @@ async function modelTurn(
         : {}),
     };
   } else {
-    url = `${trim(provider.baseUrl)}/v1beta/models/${encodeURIComponent(request.modelId)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(provider.apiKey)}`;
+    url = `${providerApiEndpoint(provider.baseUrl, protocol, `models/${encodeURIComponent(request.modelId)}:streamGenerateContent`)}?alt=sse&key=${encodeURIComponent(provider.apiKey)}`;
     const contents: { role: string; parts: unknown[] }[] = [];
     for (const item of payloadHistory) {
       if (item.kind === "message")
@@ -3689,6 +3792,7 @@ async function modelTurn(
       retries: 1,
       retryDelayMs: 2_000,
       onProgress,
+      attemptBudget,
     },
   );
   writeLog("info", "model.response", {
@@ -3724,7 +3828,10 @@ async function modelTurn(
   ) {
     // Do not let a relay with a non-settling cancel() block protocol fallback.
     void response.body?.cancel().catch(() => undefined);
-    rememberChatFallback(provider.id);
+    rememberChatFallback(provider.id, request.modelId);
+    void updateModelCapabilities(provider.id, request.modelId, {
+      supportsResponses: false,
+    });
     const compatibilityDetail = responseErrorText
       ? "（工具调用历史格式不兼容）"
       : "";
@@ -3752,6 +3859,7 @@ async function modelTurn(
       onProgress,
       "openai-chat",
       runtime,
+      attemptBudget,
     );
   }
   if (!response.ok)
@@ -3767,8 +3875,7 @@ async function modelTurn(
       onReasoning,
       onProgress,
       reasoning.reasoningMode !== "none" ? 180_000 : undefined,
-      protocol === "openai-chat" &&
-        /(?:^|[/:])glm(?:[-_.]|$)/i.test(request.modelId),
+      compatibility.streamMode,
     );
   const json = JSON.parse(await readResponseText(response, signal)) as any;
   if (protocol === "openai-chat") {
@@ -3876,7 +3983,8 @@ export async function* runAgent(
 ): AsyncGenerator<AgentEvent> {
   const runStartedAt = Date.now();
   const root = path.resolve(request.workspacePath);
-  const browserSessionId = request.taskId || requestId;
+  const browserSessionId =
+    request.connectionSessionId || request.taskId || requestId;
   bindBrowserRequest(browserSessionId, requestId);
   if (!path.isAbsolute(request.workspacePath))
     throw new Error("工作区路径必须是绝对路径");
@@ -3900,6 +4008,10 @@ export async function* runAgent(
   const requestedGitOps = requestedGitOperations(history);
   const requestedCodingOps = requestedCodingOperations(history);
   const requestedBrowserOps = requestedBrowserOperations(history);
+  const executionRequired =
+    requestedBrowserOps.size > 0 ||
+    requestedGitOps.size > 0 ||
+    requestedCodingOps.size > 0;
   const toolsEnabled = !isCasualGreeting(request.messages.at(-1));
   const latestUserRequest = relevantVerificationRequestContent(history);
   const advisoryOnly = isAdvisoryOnlyRequest(latestUserRequest);
@@ -3929,6 +4041,7 @@ export async function* runAgent(
       effectiveOpenAiProtocol(
         modelRuntime.provider.id,
         modelRuntime.provider.protocol,
+        request.modelId,
       ),
     ) === "unsupported"
   )
@@ -4049,6 +4162,9 @@ export async function* runAgent(
       requestedBrowserOps.size > 0 ||
       requestedGitOps.size > 0 ||
       requestedCodingOps.size > 0 ||
+      unverifiedBrowserClaims > 0 ||
+      unverifiedGitClaims > 0 ||
+      unverifiedCodingClaims > 0 ||
       listSubagents(requestId).some((agent) => !agent.collected);
     if (
       requestContainsImages &&
@@ -4063,6 +4179,7 @@ export async function* runAgent(
       };
     }
     let imageRetryAttempted = false;
+    const turnAttemptBudget = new ModelAttemptBudget(3);
     for (;;) {
       try {
         for await (const event of streamModelTurn(
@@ -4080,6 +4197,7 @@ export async function* runAgent(
                 successfulCodingEvidence(evidenceHistory),
               ),
           modelRuntime,
+          turnAttemptBudget,
         )) {
           if (event.type === "complete") turn = event.turn;
           else if (event.type === "reasoning") {
@@ -4087,7 +4205,10 @@ export async function* runAgent(
             yield { type: "reasoning", delta: event.delta };
           } else if (event.type === "progress")
             yield { type: "progress", message: event.message };
-          else if (event.type === "text_reset") {
+          else if (event.type === "reasoning_reset") {
+            streamedReasoning = "";
+            yield { type: "reasoning_reset" };
+          } else if (event.type === "text_reset") {
             // Upstream broke mid-answer and is being retried; drop what we streamed
             // so the fresh attempt does not append onto a truncated fragment.
             streamedText = "";
@@ -4136,38 +4257,6 @@ export async function* runAgent(
     // input/output/cached accumulate across rounds for billing; promptTokens is
     // the latest round's prompt size, i.e. the real current context occupancy.
     yield { type: "usage", ...usage, promptTokens: lastPromptTokens };
-    if (finalizationMode) {
-      if (!turn.text.trim()) {
-        closeSubagentMessageQueue(requestId);
-        yield {
-          type: "error",
-          message: "执行模型达到收尾阶段，但没有返回可用的结果总结。",
-        };
-        return;
-      }
-      yield {
-        type: "final_response",
-        textOffset: turnTextStartOffset,
-        startedAt: Date.now(),
-      };
-      history.push({
-        kind: "message",
-        role: "assistant",
-        content: turn.text,
-        reasoningContent: turn.reasoningContent,
-      });
-      if (bufferModelText || !streamedText) {
-        timelineTextLength += turn.text.length;
-        yield { type: "text", delta: turn.text };
-      }
-      closeSubagentMessageQueue(requestId);
-      yield {
-        type: "done",
-        outcome:
-          finalizationMode === "evidence-complete" ? "completed" : "blocked",
-      };
-      return;
-    }
     if (!turn.text.trim() && !turn.calls.length) {
       if (emptyTurns < 2) {
         emptyTurns += 1;
@@ -4193,15 +4282,38 @@ export async function* runAgent(
     emptyTurns = 0;
     const requestedUserInput = hasRequestedUserInputEvidence(evidenceHistory);
     const reportsMissingInput = reportsMissingRequiredUserInput(turn.text);
+    const unsupportedOverallCompletion = isUnsupportedTaskCompletionClaim(
+      turn.text,
+      executionRequired,
+      evidenceHistory,
+    );
     const browserEvidence = successfulBrowserEvidence(evidenceHistory);
+    const claimedBrowserOps = claimedBrowserOperations(turn.text);
+    const requiredBrowserOps = new Set<BrowserOperation>([
+      ...requestedBrowserOps,
+      ...claimedBrowserOps,
+    ]);
     const missingBrowserEvidence = missingRequestedBrowserOperations(
-      requestedBrowserOps,
+      requiredBrowserOps,
       browserEvidence,
     );
+    const unsupportedBrowserClaims = missingBrowserEvidence.filter(
+      (operation) => claimedBrowserOps.has(operation),
+    );
+    const browserLabels = {
+      open: "打开网页",
+      type: "填写网页",
+      click: "点击网页",
+      verify: "交互后页面验证",
+    } as const;
     const browserBlocked =
       !turn.calls.length &&
       missingBrowserEvidence.length > 0 &&
-      (requestedUserInput || reportsMissingInput);
+      unsupportedBrowserClaims.length === 0 &&
+      !unsupportedOverallCompletion &&
+      (finalizationMode === "limit-reached" ||
+        requestedUserInput ||
+        reportsMissingInput);
     if (
       !turn.calls.length &&
       missingBrowserEvidence.length &&
@@ -4209,6 +4321,14 @@ export async function* runAgent(
     ) {
       if (unverifiedBrowserClaims < 2) {
         unverifiedBrowserClaims += 1;
+        if (!bufferModelText && streamedText) {
+          timelineTextLength = turnTextStartOffset;
+          streamedText = "";
+          yield { type: "text_reset" };
+        }
+        const unsupportedClaimNotice = unsupportedBrowserClaims.length
+          ? `你上一段文字声称已经完成${unsupportedBrowserClaims.map((operation) => browserLabels[operation]).join("、")}，但没有对应的成功工具记录；该段未经验证的文字已撤回。`
+          : "";
         history.push({
           kind: "message",
           role: "assistant",
@@ -4219,44 +4339,67 @@ export async function* runAgent(
           kind: "message",
           role: "user",
           content: plannerCoordinator
-            ? `<runtime_verification>协作网页任务仍缺少执行模型的成功工具结果：${missingBrowserEvidence.join(", ")}。请调用 spawn_agent，把目标页面、交互步骤和验收条件交给 role=\"executor\" 的执行 Agent，再调用 wait_agent 复核页面快照；不要只描述操作。</runtime_verification>`
-            : `<runtime_verification>本次网页任务仍缺少成功工具结果：${missingBrowserEvidence.join(", ")}。不要总结为完成；请立即调用对应的 browser_open/browser_click/browser_type 工具实际执行。填写或点击后必须再调用 browser_snapshot 验证新页面。若确实缺少无法自行获取的网址、登录信息、验证码或必要人工操作，请调用 request_user_input，准确列出需要用户补充的内容；否则继续执行。</runtime_verification>`,
+            ? `<runtime_verification>${unsupportedClaimNotice}协作网页任务仍缺少执行模型的成功工具结果：${missingBrowserEvidence.join(", ")}。请调用 spawn_agent，把目标页面、交互步骤和验收条件交给 role=\"executor\" 的执行 Agent，再调用 wait_agent 复核页面快照；如果相关操作实际未发生且并非用户要求，请明确撤回声明，不要编造工具结果。</runtime_verification>`
+            : `<runtime_verification>${unsupportedClaimNotice}本次网页任务仍缺少成功工具结果：${missingBrowserEvidence.join(", ")}。属于用户要求的操作请立即调用 browser_open/browser_click/browser_type 实际执行，填写或点击后必须再调用 browser_snapshot 验证新页面。如果相关操作实际未发生且并非用户要求，请明确撤回声明。若确实缺少无法自行获取的网址、登录信息、验证码或必要人工操作，请调用 request_user_input，准确列出需要用户补充的内容。</runtime_verification>`,
         });
         continue;
       }
+      if (!bufferModelText && streamedText) {
+        timelineTextLength = turnTextStartOffset;
+        streamedText = "";
+        yield { type: "text_reset" };
+      }
       closeSubagentMessageQueue(requestId);
-      const labels = {
-        open: "打开网页",
-        type: "填写网页",
-        click: "点击网页",
-        verify: "交互后页面验证",
-      } as const;
       yield {
         type: "error",
-        message: `网页操作未完成：缺少 ${missingBrowserEvidence.map((operation) => labels[operation]).join("、")} 的成功工具记录。`,
+        message: `网页操作未完成：缺少 ${missingBrowserEvidence.map((operation) => browserLabels[operation]).join("、")} 的成功工具记录。`,
       };
       return;
     }
     const gitEvidence = successfulGitEvidence(evidenceHistory);
+    const claimedGitOps = claimedGitOperations(turn.text);
+    const requiredGitOps = new Set([...requestedGitOps, ...claimedGitOps]);
     const unavailableGitEvidence = unavailableGitOperations(evidenceHistory);
     const unavailableGitClaims = claimedUnavailableGitOperations(turn.text);
     const missingGitEvidence = missingRequestedGitOperations(
-      requestedGitOps,
+      requiredGitOps,
       gitEvidence,
     ).filter(
       (operation) =>
         !(
+          !claimedGitOps.has(operation) &&
           unavailableGitEvidence.has(operation) &&
           unavailableGitClaims.has(operation)
         ),
     );
+    const unsupportedGitClaims = missingGitEvidence.filter((operation) =>
+      claimedGitOps.has(operation),
+    );
+    const unauthorizedGitClaims = unsupportedGitClaims.filter(
+      (operation) => !requestedGitOps.has(operation),
+    );
     const gitBlocked =
       !turn.calls.length &&
       missingGitEvidence.length > 0 &&
-      (requestedUserInput || reportsMissingInput);
+      unsupportedGitClaims.length === 0 &&
+      !unsupportedOverallCompletion &&
+      (finalizationMode === "limit-reached" ||
+        requestedUserInput ||
+        reportsMissingInput);
     if (!turn.calls.length && missingGitEvidence.length && !gitBlocked) {
       if (unverifiedGitClaims < 2) {
         unverifiedGitClaims += 1;
+        if (!bufferModelText && streamedText) {
+          timelineTextLength = turnTextStartOffset;
+          streamedText = "";
+          yield { type: "text_reset" };
+        }
+        const unsupportedClaimNotice = unsupportedGitClaims.length
+          ? `你上一段文字声称 Git/发布操作已经完成（${unsupportedGitClaims.join(", ")}），但没有对应的成功工具记录；该段未经验证的文字已撤回。`
+          : "";
+        const unauthorizedClaimNotice = unauthorizedGitClaims.length
+          ? `其中 ${unauthorizedGitClaims.join(", ")} 未经用户明确授权，不得为了补证据而执行，只能撤回并说明真实状态。`
+          : "";
         history.push({
           kind: "message",
           role: "assistant",
@@ -4267,10 +4410,15 @@ export async function* runAgent(
           kind: "message",
           role: "user",
           content: plannerCoordinator
-            ? `<runtime_verification>协作 Git/发布任务仍缺少执行模型的成功工具结果：${missingGitEvidence.join(", ")}。请调用 spawn_agent，把提交、推送、发布目标和验证要求交给 role=\"executor\" 的执行 Agent，再调用 wait_agent 复核远端结果；不要只总结计划。</runtime_verification>`
-            : `<runtime_verification>本次 Git/发布任务仍缺少成功工具结果：${missingGitEvidence.join(", ")}。不要总结为完成；请实际调用工具执行操作。优先用 git_status/git_log 检查本地状态，用 git_remote_status 校验远端推送；不要抓取 GitHub HTML 页面验证提交。需要验证 Actions 时再使用 gh run list/gh run view。若确实缺少无法自行确定的仓库、remote、分支、发布目标或授权信息，请调用 request_user_input，准确列出需要用户补充的内容；否则继续执行。</runtime_verification>`,
+            ? `<runtime_verification>${unsupportedClaimNotice}${unauthorizedClaimNotice}协作 Git/发布任务仍缺少执行模型的成功工具结果：${missingGitEvidence.join(", ")}。仅对用户明确要求的 Git 操作调用 spawn_agent，把目标和验证要求交给 role=\"executor\" 的执行 Agent，再调用 wait_agent 复核远端结果；不要只总结计划。</runtime_verification>`
+            : `<runtime_verification>${unsupportedClaimNotice}${unauthorizedClaimNotice}本次 Git/发布任务仍缺少成功工具结果：${missingGitEvidence.join(", ")}。仅对用户明确要求的 Git 操作实际调用工具；优先用 git_status/git_log 检查本地状态，用 git_remote_status 校验远端推送，不要抓取 GitHub HTML 页面验证提交。需要验证 Actions 时再使用 gh run list/gh run view。若确实缺少无法自行确定的仓库、remote、分支、发布目标或授权信息，请调用 request_user_input，准确列出需要用户补充的内容。</runtime_verification>`,
         });
         continue;
+      }
+      if (!bufferModelText && streamedText) {
+        timelineTextLength = turnTextStartOffset;
+        streamedText = "";
+        yield { type: "text_reset" };
       }
       closeSubagentMessageQueue(requestId);
       yield {
@@ -4280,28 +4428,60 @@ export async function* runAgent(
       return;
     }
     const codingEvidence = successfulCodingEvidence(evidenceHistory);
+    const claimedCodingOps = claimedCodingOperations(turn.text);
+    const requiredCodingOps = new Set<CodingOperation>([
+      ...requestedCodingOps,
+      ...claimedCodingOps,
+    ]);
     const verifiedNoChange =
       hasVerifiedNoChangeEvidence(evidenceHistory) &&
       claimsNoChangeNeeded(turn.text);
     const verifiedNoChangeReport =
       verifiedNoChange && hasVerifiedNoChangeReport(evidenceHistory);
     const missingCodingEvidence = missingRequestedCodingOperations(
-      requestedCodingOps,
+      requiredCodingOps,
       codingEvidence,
     ).filter(
       (operation) =>
         !(
-          (operation === "modify" && verifiedNoChange) ||
-          (operation === "validate" && verifiedNoChangeReport)
+          (operation === "modify" &&
+            verifiedNoChange &&
+            !claimedCodingOps.has("modify")) ||
+          (operation === "validate" &&
+            verifiedNoChangeReport &&
+            !claimedCodingOps.has("validate"))
         ),
     );
+    const unsupportedCodingClaims = missingCodingEvidence.filter((operation) =>
+      claimedCodingOps.has(operation),
+    );
+    const codingLabels = {
+      inspect: "检查",
+      modify: "实际修改",
+      execute: "执行",
+      validate: "修改后验证",
+      connect: "建立远程连接",
+      upload: "上传文件",
+      download: "下载文件",
+    } as const;
     const codingBlocked =
       !turn.calls.length &&
-      (requestedUserInput ||
+      unsupportedCodingClaims.length === 0 &&
+      !unsupportedOverallCompletion &&
+      (finalizationMode === "limit-reached" ||
+        requestedUserInput ||
         reportsBlockedCodingOperations(turn.text, missingCodingEvidence));
     if (!turn.calls.length && missingCodingEvidence.length && !codingBlocked) {
       if (unverifiedCodingClaims < 2) {
         unverifiedCodingClaims += 1;
+        if (!bufferModelText && streamedText) {
+          timelineTextLength = turnTextStartOffset;
+          streamedText = "";
+          yield { type: "text_reset" };
+        }
+        const unsupportedClaimNotice = unsupportedCodingClaims.length
+          ? `你上一段文字声称已经完成${unsupportedCodingClaims.map((operation) => codingLabels[operation]).join("、")}，但没有对应的成功工具记录；该段未经验证的文字已撤回。`
+          : "";
         history.push({
           kind: "message",
           role: "assistant",
@@ -4312,24 +4492,54 @@ export async function* runAgent(
           kind: "message",
           role: "user",
           content: plannerCoordinator
-            ? `<runtime_verification>协作任务仍缺少执行模型的成功工具结果：${missingCodingEvidence.join(", ")}。你是规划与复核 Agent，不能直接修改或运行命令。请立即调用 spawn_agent，将完整计划、目标文件、约束和验收命令交给 role=\"executor\" 的执行 Agent，然后调用 wait_agent 收集并复核真实结果；不要只重复计划。</runtime_verification>`
-            : `<runtime_verification>本次编码任务仍缺少成功工具结果：${missingCodingEvidence.join(", ")}。不要继续总结或假设文件已经改变；请立即使用工作区工具实际检查和修改，并用 diagnostics 或真实命令验证。如果只读工具已经确认目标内容正确、问题位于工作区之外或没有可执行的修改目标，请调用 report_no_change 记录具体证据，再明确说明“无需修改”；不要制造无意义改动。若确实缺少无法自行获取的文件、需求、接口字段、外部环境、权限或连接信息，请调用 request_user_input，准确列出需要用户补充的内容；否则继续执行。</runtime_verification>`,
+            ? `<runtime_verification>${unsupportedClaimNotice}协作任务仍缺少执行模型的成功工具结果：${missingCodingEvidence.join(", ")}。你是规划与复核 Agent，不能直接修改或运行命令。属于用户要求的操作请立即调用 spawn_agent，将完整计划、目标文件、约束和验收命令交给 role=\"executor\" 的执行 Agent，然后调用 wait_agent 收集并复核真实结果；如果相关操作实际未发生且并非用户要求，请明确撤回声明。</runtime_verification>`
+            : `<runtime_verification>${unsupportedClaimNotice}本次编码任务仍缺少成功工具结果：${missingCodingEvidence.join(", ")}。不要继续总结或假设文件已经改变；属于用户要求的操作请立即使用工作区工具实际检查和修改，并用 diagnostics 或真实命令验证。如果相关操作实际未发生且并非用户要求，请明确撤回声明。如果只读工具已经确认目标内容正确、问题位于工作区之外或没有可执行的修改目标，请调用 report_no_change 记录具体证据，再明确说明“无需修改”；不要制造无意义改动。若确实缺少无法自行获取的文件、需求、接口字段、外部环境、权限或连接信息，请调用 request_user_input，准确列出需要用户补充的内容。</runtime_verification>`,
         });
         continue;
       }
+      if (!bufferModelText && streamedText) {
+        timelineTextLength = turnTextStartOffset;
+        streamedText = "";
+        yield { type: "text_reset" };
+      }
       closeSubagentMessageQueue(requestId);
-      const labels = {
-        inspect: "检查",
-        modify: "实际修改",
-        execute: "执行",
-        validate: "修改后验证",
-        connect: "建立远程连接",
-        upload: "上传文件",
-        download: "下载文件",
-      } as const;
       yield {
         type: "error",
-        message: `编码任务未完成：缺少 ${missingCodingEvidence.map((operation) => labels[operation]).join("、")} 的成功工具记录。`,
+        message: `编码任务未完成：缺少 ${missingCodingEvidence.map((operation) => codingLabels[operation]).join("、")} 的成功工具记录。`,
+      };
+      return;
+    }
+    if (!turn.calls.length && unsupportedOverallCompletion) {
+      if (unverifiedCodingClaims < 2) {
+        unverifiedCodingClaims += 1;
+        if (!bufferModelText && streamedText) {
+          timelineTextLength = turnTextStartOffset;
+          streamedText = "";
+          yield { type: "text_reset" };
+        }
+        history.push({
+          kind: "message",
+          role: "assistant",
+          content: turn.text,
+          reasoningContent: turn.reasoningContent,
+        });
+        history.push({
+          kind: "message",
+          role: "user",
+          content:
+            "<runtime_verification>你上一段文字声称任务已经完成或问题已经解决，但本轮没有任何可支撑该结论的成功工具记录；该段未经验证的文字已撤回。如果用户要求实际操作，请立即调用相应工具并根据结果继续；如果这只是错误表述，请撤回“已完成”并如实说明当前状态，不得编造执行记录。</runtime_verification>",
+        });
+        continue;
+      }
+      if (!bufferModelText && streamedText) {
+        timelineTextLength = turnTextStartOffset;
+        streamedText = "";
+        yield { type: "text_reset" };
+      }
+      closeSubagentMessageQueue(requestId);
+      yield {
+        type: "error",
+        message: "任务完成声明缺少任何成功工具记录，KCode 已阻止该结果。",
       };
       return;
     }
@@ -4361,13 +4571,26 @@ export async function* runAgent(
         continue;
       }
     }
-    const roundNarrative = turn.calls.length
-      ? executionNarrativePreview(
-          dedupeExecutionNarrative(turn.text, previousToolNarrative),
-        )
-      : "";
-    if (turn.calls.length && turn.text.trim())
-      previousToolNarrative = turn.text;
+    const hasPrematureCompletionClaim =
+      turn.calls.length > 0 &&
+      Boolean(
+        unsupportedOverallCompletion ||
+        unsupportedBrowserClaims.length ||
+        unsupportedGitClaims.length ||
+        unsupportedCodingClaims.length,
+      );
+    if (hasPrematureCompletionClaim && !bufferModelText && streamedText) {
+      timelineTextLength = turnTextStartOffset;
+      streamedText = "";
+      yield { type: "text_reset" };
+    }
+    const roundNarrative =
+      turn.calls.length && !hasPrematureCompletionClaim
+        ? executionNarrativePreview(
+            dedupeExecutionNarrative(turn.text, previousToolNarrative),
+          )
+        : "";
+    if (turn.calls.length && roundNarrative) previousToolNarrative = turn.text;
     const detectedPlan = extractExecutionPlan(turn.text);
     if (
       detectedPlan.length >= 2 &&
@@ -4459,6 +4682,7 @@ export async function* runAgent(
       yield {
         type: "done",
         outcome:
+          finalizationMode === "limit-reached" ||
           requestedUserInput ||
           reportsMissingInput ||
           browserBlocked ||
@@ -4515,6 +4739,7 @@ export async function* runAgent(
         browser_record_start: "开始网页录制",
         browser_record_stop: "停止网页录制",
         ssh_connect: "连接 SSH",
+        ssh_set_workspace: "打开远程工作区",
         ssh_run: "运行远程命令",
         ssh_list_directory: "查看远程目录",
         ssh_read_file: "读取远程文件",
@@ -4635,6 +4860,7 @@ export async function* runAgent(
         call.name === "git_remote_status" ||
         browserTool ||
         call.name === "ssh_connect" ||
+        call.name === "ssh_set_workspace" ||
         call.name === "ssh_list_directory" ||
         call.name === "ssh_read_file" ||
         call.name === "ssh_disconnect" ||

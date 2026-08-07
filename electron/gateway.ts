@@ -1,40 +1,26 @@
-import { inferContextWindow, inferReasoningConfig, type ContextLedger, type ContextSummaryRequest, type ContextSummaryResult, type ModelConfig, type ModelEvent, type ModelRequest } from "../src/types";
+import {
+  inferReasoningConfig,
+  type ContextLedger,
+  type ContextSummaryRequest,
+  type ContextSummaryResult,
+  type ModelConfig,
+  type ModelEvent,
+  type ModelRequest,
+} from "../src/types";
 import {
   parseAnthropicMessagesEvent,
   parseChatCompletionsEvent,
   parseResponsesEvent,
 } from "./protocols";
-import { getProviderWithKey } from "./store";
+import { getProviderWithKey, updateProviderProfile } from "./store";
 import { networkFetch } from "./network";
+import { inspectProvider } from "./provider-profile";
+import { providerApiEndpoint } from "./provider-url";
+import { boundedContextSource } from "../src/context";
 
 const trim = (url: string) => url.replace(/\/+$/, "");
-const apiEndpoint = (baseUrl: string, resource: string) => {
-  const base = trim(baseUrl);
-  return `${base}${/\/v\d+$/i.test(base) ? "" : "/v1"}/${resource}`;
-};
-
-function discoveredImageSupport(model: Record<string, unknown>) {
-  const architecture =
-    model.architecture && typeof model.architecture === "object"
-      ? (model.architecture as Record<string, unknown>)
-      : undefined;
-  const modalityLists = [
-    model.input_modalities,
-    architecture?.input_modalities,
-  ];
-  for (const value of modalityLists) {
-    if (!Array.isArray(value)) continue;
-    return value.some((item) => /image|vision|multimodal/i.test(String(item)));
-  }
-  const capabilities =
-    model.capabilities && typeof model.capabilities === "object"
-      ? (model.capabilities as Record<string, unknown>)
-      : undefined;
-  for (const key of ["vision", "image_input", "imageInput"]) {
-    if (typeof capabilities?.[key] === "boolean") return capabilities[key];
-  }
-  return undefined;
-}
+const apiEndpoint = (baseUrl: string, resource: string) =>
+  providerApiEndpoint(baseUrl, "openai-chat", resource);
 
 async function checkedFetch(url: string, init: RequestInit) {
   const response = await networkFetch(url, init);
@@ -48,77 +34,163 @@ async function checkedFetch(url: string, init: RequestInit) {
 }
 
 const summaryControllers = new Map<string, AbortController>();
-export function cancelContextSummary(taskId: string) { summaryControllers.get(taskId)?.abort(); summaryControllers.delete(taskId); }
-const parseSummary = (text: string, fallback: ContextLedger, durationMs: number, usage?: { input: number; output: number }): ContextSummaryResult => {
+export function cancelContextSummary(taskId: string) {
+  summaryControllers.get(taskId)?.abort();
+  summaryControllers.delete(taskId);
+}
+const parseSummary = (
+  text: string,
+  fallback: ContextLedger,
+  durationMs: number,
+  usage?: { input: number; output: number },
+): ContextSummaryResult => {
   const match = text.match(/\{[\s\S]*\}/);
   if (!match) throw new Error("模型未返回 JSON 摘要");
-  const value = JSON.parse(match[0]) as { summary?: unknown; ledger?: Partial<Record<keyof ContextLedger, unknown>> };
-  if (typeof value.summary !== "string" || !value.summary.trim()) throw new Error("模型摘要为空");
-  const list = (key: keyof ContextLedger) => Array.isArray(value.ledger?.[key]) ? (value.ledger![key] as unknown[]).filter((item): item is string => typeof item === "string").slice(-64) : fallback[key];
+  const value = JSON.parse(match[0]) as {
+    summary?: unknown;
+    ledger?: Partial<Record<keyof ContextLedger, unknown>>;
+  };
+  if (typeof value.summary !== "string" || !value.summary.trim())
+    throw new Error("模型摘要为空");
+  const list = (key: keyof ContextLedger) => {
+    const generated = Array.isArray(value.ledger?.[key])
+      ? (value.ledger![key] as unknown[]).filter(
+          (item): item is string =>
+            typeof item === "string" && Boolean(item.trim()),
+        )
+      : [];
+    return [...new Set([...(fallback[key] ?? []), ...generated])].slice(-64);
+  };
   // connections are exact local facts, not something the model should rewrite:
   // always carry the fallback (locally derived) list through verbatim.
-  return { summary: value.summary.slice(0, 40_000), ledger: { goals: list("goals"), decisions: list("decisions"), changedFiles: list("changedFiles"), validations: list("validations"), failures: list("failures"), pending: list("pending"), connections: fallback.connections ?? [] }, modelGenerated: true, durationMs, usage };
+  return {
+    summary: value.summary.slice(0, 40_000),
+    ledger: {
+      goals: list("goals"),
+      decisions: list("decisions"),
+      changedFiles: list("changedFiles"),
+      validations: list("validations"),
+      failures: list("failures"),
+      pending: list("pending"),
+      connections: fallback.connections ?? [],
+    },
+    modelGenerated: true,
+    durationMs,
+    usage,
+  };
 };
 
-export async function summarizeContext(request: ContextSummaryRequest): Promise<ContextSummaryResult> {
+export async function summarizeContext(
+  request: ContextSummaryRequest,
+): Promise<ContextSummaryResult> {
   const provider = await getProviderWithKey(request.providerId);
   cancelContextSummary(request.taskId);
   const controller = new AbortController();
   summaryControllers.set(request.taskId, controller);
   const startedAt = Date.now();
   const timer = setTimeout(() => controller.abort(), 120_000);
-  const prompt = `Compress this coding-agent history. Return JSON only with shape {"summary":"markdown","ledger":{"goals":[],"decisions":[],"changedFiles":[],"validations":[],"failures":[],"pending":[],"connections":[]}}. Preserve explicit constraints, current goal, file paths, commands that matter, validation results, failures, and unfinished work. Always keep every established connection (SSH/MySQL host, port, user) verbatim in both the summary text and ledger.connections so the session can be reused without re-asking the user. Remove repetition.\n\nExisting ledger:\n${JSON.stringify(request.ledger)}\n\nHistory:\n${request.source.slice(-120_000)}`;
+  const prompt = `Compress this coding-agent history. Return JSON only with shape {"summary":"markdown","ledger":{"goals":[],"decisions":[],"changedFiles":[],"validations":[],"failures":[],"pending":[],"connections":[]}}. Preserve explicit constraints, current goal, file paths, commands that matter, validation results, failures, and unfinished work. Keep established connection coordinates (protocol, host, port and user), but never include passwords, tokens, keys, cookies or other credentials. Remove repetition.\n\nExisting ledger:\n${JSON.stringify(request.ledger)}\n\nHistory:\n${boundedContextSource(request.source)}`;
   try {
-    let url = "", headers: Record<string, string> = { "Content-Type": "application/json" }, body: Record<string, unknown>;
+    let url = "",
+      headers: Record<string, string> = { "Content-Type": "application/json" },
+      body: Record<string, unknown>;
     if (provider.protocol === "openai-chat") {
-      url = apiEndpoint(provider.baseUrl, "chat/completions"); headers.Authorization = `Bearer ${provider.apiKey}`;
-      body = { model: request.modelId, messages: [{ role: "user", content: prompt }], max_tokens: 4000, stream: false };
+      url = apiEndpoint(provider.baseUrl, "chat/completions");
+      headers.Authorization = `Bearer ${provider.apiKey}`;
+      body = {
+        model: request.modelId,
+        messages: [{ role: "user", content: prompt }],
+        max_tokens: 4000,
+        stream: false,
+      };
     } else if (provider.protocol === "openai-responses") {
-      url = apiEndpoint(provider.baseUrl, "responses"); headers.Authorization = `Bearer ${provider.apiKey}`;
+      url = apiEndpoint(provider.baseUrl, "responses");
+      headers.Authorization = `Bearer ${provider.apiKey}`;
       body = { model: request.modelId, input: prompt, max_output_tokens: 4000 };
     } else if (provider.protocol === "anthropic-messages") {
-      url = apiEndpoint(provider.baseUrl, "messages"); headers["x-api-key"] = provider.apiKey; headers["anthropic-version"] = "2023-06-01";
-      body = { model: request.modelId, messages: [{ role: "user", content: prompt }], max_tokens: 4000 };
+      url = apiEndpoint(provider.baseUrl, "messages");
+      headers["x-api-key"] = provider.apiKey;
+      headers["anthropic-version"] = "2023-06-01";
+      body = {
+        model: request.modelId,
+        messages: [{ role: "user", content: prompt }],
+        max_tokens: 4000,
+      };
     } else {
-      url = `${trim(provider.baseUrl)}/v1beta/models/${encodeURIComponent(request.modelId)}:generateContent?key=${encodeURIComponent(provider.apiKey)}`;
-      body = { contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: { maxOutputTokens: 4000, responseMimeType: "application/json" } };
+      url = `${providerApiEndpoint(provider.baseUrl, provider.protocol, `models/${encodeURIComponent(request.modelId)}:generateContent`)}?key=${encodeURIComponent(provider.apiKey)}`;
+      body = {
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        generationConfig: {
+          maxOutputTokens: 4000,
+          responseMimeType: "application/json",
+        },
+      };
     }
-    const response = await checkedFetch(url, { method: "POST", headers, body: JSON.stringify(body), signal: controller.signal });
-    const json = await response.json() as any;
-    const text = provider.protocol === "openai-chat" ? json.choices?.[0]?.message?.content : provider.protocol === "openai-responses" ? (json.output_text ?? json.output?.flatMap((item: any) => item.content ?? []).map((item: any) => item.text ?? "").join("")) : provider.protocol === "anthropic-messages" ? json.content?.map((item: any) => item.text ?? "").join("") : json.candidates?.[0]?.content?.parts?.map((item: any) => item.text ?? "").join("");
-    const usage = provider.protocol === "openai-chat" ? { input: json.usage?.prompt_tokens ?? 0, output: json.usage?.completion_tokens ?? 0 } : provider.protocol === "openai-responses" ? { input: json.usage?.input_tokens ?? 0, output: json.usage?.output_tokens ?? 0 } : provider.protocol === "anthropic-messages" ? { input: json.usage?.input_tokens ?? 0, output: json.usage?.output_tokens ?? 0 } : { input: json.usageMetadata?.promptTokenCount ?? 0, output: json.usageMetadata?.candidatesTokenCount ?? 0 };
-    return parseSummary(String(text ?? ""), request.ledger, Date.now() - startedAt, usage);
-  } finally { clearTimeout(timer); if (summaryControllers.get(request.taskId) === controller) summaryControllers.delete(request.taskId); }
+    const response = await checkedFetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    const json = (await response.json()) as any;
+    const text =
+      provider.protocol === "openai-chat"
+        ? json.choices?.[0]?.message?.content
+        : provider.protocol === "openai-responses"
+          ? (json.output_text ??
+            json.output
+              ?.flatMap((item: any) => item.content ?? [])
+              .map((item: any) => item.text ?? "")
+              .join(""))
+          : provider.protocol === "anthropic-messages"
+            ? json.content?.map((item: any) => item.text ?? "").join("")
+            : json.candidates?.[0]?.content?.parts
+                ?.map((item: any) => item.text ?? "")
+                .join("");
+    const usage =
+      provider.protocol === "openai-chat"
+        ? {
+            input: json.usage?.prompt_tokens ?? 0,
+            output: json.usage?.completion_tokens ?? 0,
+          }
+        : provider.protocol === "openai-responses"
+          ? {
+              input: json.usage?.input_tokens ?? 0,
+              output: json.usage?.output_tokens ?? 0,
+            }
+          : provider.protocol === "anthropic-messages"
+            ? {
+                input: json.usage?.input_tokens ?? 0,
+                output: json.usage?.output_tokens ?? 0,
+              }
+            : {
+                input: json.usageMetadata?.promptTokenCount ?? 0,
+                output: json.usageMetadata?.candidatesTokenCount ?? 0,
+              };
+    return parseSummary(
+      String(text ?? ""),
+      request.ledger,
+      Date.now() - startedAt,
+      usage,
+    );
+  } finally {
+    clearTimeout(timer);
+    if (summaryControllers.get(request.taskId) === controller)
+      summaryControllers.delete(request.taskId);
+  }
 }
 
 export async function discoverModels(
   providerId: string,
 ): Promise<ModelConfig[]> {
+  return (await probeProvider(providerId)).models;
+}
+
+export async function probeProvider(providerId: string) {
   const provider = await getProviderWithKey(providerId);
-  if (provider.protocol === "gemini-generate-content") {
-    const response = await checkedFetch(`${trim(provider.baseUrl)}/v1beta/models?key=${encodeURIComponent(provider.apiKey)}`, {});
-    const json = await response.json() as { models?: { name: string; displayName?: string; inputTokenLimit?: number }[] };
-    return (json.models ?? []).filter(model => model.name.startsWith("models/")).map(model => ({ id: `${provider.id}:${model.name.slice(7)}`, modelId: model.name.slice(7), displayName: model.displayName || model.name.slice(7), protocol: provider.protocol, contextWindow: model.inputTokenLimit ?? inferContextWindow(model.name.slice(7)), ...inferReasoningConfig(model.name.slice(7), provider.protocol) }));
-  }
-  const headers: Record<string, string> =
-    provider.protocol === "anthropic-messages"
-      ? { "x-api-key": provider.apiKey, "anthropic-version": "2023-06-01" }
-      : { Authorization: `Bearer ${provider.apiKey}` };
-  const response = await checkedFetch(apiEndpoint(provider.baseUrl, "models"), {
-    headers,
-  });
-  const json = (await response.json()) as {
-    data?: Record<string, unknown>[];
-  };
-  return (json.data ?? []).map((model) => ({
-    id: `${provider.id}:${String(model.id)}`,
-    modelId: String(model.id),
-    displayName: String(model.display_name || model.id),
-    protocol: provider.protocol,
-    supportsImages: discoveredImageSupport(model),
-    contextWindow: inferContextWindow(String(model.id)),
-    ...inferReasoningConfig(String(model.id), provider.protocol),
-  }));
+  const result = await inspectProvider(provider);
+  await updateProviderProfile(providerId, result.profile);
+  return result;
 }
 
 // Third-party relays sometimes hold a stream open but stop sending data (a

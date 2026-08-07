@@ -24,7 +24,6 @@ import {
   Sun,
   Trash2,
   Wifi,
-  WifiOff,
   X,
 } from "lucide-react";
 import { inferContextWindow, inferReasoningConfig } from "../../types";
@@ -49,6 +48,22 @@ import { isPermissionPolicyCustomized } from "../../permissions";
 import { ProviderModal } from "./ProviderModal";
 import type { RemoteControlState } from "../../remote-types";
 import { MAX_REMOTE_DEVICE_NAME_LENGTH } from "../../remote-device";
+
+function remoteConnectionLabel(state: RemoteControlState) {
+  const phase =
+    state.connectionPhase ??
+    (state.connected ? "online" : state.enabled ? "connecting" : "disabled");
+  if (phase === "superseded") return "已由另一个 KCode 实例接管";
+  if (state.connected) return "远程控制在线";
+  if (state.enabled) return "远程控制离线，正在自动重连";
+  return "远程控制已关闭";
+}
+
+function remoteConnectionSummary(state: RemoteControlState) {
+  if (state.connectionPhase === "superseded")
+    return "已由另一个 KCode 实例接管";
+  return state.enabled ? "远程控制已开启" : "远程控制已关闭";
+}
 
 export function SettingsPanel({
   providers,
@@ -417,13 +432,17 @@ export function SettingsPanel({
             >
               <Smartphone size={16} />
               <span>远程控制</span>
-              <small>
-                {remoteControlState.connected
-                  ? "在线"
-                  : remoteControlState.configured
-                    ? "离线"
-                    : ""}
-              </small>
+              {remoteControlState.configured && (
+                <span
+                  className={`settings-nav-status-dot ${remoteControlState.connected ? "online" : "offline"}`}
+                  aria-label={
+                    remoteControlState.connected
+                      ? "远程控制在线"
+                      : "远程控制离线"
+                  }
+                  title={remoteConnectionLabel(remoteControlState)}
+                />
+              )}
             </button>
             <button
               className={section === "models" ? "active" : ""}
@@ -431,9 +450,9 @@ export function SettingsPanel({
             >
               <Cpu size={16} />
               <span>模型</span>
-              <small>
+              <span className="settings-nav-count">
                 {providers.filter((provider) => provider.enabled).length}
-              </small>
+              </span>
             </button>
             <button
               className={section === "skills" ? "active" : ""}
@@ -441,9 +460,9 @@ export function SettingsPanel({
             >
               <Blocks size={16} />
               <span>Skills</span>
-              <small>
-                {skills.filter((skill) => skill.installed).length || ""}
-              </small>
+              <span className="settings-nav-count">
+                {skills.filter((skill) => skill.installed).length}
+              </span>
             </button>
             <button
               className={section === "permissions" ? "active" : ""}
@@ -458,7 +477,7 @@ export function SettingsPanel({
             >
               <RefreshCw size={16} />
               <span>录制</span>
-              <small>{recordings.length || ""}</small>
+              <span className="settings-nav-count">{recordings.length}</span>
             </button>
           </nav>
           <div className="settings-content">
@@ -533,22 +552,23 @@ export function SettingsPanel({
                   <div className="settings-group remote-connected-settings">
                     <div className="remote-account-head">
                       <span
-                        className={`remote-connection-mark ${remoteControlState.connected ? "online" : ""}`}
+                        className={`remote-connection-mark ${
+                          remoteControlState.connectionPhase ??
+                          (remoteControlState.connected
+                            ? "online"
+                            : remoteControlState.enabled
+                              ? "connecting"
+                              : "disabled")
+                        }`}
+                        title={remoteConnectionLabel(remoteControlState)}
                       >
-                        {remoteControlState.connected ? (
-                          <Wifi size={16} />
-                        ) : (
-                          <WifiOff size={16} />
-                        )}
+                        <Wifi size={16} />
+                        <i aria-hidden="true" />
                       </span>
                       <span>
                         <strong>{remoteControlState.username}</strong>
                         <small>
-                          {remoteControlState.connected
-                            ? "手机可以控制这台电脑"
-                            : remoteControlState.enabled
-                              ? "正在等待重新连接"
-                              : "远程控制已关闭"}
+                          {remoteConnectionSummary(remoteControlState)}
                         </small>
                       </span>
                       <button
@@ -1015,99 +1035,112 @@ export function SettingsPanel({
                               </span>
                               <div className="model-reasoning-config">
                                 <label
-                                  className="model-context-input"
+                                  className="model-config-field model-context-input"
                                   title="上下文窗口（Token）"
                                 >
-                                  <span>上下文</span>
-                                  <input
-                                    type="number"
-                                    min="1024"
-                                    step="1024"
-                                    placeholder="未配置"
-                                    defaultValue={
-                                      model.contextWindow ??
-                                      inferContextWindow(model.modelId) ??
-                                      ""
-                                    }
-                                    onBlur={(event) =>
-                                      void updateModelContext(
-                                        p,
-                                        model.id,
-                                        event.target.value
-                                          ? Number(event.target.value)
-                                          : undefined,
-                                      )
-                                    }
-                                    onKeyDown={(event) => {
-                                      if (event.key === "Enter")
-                                        event.currentTarget.blur();
-                                    }}
-                                  />
+                                  <span>上下文窗口</span>
+                                  <span className="model-context-control">
+                                    <input
+                                      type="number"
+                                      min="1024"
+                                      step="1024"
+                                      placeholder="未配置"
+                                      aria-label={`${model.displayName} 上下文窗口`}
+                                      defaultValue={
+                                        model.contextWindow ??
+                                        inferContextWindow(model.modelId) ??
+                                        ""
+                                      }
+                                      onBlur={(event) =>
+                                        void updateModelContext(
+                                          p,
+                                          model.id,
+                                          event.target.value
+                                            ? Number(event.target.value)
+                                            : undefined,
+                                        )
+                                      }
+                                      onKeyDown={(event) => {
+                                        if (event.key === "Enter")
+                                          event.currentTarget.blur();
+                                      }}
+                                    />
+                                    <small>Token</small>
+                                  </span>
                                 </label>
-                                <select
-                                  value={
-                                    model.reasoningMode ??
-                                    inferReasoningConfig(
-                                      model.modelId,
-                                      model.protocol,
-                                    ).reasoningMode
-                                  }
-                                  onChange={(event) =>
-                                    void updateModelReasoning(
-                                      p,
-                                      model.id,
-                                      event.target.value as ReasoningMode,
-                                    )
-                                  }
-                                  title="推理模式"
-                                >
-                                  <option value="none">无推理配置</option>
-                                  <option value="effort">原生强度</option>
-                                  <option value="toggle">思考开关</option>
-                                  <option value="budget">思考预算</option>
-                                  <option value="fixed">固定思考</option>
-                                </select>
-                                <div className="model-effort-toggles">
-                                  {savedEfforts.map((effort) => {
-                                    const configured = model.reasoningEfforts ??
+                                <label className="model-config-field model-reasoning-mode">
+                                  <span>推理模式</span>
+                                  <select
+                                    value={
+                                      model.reasoningMode ??
                                       inferReasoningConfig(
                                         model.modelId,
                                         model.protocol,
-                                      ).reasoningEfforts ?? ["auto"];
-                                    return (
-                                      <button
-                                        key={effort}
-                                        className={
-                                          configured.includes(effort)
-                                            ? "active"
-                                            : ""
-                                        }
-                                        onClick={() => {
-                                          const next = configured.includes(
-                                            effort,
-                                          )
-                                            ? configured.filter(
-                                                (item) => item !== effort,
-                                              )
-                                            : [...configured, effort];
-                                          if (next.length)
-                                            void updateModelReasoning(
-                                              p,
-                                              model.id,
-                                              model.reasoningMode ??
-                                                inferReasoningConfig(
-                                                  model.modelId,
-                                                  model.protocol,
-                                                ).reasoningMode ??
-                                                "none",
-                                              next,
-                                            );
-                                        }}
-                                      >
-                                        {effortLabels[effort]}
-                                      </button>
-                                    );
-                                  })}
+                                      ).reasoningMode
+                                    }
+                                    onChange={(event) =>
+                                      void updateModelReasoning(
+                                        p,
+                                        model.id,
+                                        event.target.value as ReasoningMode,
+                                      )
+                                    }
+                                    aria-label={`${model.displayName} 推理模式`}
+                                  >
+                                    <option value="none">无推理配置</option>
+                                    <option value="effort">原生强度</option>
+                                    <option value="toggle">思考开关</option>
+                                    <option value="budget">思考预算</option>
+                                    <option value="fixed">固定思考</option>
+                                  </select>
+                                </label>
+                                <div className="model-config-field model-effort-config">
+                                  <span>可用推理等级</span>
+                                  <div
+                                    className="model-effort-toggles"
+                                    role="group"
+                                    aria-label={`${model.displayName} 可用推理等级`}
+                                  >
+                                    {savedEfforts.map((effort) => {
+                                      const configured =
+                                        model.reasoningEfforts ??
+                                          inferReasoningConfig(
+                                            model.modelId,
+                                            model.protocol,
+                                          ).reasoningEfforts ?? ["auto"];
+                                      const active =
+                                        configured.includes(effort);
+                                      return (
+                                        <button
+                                          type="button"
+                                          key={effort}
+                                          className={active ? "active" : ""}
+                                          aria-pressed={active}
+                                          onClick={() => {
+                                            const next = active
+                                              ? configured.filter(
+                                                  (item) => item !== effort,
+                                                )
+                                              : [...configured, effort];
+                                            if (next.length)
+                                              void updateModelReasoning(
+                                                p,
+                                                model.id,
+                                                model.reasoningMode ??
+                                                  inferReasoningConfig(
+                                                    model.modelId,
+                                                    model.protocol,
+                                                  ).reasoningMode ??
+                                                  "none",
+                                                next,
+                                              );
+                                          }}
+                                        >
+                                          {effortLabels[effort]}
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
                                 </div>
                               </div>
                               <button

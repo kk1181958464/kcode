@@ -55,6 +55,7 @@ import {
   reconcileById,
   visibleMessageWindow,
 } from "./mobile-ui";
+import { reconnectDelay } from "./reconnect-policy";
 import { registerPwa, subscribePwaUpdate } from "./pwa";
 import "./styles.css";
 
@@ -151,11 +152,23 @@ type PendingMobileMessage = {
 type LiveStream = {
   taskId: string;
   requestId: string;
+  sequence?: number;
   content: string;
   reasoning?: string;
   progress?: string;
   updatedAt: number;
 };
+
+function newerLiveStream(current: LiveStream | undefined, next: LiveStream) {
+  if (!current) return true;
+  if (
+    current.requestId === next.requestId &&
+    current.sequence !== undefined &&
+    next.sequence !== undefined
+  )
+    return next.sequence > current.sequence;
+  return next.updatedAt >= current.updatedAt;
+}
 
 function liveStreamKey(taskId: string, requestId: string) {
   return `${taskId}:${requestId}`;
@@ -817,7 +830,7 @@ function App() {
       let changed = false;
       for (const stream of accepted) {
         const key = liveStreamKey(stream.taskId, stream.requestId);
-        if (!next[key] || next[key].updatedAt <= stream.updatedAt) {
+        if (newerLiveStream(next[key], stream)) {
           next[key] = stream;
           changed = true;
         }
@@ -827,7 +840,7 @@ function App() {
     const latestByTask = new Map<string, LiveStream>();
     for (const stream of accepted) {
       const current = latestByTask.get(stream.taskId);
-      if (!current || current.updatedAt <= stream.updatedAt)
+      if (newerLiveStream(current, stream))
         latestByTask.set(stream.taskId, stream);
       const task = taskStateRef.current.get(stream.taskId);
       taskStateRef.current.set(stream.taskId, {
@@ -863,7 +876,7 @@ function App() {
     for (const stream of streams) {
       const key = liveStreamKey(stream.taskId, stream.requestId);
       const current = queuedLiveStreamsRef.current.get(key);
-      if (!current || current.updatedAt <= stream.updatedAt)
+      if (newerLiveStream(current, stream))
         queuedLiveStreamsRef.current.set(key, stream);
     }
     if (liveStreamTimerRef.current !== null) return;
@@ -1284,20 +1297,51 @@ function App() {
   useEffect(() => {
     if (!user) return;
     let stopped = false;
+    let reconnectAttempt = 0;
+    const clearReconnect = () => {
+      if (reconnectRef.current !== null)
+        window.clearTimeout(reconnectRef.current);
+      reconnectRef.current = null;
+    };
+    const refreshAfterResume = () => {
+      void loadDevices().catch(() => undefined);
+      if (deviceIdRef.current) void loadTasks(deviceIdRef.current).catch(() => undefined);
+    };
+    const scheduleReconnect = () => {
+      clearReconnect();
+      const delay = reconnectDelay(reconnectAttempt, navigator.onLine);
+      if (stopped || delay === undefined) return;
+      reconnectAttempt += 1;
+      reconnectRef.current = window.setTimeout(connect, delay);
+    };
     function connect() {
-      if (stopped) return;
+      if (stopped || !navigator.onLine) return;
+      const current = socketRef.current;
+      if (
+        current?.readyState === WebSocket.OPEN ||
+        current?.readyState === WebSocket.CONNECTING
+      )
+        return;
+      clearReconnect();
       const protocol = location.protocol === "https:" ? "wss:" : "ws:";
       const socket = new WebSocket(`${protocol}//${location.host}/ws`);
       socketRef.current = socket;
       socket.addEventListener("open", () => {
+        if (socketRef.current !== socket) return;
+        reconnectAttempt = 0;
         setConnected(true);
         setError("");
+        refreshAfterResume();
       });
       socket.addEventListener("close", () => {
+        if (socketRef.current !== socket) return;
+        socketRef.current = null;
         setConnected(false);
-        if (!stopped) reconnectRef.current = window.setTimeout(connect, 3000);
+        scheduleReconnect();
       });
-      socket.addEventListener("error", () => setConnected(false));
+      socket.addEventListener("error", () => {
+        if (socketRef.current === socket) setConnected(false);
+      });
       socket.addEventListener("message", (event) => {
         try {
           const message = JSON.parse(event.data) as {
@@ -1312,6 +1356,7 @@ function App() {
             event?: string;
             taskId?: string;
             requestId?: string;
+            sequence?: number;
             content?: string;
             reasoning?: string;
             progress?: string;
@@ -1338,6 +1383,7 @@ function App() {
             const stream: LiveStream = {
               taskId: message.taskId,
               requestId: message.requestId,
+              sequence: message.sequence,
               content: message.content,
               reasoning: message.reasoning,
               progress: message.progress,
@@ -1378,16 +1424,35 @@ function App() {
         }
       });
     }
+    const reconnectNow = () => {
+      if (stopped || !navigator.onLine) return;
+      if (socketRef.current?.readyState === WebSocket.OPEN) {
+        refreshAfterResume();
+        return;
+      }
+      connect();
+    };
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible") reconnectNow();
+    };
     connect();
+    window.addEventListener("online", reconnectNow);
+    window.addEventListener("focus", reconnectNow);
+    document.addEventListener("visibilitychange", handleVisibility);
     const poll = window.setInterval(() => {
+      if (!navigator.onLine || document.visibilityState !== "visible") return;
       void loadDevices().catch(() => undefined);
       void loadTasks().catch(() => undefined);
     }, 15_000);
     return () => {
       stopped = true;
-      if (reconnectRef.current) window.clearTimeout(reconnectRef.current);
+      clearReconnect();
       window.clearInterval(poll);
+      window.removeEventListener("online", reconnectNow);
+      window.removeEventListener("focus", reconnectNow);
+      document.removeEventListener("visibilitychange", handleVisibility);
       socketRef.current?.close();
+      socketRef.current = null;
     };
   }, [user, deviceId]);
 

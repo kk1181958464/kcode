@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { validateProviderBaseUrl } from "./provider-url";
+import {
+  normalizeProviderBaseUrl,
+  providerApiEndpoint,
+  validateProviderBaseUrl,
+} from "./provider-url";
 
 test("accepts HTTP and HTTPS provider URLs", () => {
   assert.equal(
@@ -31,4 +35,40 @@ test("rejects unsupported or unsafe provider URL forms", () => {
   assert.throws(() => validateProviderBaseUrl("http://provider.example?v=1"), {
     message: "Base URL 不能包含查询参数或片段",
   });
+});
+
+test("normalizes pasted API resources without dropping custom gateway paths", () => {
+  assert.equal(
+    normalizeProviderBaseUrl(
+      "https://provider.example/api/v1/chat/completions",
+      "openai-chat",
+    ),
+    "https://provider.example/api",
+  );
+  assert.equal(
+    normalizeProviderBaseUrl(
+      "https://provider.example/openai/v1beta/models/",
+      "gemini-generate-content",
+    ),
+    "https://provider.example/openai",
+  );
+});
+
+test("builds protocol-specific endpoints from canonical provider roots", () => {
+  assert.equal(
+    providerApiEndpoint(
+      "https://provider.example/api/v1",
+      "openai-responses",
+      "responses",
+    ),
+    "https://provider.example/api/v1/responses",
+  );
+  assert.equal(
+    providerApiEndpoint(
+      "https://provider.example/gemini/v1beta",
+      "gemini-generate-content",
+      "models",
+    ),
+    "https://provider.example/gemini/v1beta/models",
+  );
 });

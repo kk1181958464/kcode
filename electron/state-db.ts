@@ -2,6 +2,10 @@ import { app } from "electron";
 import { DatabaseSync } from "node:sqlite";
 import { existsSync, statSync } from "node:fs";
 import path from "node:path";
+import {
+  compactTaskActivityPayloads,
+  type DeferredActivityPayload,
+} from "../src/activity-payload";
 
 let database: DatabaseSync | undefined;
 const databasePath = () => path.join(app.getPath("userData"), "kcode.sqlite");
@@ -25,6 +29,13 @@ function db() {
         position INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS activity_payloads (
+        activity_id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL,
+        value TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
+      );
     `);
     ensureTaskHeaderColumn(database);
     migrateLegacyTasks(database);
@@ -38,7 +49,9 @@ function ensureTaskHeaderColumn(connection: DatabaseSync) {
     name: string;
   }[];
   if (!columns.some((column) => column.name === "header"))
-    connection.exec("ALTER TABLE tasks ADD COLUMN header TEXT NOT NULL DEFAULT '{}'");
+    connection.exec(
+      "ALTER TABLE tasks ADD COLUMN header TEXT NOT NULL DEFAULT '{}'",
+    );
 }
 
 function taskHeader(task: unknown) {
@@ -107,13 +120,15 @@ function saveTasks(connection: DatabaseSync, value: unknown[]) {
         throw new Error("任务数据缺少有效 ID");
       const id = (task as any).id as string;
       ids.add(id);
+      const compacted = compactTaskActivityPayloads(task);
       upsert.run(
         id,
-        JSON.stringify(task),
-        JSON.stringify(taskHeader(task)),
+        JSON.stringify(compacted.task),
+        JSON.stringify(taskHeader(compacted.task)),
         position,
         Date.now(),
       );
+      saveActivityPayloads(connection, id, compacted.payloads);
     });
     const existing = connection.prepare("SELECT id FROM tasks").all() as {
       id: string;
@@ -127,6 +142,20 @@ function saveTasks(connection: DatabaseSync, value: unknown[]) {
   }
 }
 
+function saveActivityPayloads(
+  connection: DatabaseSync,
+  taskId: string,
+  payloads: DeferredActivityPayload[],
+) {
+  if (!payloads.length) return;
+  const upsert = connection.prepare(
+    "INSERT INTO activity_payloads(activity_id,task_id,value,updated_at) VALUES(?,?,?,?) ON CONFLICT(activity_id) DO UPDATE SET task_id=excluded.task_id, value=excluded.value, updated_at=excluded.updated_at",
+  );
+  const now = Date.now();
+  for (const item of payloads)
+    upsert.run(item.activityId, taskId, JSON.stringify(item.payload), now);
+}
+
 export function listTaskHeaders() {
   const rows = db()
     .prepare("SELECT header FROM tasks ORDER BY position")
@@ -136,8 +165,14 @@ export function listTaskHeaders() {
 
 export function loadTask(id: string): unknown | null {
   const row = db().prepare("SELECT value FROM tasks WHERE id = ?").get(id) as
-    | { value: string }
-    | undefined;
+    { value: string } | undefined;
+  return row?.value ? JSON.parse(row.value) : null;
+}
+
+export function loadActivityPayload(activityId: string): unknown | null {
+  const row = db()
+    .prepare("SELECT value FROM activity_payloads WHERE activity_id = ?")
+    .get(activityId) as { value?: string } | undefined;
   return row?.value ? JSON.parse(row.value) : null;
 }
 
@@ -149,6 +184,7 @@ export function saveTask(id: string, value: unknown) {
   )
     throw new Error("任务数据与任务 ID 不匹配");
   const connection = db();
+  const compacted = compactTaskActivityPayloads(value);
   const current = connection
     .prepare("SELECT position FROM tasks WHERE id = ?")
     .get(id) as { position: number } | undefined;
@@ -156,7 +192,9 @@ export function saveTask(id: string, value: unknown) {
     current?.position ??
     Number(
       (
-        connection.prepare("SELECT COALESCE(MAX(position), -1) + 1 AS next FROM tasks").get() as {
+        connection
+          .prepare("SELECT COALESCE(MAX(position), -1) + 1 AS next FROM tasks")
+          .get() as {
           next: number;
         }
       ).next,
@@ -167,16 +205,19 @@ export function saveTask(id: string, value: unknown) {
     )
     .run(
       id,
-      JSON.stringify(value),
-      JSON.stringify(taskHeader(value)),
+      JSON.stringify(compacted.task),
+      JSON.stringify(taskHeader(compacted.task)),
       position,
       Date.now(),
     );
+  saveActivityPayloads(connection, id, compacted.payloads);
 }
 
 export function saveTaskOrder(ids: string[]) {
   const connection = db();
-  const update = connection.prepare("UPDATE tasks SET position = ? WHERE id = ?");
+  const update = connection.prepare(
+    "UPDATE tasks SET position = ? WHERE id = ?",
+  );
   connection.exec("BEGIN IMMEDIATE");
   try {
     ids.forEach((id, position) => update.run(position, id));

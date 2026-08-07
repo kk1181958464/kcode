@@ -30,6 +30,7 @@ export function ProviderModal({
   const [busy, setBusy] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [syncedModelCount, setSyncedModelCount] = useState<number | null>(null);
+  const [protocolSuggestion, setProtocolSuggestion] = useState<string>();
   const [error, setError] = useState("");
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const patch = (next: Partial<ProviderConfig>) =>
@@ -44,6 +45,7 @@ export function ProviderModal({
 
   useEffect(() => {
     setSyncedModelCount(null);
+    setProtocolSuggestion(undefined);
   }, [apiKey, provider.baseUrl, provider.protocol]);
 
   async function save() {
@@ -84,23 +86,37 @@ export function ProviderModal({
     setError("");
     try {
       await window.kcode.providers.save(provider, apiKey || undefined);
-      const discovered = await window.kcode.providers.discover(provider.id);
-      const models = discovered.map((model) => {
-        const existing = provider.models.find(
-          (item) => item.modelId === model.modelId,
-        );
-        return existing
-          ? {
-              ...model,
-              contextWindow: existing.contextWindow ?? model.contextWindow,
-              reasoningMode: existing.reasoningMode ?? model.reasoningMode,
-              reasoningEfforts:
-                existing.reasoningEfforts ?? model.reasoningEfforts,
-            }
-          : model;
-      });
-      patch({ models });
+      const result = await window.kcode.providers.probe(provider.id);
+      const discovered = result.models;
+      const models = result.profile.supportsModelListing
+        ? discovered.map((model) => {
+            const existing = provider.models.find(
+              (item) => item.modelId === model.modelId,
+            );
+            return existing
+              ? {
+                  ...model,
+                  contextWindow: existing.contextWindow ?? model.contextWindow,
+                  reasoningMode: existing.reasoningMode ?? model.reasoningMode,
+                  reasoningEfforts:
+                    existing.reasoningEfforts ?? model.reasoningEfforts,
+                }
+              : model;
+          })
+        : provider.models;
+      patch({ models, profile: result.profile });
+      setProtocolSuggestion(
+        result.suggestedProtocol &&
+          result.suggestedProtocol !== provider.protocol
+          ? `检测到 ${result.suggestedProtocol}，请确认协议设置`
+          : undefined,
+      );
       setSyncedModelCount(models.length);
+      if (
+        result.profile.status === "auth-error" ||
+        result.profile.status === "unreachable"
+      )
+        setError(result.profile.message || "供应商连接检测失败");
     } catch (e) {
       setError(errorMessage(e));
     } finally {
@@ -210,7 +226,17 @@ export function ProviderModal({
           <div className="section-title">
             <div>
               <h3>可用模型</h3>
-              <p>从服务端同步模型列表，也可手动添加模型 ID。</p>
+              <p>检测接口协议并同步模型列表，也可手动添加模型 ID。</p>
+              {(provider.profile?.message || protocolSuggestion) && (
+                <p
+                  className={`provider-probe-status ${provider.profile?.status ?? "degraded"}`}
+                >
+                  {protocolSuggestion || provider.profile?.message}
+                  {provider.profile?.latencyMs !== undefined
+                    ? ` · ${provider.profile.latencyMs} ms`
+                    : ""}
+                </p>
+              )}
             </div>
             <div className="model-sync-area">
               {syncedModelCount !== null && (
@@ -227,7 +253,7 @@ export function ProviderModal({
                 onClick={discover}
               >
                 <RefreshCw size={14} className={syncing ? "spinning" : ""} />
-                {syncing ? "同步中" : "同步模型"}
+                {syncing ? "检测中" : "检测并同步"}
               </button>
             </div>
           </div>

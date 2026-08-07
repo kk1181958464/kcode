@@ -30,7 +30,7 @@ const summaryTokenLimit = (contextWindow: number) =>
 const trimSummary = (text: string, contextWindow: number) => {
   const limit = summaryTokenLimit(contextWindow) * 3;
   if (text.length <= limit) return text;
-  return `[较早的压缩摘要前部已省略]\n${text.slice(-limit)}`;
+  return boundedContextSource(text, limit);
 };
 
 // Single source of truth for the "chars ≈ tokens" heuristic (chars / 3),
@@ -52,6 +52,130 @@ export const estimateMessageTokens = (items: ChatMessage[]) =>
       0,
     ) / 3,
   );
+
+const sensitiveConnectionKey =
+  /password|passphrase|secret|token|api.?key|private.?key|credential|cookie|authorization/i;
+
+export function redactSensitiveText(text: string) {
+  return text
+    .replace(
+      /-----BEGIN [^-\r\n]*PRIVATE KEY-----[\s\S]*?-----END [^-\r\n]*PRIVATE KEY-----/gi,
+      "[私钥已隐藏]",
+    )
+    .replace(
+      /((?:password|passphrase|secret|token|api.?key|private.?key|credential|cookie|authorization)["']?\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;}\]]+)/gi,
+      (_match, prefix: string, value: string) => {
+        const quote = value.startsWith('"')
+          ? '"'
+          : value.startsWith("'")
+            ? "'"
+            : "";
+        return `${prefix}${quote}[已隐藏]${quote}`;
+      },
+    )
+    .replace(/([a-z][a-z\d+.-]*:\/\/[^:\s/@]+):[^@\s/]+@/gi, "$1:[已隐藏]@");
+}
+
+function redactConnectionValue(value: unknown, key = ""): unknown {
+  if (sensitiveConnectionKey.test(key)) return "[已隐藏]";
+  if (Array.isArray(value))
+    return value.map((item) => redactConnectionValue(item));
+  if (value && typeof value === "object")
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(
+        ([childKey, item]) => [childKey, redactConnectionValue(item, childKey)],
+      ),
+    );
+  return value;
+}
+
+export function boundedContextSource(source: string, maxChars = 120_000) {
+  if (source.length <= maxChars) return source;
+  const marker = "\n\n[中间较早内容因长度限制已省略]\n\n";
+  const available = Math.max(0, maxChars - marker.length);
+  const headLength = Math.floor(available * 0.4);
+  return `${source.slice(0, headLength)}${marker}${source.slice(-(available - headLength))}`;
+}
+
+export function contextSummarySource(
+  task: CompactableContext,
+  compactUntil: number,
+  contextWindow: number,
+) {
+  const alreadyCompacted = task.compactedMessageCount ?? 0;
+  const transcript = task.messages
+    .slice(alreadyCompacted, compactUntil)
+    .map((message) => {
+      const role = message.role === "user" ? "用户" : "模型";
+      const imageNotes = message.images
+        ?.map((image) => task.imageSemantics?.[image.id] || image.name)
+        .filter(Boolean)
+        .join("；");
+      return [
+        `### ${role}${message.model ? ` (${message.model})` : ""}`,
+        message.content.trim() || "[无文字内容]",
+        imageNotes ? `图片：${imageNotes}` : "",
+      ]
+        .filter(Boolean)
+        .join("\n");
+    })
+    .join("\n\n");
+  const source = [
+    task.contextSummary?.trim()
+      ? `## 既有压缩摘要\n${redactSensitiveText(task.contextSummary.trim())}`
+      : "",
+    transcript ? `## 本次待压缩原始对话\n${transcript}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+  const sourceLimit = Math.min(
+    120_000,
+    Math.max(24_000, summaryTokenLimit(contextWindow) * 12),
+  );
+  return boundedContextSource(redactSensitiveText(source), sourceLimit);
+}
+
+function repeatedLineRatio(text: string) {
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length >= 8);
+  if (lines.length < 6) return 0;
+  return 1 - new Set(lines).size / lines.length;
+}
+
+export function acceptModelContextSummary<
+  T extends { summary: string; ledger: ContextLedger },
+>(
+  local: {
+    contextSummary: string;
+    contextLedger: ContextLedger;
+    compactedMessageCount: number;
+  },
+  model: T,
+  contextWindow: number,
+) {
+  const summary = redactSensitiveText(model.summary.trim());
+  const hardLimit = summaryTokenLimit(contextWindow) * 3;
+  const growthLimit = Math.max(12_000, local.contextSummary.length * 2.5);
+  if (
+    !summary ||
+    summary.length > hardLimit ||
+    summary.length > growthLimit ||
+    repeatedLineRatio(summary) > 0.3
+  )
+    return undefined;
+  const ledger = Object.fromEntries(
+    (Object.keys(emptyLedger()) as (keyof ContextLedger)[]).map((key) => [
+      key,
+      uniqueRecent(
+        [...(local.contextLedger[key] ?? []), ...(model.ledger[key] ?? [])],
+        key === "changedFiles" ? 64 : key === "connections" ? 16 : 32,
+      ),
+    ]),
+  ) as ContextLedger;
+  return { ...model, summary, ledger };
+}
 
 export function compactConversation(
   task: CompactableContext,
@@ -101,7 +225,9 @@ export function compactConversation(
       message.role === "user"
         ? "用户"
         : `模型${message.model ? `(${message.model})` : ""}`;
-    const text = message.content.replace(/\s+/g, " ").trim();
+    const text = redactSensitiveText(
+      message.content.replace(/\s+/g, " ").trim(),
+    );
     const semantics = message.images
       ?.map((image) => task.imageSemantics?.[image.id])
       .filter(Boolean)
@@ -146,10 +272,9 @@ export function compactConversation(
         /测试|构建|检查/.test(activity.title),
     )
     .map((activity) => `${activity.title}: ${activity.status}`);
-  // Connections are durable facts: a session opened earlier stays usable across
-  // rounds, so their coordinates must survive compaction verbatim (never lumped
-  // into the truncated summary text). Activity inputs are already redacted, so
-  // host/port/username are safe to keep while passwords never appear here.
+  // Connection coordinates are durable, but activity inputs can originate from
+  // old data created before runtime redaction. Sanitize again at the persistence
+  // boundary so summaries never become a credential store.
   const connections = task.activities
     .filter(
       (activity) =>
@@ -166,7 +291,7 @@ export function compactConversation(
     )
     .map((activity) => {
       const input = (activity.input ?? {}) as Record<string, unknown>;
-      return `${activity.tool} ${JSON.stringify(input)}`;
+      return `${activity.tool} ${JSON.stringify(redactConnectionValue(input))}`;
     });
   const nextLedger: ContextLedger = {
     goals: uniqueRecent([...ledger.goals, ...goals]),
@@ -176,7 +301,7 @@ export function compactConversation(
     failures: uniqueRecent([...ledger.failures, ...errors]),
     pending: uniqueRecent([...ledger.pending, ...pending]),
     connections: uniqueRecent(
-      [...(ledger.connections ?? []), ...connections],
+      [...(ledger.connections ?? []), ...connections].map(redactSensitiveText),
       16,
     ),
   };
@@ -204,7 +329,10 @@ export function compactConversation(
   ]
     .filter(Boolean)
     .join("\n\n");
-  const contextSummary = trimSummary(sections, contextWindow);
+  const contextSummary = trimSummary(
+    redactSensitiveText(sections),
+    contextWindow,
+  );
   if (
     !contextSummary.trim() ||
     (!nextLedger.goals.length &&

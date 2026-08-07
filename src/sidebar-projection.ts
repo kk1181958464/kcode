@@ -16,6 +16,7 @@ function sidebarFieldsMatch(task: TaskRecord, snapshot: SidebarTask) {
     task.id === snapshot.id &&
     task.name === snapshot.name &&
     task.workspacePath === snapshot.workspacePath &&
+    task.remoteWorkspace?.id === snapshot.remoteWorkspace?.id &&
     Boolean(task.archived) === Boolean(snapshot.archived) &&
     task.runningId === snapshot.runningId &&
     task.runStatus === snapshot.runStatus
@@ -51,6 +52,7 @@ export function projectSidebarWorkspaceGroups(
         id: task.id,
         name: task.name,
         workspacePath: task.workspacePath,
+        remoteWorkspace: task.remoteWorkspace,
         archived: Boolean(task.archived),
         runningId: task.runningId,
         runStatus: task.runStatus,
@@ -64,9 +66,12 @@ export function projectSidebarWorkspaceGroups(
       !`${task.name} ${task.workspacePath}`.toLocaleLowerCase().includes(query)
     )
       continue;
-    const conversations = groups.get(task.workspacePath);
+    const workspaceKey = task.remoteWorkspace
+      ? `ssh://${task.remoteWorkspace.id}`
+      : task.workspacePath;
+    const conversations = groups.get(workspaceKey);
     if (conversations) conversations.push(task);
-    else groups.set(task.workspacePath, [task]);
+    else groups.set(workspaceKey, [task]);
   }
 
   return {
@@ -74,11 +79,21 @@ export function projectSidebarWorkspaceGroups(
     showArchived,
     snapshot,
     workspaceGroups: [...groups.entries()].map(
-      ([workspacePath, conversations]) => ({
-        workspacePath,
-        name: workspacePath.split(/[\\/]/).filter(Boolean).at(-1) || "工作区",
-        conversations,
-      }),
+      ([_workspaceKey, conversations]) => {
+        const remote = conversations[0]?.remoteWorkspace;
+        return {
+          workspacePath: conversations[0]?.workspacePath ?? "",
+          name:
+            remote?.name ||
+            conversations[0]?.workspacePath
+              .split(/[\\/]/)
+              .filter(Boolean)
+              .at(-1) ||
+            "工作区",
+          conversations,
+          remote: Boolean(remote),
+        };
+      },
     ),
   };
 }

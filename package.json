@@ -14,6 +14,8 @@
     "start": "electron .",
     "typecheck": "tsc -b --pretty false && tsc -p electron/tsconfig.json --pretty false",
     "test": "node scripts/run-tests.mjs",
+    "css:prune": "node scripts/prune-css.mjs",
+    "css:prune:write": "node scripts/prune-css.mjs --write",
     "icons": "node scripts/generate-icons.mjs",
     "dist:win": "npm run icons && npm run build && electron-builder --win nsis --publish never",
     "dist:mac": "npm run icons && npm run build && electron-builder --mac dmg zip --publish never",
@@ -47,6 +49,14 @@
       {
         "from": "skills",
         "to": "skills"
+      },
+      {
+        "from": "THIRD_PARTY_NOTICES.md",
+        "to": "THIRD_PARTY_NOTICES.md"
+      },
+      {
+        "from": "third_party/AionUi-LICENSE.txt",
+        "to": "licenses/AionUi-LICENSE.txt"
       }
     ],
     "win": {
@@ -86,6 +96,18 @@
     }
   },
   "dependencies": {
+    "@codemirror/lang-css": "^6.3.1",
+    "@codemirror/lang-html": "^6.4.12",
+    "@codemirror/lang-javascript": "^6.2.5",
+    "@codemirror/lang-json": "^6.0.2",
+    "@codemirror/lang-markdown": "^6.5.2",
+    "@codemirror/lang-php": "^6.0.2",
+    "@codemirror/lang-python": "^6.2.1",
+    "@codemirror/language": "^6.12.4",
+    "@codemirror/state": "^6.7.1",
+    "@codemirror/view": "^6.43.8",
+    "@lezer/highlight": "^1.2.3",
+    "@uiw/react-codemirror": "^4.25.11",
     "@vitejs/plugin-react": "^6.0.3",
     "@vscode/ripgrep": "^1.18.0",
     "diff": "^9.0.0",
@@ -116,7 +138,10 @@
     "electron": "^43.1.0",
     "electron-builder": "^26.15.3",
     "png-to-ico": "^3.0.2",
+    "postcss": "^8.5.26",
+    "postcss-safe-parser": "^7.0.1",
     "prettier": "^3.9.5",
+    "purgecss": "^8.0.0",
     "sharp": "^0.35.3",
     "tsx": "^4.23.0",
     "typescript": "^7.0.2",

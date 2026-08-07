@@ -136,7 +136,7 @@ export function requestedCodingOperations(
       content,
     );
   const explicitModifyRequest =
-    /(?:帮我|请(?!问)|麻烦|要你|开始|继续|把|替我|重新).{0,50}(?:修改|修复|解决|优化|增加|新增|添加|删除|重构|实现|调整|替换|创建|生成|编写|开发|搭建|配置|接入|edit|change|fix|implement|add|remove|create|develop|configure)/i.test(
+    /(?:帮我|请(?!问)|麻烦|要你|开始|继续|把|替我|重新).{0,50}(?:修改|修复|改为|改成|修改成|切换为|替换为|解决|优化|增加|新增|添加|删除|重构|实现|调整|替换|创建|生成|编写|开发|搭建|配置|接入|edit|change|fix|implement|add|remove|create|develop|configure)/i.test(
       content,
     );
   const explicitExecuteRequest =
@@ -176,7 +176,7 @@ export function requestedCodingOperations(
   )
     operations.add("inspect");
   if (
-    /(?:改一下|修改|修复|解决|优化|适配|增加|新增|添加|加上|删除|移除|重构|实现|落地|调整|替换|换成|设计一下|开始改|弄一下|弄好|做一个|做个|创建|新建|生成|写入|编写|开发|搭建|制作|配置|接入|集成|迁移|美化|处理一下|完善|补齐|补上|收尾)|\b(?:edit|change|modify|fix|implement|add|remove|refactor|optimi[sz]e|update|create|write|develop|configure|integrate|migrate)\b|\bbuild\s+(?:(?:a|an|the|this|new)\s+)?(?:app|application|page|site|feature|component|tool|service|project)\b/i.test(
+    /(?:改一下|修改|改为|改成|修改成|切换为|替换为|修改|修复|解决|优化|适配|增加|新增|添加|加上|删除|移除|重构|实现|落地|调整|替换|换成|设计一下|开始改|弄一下|弄好|做一个|做个|创建|新建|生成|写入|编写|开发|搭建|制作|配置|接入|集成|迁移|美化|弹窗|页面交互|处理一下|完善|补齐|补上|收尾)|\b(?:edit|change|modify|fix|implement|add|remove|refactor|optimi[sz]e|update|create|write|develop|configure|integrate|migrate)\b|\bbuild\s+(?:(?:a|an|the|this|new)\s+)?(?:app|application|page|site|feature|component|tool|service|project)\b/i.test(
       modifyContent,
     )
   )
@@ -233,32 +233,76 @@ export function shouldRequireCodingTool(
 
 /** Operations the assistant claims have already happened in its final text. */
 export function claimedCodingOperations(text: string) {
+  const proseText = text
+    .replace(/```[\s\S]*?```/g, "")
+    .replace(
+      /(?:如果|若|假如|一旦|\bif\b|\bwhen\b)[^。！？!?\n]{0,160}[。！？!?]?/gi,
+      "",
+    );
+  const assertedText = proseText.replace(
+    /(?:无需|不需要|没有必要|不必)(?:再)?(?:修改|改动|变更)|(?:未|没有|尚未|无法|不能|不会|并未).{0,10}(?:检查|查看|读取|搜索|排查|审查|分析|确认|定位|修改|改动|修复|优化|新增|添加|创建|生成|写入|实现|调整|更新|运行|执行|启动|安装|部署|发布|验证|测试|构建|连接|上传|下载)|\b(?:not|never|did not|could not|unable to)\b[^.!?\n]{0,40}\b(?:inspect|check|modify|edit|fix|implement|run|execute|validate|connect|upload|download)\b/gi,
+    "",
+  );
   const operations = new Set<CodingOperation>();
   if (
-    /(?:已|已经|完成|实际).{0,18}(?:检查|查看|读取|搜索|排查|审查|分析|确认|定位)|(?:检查|读取|搜索|排查|审查|分析).{0,12}(?:完成|通过|结果)|\b(?:inspected|checked|reviewed|analyzed|read|searched)\b/i.test(
-      text,
+    /(?:已|已经|完成|实际).{0,18}(?:检查|查看|读取|搜索|排查|审查|分析|确认|定位)|(?:我|我们)(?:已经|已)?(?:检查|查看|读取|搜索|排查|审查|分析|确认|定位)(?:了|过)|(?:检查|读取|搜索|排查|审查|分析)(?:后|并).{0,10}(?:确认|发现|结果)|(?:检查|读取|搜索|排查|审查|分析).{0,12}(?:完成|通过|结果)|\b(?:inspected|checked|reviewed|analyzed|read|searched)\b/i.test(
+      assertedText,
     )
   )
     operations.add("inspect");
   if (
-    /(?:已|已经|完成|成功|落地|搞定|做好|弄好|处理好).{0,24}(?:修改|改造|修复|优化|适配|新增|添加|创建|新建|生成|写入|编写|开发|搭建|配置|删除|移除|重构|实现|替换|调整)|(?:修改|改动|改造|修复|优化|适配|实现|调整|创建|生成|写入)(?:文件|范围|集中|位于|涉及|如下|完成|成功|好了)|修改文件\s*[:：]|\b(?:(?:i|we)(?:'ve| have)?\s+)?(?:modified|edited|changed|fixed|implemented|updated|created|written|built|configured)(?:\s+successfully)?\b/i.test(
-      text,
+    /(?:已|已经|完成|成功|落地|搞定|做好|弄好|处理好).{0,24}(?:修改|改造|修复|优化|适配|新增|添加|创建|新建|生成|写入|编写|开发|搭建|配置|删除|移除|重构|实现|替换|调整|更新)|(?:我|我们)(?:已经|已)?(?:修改|改动|改造|修复|优化|适配|新增|添加|创建|新建|生成|写入|编写|开发|搭建|配置|删除|移除|重构|实现|替换|调整|更新)(?:了|完成|好了)|(?:做了|完成了).{0,16}(?:修改|改动|改造|修复|优化|新增|添加|创建|配置|重构|调整|更新)|(?:修改|改动|改造|修复|优化|适配|实现|调整|创建|生成|写入|更新)(?:文件|范围|集中|位于|涉及|如下|完成|成功|好了|了)|修改文件\s*[:：]|\b(?:(?:i|we)(?:'ve| have)?\s+)?(?:modified|edited|changed|fixed|implemented|updated|created|written|built|configured)(?:\s+successfully)?\b/i.test(
+      assertedText,
     )
   )
     operations.add("modify");
   if (
-    /(?:已|已经|成功|完成|搞定|做好|弄好|处理好).{0,18}(?:运行|执行|启动|安装|部署|发布)|(?:运行|执行|启动|安装|部署).{0,10}(?:成功|完成|好了)|\b(?:(?:i|we)(?:'ve| have)?\s+)?(?:ran|executed|started|launched|installed|deployed|done|all set)\b/i.test(
-      text,
+    /(?:已|已经|成功|完成|搞定|做好|弄好|处理好).{0,18}(?:运行|执行|启动|安装|部署|发布)|(?:我|我们|并|随后|然后|同时)(?:已经|已)?(?:运行|执行|启动|安装|部署|发布)(?:了|完成|好了)|(?:运行|执行|启动|安装|部署).{0,10}(?:成功|完成|好了)|\b(?:(?:i|we)(?:'ve| have)?\s+)?(?:ran|executed|started|launched|installed|deployed)\b/i.test(
+      assertedText,
     )
   )
     operations.add("execute");
   if (
     /(?:类型检查|测试|构建|生产构建|lint|typecheck).{0,14}(?:通过|成功|完成)|(?:通过|成功).{0,10}(?:类型检查|测试|构建)|\b(?:tests?|typecheck|lint|build)\s+(?:passed|succeeded|completed)\b/i.test(
-      text,
+      assertedText,
     )
   )
     operations.add("validate");
+  if (
+    /(?:已|已经|成功).{0,16}(?:连接|连上|登录到).{0,18}(?:SSH|服务器|主机|MySQL|SQL Server|MongoDB|数据库)|(?:SSH|服务器|主机|MySQL|SQL Server|MongoDB|数据库).{0,16}(?:已连接|连接成功|已登录)|\b(?:connected|logged in)\s+(?:to\s+)?(?:the\s+)?(?:ssh|server|host|mysql|sql server|mongodb|database)\b/i.test(
+      assertedText,
+    )
+  )
+    operations.add("connect");
+  if (
+    /(?:已|已经|成功).{0,12}(?:上传|传到)|(?:上传|传输).{0,12}(?:成功|完成|好了)|\b(?:uploaded|upload completed|upload succeeded)\b/i.test(
+      assertedText,
+    )
+  )
+    operations.add("upload");
+  if (
+    /(?:已|已经|成功).{0,12}(?:下载|拉取)|(?:下载|拉取).{0,12}(?:成功|完成|好了)|\b(?:downloaded|download completed|download succeeded)\b/i.test(
+      assertedText,
+    )
+  )
+    operations.add("download");
   return operations;
+}
+
+export function claimsTaskCompletion(text: string) {
+  const proseText = text
+    .replace(/```[\s\S]*?```/g, "")
+    .replace(
+      /(?:如果|若|假如|一旦|\bif\b|\bwhen\b)[^。！？!?\n]{0,160}[。！？!?]?/gi,
+      "",
+    );
+  const assertedText = proseText.replace(
+    /(?:未|没有|尚未|还没|无法|不能|并未).{0,10}(?:完成|解决|处理完|搞定|做好|弄好)|(?:部分|仅|只).{0,8}(?:完成|处理|解决)|\b(?:not|never|isn't|wasn't|did not|could not|unable to|partially)\b[^.!?\n]{0,40}\b(?:complete|completed|done|resolved|fixed)\b/gi,
+    "",
+  );
+  return /(?:任务|工作|需求|问题|故障|功能|处理).{0,12}(?:已|已经|都已|全部)?(?:完成|解决|处理完|处理好|搞定|做好|弄好)|(?:已|已经)(?:全部|整体|都)?(?:完成|处理完|处理好|解决|搞定|做好|弄好)|\b(?:task completed|completed successfully|all done|all set|fully resolved)\b/i.test(
+    assertedText,
+  );
 }
 
 type SuccessfulResult = {
@@ -278,6 +322,41 @@ function parsedResults(history: CodingVerificationHistoryItem[]) {
     }
   }
   return results;
+}
+
+export function hasSuccessfulToolEvidence(
+  history: CodingVerificationHistoryItem[],
+) {
+  const calls = new Map<string, string>();
+  for (const item of history)
+    if (item.kind === "calls")
+      for (const call of item.calls) calls.set(call.id, call.name);
+  const administrativeTools = new Set([
+    "request_user_input",
+    "report_no_change",
+    "spawn_agent",
+    "list_agents",
+    "message_agent",
+    "stop_agent",
+  ]);
+  for (const [callId, result] of parsedResults(history)) {
+    const tool = calls.get(callId);
+    if (result.success === true && tool && !administrativeTools.has(tool))
+      return true;
+  }
+  return false;
+}
+
+export function isUnsupportedTaskCompletionClaim(
+  text: string,
+  executionRequired: boolean,
+  history: CodingVerificationHistoryItem[],
+) {
+  return (
+    executionRequired &&
+    claimsTaskCompletion(text) &&
+    !hasSuccessfulToolEvidence(history)
+  );
 }
 
 export function hasRequestedUserInputEvidence(

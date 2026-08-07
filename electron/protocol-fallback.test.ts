@@ -56,3 +56,16 @@ test("remembers a provider's Chat Completions fallback temporarily", () => {
     "anthropic-messages",
   );
 });
+
+test("keeps a Responses fallback scoped to the incompatible model", () => {
+  clearProtocolFallbacks();
+  rememberChatFallback("proxy", "model-a", 1_000);
+  assert.equal(
+    effectiveOpenAiProtocol("proxy", "openai-responses", "model-a", 2_000),
+    "openai-chat",
+  );
+  assert.equal(
+    effectiveOpenAiProtocol("proxy", "openai-responses", "model-b", 2_000),
+    "openai-responses",
+  );
+});

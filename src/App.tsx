@@ -12,6 +12,8 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
+  type WheelEvent,
 } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -76,6 +78,8 @@ import type {
   RemoteControlState,
   RemoteTaskStreamEvent,
 } from "./remote-types";
+import type { SshRemoteState } from "./ssh-remote-types";
+import { sshWorkspaceRootFromActivity } from "./ssh-workspace-activity";
 import {
   materializeRemoteAttachments,
   remoteAttachmentPrompt,
@@ -86,7 +90,9 @@ import {
   CONTEXT_AUTO_COMPACT_RATIO,
   CONTEXT_COMPACT_WARNING_RATIO,
   CONTEXT_FORCE_COMPACT_RATIO,
+  acceptModelContextSummary,
   compactConversation,
+  contextSummarySource,
   estimateMessageTokens,
   estimateTextTokens,
 } from "./context";
@@ -119,6 +125,11 @@ import {
   windowContainingTurn,
   type ConversationWindow,
 } from "./conversation-window";
+import {
+  ConversationScrollController,
+  nestedWheelScroller,
+} from "./conversation-scroll-controller";
+import { taskRuntimeStore } from "./task-runtime-store";
 import {
   normalizeStoredTask,
   storedActiveTask,
@@ -159,6 +170,14 @@ const SettingsPanel = lazy(() =>
     default: m.SettingsPanel,
   })),
 );
+const SshRemoteDialog = lazy(() =>
+  import("./components/remote/SshRemoteDialog").then((module) => ({
+    default: module.SshRemoteDialog,
+  })),
+);
+const SshRemoteEditor = lazy(
+  () => import("./components/remote/SshRemoteEditor"),
+);
 import { ConversationArea } from "./components/conversation/ConversationArea";
 import { ConversationSearch } from "./components/conversation/ConversationSearch";
 import {
@@ -192,11 +211,13 @@ import {
   streamingProgressKey,
   streamingReasoningKey,
 } from "./streaming-text-store";
+import { acceptStreamSequence } from "./stream-sequence";
 import {
   appendActivityOutput,
   replaceActivityOutput,
   resetActivityOutput,
 } from "./activity-output-store";
+import { selectActivityGroups, upsertActivity } from "./activity-index";
 import { registerAppToastHandler, type AppToast } from "./lib/toast";
 import { useEventCallback } from "./lib/use-event-callback";
 import {
@@ -253,6 +274,20 @@ function estimateRequestContextTokens({
   );
 }
 
+function outputTokenReserve(
+  contextWindow: number | undefined,
+  reasoning: boolean,
+) {
+  if (!contextWindow) return 8_000;
+  return Math.max(8_000, Math.floor(contextWindow * (reasoning ? 0.18 : 0.12)));
+}
+
+function clearPromptTokenSnapshot(usage: TaskRecord["usage"]) {
+  if (!usage) return usage;
+  const { promptTokens: _promptTokens, ...rest } = usage;
+  return rest;
+}
+
 function formatContextPercent(tokens: number, contextWindow?: number) {
   if (!contextWindow) return "未配置";
   return `${Math.min(100, Math.round((tokens / contextWindow) * 100))}%`;
@@ -277,6 +312,11 @@ export default function App() {
       ? [initialTask()]
       : storedTasks(),
   );
+  const taskRuntimeRevision = useSyncExternalStore(
+    taskRuntimeStore.subscribe,
+    taskRuntimeStore.getSnapshot,
+    taskRuntimeStore.getSnapshot,
+  );
   const [taskStorageReady, setTaskStorageReady] = useState(false);
   const [activeTaskId, setActiveTaskId] = useState(
     () => localStorage.getItem("kcode.activeTaskId") || "",
@@ -284,12 +324,18 @@ export default function App() {
   const [pendingFolder, setPendingFolder] = useState<WorkspaceFolder | null>(
     null,
   );
+  const [sshRemoteDialogTaskId, setSshRemoteDialogTaskId] = useState<string>();
+  const [sshRemoteState, setSshRemoteState] = useState<SshRemoteState>();
+  const [workspaceView, setWorkspaceView] = useState<"chat" | "editor">(
+    () => (storedActiveTask()?.remoteWorkspace ? "editor" : "chat"),
+  );
   const [deleteTarget, setDeleteTarget] = useState<
     | { kind: "workspace"; path: string; name: string; count: number }
     | { kind: "task"; task: TaskRecord }
   >();
   const [newTaskName, setNewTaskName] = useState("");
   const [taskQuery, setTaskQuery] = useState("");
+  const deferredTaskQuery = useDeferredValue(taskQuery);
   const [showArchived, setShowArchived] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     const saved = Number(localStorage.getItem("kcode.sidebarWidth"));
@@ -409,9 +455,21 @@ export default function App() {
     },
   );
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const closeSidebar = useCallback(() => setSidebarOpen(false), []);
   const [statusOpen, setStatusOpen] = useState(
     () => localStorage.getItem("kcode.statusPanel") !== "false",
   );
+  useEffect(() => {
+    const compact = window.matchMedia("(max-width: 620px)");
+    const collapseForCompactLayout = (matches: boolean) => {
+      if (matches) setSidebarOpen(false);
+    };
+    collapseForCompactLayout(compact.matches);
+    const onChange = (event: MediaQueryListEvent) =>
+      collapseForCompactLayout(event.matches);
+    compact.addEventListener("change", onChange);
+    return () => compact.removeEventListener("change", onChange);
+  }, []);
   const [selected, setSelected] = useState("");
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [modelMenuProvider, setModelMenuProvider] = useState<string>();
@@ -447,6 +505,7 @@ export default function App() {
       configured: false,
       enabled: false,
       connected: false,
+      connectionPhase: "disabled",
       serverUrl: "",
       deviceId: "",
       deviceName: "",
@@ -524,6 +583,18 @@ export default function App() {
     () => setBrowserAddress(browserState.url || ""),
     [browserState.url],
   );
+  useEffect(() => {
+    if (!browserState.open) return;
+    const compactSplit = window.matchMedia("(max-width: 1100px)");
+    const collapseForCompactSplit = (matches: boolean) => {
+      if (matches) setSidebarOpen(false);
+    };
+    collapseForCompactSplit(compactSplit.matches);
+    const onChange = (event: MediaQueryListEvent) =>
+      collapseForCompactSplit(event.matches);
+    compactSplit.addEventListener("change", onChange);
+    return () => compactSplit.removeEventListener("change", onChange);
+  }, [browserState.open]);
   const [usage, setUsage] = useState(
     () => storedActiveTask()?.usage ?? { input: 0, output: 0, cached: 0 },
   );
@@ -569,6 +640,8 @@ export default function App() {
   >(() => undefined);
   const remoteSyncTimerRef = useRef<number | undefined>(undefined);
   const remoteStreamTimersRef = useRef(new Map<string, number>());
+  const remoteStreamSequencesRef = useRef(new Map<string, number>());
+  const agentEventSequencesRef = useRef(new Map<string, number>());
   const hydratedTaskIdsRef = useRef(new Set(tasks.map((task) => task.id)));
   const persistedTaskRefsRef = useRef(new Map<string, TaskRecord>());
   const persistedTaskOrderRef = useRef("");
@@ -585,6 +658,9 @@ export default function App() {
   const bottomSettlePassesRef = useRef(0);
   const pendingLatestScrollRef = useRef<ScrollBehavior | undefined>(undefined);
   const scrollFrameRef = useRef<number | undefined>(undefined);
+  const conversationScrollControllerRef = useRef(
+    new ConversationScrollController(),
+  );
   const scrollStateByTaskRef = useRef(
     new Map<string, ConversationScrollState>(),
   );
@@ -692,6 +768,7 @@ export default function App() {
   const loadingOlderTurnsRef = useRef(false);
   const pagedTaskRef = useRef<string | undefined>(undefined);
   const gitRefreshActivityRef = useRef<string | undefined>(undefined);
+  const adoptedSshActivitiesRef = useRef(new Set<string>());
   const [conversationPageSize, setConversationPageSize] = useState(18);
   const [visibleTurnWindow, setVisibleTurnWindow] =
     useState<ConversationWindow>({ start: 0, end: 0 });
@@ -717,6 +794,43 @@ export default function App() {
     () => tasks.find((task) => task.id === activeTaskId) ?? tasks[0],
     [tasks, activeTaskId],
   );
+  useEffect(() => {
+    const remote = activeTask?.remoteWorkspace;
+    if (!activeTask || !remote || !window.kcode?.sshRemote) {
+      setSshRemoteState(undefined);
+      return;
+    }
+    let active = true;
+    setSshRemoteState((current) => ({
+      taskId: activeTask.id,
+      connected: current?.taskId === activeTask.id && Boolean(current.connected),
+      connecting: true,
+      profile: remote,
+      cachePath: activeTask.workspacePath,
+    }));
+    void window.kcode.sshRemote
+      .state(activeTask.id, remote.id)
+      .then((state) =>
+        state.connected
+          ? state
+          : window.kcode.sshRemote.connectSaved(activeTask.id, remote.id),
+      )
+      .then((state) => active && setSshRemoteState(state))
+      .catch(async () => {
+        const state = await window.kcode.sshRemote.state(
+          activeTask.id,
+          remote.id,
+        );
+        if (active) setSshRemoteState(state);
+      });
+    return () => {
+      active = false;
+    };
+  }, [
+    activeTask?.id,
+    activeTask?.remoteWorkspace?.id,
+    activeTask?.remoteWorkspace?.rootPath,
+  ]);
   const effectiveContextDirectory = contextDialogDirectory(
     activeTask?.contextDirectory,
     contextDirectory,
@@ -834,19 +948,10 @@ export default function App() {
         .filter((message) => message.id.startsWith("assistant:"))
         .map((message) => message.id.slice("assistant:".length)),
     );
-    const grouped = new Map<string, AgentActivity[]>();
-    for (const activity of activities) {
-      if (!visibleRequests.has(activity.requestId)) continue;
-      const group = grouped.get(activity.requestId);
-      if (group) group.push(activity);
-      else grouped.set(activity.requestId, [activity]);
-    }
-    return grouped;
+    return selectActivityGroups(activities, visibleRequests);
   }, [activities, visibleMessages]);
   const handleActivityChange = useCallback((next: AgentActivity) => {
-    setActivities((all) =>
-      all.map((item) => (item.id === next.id ? next : item)),
-    );
+    setActivities((all) => upsertActivity(all, next));
   }, []);
   useLayoutEffect(() => {
     if (!activeTaskId || pagedTaskRef.current === activeTaskId) return;
@@ -975,6 +1080,7 @@ export default function App() {
           // Keep bottom following while the user is at the bottom, but do not
           // update React state or mark the scroll as programmatic here. This
           // path runs during streaming and must stay out of the input hot path.
+          conversationScrollControllerRef.current.markProgrammatic();
           current.scrollTop = current.scrollHeight;
           const taskId = displayedTaskIdRef.current;
           if (taskId)
@@ -1142,17 +1248,24 @@ export default function App() {
         { scrollTop, clientHeight, scrollHeight },
         hasNewerMessages,
       );
+      const scrollObservation = conversationScrollControllerRef.current.observe(
+        { scrollTop, clientHeight, scrollHeight },
+        hasNewerMessages,
+      );
+      const shouldFollow = atBottom && !scrollObservation.userScrolledAway;
       const taskId = displayedTaskIdRef.current;
       if (taskId)
         scrollStateByTaskRef.current.set(taskId, {
           top: scrollTop,
-          atBottom,
+          atBottom: shouldFollow,
         });
-      if (autoFollowRef.current !== atBottom) {
-        autoFollowRef.current = atBottom;
-        setShowScrollToBottom(!atBottom);
-        if (!atBottom) refreshTurnPositions();
+      if (autoFollowRef.current !== shouldFollow) {
+        autoFollowRef.current = shouldFollow;
+        if (!shouldFollow) refreshTurnPositions();
       }
+      setShowScrollToBottom(
+        !shouldFollow || scrollObservation.showScrollButton,
+      );
       updateActiveTurn(target);
     });
   }
@@ -1175,6 +1288,7 @@ export default function App() {
       bottomIndicatorUntilRef.current = performance.now() + 450;
       setScrollingToBottom(true);
     }
+    conversationScrollControllerRef.current.markProgrammatic();
     const latest = latestConversationWindow(
       conversationTurns.length,
       conversationPageSize,
@@ -1214,6 +1328,7 @@ export default function App() {
         return;
       }
       current.scrollTop = current.scrollHeight;
+      conversationScrollControllerRef.current.markProgrammatic();
       const taskId = displayedTaskIdRef.current;
       if (taskId)
         scrollStateByTaskRef.current.set(taskId, {
@@ -1253,12 +1368,13 @@ export default function App() {
       bottomLayoutFrameRef.current = undefined;
       const current = conversationRef.current;
       if (!current || !autoFollowRef.current) return;
+      conversationScrollControllerRef.current.markProgrammatic();
       current.scrollTop = current.scrollHeight;
     });
     setActiveConversationTurn(conversationTurns.at(-1)?.id);
   }
 
-  function interruptBottomSettle() {
+  function interruptBottomSettle(userInitiated = false) {
     if (bottomSettleTimerRef.current) {
       window.clearTimeout(bottomSettleTimerRef.current);
       bottomSettleTimerRef.current = undefined;
@@ -1271,7 +1387,9 @@ export default function App() {
     setScrollingToBottom(false);
     const conversation = conversationRef.current;
     if (conversation) {
-      const atBottom = isConversationAtBottom(conversation, hasNewerMessages);
+      const atBottom =
+        !userInitiated &&
+        isConversationAtBottom(conversation, hasNewerMessages);
       autoFollowRef.current = atBottom;
       setShowScrollToBottom(!atBottom);
     }
@@ -1281,12 +1399,23 @@ export default function App() {
     }
   }
 
+  function handleConversationWheel(event: WheelEvent<HTMLElement>) {
+    const container = event.currentTarget;
+    const nested = nestedWheelScroller(event.target, container, event.deltaY);
+    const bottomGap =
+      container.scrollHeight - container.scrollTop - container.clientHeight;
+    if (!nested && event.deltaY > 0 && bottomGap <= 1) return;
+    conversationScrollControllerRef.current.markUserIntent();
+    interruptBottomSettle(true);
+  }
+
   function scrollToTurn(turnId: string, index: number) {
     if (index === conversationTurns.length - 1) return scrollToLatest("auto");
     const conversation = conversationRef.current;
     const element = turnRefs.current.get(turnId);
     if (!conversation) return;
     interruptBottomSettle();
+    conversationScrollControllerRef.current.markUserIntent();
     autoFollowRef.current = false;
     setShowScrollToBottom(true);
     if (!element) {
@@ -1307,18 +1436,32 @@ export default function App() {
     setActiveConversationTurn(turnId);
   }
   const workspaceGroups = useMemo(() => {
+    const sidebarTasks = taskRuntimeStore.overlayTasks(tasks);
     const projection = projectSidebarWorkspaceGroups(
-      tasks,
-      taskQuery,
+      sidebarTasks,
+      deferredTaskQuery,
       showArchived,
       sidebarProjectionRef.current,
     );
     sidebarProjectionRef.current = projection;
     return projection.workspaceGroups;
-  }, [tasks, taskQuery, showArchived]);
+  }, [tasks, deferredTaskQuery, showArchived, taskRuntimeRevision]);
 
   async function refreshGitState(includeDiff = gitDiffOpen) {
     if (!window.kcode?.workspace.gitState || !activeTask?.workspacePath) return;
+    if (activeTask.remoteWorkspace) {
+      setGitState({
+        available: false,
+        files: 0,
+        additions: 0,
+        deletions: 0,
+        summary: "",
+        diff: "",
+        error: "SSH Remote 工作区",
+      });
+      setGitRefreshing(false);
+      return;
+    }
     setGitRefreshing(true);
     try {
       setGitState(
@@ -1357,9 +1500,13 @@ export default function App() {
       const activity = activities[index];
       if (
         activity.status === "success" &&
-        ["write_file", "apply_patch", "move_path", "delete_path"].includes(
-          activity.tool,
-        )
+        [
+          "write_file",
+          "apply_patch",
+          "move_path",
+          "delete_path",
+          "ssh_write_file",
+        ].includes(activity.tool)
       )
         return activity.id;
     }
@@ -1610,27 +1757,43 @@ export default function App() {
     event.preventDefault();
     const startX = event.clientX;
     const startWidth = sidebarWidth;
+    const widthAt = (clientX: number) =>
+      Math.min(420, Math.max(210, startWidth + clientX - startX));
     document.body.classList.add("resizing-sidebar");
-    const move = (moveEvent: PointerEvent) => {
-      const width = Math.min(
-        420,
-        Math.max(210, startWidth + moveEvent.clientX - startX),
+    let frame: number | undefined;
+    let pendingWidth = startWidth;
+    const applyPendingWidth = () => {
+      frame = undefined;
+      appShellRef.current?.style.setProperty(
+        "--sidebar-width",
+        `${pendingWidth}px`,
       );
-      appShellRef.current?.style.setProperty("--sidebar-width", `${width}px`);
     };
-    const stop = (upEvent: PointerEvent) => {
-      const width = Math.min(
-        420,
-        Math.max(210, startWidth + upEvent.clientX - startX),
-      );
-      setSidebarWidth(width);
-      localStorage.setItem("kcode.sidebarWidth", String(width));
-      document.body.classList.remove("resizing-sidebar");
+    const move = (moveEvent: PointerEvent) => {
+      pendingWidth = widthAt(moveEvent.clientX);
+      if (frame === undefined) frame = requestAnimationFrame(applyPendingWidth);
+    };
+    const cleanup = () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", stop);
+      window.removeEventListener("pointercancel", cancel);
+      window.removeEventListener("blur", cancel);
+      document.body.classList.remove("resizing-sidebar");
     };
+    const finish = (width: number) => {
+      if (frame !== undefined) cancelAnimationFrame(frame);
+      frame = undefined;
+      appShellRef.current?.style.setProperty("--sidebar-width", `${width}px`);
+      setSidebarWidth(width);
+      localStorage.setItem("kcode.sidebarWidth", String(width));
+      cleanup();
+    };
+    const stop = (upEvent: PointerEvent) => finish(widthAt(upEvent.clientX));
+    const cancel = () => finish(pendingWidth);
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", stop);
+    window.addEventListener("pointercancel", cancel);
+    window.addEventListener("blur", cancel);
   }
 
   function startBrowserResize(event: React.PointerEvent) {
@@ -1643,19 +1806,24 @@ export default function App() {
     document.body.classList.add("resizing-browser");
     let frame: number | undefined;
     let pendingWidth = startWidth;
+    const applyPendingWidth = () => {
+      frame = undefined;
+      appShellRef.current?.style.setProperty(
+        "--browser-width",
+        `${pendingWidth}px`,
+      );
+      void window.kcode?.browser?.setWidth(pendingWidth);
+    };
     const move = (moveEvent: PointerEvent) => {
-      const width = widthAt(moveEvent.clientX);
-      pendingWidth = width;
-      appShellRef.current?.style.setProperty("--browser-width", `${width}px`);
+      pendingWidth = widthAt(moveEvent.clientX);
       if (frame !== undefined) return;
-      frame = requestAnimationFrame(() => {
-        frame = undefined;
-        void window.kcode?.browser?.setWidth(pendingWidth);
-      });
+      frame = requestAnimationFrame(applyPendingWidth);
     };
     const stop = (upEvent: PointerEvent) => {
       const width = widthAt(upEvent.clientX);
       if (frame !== undefined) cancelAnimationFrame(frame);
+      frame = undefined;
+      appShellRef.current?.style.setProperty("--browser-width", `${width}px`);
       void window.kcode?.browser?.setWidth(width);
       document.body.classList.remove("resizing-browser");
       window.removeEventListener("pointermove", move);
@@ -1714,6 +1882,7 @@ export default function App() {
       (task) => task.workspacePath === workspacePath,
     );
     removed.forEach((task) => {
+      taskRuntimeStore.clear(task.id);
       attachmentDraftsRef.current.delete(task.id);
       hydratedTaskIdsRef.current.delete(task.id);
       persistedTaskRefsRef.current.delete(task.id);
@@ -1721,6 +1890,13 @@ export default function App() {
       conversationWindowByTaskRef.current.delete(task.id);
     });
     if (window.kcode) {
+      await Promise.all(
+        removed
+          .filter((task) => task.remoteWorkspace)
+          .map((task) =>
+            window.kcode.sshRemote.disconnect(task.id).catch(() => undefined),
+          ),
+      );
       await Promise.all(
         removed.map((task) => window.kcode.chat.cancelSummary(task.id)),
       );
@@ -1749,6 +1925,7 @@ export default function App() {
         const attachmentDraft = attachmentDraftsRef.current.get(loadedNext.id);
         claimTaskView(loadedNext.id);
         setActiveTaskId(loadedNext.id);
+        setWorkspaceView(loadedNext.remoteWorkspace ? "editor" : "chat");
         setMessages(loadedNext.messages);
         setActivities(loadedNext.activities);
         setRunningId(loadedNext.runningId);
@@ -1763,6 +1940,7 @@ export default function App() {
       } else {
         claimTaskView("");
         setActiveTaskId("");
+        setWorkspaceView("chat");
         setMessages([]);
         setActivities([]);
         setRunningId(undefined);
@@ -1872,11 +2050,14 @@ export default function App() {
     const taskId = requestTasksRef.current.get(requestId);
     const remote = window.kcode?.remote;
     if (!taskId || !remote) return;
+    const sequence = (remoteStreamSequencesRef.current.get(requestId) ?? 0) + 1;
+    remoteStreamSequencesRef.current.set(requestId, sequence);
     const event: RemoteTaskStreamEvent = {
       type: "task.event",
       event: "stream",
       taskId,
       requestId,
+      sequence,
       content: getStreamingText(requestId).slice(-96_000),
       reasoning: getStreamingText(streamingReasoningKey(requestId)).slice(
         -8_000,
@@ -1970,6 +2151,51 @@ export default function App() {
     scheduleRemoteStreamSync(requestId);
   }
 
+  function adoptActivitySshWorkspace(
+    taskId: string,
+    activity: AgentActivity,
+  ) {
+    const rootPath = sshWorkspaceRootFromActivity(activity);
+    if (!window.kcode?.sshRemote || !rootPath) return;
+    const adoptionKey = `${taskId}:${activity.id}:${rootPath}`;
+    if (adoptedSshActivitiesRef.current.has(adoptionKey)) return;
+    adoptedSshActivitiesRef.current.add(adoptionKey);
+    void window.kcode.sshRemote
+      .adopt(taskId, rootPath)
+      .then((state) => {
+        if (!state.profile || !state.cachePath)
+          throw new Error("SSH 连接未返回可编辑的远程工作区。");
+        setTasks((all) =>
+          all.map((task) =>
+            task.id === taskId
+              ? {
+                  ...task,
+                  workspacePath: state.cachePath!,
+                  remoteWorkspace: state.profile,
+                  updatedAt: Date.now(),
+                }
+              : task,
+          ),
+        );
+        if (
+          isTaskViewCurrent(
+            activeTaskIdRef.current,
+            displayedTaskIdRef.current,
+            taskId,
+          )
+        ) {
+          setSshRemoteState(state);
+        }
+      })
+      .catch((error) => {
+        adoptedSshActivitiesRef.current.delete(adoptionKey);
+        if (activeTaskIdRef.current === taskId)
+          setContextError(
+            `SSH 已连接，但打开远程编辑器失败：${errorMessage(error)}`,
+          );
+      });
+  }
+
   function scheduleReasoningFlush() {
     if (reasoningFlushTimerRef.current) return;
     reasoningFlushTimerRef.current = window.setTimeout(() => {
@@ -1986,6 +2212,14 @@ export default function App() {
   useEffect(
     () =>
       window.kcode?.chat.onEvent((id, event) => {
+        if (
+          !acceptStreamSequence(
+            agentEventSequencesRef.current,
+            id,
+            event.sequence,
+          )
+        )
+          return;
         const taskId = requestTasksRef.current.get(id);
         if (!taskId) return;
         const isActive = isTaskViewCurrent(
@@ -1993,6 +2227,16 @@ export default function App() {
           displayedTaskIdRef.current,
           taskId,
         );
+        if (
+          event.type !== "done" &&
+          event.type !== "error" &&
+          event.type !== "activity_output"
+        ) {
+          const startedAt =
+            tasksRef.current.find((task) => task.id === taskId)?.startedAt ??
+            Date.now();
+          taskRuntimeStore.ensureRunning(taskId, id, startedAt);
+        }
         if (event.type === "activity_output") {
           if (event.mode === "append")
             appendActivityOutput(event.activityId, event.value);
@@ -2005,6 +2249,7 @@ export default function App() {
           event.type !== "text" &&
           event.type !== "final_response" &&
           event.type !== "reasoning" &&
+          event.type !== "reasoning_reset" &&
           event.type !== "progress"
         )
           setTasks((all) => {
@@ -2073,14 +2318,9 @@ export default function App() {
                 )
               : all;
           resetActivityOutput(event.activity.id);
-          const updateActivities = (all: AgentActivity[]) => {
-            const exists = all.some((item) => item.id === event.activity.id);
-            return exists
-              ? all.map((item) =>
-                  item.id === event.activity.id ? event.activity : item,
-                )
-              : [...all, event.activity];
-          };
+          const updateActivities = (all: AgentActivity[]) =>
+            upsertActivity(all, event.activity);
+          adoptActivitySshWorkspace(taskId, event.activity);
           startTransition(() => {
             setTasks((all) =>
               all.map((task) =>
@@ -2099,6 +2339,11 @@ export default function App() {
               setActivities(updateActivities);
             }
           });
+          return;
+        }
+        if (event.type === "reasoning_reset") {
+          clearPendingReasoning(id);
+          scheduleRemoteStreamSync(id);
           return;
         }
         if (event.type === "reasoning") {
@@ -2198,6 +2443,7 @@ export default function App() {
           }
         }
         if (event.type === "error") {
+          taskRuntimeStore.finish(taskId, id);
           clearStreamingProgress(id);
           clearPendingReasoning(id);
           if (textFlushTimerRef.current) {
@@ -2259,6 +2505,7 @@ export default function App() {
           requestTasksRef.current.delete(id);
         }
         if (event.type === "done") {
+          taskRuntimeStore.finish(taskId, id);
           const finishedStatus =
             event.outcome === "blocked" ? "blocked" : "completed";
           clearStreamingProgress(id);
@@ -2342,7 +2589,13 @@ export default function App() {
             pending.state.top,
             Math.max(0, conversation.scrollHeight - conversation.clientHeight),
           );
+      conversationScrollControllerRef.current.markProgrammatic();
       conversation.scrollTop = top;
+      conversationScrollControllerRef.current.reset({
+        scrollTop: top,
+        scrollHeight: conversation.scrollHeight,
+        clientHeight: conversation.clientHeight,
+      });
       autoFollowRef.current = pending.state.atBottom;
       setShowScrollToBottom(!pending.state.atBottom);
       pendingScrollRestoreRef.current = undefined;
@@ -2361,6 +2614,7 @@ export default function App() {
       const conversation = conversationRef.current;
       if (conversation) {
         programmaticScrollRef.current = true;
+        conversationScrollControllerRef.current.markProgrammatic();
         conversation.scrollTop = conversation.scrollHeight;
         setShowScrollToBottom(false);
         setActiveConversationTurn(conversationTurns.at(-1)?.id);
@@ -2384,6 +2638,8 @@ export default function App() {
   async function clearCurrentConversation() {
     const requestId = currentRequest.current;
     if (requestId && window.kcode) await window.kcode.chat.cancel(requestId);
+    if (requestId && activeTask?.id)
+      taskRuntimeStore.finish(activeTask.id, requestId);
     if (previewTimerRef.current) window.clearInterval(previewTimerRef.current);
     currentRequest.current = undefined;
     setRunningId(undefined);
@@ -2416,6 +2672,7 @@ export default function App() {
 
   async function startNewTask() {
     setContextError("");
+    if (!taskStorageReady) return;
     try {
       if (window.kcode && !window.kcode.workspace)
         throw new Error("桌面主进程版本较旧，请重启应用后再试");
@@ -2428,6 +2685,79 @@ export default function App() {
     } catch (error) {
       setContextError(errorMessage(error));
     }
+  }
+
+  function startSshRemote() {
+    setContextError("");
+    if (!taskStorageReady) return;
+    if (!window.kcode?.sshRemote) {
+      setContextError("桌面主进程版本较旧，请重启应用后再试");
+      return;
+    }
+    setSshRemoteDialogTaskId(uid());
+  }
+
+  function createSshRemoteTask(state: SshRemoteState) {
+    if (!state.profile || !state.cachePath) {
+      setContextError("SSH Remote 连接未返回有效工作区信息。");
+      return;
+    }
+    const existing = tasksRef.current.find((task) => task.id === state.taskId);
+    if (existing) {
+      setTasks((all) =>
+        all.map((task) =>
+          task.id === state.taskId
+            ? {
+                ...task,
+                name: state.profile!.name,
+                workspacePath: state.cachePath!,
+                remoteWorkspace: state.profile,
+                updatedAt: Date.now(),
+              }
+            : task,
+        ),
+      );
+      setSshRemoteState(state);
+      setWorkspaceView("editor");
+      setSshRemoteDialogTaskId(undefined);
+      return;
+    }
+    const now = Date.now();
+    const task: TaskRecord = {
+      id: state.taskId,
+      name: state.profile.name,
+      workspacePath: state.cachePath,
+      remoteWorkspace: state.profile,
+      createdAt: now,
+      updatedAt: now,
+      messages: [],
+      activities: [],
+      modelSelection: selected,
+      collaboration: activeTask?.collaboration,
+      reasoningEffort,
+    };
+    hydratedTaskIdsRef.current.add(task.id);
+    setTasks((all) => [task, ...all]);
+    claimTaskView(task.id);
+    setActiveTaskId(task.id);
+    setMessages([]);
+    setActivities([]);
+    setInput("");
+    setAttachedFiles([]);
+    setAttachedImages([]);
+    setUsage({ input: 0, output: 0, cached: 0 });
+    setUsageResolved(false);
+    setDurationMs(0);
+    setUsedContextCount(0);
+    currentRequest.current = undefined;
+    setRunningId(undefined);
+    requestStartedRef.current = undefined;
+    contextByMessageRef.current.clear();
+    autoFollowRef.current = true;
+    setWorkspaceView("editor");
+    setStatusOpen(false);
+    setSshRemoteState(state);
+    setSshRemoteDialogTaskId(undefined);
   }
 
   async function createTask() {
@@ -2449,6 +2779,7 @@ export default function App() {
     setTasks((all) => [task, ...all]);
     claimTaskView(task.id);
     setActiveTaskId(task.id);
+    setWorkspaceView("chat");
     setMessages([]);
     setActivities([]);
     setInput("");
@@ -2538,6 +2869,8 @@ export default function App() {
     setRunningId(task.runningId);
     requestStartedRef.current = task.startedAt;
     setActiveTaskId(task.id);
+    setWorkspaceView(task.remoteWorkspace ? "editor" : "chat");
+    setSshRemoteState(undefined);
     setMessages(task.messages);
     setActivities(task.activities);
     setSelected(task.modelSelection || selected);
@@ -2552,15 +2885,34 @@ export default function App() {
     setAttachedImages(attachmentDraft?.images ?? []);
     contextByMessageRef.current.clear();
     autoFollowRef.current = targetScroll.atBottom;
+    conversationScrollControllerRef.current.reset();
     setShowScrollToBottom(!targetScroll.atBottom);
   }
 
   async function createConversation(workspacePath: string) {
+    const sourceTask = tasksRef.current.find(
+      (task) => task.workspacePath === workspacePath,
+    );
     const now = Date.now();
+    const taskId = uid();
+    let remoteWorkspace = sourceTask?.remoteWorkspace;
+    if (remoteWorkspace && window.kcode?.sshRemote) {
+      try {
+        const state = await window.kcode.sshRemote.connectSaved(
+          taskId,
+          remoteWorkspace.id,
+        );
+        remoteWorkspace = state.profile ?? remoteWorkspace;
+      } catch (error) {
+        setContextError(`SSH Remote 连接失败：${errorMessage(error)}`);
+        return;
+      }
+    }
     const task: TaskRecord = {
-      id: uid(),
+      id: taskId,
       name: "新对话",
       workspacePath,
+      remoteWorkspace,
       createdAt: now,
       updatedAt: now,
       messages: [],
@@ -2581,6 +2933,7 @@ export default function App() {
     });
     claimTaskView(task.id);
     setActiveTaskId(task.id);
+    setWorkspaceView(remoteWorkspace ? "editor" : "chat");
     setMessages([]);
     setActivities([]);
     setInput("");
@@ -2598,6 +2951,7 @@ export default function App() {
   }
 
   async function removeTask(task: TaskRecord) {
+    taskRuntimeStore.clear(task.id);
     delete initialDrafts.current[task.id];
     attachmentDraftsRef.current.delete(task.id);
     hydratedTaskIdsRef.current.delete(task.id);
@@ -2609,6 +2963,8 @@ export default function App() {
       JSON.stringify(initialDrafts.current),
     );
     if (window.kcode) {
+      if (task.remoteWorkspace)
+        await window.kcode.sshRemote.disconnect(task.id).catch(() => undefined);
       await window.kcode.chat.cancelSummary(task.id);
       const requestIds = task.messages
         .filter((message) => message.id.startsWith("assistant:"))
@@ -2629,6 +2985,7 @@ export default function App() {
         const attachmentDraft = attachmentDraftsRef.current.get(loadedNext.id);
         claimTaskView(loadedNext.id);
         setActiveTaskId(loadedNext.id);
+        setWorkspaceView(loadedNext.remoteWorkspace ? "editor" : "chat");
         setMessages(loadedNext.messages);
         setActivities(loadedNext.activities);
         setInput(initialDrafts.current[loadedNext.id] ?? "");
@@ -2644,6 +3001,7 @@ export default function App() {
       } else {
         claimTaskView("");
         setActiveTaskId("");
+        setWorkspaceView("chat");
         setMessages([]);
         setActivities([]);
         setRunningId(undefined);
@@ -2921,6 +3279,7 @@ export default function App() {
           ? {
               ...task,
               ...finalCompacted,
+              usage: clearPromptTokenSnapshot(task.usage),
               summarySnapshots: summarySnapshot(task),
               summaryMeta:
                 "summaryMeta" in finalCompacted
@@ -2954,18 +3313,27 @@ export default function App() {
       (item) => `${item.provider.id}|${item.model.id}` === task.modelSelection,
     );
     if (!target) return local;
+    const contextWindow =
+      target.model.contextWindow ?? inferContextWindow(target.model.modelId);
+    if (!contextWindow) return local;
     try {
       const result = await window.kcode.chat.summarize({
         taskId: task.id,
         providerId: target.provider.id,
         modelId: target.model.modelId,
-        source: local.contextSummary,
+        source: contextSummarySource(
+          task,
+          local.compactedMessageCount,
+          contextWindow,
+        ),
         ledger: local.contextLedger,
       });
+      const accepted = acceptModelContextSummary(local, result, contextWindow);
+      if (!accepted) return local;
       return {
         ...local,
-        contextSummary: result.summary,
-        contextLedger: result.ledger,
+        contextSummary: accepted.summary,
+        contextLedger: accepted.ledger,
         summaryMeta: {
           modelGenerated: true,
           durationMs: result.durationMs,
@@ -2993,6 +3361,7 @@ export default function App() {
           pending: [],
           connections: [],
         },
+        compactedMessageCount: task.compactedMessageCount ?? 0,
         modelGenerated: task.summaryMeta?.modelGenerated ?? false,
         durationMs: task.summaryMeta?.durationMs,
         usage: task.summaryMeta?.usage,
@@ -3024,6 +3393,7 @@ export default function App() {
             ? {
                 ...task,
                 ...compacted,
+                usage: clearPromptTokenSnapshot(task.usage),
                 summarySnapshots: summarySnapshot(task),
                 summaryMeta:
                   "summaryMeta" in compacted
@@ -3059,6 +3429,7 @@ export default function App() {
               contextSummary: undefined,
               contextLedger: undefined,
               compactedMessageCount: 0,
+              usage: clearPromptTokenSnapshot(task.usage),
               updatedAt: Date.now(),
             }
           : task,
@@ -3079,6 +3450,8 @@ export default function App() {
               ...task,
               contextSummary: snapshot.summary,
               contextLedger: snapshot.ledger,
+              compactedMessageCount: snapshot.compactedMessageCount ?? 0,
+              usage: clearPromptTokenSnapshot(task.usage),
               summaryMeta: {
                 modelGenerated: snapshot.modelGenerated,
                 durationMs: snapshot.durationMs ?? 0,
@@ -3167,6 +3540,27 @@ export default function App() {
       taskSummaryBusy
     )
       return;
+    if (requestTask.remoteWorkspace && window.kcode?.sshRemote) {
+      try {
+        const remoteState = await window.kcode.sshRemote.state(
+          taskId,
+          requestTask.remoteWorkspace.id,
+        );
+        const connected = remoteState.connected
+          ? remoteState
+          : await window.kcode.sshRemote.connectSaved(
+              taskId,
+              requestTask.remoteWorkspace.id,
+            );
+        if (taskIsCurrent()) setSshRemoteState(connected);
+      } catch (error) {
+        if (taskIsCurrent()) {
+          setContextError(`SSH Remote 连接失败：${errorMessage(error)}`);
+          setWorkspaceView("editor");
+        }
+        return;
+      }
+    }
     const requestedCollaboration = requestTask.collaboration;
     const executorTarget = requestedCollaboration
       ? models.find(
@@ -3301,17 +3695,10 @@ export default function App() {
       (total, file) => total + estimateTextTokens(file.content),
       0,
     );
-    const outputReserve = requestContextWindow
-      ? Math.max(
-          8_000,
-          Math.floor(
-            requestContextWindow *
-              (requestEfforts.some((effort) => effort !== "auto")
-                ? 0.18
-                : 0.12),
-          ),
-        )
-      : 8_000;
+    const outputReserve = outputTokenReserve(
+      requestContextWindow,
+      requestEfforts.some((effort) => effort !== "auto"),
+    );
     const requestCalibrationKey = `${target.provider.id}|${target.model.modelId}`;
     const requestCalibrationFactor =
       tokenCalibration[requestCalibrationKey] ?? 1;
@@ -3358,7 +3745,7 @@ export default function App() {
         let finalCompacted = compacted;
         try {
           finalCompacted = await improveSummaryWithModel(
-            requestTaskWithSelection,
+            { ...requestTaskWithSelection, messages: nextMessages },
             compacted,
           );
         } finally {
@@ -3388,6 +3775,7 @@ export default function App() {
               ? {
                   ...task,
                   ...finalCompacted,
+                  usage: clearPromptTokenSnapshot(task.usage),
                   summarySnapshots: summarySnapshot(task),
                   summaryMeta:
                     "summaryMeta" in finalCompacted
@@ -3471,6 +3859,7 @@ export default function App() {
       const response = `我已经检查了当前项目${requestFiles.length ? `和 **${requestFiles.length} 个上下文文件**` : ""}。当前使用${effortLabels[requestReasoningEffort]}推理强度，下一步建议优先完成：\n\n1. 接入工作区文件读取与代码搜索\n2. 建立工具调用的权限确认流程\n3. 在任务右侧展示实时执行进度\n\n\`\`\`ts\nconst result = await agent.run({\n  workspace: \"D:/project/kcode\",\n  model: \"${target.model.modelId}\",\n});\n\`\`\`\n\n> 当前模型通道正常，桌面端可以继续接入 Agent 工具循环。`;
       const chunks = response.match(/[\s\S]{1,12}/g) ?? [response];
       currentRequest.current = id;
+      taskRuntimeStore.start(taskId, id, requestStartedAt);
       setRunningId(id);
       setTasks((all) =>
         all.map((task) =>
@@ -3519,6 +3908,7 @@ export default function App() {
             ),
           );
           currentRequest.current = undefined;
+          taskRuntimeStore.finish(taskId, id);
           setRunningId(undefined);
           setTasks((all) =>
             all.map((task) =>
@@ -3542,6 +3932,7 @@ export default function App() {
     }
     const id = uid();
     requestTasksRef.current.set(id, taskId);
+    taskRuntimeStore.start(taskId, id, requestStartedAt);
     const assistantMessage: ChatMessage = {
       id: `assistant:${id}`,
       role: "assistant",
@@ -3589,6 +3980,7 @@ export default function App() {
       await window.kcode.chat.start({
         requestId: id,
         taskId,
+        connectionSessionId: requestTask.remoteWorkspace ? taskId : undefined,
         providerId: target.provider.id,
         modelId: target.model.modelId,
         messages: history,
@@ -3596,11 +3988,13 @@ export default function App() {
         permissionMode,
         permissionPolicy,
         workspacePath: requestTask.workspacePath,
+        remoteWorkspace: requestTask.remoteWorkspace,
         contextWindow: requestContextWindow,
         agentRole: collaboration ? "planner" : undefined,
         collaboration,
       });
     } catch (error) {
+      taskRuntimeStore.finish(taskId, id);
       const detail = errorMessage(error);
       const failure = detail
         ? `生成失败：模型请求未能启动。${detail}`
@@ -3700,6 +4094,7 @@ export default function App() {
       if (requestStartedRef.current)
         setDurationMs(completedAt - requestStartedRef.current);
       currentRequest.current = undefined;
+      if (activeTask?.id) taskRuntimeStore.finish(activeTask.id, requestId);
       setRunningId(undefined);
       clearPendingReasoning(requestId);
       clearStreamingProgress(requestId);
@@ -3814,6 +4209,7 @@ export default function App() {
           else {
             await window.kcode.chat.cancel(task.runningId);
             const completedAt = Date.now();
+            taskRuntimeStore.finish(task.id, task.runningId);
             setTasks((all) =>
               all.map((item) =>
                 item.id === task.id
@@ -3877,6 +4273,7 @@ export default function App() {
             .join("\n")}`
         : checkpoint.request.recoveryContext,
       taskId,
+      connectionSessionId: activeTask.remoteWorkspace ? taskId : undefined,
       messages: activeTask.messages.map(({ role, content, images }) => ({
         role,
         content,
@@ -3885,6 +4282,7 @@ export default function App() {
       permissionMode,
       permissionPolicy,
       contextWindow: selectedContextWindow,
+      remoteWorkspace: activeTask.remoteWorkspace,
     });
     requestTasksRef.current.set(id, taskId);
     const startedAt = Date.now();
@@ -3968,10 +4366,49 @@ export default function App() {
   // The context gauge must reflect what the model actually reads each turn (the
   // last prompt token count), not usage.input, which accumulates every turn's
   // prompt and balloons far past the window in a multi-round agentic run.
-  const contextTokens = Math.max(usage.promptTokens ?? 0, localContextTokens);
+  const contextTokens = usage.promptTokens ?? localContextTokens;
+  const contextTokenSource =
+    usage.promptTokens === undefined ? "estimated" : "reported";
   const selectedConnected = Boolean(selectedTarget?.provider.hasApiKey);
   const efforts = reasoningEffortsForModel(selectedTarget?.model);
   const supportsReasoning = efforts.some((effort) => effort !== "auto");
+  const draftAttachmentTokens = useMemo(
+    () =>
+      attachedFiles.reduce(
+        (total, file) => total + estimateTextTokens(file.content),
+        0,
+      ) +
+      Math.ceil(
+        attachedImages.reduce(
+          (total, image) => total + Math.min(image.size, 750_000),
+          0,
+        ) / 2_250,
+      ),
+    [attachedFiles, attachedImages],
+  );
+  const nextRequestTokens = useMemo(
+    () =>
+      estimateRequestContextTokens({
+        messages: deferredMessages,
+        compactedMessageCount: activeTask?.compactedMessageCount ?? 0,
+        contextSummary: activeTask?.contextSummary,
+        attachmentTokens: draftAttachmentTokens,
+        outputReserve: outputTokenReserve(
+          selectedContextWindow,
+          supportsReasoning,
+        ),
+        calibrationFactor,
+      }),
+    [
+      activeTask?.compactedMessageCount,
+      activeTask?.contextSummary,
+      calibrationFactor,
+      deferredMessages,
+      draftAttachmentTokens,
+      selectedContextWindow,
+      supportsReasoning,
+    ],
+  );
   useEffect(() => {
     setReasoningEffort((current) => {
       const next = normalizeEffort(current, efforts);
@@ -4062,6 +4499,7 @@ export default function App() {
   // Stable-identity wrappers so memoized Sidebar/TopBar skip streaming-tick
   // re-renders. Identity never changes; the latest closure is always invoked.
   const onStartNewTask = useEventCallback(() => void startNewTask());
+  const onStartSshRemote = useEventCallback(startSshRemote);
   const onReorderWorkspace = useEventCallback(
     (from: string | undefined, to: string) => reorderWorkspace(from, to),
   );
@@ -4082,6 +4520,13 @@ export default function App() {
   });
   const onOpenSettings = useEventCallback(openSettings);
   const onStartSidebarResize = useEventCallback(startSidebarResize);
+  const onWorkspaceViewChange = useEventCallback(
+    (view: "chat" | "editor") => {
+      setWorkspaceView(view);
+      setConversationSearchOpen(false);
+      if (view === "editor") setStatusOpen(false);
+    },
+  );
   const onUpdateStatusPanel = useEventCallback(updateStatusPanel);
   const onSetSidebarDeleteTarget = useEventCallback(
     (
@@ -4115,7 +4560,7 @@ export default function App() {
       <TitleBar appUpdate={appUpdate} setUpdateOpen={setUpdateOpen} />
       <div
         ref={appShellRef}
-        className={`app-shell ${sidebarOpen ? "" : "sidebar-collapsed"} ${statusOpen ? "" : "status-collapsed"} ${browserState.open ? "browser-open" : ""}`}
+        className={`app-shell ${sidebarOpen ? "" : "sidebar-collapsed"} ${statusOpen ? "" : "status-collapsed"} ${browserState.open ? "browser-open" : ""} ${settings ? "settings-open" : ""}`}
         style={
           {
             "--sidebar-width": `${sidebarWidth}px`,
@@ -4125,6 +4570,7 @@ export default function App() {
       >
         <Sidebar
           workspaceGroups={workspaceGroups}
+          taskStorageReady={taskStorageReady}
           activeTaskId={activeTask?.id}
           taskQuery={taskQuery}
           setTaskQuery={setTaskQuery}
@@ -4132,6 +4578,7 @@ export default function App() {
           setShowArchived={setShowArchived}
           collapsedWorkspaces={collapsedWorkspaces}
           startNewTask={onStartNewTask}
+          startSshRemote={onStartSshRemote}
           reorderWorkspace={onReorderWorkspace}
           reorderTask={onReorderTask}
           toggleWorkspace={onToggleWorkspace}
@@ -4141,9 +4588,12 @@ export default function App() {
           setDeleteTarget={onSetSidebarDeleteTarget}
           setContextError={setContextError}
           openSettings={onOpenSettings}
+          closeSidebar={closeSidebar}
           startSidebarResize={onStartSidebarResize}
         />
-        <main className="main">
+        <main
+          className={`main ${workspaceView === "editor" && activeTask?.remoteWorkspace ? "remote-editor-mode" : ""}`}
+        >
           <TopBar
             taskName={activeTask?.name || "新任务"}
             sidebarOpen={sidebarOpen}
@@ -4151,7 +4601,29 @@ export default function App() {
             statusOpen={statusOpen}
             updateStatusPanel={onUpdateStatusPanel}
             gitState={gitState}
+            remoteWorkspace={activeTask?.remoteWorkspace}
+            remoteState={sshRemoteState}
+            workspaceView={workspaceView}
+            setWorkspaceView={onWorkspaceViewChange}
           />
+          {workspaceView === "editor" && activeTask?.remoteWorkspace && (
+            <Suspense
+              fallback={
+                <div className="ssh-editor-loading">
+                  <LoaderCircle className="spinning" size={18} />
+                </div>
+              }
+            >
+              <SshRemoteEditor
+                key={`${activeTask.id}:${activeTask.remoteWorkspace.id}:${activeTask.remoteWorkspace.rootPath}`}
+                taskId={activeTask.id}
+                workspace={activeTask.remoteWorkspace}
+                state={sshRemoteState}
+                onStateChange={setSshRemoteState}
+                onReconnect={() => setSshRemoteDialogTaskId(activeTask.id)}
+              />
+            </Suspense>
+          )}
           <ConversationSearch
             open={conversationSearchOpen}
             live={Boolean(runningId)}
@@ -4162,6 +4634,7 @@ export default function App() {
           <ConversationArea
             conversationRef={conversationRef}
             handleConversationScroll={handleConversationScroll}
+            handleConversationWheel={handleConversationWheel}
             interruptBottomSettle={interruptBottomSettle}
             conversationTurns={conversationTurns}
             turnRailRef={turnRailRef}
@@ -4595,7 +5068,7 @@ export default function App() {
             </div>
           </div>
         </main>
-        {!browserState.open && !settings && (
+        {!browserState.open && !settings && workspaceView !== "editor" && (
           <StatusPanel
             runStatus={runStatus}
             activities={statusActivities}
@@ -4620,6 +5093,9 @@ export default function App() {
             usedContextCount={usedContextCount}
             selectedContextWindow={selectedContextWindow}
             contextTokens={contextTokens}
+            contextTokenSource={contextTokenSource}
+            nextRequestTokens={nextRequestTokens}
+            contextWindowEstimated={!selectedTarget?.model.contextWindow}
             calibrationFactor={calibrationFactor}
             compactActiveConversation={compactActiveConversation}
             summaryOpen={summaryOpen}
@@ -4681,6 +5157,15 @@ export default function App() {
             createTask={createTask}
             onClose={() => setPendingFolder(null)}
           />
+        )}
+        {sshRemoteDialogTaskId && (
+          <Suspense fallback={null}>
+            <SshRemoteDialog
+              taskId={sshRemoteDialogTaskId}
+              onConnected={createSshRemoteTask}
+              onClose={() => setSshRemoteDialogTaskId(undefined)}
+            />
+          </Suspense>
         )}
         {deleteTarget && (
           <DeleteDialog

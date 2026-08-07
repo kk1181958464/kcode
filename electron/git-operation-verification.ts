@@ -25,20 +25,52 @@ export function isNotGitRepositoryOutput(value: string) {
 export function requestedGitOperations(history: VerificationHistoryItem[]) {
   const content = relevantVerificationRequestContent(history);
   const operations = new Set<GitOperation>();
-  const asksForStatus =
-    /(?:是否|有没有|是不是|成功了吗|完成了吗|提交了吗|推送了吗|发布了吗|触发了吗|了没|了吗)[？?]?|\?$/i.test(
+  const asksForInformation =
+    /(?:为什么|为何|怎么会|怎么就|怎么回事|哪个|哪些|什么原因|是否|有没有|是不是|成功了吗|完成了吗|提交了吗|推送了吗|发布了吗|触发了吗|了没|了吗)[？?]?|\?$/i.test(
       content.trim(),
     );
   const explicitRequest =
     /(?:帮我|请(?!问)|麻烦|要你|开始|继续|把).{0,30}(?:提交|推送|发布|触发|commit|push|release)/i.test(
       content,
     );
-  if (asksForStatus && !explicitRequest) return operations;
-  if (/提交|\bcommit\b/i.test(content)) operations.add("commit");
-  if (/提交.{0,6}(?:到|至)\s*(?:GitHub|远端)|推送|\bpush\b/i.test(content))
-    operations.add("push");
-  if (/打包|发布|触发.{0,8}(?:Actions|工作流)|\brelease\b/i.test(content))
-    operations.add("release");
+  if (asksForInformation && !explicitRequest) return operations;
+
+  const commitRequested =
+    /\bgit\s+commit\b|\bcommit\b/i.test(content) ||
+    /(?:提交|commit).{0,10}(?:(?:到|至)\s*)?(?:GitHub|GitLab|Gitee|远端(?:仓库)?|Git\s*仓库|代码仓库)/i.test(
+      content,
+    ) ||
+    /(?:提交|commit)(?:一下|这些)?\s*(?:代码|改动|修改|变更|源码|项目)/i.test(
+      content,
+    ) ||
+    /(?:代码|改动|修改|变更|源码|项目).{0,12}(?:提交|commit)/i.test(content);
+  const pushRequested =
+    /\bgit\s+push\b/i.test(content) ||
+    /(?:提交|推送|push).{0,12}(?:(?:到|至)\s*)?(?:GitHub|GitLab|Gitee|远端(?:仓库)?|Git\s*仓库|代码仓库)/i.test(
+      content,
+    ) ||
+    /(?:代码|改动|修改|变更|源码|项目|分支|标签).{0,12}(?:推送|push)/i.test(
+      content,
+    ) ||
+    /(?:推送|push).{0,12}(?:代码|改动|修改|变更|源码|项目|分支|标签|origin|main|master)/i.test(
+      content,
+    ) ||
+    /\bcommit\b.{0,16}\bpush\b/i.test(content);
+  const releaseRequested =
+    /(?:触发|启动|重跑|重新运行).{0,16}(?:(?:GitHub\s*)?(?:Actions|工作流)|(?:发布|打包)(?:流程|任务|工作流)?)/i.test(
+      content,
+    ) ||
+    /(?:(?:GitHub\s*)?(?:Actions|工作流)).{0,16}(?:触发|启动|重跑|重新运行)/i.test(
+      content,
+    ) ||
+    /(?:创建|发布).{0,10}(?:GitHub\s*)?(?:Release|版本)|(?:版本).{0,10}发布|\brelease\b/i.test(
+      content,
+    ) ||
+    /\bgh\s+(?:workflow\s+run|run\s+rerun|release\s+create)\b/i.test(content);
+
+  if (commitRequested) operations.add("commit");
+  if (pushRequested) operations.add("push");
+  if (releaseRequested) operations.add("release");
   return operations;
 }
 
@@ -50,18 +82,32 @@ export function missingRequestedGitOperations(
 }
 
 export function claimedGitOperations(text: string) {
+  const proseText = text
+    .replace(/```[\s\S]*?```/g, "")
+    .replace(
+      /(?:如果|若|假如|一旦|\bif\b|\bwhen\b)[^。！？!?\n]{0,160}[。！？!?]?/gi,
+      "",
+    );
+  const assertedText = proseText.replace(
+    /(?:未|没有|尚未|无法|不能|并未).{0,10}(?:提交|推送|发布|触发|启动|commit|push|release)|\b(?:not|never|did not|could not|unable to)\b[^.!?\n]{0,40}\b(?:commit|push|release|trigger)\b/gi,
+    "",
+  );
   const operations = new Set<GitOperation>();
   if (
-    /(?:已|成功).{0,12}(?:提交|commit)|提交\s*[:：]\s*`?[0-9a-f]{7,40}/i.test(
-      text,
+    /(?:已|成功).{0,12}(?:提交|commit)|(?:我|我们)(?:已经|已)?(?:提交|commit)(?:了|完成)|提交\s*[:：]\s*`?[0-9a-f]{7,40}/i.test(
+      assertedText,
     )
   )
     operations.add("commit");
-  if (/(?:已|成功).{0,12}(?:推送|push)|(?:分支|标签).{0,10}已推送/i.test(text))
+  if (
+    /(?:已|成功).{0,12}(?:推送|push)|(?:我|我们|并|随后|然后|同时)(?:已经|已)?(?:推送|push)(?:了|完成)|(?:推送|push)(?:了|完成)|(?:分支|标签).{0,10}已推送/i.test(
+      assertedText,
+    )
+  )
     operations.add("push");
   if (
-    /(?:已|成功).{0,12}(?:触发|启动).{0,12}(?:打包|发布|Actions|工作流)|(?:Release|Actions).{0,12}(?:运行中|已创建|已触发)/i.test(
-      text,
+    /(?:已|成功).{0,12}(?:触发|启动).{0,12}(?:打包|发布|Actions|工作流)|(?:我|我们|并|随后|然后|同时)(?:已经|已)?(?:触发|启动)(?:了)?.{0,12}(?:打包|发布|Actions|工作流)|(?:Release|Actions).{0,12}(?:运行中|已创建|已触发)/i.test(
+      assertedText,
     )
   )
     operations.add("release");

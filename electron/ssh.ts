@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import {
   mkdirSync,
   statSync,
@@ -23,6 +23,8 @@ type SshSession = {
   host: string;
   port: number;
   username: string;
+  authType: "password" | "private-key";
+  hostFingerprint?: string;
 };
 
 type RemoteUndoSnapshot = {
@@ -45,7 +47,22 @@ export type SshConnectInput = {
   password?: string;
   privateKey?: string;
   passphrase?: string;
+  hostFingerprint?: string;
 };
+
+export function sshSessionInfo(sessionId: string) {
+  const session = sessions.get(sessionId);
+  return session
+    ? {
+        connected: true as const,
+        host: session.host,
+        port: session.port,
+        username: session.username,
+        authType: session.authType,
+        hostFingerprint: session.hostFingerprint,
+      }
+    : { connected: false as const };
+}
 
 const sessions = new Map<string, SshSession>();
 const remoteUndoSnapshots = new Map<string, RemoteUndoSnapshot>();
@@ -78,7 +95,18 @@ function friendlySshError(error: unknown, credentialKind?: SshCredentialKind) {
   if (/ENOTFOUND|EAI_AGAIN/i.test(message)) return "SSH 服务器地址无法解析。";
   if (/ECONNRESET|not connected|No response from server/i.test(message))
     return "SSH 连接已断开。";
+  if (/host denied|host key|verification failed/i.test(message))
+    return "SSH 主机密钥与已保存指纹不一致。请确认服务器身份后删除旧连接并重新建立。";
   return `SSH 操作失败：${message}`;
+}
+
+function fingerprintsMatch(left: string, right: string) {
+  const leftBytes = Buffer.from(left);
+  const rightBytes = Buffer.from(right);
+  return (
+    leftBytes.length === rightBytes.length &&
+    timingSafeEqual(leftBytes, rightBytes)
+  );
 }
 
 export function normalizeSshPrivateKey(value?: string) {
@@ -115,6 +143,7 @@ export async function connectSsh(
     throw new Error("SSH 端口必须是 1 到 65535 之间的整数。");
 
   const client = new Client();
+  let hostFingerprint: string | undefined;
   const credentialKind: SshCredentialKind =
     input.password && privateKey
       ? "password-and-key"
@@ -164,6 +193,14 @@ export async function connectSsh(
         readyTimeout: 30_000,
         keepaliveInterval: 10_000,
         keepaliveCountMax: 3,
+        hostHash: "sha256",
+        hostVerifier: (fingerprint: string) => {
+          hostFingerprint = fingerprint;
+          return (
+            !input.hostFingerprint ||
+            fingerprintsMatch(input.hostFingerprint, fingerprint)
+          );
+        },
       });
     } catch (error) {
       finish(new Error(friendlySshError(error, credentialKind)));
@@ -181,6 +218,8 @@ export async function connectSsh(
     host,
     port,
     username,
+    authType: privateKey ? "private-key" : "password",
+    hostFingerprint,
   };
   sessions.set(sessionId, session);
   client.on("close", () => {
@@ -193,6 +232,7 @@ export async function connectSsh(
     host,
     port,
     username,
+    hostFingerprint,
   };
 }
 
@@ -481,6 +521,19 @@ async function readRemoteText(
   });
 }
 
+export function assertSshWriteExpectation(
+  existed: boolean,
+  before: string,
+  expectedContent?: string | null,
+) {
+  if (expectedContent === null && existed)
+    throw new Error("远程文件已经存在，请换一个名称后重试。");
+  if (typeof expectedContent === "string" && (!existed || before !== expectedContent))
+    throw new Error(
+      "远程文件已被其他进程修改。请重新加载文件后再保存，避免覆盖新内容。",
+    );
+}
+
 function writeRemoteAtomic(
   sftp: SFTPWrapper,
   remotePath: string,
@@ -548,11 +601,51 @@ export async function listSshDirectory(
     );
     return entries.slice(0, 1000).map((entry) => ({
       name: entry.filename,
-      type: entry.attrs.isDirectory() ? "directory" : "file",
+      type: entry.attrs.isSymbolicLink()
+        ? ("symlink" as const)
+        : entry.attrs.isDirectory()
+          ? ("directory" as const)
+          : ("file" as const),
       size: entry.attrs.size,
       modifiedAt: entry.attrs.mtime,
       mode: entry.attrs.mode,
     }));
+  } finally {
+    sftp.end();
+  }
+}
+
+export async function resolveSshRoot(
+  sessionId: string,
+  requestId: string,
+  requestedPath: string,
+  signal: AbortSignal,
+) {
+  const session = getSession(sessionId, requestId);
+  const sftp = await getSftp(session, signal);
+  try {
+    const home = await sftpOperation<string>(sftp, signal, (complete) =>
+      sftp.realpath(".", (error, absolutePath) =>
+        complete(
+          error ? new Error(friendlySshError(error)) : undefined,
+          absolutePath,
+        ),
+      ),
+    );
+    const raw = requestedPath.trim() || home;
+    const expanded = raw === "~"
+      ? home
+      : raw.startsWith("~/")
+        ? path.posix.join(home, raw.slice(2))
+        : raw;
+    return await sftpOperation<string>(sftp, signal, (complete) =>
+      sftp.realpath(expanded, (error, absolutePath) =>
+        complete(
+          error ? new Error(friendlySshError(error)) : undefined,
+          absolutePath,
+        ),
+      ),
+    );
   } finally {
     sftp.end();
   }
@@ -577,10 +670,11 @@ export async function readSshFile(
 export async function writeSshFile(
   sessionId: string,
   requestId: string,
-  activityId: string,
+  activityId: string | undefined,
   remotePath: string,
   content: string,
   signal: AbortSignal,
+  expectedContent?: string | null,
 ) {
   if (!remotePath) throw new Error("缺少远程文件路径。");
   if (Buffer.byteLength(content) > MAX_REMOTE_FILE_BYTES)
@@ -604,19 +698,21 @@ export async function writeSshFile(
       if (/no such file|not found|不存在/i.test(message)) existed = false;
       else throw error;
     }
+    assertSshWriteExpectation(existed, before, expectedContent);
     await writeRemoteAtomic(sftp, remotePath, content, signal, mode);
-    remoteUndoSnapshots.set(activityId, {
-      sessionId,
-      requestId,
-      remotePath,
-      before,
-      after: content,
-      existed,
-      mode,
-      host: session.host,
-      port: session.port,
-      username: session.username,
-    });
+    if (activityId)
+      remoteUndoSnapshots.set(activityId, {
+        sessionId,
+        requestId,
+        remotePath,
+        before,
+        after: content,
+        existed,
+        mode,
+        host: session.host,
+        port: session.port,
+        username: session.username,
+      });
     return { bytes: Buffer.byteLength(content), before, after: content };
   } finally {
     sftp.end();

@@ -4,12 +4,12 @@ import { readSseJson } from "./sse-stream";
 
 const encode = (value: string) => new TextEncoder().encode(value);
 
-async function collect(response: Response) {
+async function collect(response: Response, terminalGraceMs = 20) {
   const events: any[] = [];
   for await (const event of readSseJson(response, {
     signal: new AbortController().signal,
     idleTimeoutMs: 50,
-    terminalGraceMs: 20,
+    terminalGraceMs,
   }))
     events.push(event);
   return events;
@@ -75,7 +75,9 @@ test("keeps a short grace period for the OpenAI usage chunk", async () => {
       }, 5);
     },
   });
-  const events = await collect(new Response(body));
+  // Keep the test grace well below production's 750 ms while allowing for the
+  // Node test runner executing many files concurrently on Windows.
+  const events = await collect(new Response(body), 100);
   assert.equal(events.length, 3);
   assert.equal(events[1].usage.prompt_tokens, 10);
   assert.equal(events[2].type, "__sse_done");
@@ -152,4 +154,43 @@ test("classifies a truncated final SSE JSON event as an interrupted stream", asy
     collect(new Response(body)),
     /模型响应流意外中断（SSE 事件 JSON 不完整/,
   );
+});
+
+test("parses UTF-8 SSE events split across arbitrary transport chunks", async () => {
+  const source = encode(
+    'data: {"choices":[{"delta":{"content":"读取完成"}}]}\n\n' +
+      'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
+  );
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const sizes = [1, 2, 7, 3, 11, 5, 13];
+      let offset = 0;
+      let index = 0;
+      while (offset < source.length) {
+        const size = sizes[index++ % sizes.length];
+        controller.enqueue(source.slice(offset, offset + size));
+        offset += size;
+      }
+      controller.close();
+    },
+  });
+  const events = await collect(new Response(body));
+  assert.equal(events[0].choices[0].delta.content, "读取完成");
+  assert.equal(events[1].choices[0].finish_reason, "stop");
+});
+
+test("joins multi-line SSE data fields before parsing JSON", async () => {
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(
+        encode(
+          'data: {"choices":\n' +
+            'data: [{"delta":{},"finish_reason":"stop"}]}\n\n',
+        ),
+      );
+      controller.close();
+    },
+  });
+  const events = await collect(new Response(body));
+  assert.equal(events[0].choices[0].finish_reason, "stop");
 });

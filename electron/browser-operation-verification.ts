@@ -24,7 +24,7 @@ export function requestedBrowserOperations(
       content,
     );
   const implementationDescription =
-    /(?:修复|修改|开发|实现|优化|重构|排查|调试|代码|项目|组件|函数|逻辑|样式|bug|问题|卡住|卡顿|报错)/i.test(
+    /(?:修复|修改|改为|改成|切换为|替换为|开发|实现|优化|重构|排查|调试|代码|项目|组件|函数|逻辑|样式|页面交互|前端|弹窗|bug|问题|卡住|卡顿|报错)/i.test(
       content,
     );
   const startsWithBrowserAction =
@@ -78,6 +78,53 @@ export function requestedBrowserOperations(
     )
   )
     operations.add("verify");
+  return operations;
+}
+
+/** Browser actions the assistant says already happened in a completed turn. */
+export function claimedBrowserOperations(text: string) {
+  const proseText = text
+    .replace(/```[\s\S]*?```/g, "")
+    .replace(
+      /(?:如果|若|假如|一旦|\bif\b|\bwhen\b)[^。！？!?\n]{0,160}[。！？!?]?/gi,
+      "",
+    );
+  const assertedText = proseText.replace(
+    /(?:未|没有|尚未|无法|不能|并未).{0,10}(?:打开|访问|进入|导航|填写|输入|键入|登录|点击|选择|提交|发送|验证|确认|检查|刷新|截图)|\b(?:not|never|did not|could not|unable to)\b[^.!?\n]{0,40}\b(?:open|visit|navigate|fill|enter|type|log in|click|select|submit|verify|capture)\b/gi,
+    "",
+  );
+  const operations = new Set<BrowserOperation>();
+  const loginCompleted =
+    /(?:已|已经)(?:成功)?登录(?!页|页面|界面)|登录成功|\blogged in\b/i.test(
+      assertedText,
+    );
+  if (
+    /(?:已|已经|成功).{0,14}(?:打开|访问|进入|导航到).{0,28}(?:网页|网站|页面|浏览器|https?:\/\/)|(?:网页|网站|页面).{0,14}(?:已打开|打开成功|已进入)|\b(?:opened|visited|navigated to)\s+(?:the\s+)?(?:web(?:site|page)?|browser|https?:\/\/)/i.test(
+      assertedText,
+    )
+  )
+    operations.add("open");
+  if (
+    /(?:已|已经|成功).{0,14}(?:填写|输入|键入)|(?:表单|账号|密码|输入框).{0,14}(?:已填写|已输入|填写完成)|\b(?:filled|entered|typed)\b/i.test(
+      assertedText,
+    ) ||
+    loginCompleted
+  )
+    operations.add("type");
+  if (
+    /(?:已|已经|成功).{0,14}(?:点击|选择|提交|发送)|(?:按钮|菜单|选项|表单).{0,14}(?:已点击|已选择|已提交)|\b(?:clicked|selected|submitted|sent)\b/i.test(
+      assertedText,
+    ) ||
+    loginCompleted
+  )
+    operations.add("click");
+  if (
+    /(?:已|已经|成功).{0,16}(?:验证|确认|检查|刷新|截图).{0,20}(?:网页|网站|页面|结果|状态)|(?:网页|网站|页面).{0,16}(?:验证通过|确认正常|截图完成|显示正常)|\b(?:verified|confirmed|captured)\s+(?:the\s+)?(?:page|result|state|screenshot)\b/i.test(
+      assertedText,
+    )
+  )
+    operations.add("verify");
+  if (loginCompleted) operations.add("verify");
   return operations;
 }
 

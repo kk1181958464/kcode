@@ -1,7 +1,12 @@
 import { app, safeStorage } from "electron";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { inferContextWindow, type ProviderConfig } from "../src/types";
+import {
+  inferContextWindow,
+  type ModelConfig,
+  type ProviderConfig,
+  type ProviderProfile,
+} from "../src/types";
 import { validateProviderBaseUrl } from "./provider-url";
 
 type StoredProvider = Omit<ProviderConfig, "hasApiKey"> & {
@@ -175,6 +180,40 @@ export async function getProviderWithKey(id: string) {
       Buffer.from(provider.encryptedApiKey, "base64"),
     ),
   };
+}
+
+export async function updateProviderProfile(
+  id: string,
+  profile: ProviderProfile,
+) {
+  const all = await readStored();
+  const index = all.findIndex((item) => item.id === id);
+  if (index < 0) throw new Error("供应商不存在");
+  all[index] = { ...all[index], profile };
+  await writeStored(all);
+  return publicProvider(all[index]);
+}
+
+export async function updateModelCapabilities(
+  providerId: string,
+  modelId: string,
+  capabilities: Partial<
+    Pick<ModelConfig, "supportsResponses" | "supportsTools" | "streamMode">
+  >,
+) {
+  const all = await readStored();
+  const index = all.findIndex((item) => item.id === providerId);
+  if (index < 0) return;
+  let changed = false;
+  const models = all[index].models.map((model) => {
+    if (model.modelId !== modelId) return model;
+    const next = { ...model, ...capabilities };
+    changed ||= JSON.stringify(next) !== JSON.stringify(model);
+    return next;
+  });
+  if (!changed) return;
+  all[index] = { ...all[index], models };
+  await writeStored(all);
 }
 
 export async function exportProviderVault(): Promise<RemoteProvider[]> {

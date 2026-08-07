@@ -2,12 +2,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   claimedCodingOperations,
+  claimsTaskCompletion,
   claimsNoChangeNeeded,
   compactOperationEvidenceResult,
   hasRequestedUserInputEvidence,
+  hasSuccessfulToolEvidence,
   hasVerifiedNoChangeEvidence,
   hasVerifiedNoChangeReport,
   isAdvisoryOnlyRequest,
+  isUnsupportedTaskCompletionClaim,
   missingRequestedCodingOperations,
   relevantVerificationRequestContent,
   reportsBlockedCodingOperations,
@@ -113,6 +116,106 @@ test("detects coding work requested and falsely claimed by a text-only reply", (
     ],
     ["inspect", "modify", "validate"],
   );
+  assert.deepEqual(
+    [...claimedCodingOperations("我修改了 src/App.tsx，并运行了构建。")],
+    ["modify", "execute"],
+  );
+  assert.deepEqual(
+    [
+      ...claimedCodingOperations(
+        "SSH 服务器已连接，文件上传成功，远程日志下载完成。",
+      ),
+    ],
+    ["connect", "upload", "download"],
+  );
+  assert.deepEqual(
+    [
+      ...claimedCodingOperations(
+        "尚未修改文件，无法连接服务器，也没有上传或下载任何内容。",
+      ),
+    ],
+    [],
+  );
+  assert.deepEqual(
+    [...claimedCodingOperations("检查后确认当前实现正确，无需修改。")],
+    ["inspect"],
+  );
+  assert.deepEqual(
+    [...claimedCodingOperations("如果修改了文件，就需要重新运行测试。")],
+    [],
+  );
+  assert.deepEqual(
+    missingRequestedCodingOperations(
+      claimedCodingOperations("我修改了配置文件。"),
+      new Set(),
+    ),
+    ["modify"],
+  );
+});
+
+test("requires successful tool evidence only when a task requested execution", () => {
+  assert.equal(claimsTaskCompletion("任务已完成，问题已经解决。"), true);
+  assert.equal(
+    claimsTaskCompletion("任务尚未完成，目前只处理了一部分。"),
+    false,
+  );
+  assert.equal(hasSuccessfulToolEvidence([]), false);
+  assert.equal(
+    isUnsupportedTaskCompletionClaim("回答已完成。", false, []),
+    false,
+  );
+  assert.equal(
+    isUnsupportedTaskCompletionClaim("任务已完成。", true, []),
+    true,
+  );
+  assert.equal(
+    hasSuccessfulToolEvidence([
+      {
+        kind: "calls",
+        calls: [{ id: "failed", name: "run_command", input: {} }],
+      },
+      {
+        kind: "result",
+        callId: "failed",
+        content: '{"success":false,"data":{"executed":true,"exitCode":1}}',
+      },
+    ]),
+    false,
+  );
+  assert.equal(
+    hasSuccessfulToolEvidence([
+      {
+        kind: "calls",
+        calls: [{ id: "read", name: "read_file", input: {} }],
+      },
+      { kind: "result", callId: "read", content: '{"success":true}' },
+    ]),
+    true,
+  );
+  assert.equal(
+    isUnsupportedTaskCompletionClaim("任务已完成。", true, [
+      {
+        kind: "calls",
+        calls: [{ id: "read", name: "read_file", input: {} }],
+      },
+      { kind: "result", callId: "read", content: '{"success":true}' },
+    ]),
+    false,
+  );
+  assert.equal(
+    hasSuccessfulToolEvidence([
+      {
+        kind: "calls",
+        calls: [{ id: "question", name: "request_user_input", input: {} }],
+      },
+      {
+        kind: "result",
+        callId: "question",
+        content: '{"success":true}',
+      },
+    ]),
+    false,
+  );
 });
 
 test("requires structured successful tool results as coding evidence", () => {
@@ -178,6 +281,20 @@ test("detects execution requests and inherits the previous request for continuat
       ]),
     ],
     [],
+  );
+
+  assert.deepEqual(
+    [
+      ...requestedCodingOperations([
+        {
+          kind: "message",
+          role: "user",
+          content:
+            "我的页面，右上角门店标签改为切换门店，点击后弹窗，输入账号密码，直接登录另一个账号",
+        },
+      ]),
+    ],
+    ["modify"],
   );
 });
 

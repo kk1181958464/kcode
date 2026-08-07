@@ -28,6 +28,8 @@ const api: KCodeApi = {
     compact: () => ipcRenderer.invoke("state:compact"),
     taskHeaders: () => ipcRenderer.invoke("state:task-headers"),
     loadTask: (id) => ipcRenderer.invoke("state:load-task", id),
+    loadActivityPayload: (activityId) =>
+      ipcRenderer.invoke("state:load-activity-payload", activityId),
     saveTask: (id, value) => ipcRenderer.invoke("state:save-task", id, value),
     saveTaskOrder: (ids) => ipcRenderer.invoke("state:save-task-order", ids),
     deleteTask: (id) => ipcRenderer.invoke("state:delete-task", id),
@@ -43,6 +45,7 @@ const api: KCodeApi = {
       ipcRenderer.invoke("providers:save", provider, apiKey),
     remove: (id) => ipcRenderer.invoke("providers:remove", id),
     discover: (id) => ipcRenderer.invoke("providers:discover", id),
+    probe: (id) => ipcRenderer.invoke("providers:probe", id),
   },
   skills: {
     list: (refresh) => ipcRenderer.invoke("skills:list", refresh),
@@ -89,6 +92,33 @@ const api: KCodeApi = {
       ipcRenderer.invoke("workspace:git-file-diff", path, filePath),
     showFolderMenu: (path) =>
       ipcRenderer.invoke("workspace:show-folder-menu", path),
+  },
+  sshRemote: {
+    profiles: () => ipcRenderer.invoke("ssh-remote:profiles"),
+    connect: (input) => ipcRenderer.invoke("ssh-remote:connect", input),
+    adopt: (taskId, rootPath) =>
+      ipcRenderer.invoke("ssh-remote:adopt", taskId, rootPath),
+    connectSaved: (taskId, profileId) =>
+      ipcRenderer.invoke("ssh-remote:connect-saved", taskId, profileId),
+    state: (taskId, profileId) =>
+      ipcRenderer.invoke("ssh-remote:state", taskId, profileId),
+    disconnect: (taskId) =>
+      ipcRenderer.invoke("ssh-remote:disconnect", taskId),
+    forget: (profileId) => ipcRenderer.invoke("ssh-remote:forget", profileId),
+    list: (taskId, profileId, remotePath) =>
+      ipcRenderer.invoke("ssh-remote:list", taskId, profileId, remotePath),
+    read: (taskId, profileId, remotePath) =>
+      ipcRenderer.invoke("ssh-remote:read", taskId, profileId, remotePath),
+    write: (taskId, profileId, remotePath, content, expectedContent) =>
+      ipcRenderer.invoke(
+        "ssh-remote:write",
+        taskId,
+        profileId,
+        remotePath,
+        content,
+        expectedContent,
+      ),
+    pickPrivateKey: () => ipcRenderer.invoke("ssh-remote:pick-private-key"),
   },
   browser: {
     activate: (sessionId) => ipcRenderer.invoke("browser:activate", sessionId),

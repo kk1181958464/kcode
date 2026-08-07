@@ -3,6 +3,7 @@ export type LiveStreamEvent = {
   event: "stream";
   taskId: string;
   requestId: string;
+  sequence: number;
   content: string;
   reasoning?: string;
   progress?: string;
@@ -55,8 +56,15 @@ export class LiveStreamCache {
     this.prune(receivedAt);
     const key = this.key(userId, deviceId, event.taskId);
     const current = this.entries.get(key);
-    if (current && current.event.updatedAt > event.updatedAt)
-      return { deviceId, ...current.event };
+    if (current) {
+      const sameRequest = current.event.requestId === event.requestId;
+      const ordered =
+        sameRequest && current.event.sequence > 0 && event.sequence > 0;
+      const stale = ordered
+        ? event.sequence <= current.event.sequence
+        : event.updatedAt < current.event.updatedAt;
+      if (stale) return { deviceId, ...current.event };
+    }
     this.entries.delete(key);
     this.entries.set(key, {
       userId,

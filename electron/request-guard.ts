@@ -1,4 +1,5 @@
 import { networkFetch } from "./network";
+import { ModelAttemptBudget } from "./model-attempt-budget";
 
 const DEFAULT_FIRST_BYTE_TIMEOUT_MS = 120_000;
 const DEFAULT_IDLE_TIMEOUT_MS = 120_000;
@@ -11,6 +12,7 @@ type FetchWithRetryOptions = {
   retryDelayMs?: number;
   fetchImpl?: typeof fetch;
   onProgress?: (message: string) => void;
+  attemptBudget?: ModelAttemptBudget;
 };
 
 function isRetryableStatus(status: number) {
@@ -64,10 +66,12 @@ export async function fetchWithRetry(
     retryDelayMs = 500,
     fetchImpl = networkFetch,
     onProgress,
+    attemptBudget,
   } = options;
   let lastError: unknown;
   for (let attempt = 0; attempt <= retries; attempt += 1) {
     if (signal.aborted) throw abortReason(signal);
+    const requestAttempt = attemptBudget?.acquire() ?? attempt + 1;
     const controller = new AbortController();
     let timedOut = false;
     const abort = () => controller.abort(abortReason(signal));
@@ -78,12 +82,12 @@ export async function fetchWithRetry(
     }, firstByteTimeoutMs);
     const startedAt = Date.now();
     onProgress?.(
-      `请求已发送，正在等待上游模型首个响应${attempt ? `（第 ${attempt + 1} 次尝试）` : ""}…`,
+      `请求已发送，正在等待上游模型首个响应${requestAttempt > 1 ? `（总第 ${requestAttempt} 次尝试）` : ""}…`,
     );
     const progress = setInterval(() => {
       const seconds = Math.round((Date.now() - startedAt) / 1_000);
       onProgress?.(
-        `上游模型尚未返回首个响应，已等待 ${seconds} 秒${attempt ? `（第 ${attempt + 1} 次尝试）` : ""}…`,
+        `上游模型尚未返回首个响应，已等待 ${seconds} 秒${requestAttempt > 1 ? `（总第 ${requestAttempt} 次尝试）` : ""}…`,
       );
     }, WAIT_PROGRESS_INTERVAL_MS);
     try {
@@ -91,7 +95,11 @@ export async function fetchWithRetry(
         ...init,
         signal: controller.signal,
       });
-      if (isRetryableStatus(response.status) && attempt < retries) {
+      if (
+        isRetryableStatus(response.status) &&
+        attempt < retries &&
+        (!attemptBudget || attemptBudget.canAttempt())
+      ) {
         const delay = retryDelay(response, retryDelayMs * (attempt + 1));
         onProgress?.(
           `上游返回 ${response.status}，将在 ${Math.max(1, Math.ceil(delay / 1_000))} 秒后重试…`,
@@ -109,7 +117,11 @@ export async function fetchWithRetry(
         lastError = new Error(
           `模型请求等待响应超时（${Math.round(firstByteTimeoutMs / 1_000)} 秒）`,
         );
-        if (attempt >= retries) throw lastError;
+        if (
+          attempt >= retries ||
+          (attemptBudget && !attemptBudget.canAttempt())
+        )
+          throw lastError;
         const delay = retryDelayMs * (attempt + 1);
         onProgress?.(
           `上游长时间无响应，将在 ${Math.max(1, Math.ceil(delay / 1_000))} 秒后重试…`,
@@ -118,7 +130,8 @@ export async function fetchWithRetry(
         continue;
       }
       lastError = error;
-      if (attempt >= retries) throw error;
+      if (attempt >= retries || (attemptBudget && !attemptBudget.canAttempt()))
+        throw error;
       await wait(retryDelayMs * (attempt + 1), signal);
     } finally {
       clearTimeout(timer);

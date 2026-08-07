@@ -96,6 +96,7 @@ test("validates bounded live stream replacement events", () => {
       event: "stream",
       taskId: "task-1",
       requestId: "request-1",
+      sequence: 7,
       content: "实时输出\n",
       reasoning: "检查项目",
       progress: "正在读取文件",
@@ -106,11 +107,23 @@ test("validates bounded live stream replacement events", () => {
       event: "stream",
       taskId: "task-1",
       requestId: "request-1",
+      sequence: 7,
       content: "实时输出\n",
       reasoning: "检查项目",
       progress: "正在读取文件",
       updatedAt: 100,
     },
+  );
+  assert.throws(() =>
+    parseRemoteTaskEvent({
+      type: "task.event",
+      event: "stream",
+      taskId: "task-1",
+      requestId: "request-1",
+      sequence: -1,
+      content: "invalid",
+      updatedAt: 100,
+    }),
   );
   assert.throws(() =>
     parseRemoteTaskEvent({

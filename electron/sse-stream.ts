@@ -62,22 +62,24 @@ export async function* readSseJson(
   let terminal = false;
   let lastEventAt = Date.now();
   let lastProgressAt = lastEventAt;
-  let softTerminalDeadline = 0;
+  let softTerminalRemainingMs: number | undefined;
   const terminalGraceMs = options.terminalGraceMs ?? DEFAULT_TERMINAL_GRACE_MS;
   const idleTimeoutMs =
     options.idleTimeoutMs ?? DEFAULT_SEMANTIC_IDLE_TIMEOUT_MS;
   try {
     while (!terminal) {
       const now = Date.now();
-      if (softTerminalDeadline && now >= softTerminalDeadline) break;
+      if (
+        softTerminalRemainingMs !== undefined &&
+        softTerminalRemainingMs <= 0
+      )
+        break;
       const semanticRemaining = idleTimeoutMs - (now - lastEventAt);
       if (semanticRemaining <= 0)
         throw new Error(
           `模型响应流长时间没有有效事件（${Math.round(idleTimeoutMs / 1_000)} 秒）`,
         );
-      const terminalRemaining = softTerminalDeadline
-        ? softTerminalDeadline - now
-        : undefined;
+      const terminalRemaining = softTerminalRemainingMs;
       const readTimeout = Math.max(
         1,
         Math.min(
@@ -87,6 +89,7 @@ export async function* readSseJson(
         ),
       );
       let chunk: ReadableStreamReadResult<Uint8Array>;
+      const readStartedAt = Date.now();
       try {
         chunk = await readStreamChunk(
           reader,
@@ -95,9 +98,11 @@ export async function* readSseJson(
           options.onProgress,
         );
       } catch (error) {
-        if (softTerminalDeadline) break;
+        if (softTerminalRemainingMs !== undefined) break;
         throw error;
       }
+      if (softTerminalRemainingMs !== undefined)
+        softTerminalRemainingMs -= Math.max(0, Date.now() - readStartedAt);
       const { done, value } = chunk;
       buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
       const blocks = buffer.split(/\r?\n\r?\n/);
@@ -112,8 +117,8 @@ export async function* readSseJson(
             terminal = true;
             break;
           }
-          if (kind === "soft" && !softTerminalDeadline)
-            softTerminalDeadline = Date.now() + terminalGraceMs;
+          if (kind === "soft" && softTerminalRemainingMs === undefined)
+            softTerminalRemainingMs = terminalGraceMs;
         }
         if (terminal) break;
       }

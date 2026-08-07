@@ -7,7 +7,9 @@ import {
   FolderOpen,
   GripVertical,
   Plus,
+  PanelLeftClose,
   Search,
+  Server,
   Settings,
   Trash2,
 } from "lucide-react";
@@ -36,6 +38,7 @@ function sidebarRowKey(_: number, row: SidebarRow) {
 
 export interface SidebarProps {
   workspaceGroups: SidebarWorkspaceGroup[];
+  taskStorageReady: boolean;
   activeTaskId?: string;
   taskQuery: string;
   setTaskQuery(value: string): void;
@@ -43,6 +46,7 @@ export interface SidebarProps {
   setShowArchived(updater: (value: boolean) => boolean): void;
   collapsedWorkspaces: Set<string>;
   startNewTask(): void;
+  startSshRemote(): void;
   reorderWorkspace(sourcePath: string | undefined, targetPath: string): void;
   reorderTask(sourceId: string | undefined, targetId: string): void;
   toggleWorkspace(workspacePath: string): void;
@@ -56,11 +60,13 @@ export interface SidebarProps {
   ): void;
   setContextError(message: string): void;
   openSettings(section: SettingsSection): void;
+  closeSidebar(): void;
   startSidebarResize(event: React.PointerEvent): void;
 }
 
 export const Sidebar = memo(function Sidebar({
   workspaceGroups,
+  taskStorageReady,
   activeTaskId,
   taskQuery,
   setTaskQuery,
@@ -68,6 +74,7 @@ export const Sidebar = memo(function Sidebar({
   setShowArchived,
   collapsedWorkspaces,
   startNewTask,
+  startSshRemote,
   reorderWorkspace,
   reorderTask,
   toggleWorkspace,
@@ -77,6 +84,7 @@ export const Sidebar = memo(function Sidebar({
   setDeleteTarget,
   setContextError,
   openSettings,
+  closeSidebar,
   startSidebarResize,
 }: SidebarProps) {
   const [draggedTaskId, setDraggedTaskId] = useState<string>();
@@ -184,14 +192,39 @@ export const Sidebar = memo(function Sidebar({
           <strong>KCode</strong>
           <small>Agent workspace</small>
         </div>
+        <button
+          type="button"
+          className="sidebar-mobile-close"
+          title="关闭导航抽屉"
+          aria-label="关闭导航抽屉"
+          onClick={closeSidebar}
+        >
+          <PanelLeftClose size={16} />
+        </button>
       </div>
-      <button className="new-task" onClick={() => void startNewTask()}>
-        <span className="new-task-icon">
-          <Plus size={15} />
-        </span>
-        <span>新建任务</span>
-        <kbd>Ctrl N</kbd>
-      </button>
+      <div className="new-task-actions">
+        <button
+          className="new-task"
+          disabled={!taskStorageReady}
+          onClick={() => void startNewTask()}
+        >
+          <span className="new-task-icon">
+            <Plus size={15} />
+          </span>
+          <span>新建任务</span>
+          <kbd>Ctrl N</kbd>
+        </button>
+        <button
+          type="button"
+          className="new-ssh-remote"
+          title="新建 SSH Remote 任务"
+          aria-label="新建 SSH Remote 任务"
+          disabled={!taskStorageReady}
+          onClick={startSshRemote}
+        >
+          <Server size={15} />
+        </button>
+      </div>
       <div className="workspace-label">工作区与对话</div>
       <div className="task-filter">
         <Search size={13} />
@@ -282,14 +315,21 @@ export const Sidebar = memo(function Sidebar({
                 >
                   <ChevronDown size={13} />
                 </span>
-                <FolderOpen size={15} />
+                {row.group.remote ? (
+                  <Server size={15} />
+                ) : (
+                  <FolderOpen size={15} />
+                )}
                 <span className="workspace-name">{row.group.name}</span>
                 <small>{row.group.conversations.length}</small>
                 <button
                   title={`在 ${row.group.name} 新建对话`}
                   onClick={(event) => {
                     event.stopPropagation();
-                    void createConversation(row.group.workspacePath);
+                    void createConversation(
+                      row.group.conversations[0]?.workspacePath ??
+                        row.group.workspacePath,
+                    );
                   }}
                 >
                   <Plus size={14} />
@@ -325,12 +365,16 @@ export const Sidebar = memo(function Sidebar({
                 )
                   return;
                 void switchTask(row.task.id);
+                if (window.matchMedia("(max-width: 620px)").matches)
+                  closeSidebar();
               }}
               onKeyDown={(event) => {
                 if (event.target !== event.currentTarget) return;
                 if (event.key === "Enter" || event.key === " ") {
                   event.preventDefault();
                   void switchTask(row.task.id);
+                  if (window.matchMedia("(max-width: 620px)").matches)
+                    closeSidebar();
                 }
               }}
               onDragStart={(event) => {

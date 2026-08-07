@@ -22,7 +22,6 @@ import {
   LoaderCircle,
   RotateCcw,
   Terminal,
-  TextWrap,
   UserRound,
   X,
 } from "lucide-react";
@@ -39,6 +38,10 @@ import {
   executionNarrativePreview,
 } from "../../execution-narrative";
 import {
+  normalizeActivity,
+  summarizeActivities,
+} from "../../activity-view-model";
+import {
   summarizeExecutionPlan,
   type ExecutionPlanStepStatus,
 } from "../../execution-plan";
@@ -53,6 +56,10 @@ import { revealLocalPath } from "../../lib/reveal-path";
 import { effortLabels } from "../../lib/model-utils";
 import { MarkdownMessage } from "../common/MarkdownMessage";
 import { DiffView } from "../common/DiffView";
+import {
+  FileChangePreviewDialog,
+  type FileChangePreviewItem,
+} from "../common/FileChangePreviewDialog";
 import { LinkifiedText } from "../common/LinkifiedText";
 import {
   getStreamingText,
@@ -75,6 +82,10 @@ import {
   getActivityOutputTail,
   subscribeActivityOutput,
 } from "../../activity-output-store";
+import {
+  hydrateActivityPayload,
+  type ActivityPayload,
+} from "../../activity-payload";
 
 const ACTIVITY_INITIAL_RENDER_LIMIT = 32;
 const ACTIVITY_RENDER_PAGE_SIZE = 48;
@@ -95,48 +106,6 @@ function renderedActivityDetail(detail: string) {
     omitted,
   };
 }
-
-const BoundedDiffView = memo(function BoundedDiffView({
-  text,
-}: {
-  text: string;
-}) {
-  const [wrapLines, setWrapLines] = useState(true);
-  const [showFullDiff, setShowFullDiff] = useState(false);
-  const rendered = useMemo(
-    () => (showFullDiff ? { text, omitted: 0 } : renderedActivityDetail(text)),
-    [showFullDiff, text],
-  );
-  const lineCount = useMemo(() => text.split("\n").length, [text]);
-  return (
-    <>
-      {rendered.omitted > 0 && (
-        <div className="activity-output-truncated">
-          <span>
-            差异过大，已省略中间 {rendered.omitted.toLocaleString()} 个字符。
-          </span>
-          <button type="button" onClick={() => setShowFullDiff(true)}>
-            显示完整差异
-          </button>
-        </div>
-      )}
-      <div className="diff-view-controls">
-        <small>{lineCount.toLocaleString()} 行</small>
-        <button
-          type="button"
-          className={wrapLines ? "is-active" : ""}
-          title={wrapLines ? "关闭长行自动换行" : "开启长行自动换行"}
-          aria-label={wrapLines ? "关闭长行自动换行" : "开启长行自动换行"}
-          aria-pressed={wrapLines}
-          onClick={() => setWrapLines((value) => !value)}
-        >
-          <TextWrap size={13} />
-        </button>
-      </div>
-      <DiffView text={rendered.text} wrapLines={wrapLines} />
-    </>
-  );
-});
 
 function MessageItem({
   message,
@@ -345,6 +314,7 @@ const ActivityItem = memo(function ActivityItem({
   const [elapsedMs, setElapsedMs] = useState(() =>
     Math.max(0, (activity.completedAt ?? Date.now()) - activity.startedAt),
   );
+  const activityView = normalizeActivity(activity);
   const pending = activity.status === "waiting";
   const detail = activity.diff || activity.output;
   const rawReadableFailure =
@@ -363,9 +333,7 @@ const ActivityItem = memo(function ActivityItem({
   const executionNarrative = activityExecutionNarrative(activity);
   const liveOutput = activity.status === "running" && !detail;
   const executionModel =
-    activity.agentRole === "executor"
-      ? activity.modelDisplayName || activity.modelId
-      : undefined;
+    activity.agentRole === "executor" ? activityView.model : undefined;
   const revealPath = activityRevealPath(activity);
   useEffect(() => {
     if (activity.status === "failed") setExpanded(true);
@@ -494,21 +462,7 @@ const ActivityItem = memo(function ActivityItem({
             {activity.undone ? "已恢复" : undoing ? "恢复中" : "恢复"}
           </button>
         )}
-        <span className="activity-status">
-          {pending
-            ? "等待确认"
-            : activity.status === "running"
-              ? "执行中"
-              : activity.status === "success"
-                ? "完成"
-                : activity.status === "completed"
-                  ? `退出码 ${activity.exitCode ?? "非0"}`
-                  : activity.status === "denied"
-                    ? "已阻止"
-                    : activity.recoverable
-                      ? "访问受限"
-                      : "失败"}
-        </span>
+        <span className="activity-status">{activityView.statusLabel}</span>
         <ChevronDown size={14} />
       </div>
       {expanded && (
@@ -780,84 +734,96 @@ function ExecutionFileBreakdown({
   workspacePath: string;
   compact?: boolean;
 }) {
-  const [expandedFile, setExpandedFile] = useState<string>();
+  const [previewFile, setPreviewFile] = useState<string>();
+  const previewItems: FileChangePreviewItem[] = useMemo(
+    () =>
+      entries.map(([path, stats]) => ({
+        path,
+        diff: stats.diffs.join("\n\n"),
+        additions: stats.additions,
+        deletions: stats.deletions,
+        revealable: stats.revealable,
+      })),
+    [entries],
+  );
+  const visibleEntries = entries.slice(
+    0,
+    compact ? 4 : FILE_INITIAL_RENDER_LIMIT,
+  );
   if (!entries.length) return null;
   return (
-    <div
-      className={`execution-summary-file-breakdown ${compact ? "compact" : ""}`}
-      aria-label="本轮文件改动"
-    >
-      <header>
-        <strong>文件改动</strong>
-        <small>
-          {fileStats.files} 个文件 · +{fileStats.additions} -
-          {fileStats.deletions}
-        </small>
-      </header>
-      {entries.map(([file, stats]) => {
-        const diff = stats.diffs.join("\n\n");
-        const hasDiff = Boolean(diff);
-        const open = expandedFile === file;
-        return (
-          <div
-            className={`execution-summary-file-item ${open ? "open" : ""}`}
-            key={file}
-          >
-            <div
-              className={`execution-summary-file-row-wrap ${stats.revealable ? "revealable" : ""}`}
-            >
-              <button
-                type="button"
-                className={`execution-summary-file-row ${hasDiff ? "" : "no-diff"}`}
-                aria-expanded={hasDiff ? open : undefined}
-                aria-label={
-                  hasDiff ? `查看 ${file} 的改动` : `${file} 没有差异详情`
-                }
-                title={hasDiff ? "点击查看改动" : "此改动没有可显示的差异"}
-                onClick={() =>
-                  hasDiff && setExpandedFile(open ? undefined : file)
-                }
+    <>
+      <div
+        className={`execution-summary-file-breakdown ${compact ? "compact" : ""}`}
+        aria-label="本轮文件改动"
+      >
+        <header>
+          <strong>文件改动</strong>
+          <small>
+            {fileStats.files} 个文件 · +{fileStats.additions} -
+            {fileStats.deletions}
+          </small>
+        </header>
+        {visibleEntries.map(([file, stats]) => {
+          const hasDiff = stats.diffs.length > 0;
+          return (
+            <div className="execution-summary-file-item" key={file}>
+              <div
+                className={`execution-summary-file-row-wrap ${stats.revealable ? "revealable" : ""}`}
               >
-                {hasDiff ? (
-                  <ChevronDown
-                    size={12}
-                    className="execution-summary-file-chevron"
-                  />
-                ) : (
-                  <FileCode2 size={12} />
-                )}
-                <code title={file}>{file}</code>
-                <span>
-                  <b>+{stats.additions}</b>
-                  <i>-{stats.deletions}</i>
-                </span>
-              </button>
-              {stats.revealable && (
                 <button
                   type="button"
-                  className="execution-summary-file-reveal"
-                  title="在文件资源管理器中显示"
-                  aria-label={`在文件资源管理器中显示 ${file}`}
-                  onClick={() => void revealLocalPath(file, workspacePath)}
+                  className={`execution-summary-file-row ${hasDiff ? "" : "no-diff"}`}
+                  aria-haspopup={hasDiff ? "dialog" : undefined}
+                  aria-label={
+                    hasDiff ? `查看 ${file} 的改动` : `${file} 没有差异详情`
+                  }
+                  title={hasDiff ? "点击查看改动" : "此改动没有可显示的差异"}
+                  onClick={() => hasDiff && setPreviewFile(file)}
                 >
-                  <FolderOpen size={12} />
+                  {hasDiff ? (
+                    <ChevronRight size={12} />
+                  ) : (
+                    <FileCode2 size={12} />
+                  )}
+                  <code title={file}>{file}</code>
+                  <span>
+                    <b>+{stats.additions}</b>
+                    <i>-{stats.deletions}</i>
+                  </span>
                 </button>
-              )}
-            </div>
-            {open && hasDiff && (
-              <div className="execution-summary-file-diff">
-                <BoundedDiffView text={diff} />
+                {stats.revealable && (
+                  <button
+                    type="button"
+                    className="execution-summary-file-reveal"
+                    title="在文件资源管理器中显示"
+                    aria-label={`在文件资源管理器中显示 ${file}`}
+                    onClick={() => void revealLocalPath(file, workspacePath)}
+                  >
+                    <FolderOpen size={12} />
+                  </button>
+                )}
               </div>
-            )}
-          </div>
-        );
-      })}
-      {fileStats.files > entries.length && (
-        <footer>
-          还有 {fileStats.files - entries.length} 个文件，展开查看全部
-        </footer>
+            </div>
+          );
+        })}
+        {fileStats.files > visibleEntries.length && (
+          <footer>
+            还有 {fileStats.files - visibleEntries.length}{" "}
+            个文件，点击任一文件后可在弹窗中切换
+          </footer>
+        )}
+      </div>
+      {previewFile && (
+        <FileChangePreviewDialog
+          files={previewItems}
+          selectedPath={previewFile}
+          workspacePath={workspacePath}
+          onSelectPath={setPreviewFile}
+          onClose={() => setPreviewFile(undefined)}
+        />
       )}
-    </div>
+    </>
   );
 }
 
@@ -887,6 +853,36 @@ function activeExecutionCopy(activity: AgentActivity) {
     default:
       return { label: `正在${activity.title}`, target };
   }
+}
+
+function executorEvidence(activities: readonly AgentActivity[]) {
+  const executed = [...activities]
+    .reverse()
+    .find(
+      (activity) =>
+        activity.agentRole === "executor" &&
+        Boolean(activity.modelDisplayName || activity.modelId),
+    );
+  if (executed)
+    return {
+      model: executed.modelDisplayName || executed.modelId || "执行模型",
+      effort: executed.reasoningEffort,
+      executed: true,
+    };
+  const dispatched = [...activities]
+    .reverse()
+    .find(
+      (activity) =>
+        activity.tool === "spawn_agent" &&
+        typeof activity.input.model === "string" &&
+        activity.input.model,
+    );
+  if (!dispatched) return undefined;
+  return {
+    model: String(dispatched.input.model),
+    effort: undefined,
+    executed: false,
+  };
 }
 
 function PlanStepMark({
@@ -976,80 +972,70 @@ export const ExecutionSummary = memo(
     reasoningNode?: React.ReactNode;
   }) {
     const [expanded, setExpanded] = useState(false);
+    const [deferredPayloads, setDeferredPayloads] = useState<
+      Record<string, ActivityPayload | null>
+    >({});
+    const [payloadsLoading, setPayloadsLoading] = useState(false);
     const [visibleActivityCount, setVisibleActivityCount] = useState(
       ACTIVITY_INITIAL_RENDER_LIMIT,
     );
-    const fileStats = useMemo(
-      () => collectFileChangeStats(activities),
-      [activities],
+    useEffect(() => {
+      const pending = activities.filter(
+        (activity) =>
+          activity.payloadStored && !(activity.id in deferredPayloads),
+      );
+      if (!pending.length || !window.kcode?.state.loadActivityPayload) return;
+      let active = true;
+      setPayloadsLoading(true);
+      void Promise.all(
+        pending.map(
+          async (activity) =>
+            [
+              activity.id,
+              (await window.kcode.state.loadActivityPayload(
+                activity.id,
+              )) as ActivityPayload | null,
+            ] as const,
+        ),
+      )
+        .then((items) => {
+          if (!active) return;
+          setDeferredPayloads((current) => ({
+            ...current,
+            ...Object.fromEntries(items),
+          }));
+        })
+        .finally(() => active && setPayloadsLoading(false));
+      return () => {
+        active = false;
+      };
+    }, [activities, deferredPayloads]);
+    const displayActivities = useMemo(
+      () =>
+        activities.map((activity) =>
+          hydrateActivityPayload(activity, deferredPayloads[activity.id]),
+        ),
+      [activities, deferredPayloads],
     );
-    const previewFiles = fileStats.entries.slice(0, FILE_INITIAL_RENDER_LIMIT);
-    const compactPreviewFiles = fileStats.entries.slice(0, 4);
+    const fileStats = useMemo(
+      () => collectFileChangeStats(displayActivities),
+      [displayActivities],
+    );
     const planInfo = useMemo(
       () => summarizeExecutionPlan(allActivities),
       [allActivities],
     );
-    const inlineActivities = activities.slice(-4);
+    const inlineActivities = displayActivities.slice(-4);
     // Recomputing these passes on every streaming flush is wasted work; the
     // result only changes when the activity set changes.
-    const executionStats = useMemo(() => {
-      let commands = 0;
-      let agents = 0;
-      let completed = 0;
-      let failures = 0;
-      let limited = 0;
-      let active: AgentActivity | undefined;
-      for (const activity of activities) {
-        if (commandTools.includes(activity.tool)) commands += 1;
-        if (activity.tool === "spawn_agent") agents += 1;
-        if (activity.status === "success" || activity.status === "completed")
-          completed += 1;
-        if (activity.status === "failed" && activity.recoverable) limited += 1;
-        else if (activity.status === "failed" || activity.status === "denied")
-          failures += 1;
-        if (activity.status === "running" || activity.status === "waiting")
-          active = activity;
-      }
-      return {
-        commands,
-        agents,
-        completed,
-        failures,
-        limited,
-        active,
-        last: activities.at(-1),
-        waiting: active?.status === "waiting",
-      };
-    }, [activities]);
-    const executorEvidence = useMemo(() => {
-      const executed = [...activities]
-        .reverse()
-        .find(
-          (activity) =>
-            activity.agentRole === "executor" &&
-            Boolean(activity.modelDisplayName || activity.modelId),
-        );
-      if (executed)
-        return {
-          model: executed.modelDisplayName || executed.modelId || "执行模型",
-          effort: executed.reasoningEffort,
-          executed: true,
-        };
-      const dispatched = [...activities]
-        .reverse()
-        .find(
-          (activity) =>
-            activity.tool === "spawn_agent" &&
-            typeof activity.input.model === "string" &&
-            activity.input.model,
-        );
-      if (!dispatched) return undefined;
-      return {
-        model: String(dispatched.input.model),
-        effort: undefined,
-        executed: false,
-      };
-    }, [activities]);
+    const executionStats = useMemo(
+      () => summarizeActivities(displayActivities),
+      [displayActivities],
+    );
+    const executor = useMemo(
+      () => executorEvidence(displayActivities),
+      [displayActivities],
+    );
     const activeRunning =
       running && executionStats.active?.status === "running";
     const executionInProgress = activeRunning;
@@ -1073,8 +1059,8 @@ export const ExecutionSummary = memo(
       headline = running ? "访问受限，正在切换方案" : "已降级完成";
     } else if (executionStats.commands) {
       headline = `已执行 ${executionStats.commands} 个命令`;
-    } else if (activities.length) {
-      headline = `已完成 ${activities.length} 个步骤`;
+    } else if (displayActivities.length) {
+      headline = `已完成 ${displayActivities.length} 个步骤`;
     }
     useEffect(() => {
       if (executionStats.waiting) setExpanded(true);
@@ -1082,12 +1068,12 @@ export const ExecutionSummary = memo(
     useEffect(() => {
       if (!expanded) setVisibleActivityCount(ACTIVITY_INITIAL_RENDER_LIMIT);
     }, [expanded]);
-    if (!activities.length) return null;
+    if (!displayActivities.length) return null;
     const hiddenActivityCount = Math.max(
       0,
-      activities.length - visibleActivityCount,
+      displayActivities.length - visibleActivityCount,
     );
-    const visibleActivities = activities.slice(hiddenActivityCount);
+    const visibleActivities = displayActivities.slice(hiddenActivityCount);
     const showPlanList = Boolean(
       isLatestGroup &&
       planInfo &&
@@ -1133,22 +1119,21 @@ export const ExecutionSummary = memo(
               {executionStats.agents > 0 && (
                 <span>{executionStats.agents} 个子 Agent</span>
               )}
-              {executorEvidence && (
+              {executor && (
                 <span
                   className={`execution-summary-executor ${
-                    executorEvidence.executed ? "verified" : "dispatched"
+                    executor.executed ? "verified" : "dispatched"
                   }`}
                   title={
-                    executorEvidence.executed
+                    executor.executed
                       ? "已收到该执行模型的真实工具活动"
                       : "执行模型已派发，正在等待工具活动"
                   }
                 >
                   <Cpu size={10} />
-                  {executorEvidence.model}
-                  {executorEvidence.effort &&
-                    ` · ${effortLabels[executorEvidence.effort]}`}
-                  {executorEvidence.executed ? " 执行" : " 已派发"}
+                  {executor.model}
+                  {executor.effort && ` · ${effortLabels[executor.effort]}`}
+                  {executor.executed ? " 执行" : " 已派发"}
                 </span>
               )}
               {isLatestGroup && planInfo && (
@@ -1165,7 +1150,9 @@ export const ExecutionSummary = memo(
               )}
               {!executionStats.commands &&
                 !executionStats.agents &&
-                !fileStats.files && <span>{activities.length} 个步骤</span>}
+                !fileStats.files && (
+                  <span>{displayActivities.length} 个步骤</span>
+                )}
               {executionStats.failures > 0 && (
                 <span className="execution-summary-failures">
                   {executionStats.failures} 项失败
@@ -1205,9 +1192,9 @@ export const ExecutionSummary = memo(
                 </span>
               );
             })}
-            {activities.length > inlineActivities.length && (
+            {displayActivities.length > inlineActivities.length && (
               <small>
-                还有 {activities.length - inlineActivities.length} 项
+                还有 {displayActivities.length - inlineActivities.length} 项
               </small>
             )}
           </div>
@@ -1248,10 +1235,10 @@ export const ExecutionSummary = memo(
               </span>
             </div>
           )}
-        {!expanded && compactPreviewFiles.length > 0 && (
+        {!expanded && fileStats.entries.length > 0 && (
           <ExecutionFileBreakdown
             fileStats={fileStats}
-            entries={compactPreviewFiles}
+            entries={fileStats.entries}
             workspacePath={workspacePath}
             compact
           />
@@ -1261,7 +1248,9 @@ export const ExecutionSummary = memo(
             <div className="execution-summary-detail-head">
               <strong>执行明细</strong>
               <small>
-                {activities.length} 个步骤 · {executionStats.completed} 已完成
+                {displayActivities.length} 个步骤 · {executionStats.completed}{" "}
+                已完成
+                {payloadsLoading ? " · 正在加载完整输出" : ""}
               </small>
             </div>
             {hiddenActivityCount > 0 && (
@@ -1271,7 +1260,7 @@ export const ExecutionSummary = memo(
                 onClick={() =>
                   setVisibleActivityCount((count) =>
                     Math.min(
-                      activities.length,
+                      displayActivities.length,
                       count + ACTIVITY_RENDER_PAGE_SIZE,
                     ),
                   )
@@ -1294,7 +1283,7 @@ export const ExecutionSummary = memo(
             ))}
             <ExecutionFileBreakdown
               fileStats={fileStats}
-              entries={previewFiles}
+              entries={fileStats.entries}
               workspacePath={workspacePath}
             />
           </div>
@@ -1392,13 +1381,20 @@ function AssistantTailState({
 function CompletedProcessDisclosure({
   durationMs,
   failed,
+  activities,
   children,
 }: {
   durationMs: number;
   failed: boolean;
+  activities: AgentActivity[];
   children: React.ReactNode;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const fileStats = useMemo(
+    () => collectFileChangeStats(activities),
+    [activities],
+  );
+  const executor = useMemo(() => executorEvidence(activities), [activities]);
   return (
     <section
       className={`completed-process ${expanded ? "expanded" : ""} ${
@@ -1411,9 +1407,28 @@ function CompletedProcessDisclosure({
         aria-expanded={expanded}
         onClick={() => setExpanded((value) => !value)}
       >
-        <span>{failed ? "处理未完成" : "已处理"}</span>
-        <time>{formatCompactDuration(durationMs)}</time>
-        <ChevronRight size={13} />
+        <span className="completed-process-state">
+          {failed ? <CircleAlert size={13} /> : <CheckCircle2 size={13} />}
+          <strong>{failed ? "处理未完成" : "已处理"}</strong>
+          <time>{formatCompactDuration(durationMs)}</time>
+        </span>
+        <span className="completed-process-metrics">
+          <span>{activities.length} 个步骤</span>
+          {fileStats.files > 0 && <span>{fileStats.files} 个文件</span>}
+          {fileStats.files > 0 && (
+            <span className="completed-process-diff">
+              <b>+{fileStats.additions}</b>
+              <i>-{fileStats.deletions}</i>
+            </span>
+          )}
+          {executor && (
+            <span className="completed-process-executor" title={executor.model}>
+              <Cpu size={10} />
+              {executor.model}
+            </span>
+          )}
+        </span>
+        <ChevronRight className="completed-process-chevron" size={13} />
       </button>
       {expanded && <div className="completed-process-body">{children}</div>}
     </section>
@@ -1554,6 +1569,7 @@ const AssistantTimeline = memo(function AssistantTimeline({
             activities,
           )}
           failed={Boolean(message.error)}
+          activities={activities}
         >
           {timelineNodes}
         </CompletedProcessDisclosure>

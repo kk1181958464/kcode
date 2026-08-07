@@ -26,6 +26,76 @@ test("detects requested and claimed Git release operations", () => {
     [...claimedGitOperations("已提交并推送，Release 工作流已触发")],
     ["commit", "push", "release"],
   );
+  assert.deepEqual(
+    [...claimedGitOperations("我提交了修改、推送了分支并触发了打包工作流")],
+    ["commit", "push", "release"],
+  );
+  assert.deepEqual(
+    [...claimedGitOperations("尚未提交，无法推送，也没有成功触发发布工作流。")],
+    [],
+  );
+  assert.deepEqual(
+    [...claimedGitOperations("如果推送了分支，就会触发发布工作流。")],
+    [],
+  );
+  assert.deepEqual(
+    missingRequestedGitOperations(
+      claimedGitOperations("我提交了修改并推送了分支"),
+      new Set(["commit"]),
+    ),
+    ["push"],
+  );
+});
+
+test("does not mistake application submission language for Git work", () => {
+  const nonGitRequests = [
+    'index/order/send {"code":2,"msg":"提交微信发货信息失败，请重新发货，错误原因：支付单不存在"} 我去找哪个字段看',
+    "帮我排查订单提交失败和消息推送异常",
+    "查看发布消息接口的参数，并运行本地打包检查",
+    "为什么默认就走 Git 提交了？我没让它处理 Git",
+  ];
+  for (const content of nonGitRequests) {
+    assert.deepEqual(
+      requestedGitOperations([{ kind: "message", role: "user", content }]),
+      new Set(),
+      content,
+    );
+  }
+});
+
+test("keeps explicit code and repository Git requests actionable", () => {
+  const cases: Array<[string, string[]]> = [
+    ["提交代码", ["commit"]],
+    ["把这些改动提交并推送到远端", ["commit", "push"]],
+    ["运行 git commit 后再 git push", ["commit", "push"]],
+    ["触发 GitHub Actions 打包工作流", ["release"]],
+  ];
+  for (const [content, expected] of cases) {
+    assert.deepEqual(
+      [...requestedGitOperations([{ kind: "message", role: "user", content }])],
+      expected,
+      content,
+    );
+  }
+});
+
+test("does not inherit a business submission as Git work on continue", () => {
+  assert.deepEqual(
+    requestedGitOperations([
+      {
+        kind: "message",
+        role: "user",
+        content: "排查提交微信发货信息失败的问题",
+      },
+      {
+        kind: "message",
+        role: "assistant",
+        content: "接下来继续检查提交支付单号时使用的字段。",
+      },
+      { kind: "message", role: "user", content: "继续" },
+    ]),
+    new Set(),
+  );
 });
 
 test("requires successful tool results as Git evidence", () => {

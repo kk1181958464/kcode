@@ -2,6 +2,8 @@ import type { Protocol } from "../src/types";
 
 const FALLBACK_TTL_MS = 30 * 60_000;
 const chatFallbackUntil = new Map<string, number>();
+const fallbackKey = (providerId: string, modelId?: string) =>
+  `${providerId}\u0000${modelId ?? "*"}`;
 
 export function shouldFallbackResponses(
   baseUrl: string,
@@ -29,17 +31,33 @@ export function shouldFallbackResponses(
 export function effectiveOpenAiProtocol(
   providerId: string,
   configured: Protocol,
+  modelIdOrNow?: string | number,
   now = Date.now(),
 ): Protocol {
   if (configured !== "openai-responses") return configured;
-  const until = chatFallbackUntil.get(providerId) ?? 0;
-  if (until > now) return "openai-chat";
-  chatFallbackUntil.delete(providerId);
+  const modelId = typeof modelIdOrNow === "string" ? modelIdOrNow : undefined;
+  const timestamp = typeof modelIdOrNow === "number" ? modelIdOrNow : now;
+  const key = fallbackKey(providerId, modelId);
+  const until =
+    chatFallbackUntil.get(key) ??
+    chatFallbackUntil.get(fallbackKey(providerId)) ??
+    0;
+  if (until > timestamp) return "openai-chat";
+  chatFallbackUntil.delete(key);
   return configured;
 }
 
-export function rememberChatFallback(providerId: string, now = Date.now()) {
-  chatFallbackUntil.set(providerId, now + FALLBACK_TTL_MS);
+export function rememberChatFallback(
+  providerId: string,
+  modelIdOrNow?: string | number,
+  now = Date.now(),
+) {
+  const modelId = typeof modelIdOrNow === "string" ? modelIdOrNow : undefined;
+  const timestamp = typeof modelIdOrNow === "number" ? modelIdOrNow : now;
+  chatFallbackUntil.set(
+    fallbackKey(providerId, modelId),
+    timestamp + FALLBACK_TTL_MS,
+  );
 }
 
 export function clearProtocolFallbacks() {

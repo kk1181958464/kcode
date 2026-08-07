@@ -11,6 +11,7 @@ import {
   disconnectSsh,
   normalizeSshPrivateKey,
   runSshCommand,
+  sshSessionInfo,
 } from "./ssh";
 
 test("normalizes escaped newlines in SSH private keys", () => {
@@ -20,7 +21,7 @@ test("normalizes escaped newlines in SSH private keys", () => {
   );
 });
 
-test("connects without host fingerprint verification", async () => {
+test("records and verifies an SSH host fingerprint", async () => {
   const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
   const clients = new Set<Connection>();
   const server = new Server(
@@ -52,7 +53,26 @@ test("connects without host fingerprint verification", async () => {
     new AbortController().signal,
   );
   assert.equal(result.connected, true);
+  assert.equal(sshSessionInfo("fingerprint-task").authType, "password");
+  assert.match(result.hostFingerprint || "", /^[a-f0-9]+$/i);
   assert.equal(disconnectSsh("fingerprint-task"), true);
+  const verified = await connectSsh(
+    "fingerprint-task-verified",
+    "request-2",
+    { ...input, hostFingerprint: result.hostFingerprint },
+    new AbortController().signal,
+  );
+  assert.equal(verified.hostFingerprint, result.hostFingerprint);
+  assert.equal(disconnectSsh("fingerprint-task-verified"), true);
+  await assert.rejects(
+    connectSsh(
+      "fingerprint-task-rejected",
+      "request-3",
+      { ...input, hostFingerprint: "unexpected-fingerprint" },
+      new AbortController().signal,
+    ),
+    /主机密钥.*不一致/,
+  );
   for (const client of clients) client.end();
   await new Promise<void>((resolve) => server.close(() => resolve()));
 });

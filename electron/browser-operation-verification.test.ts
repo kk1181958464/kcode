@@ -1,10 +1,35 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  claimedBrowserOperations,
   missingRequestedBrowserOperations,
   requestedBrowserOperations,
   successfulBrowserEvidence,
 } from "./browser-operation-verification";
+
+test("requires tool evidence for browser actions claimed in final text", () => {
+  assert.deepEqual([...claimedBrowserOperations("已打开登录页面。")], ["open"]);
+  const claimed = claimedBrowserOperations(
+    "已打开登录页面，输入账号密码并点击提交，最后确认页面显示正常。",
+  );
+  assert.deepEqual([...claimed], ["open", "type", "click", "verify"]);
+  assert.deepEqual(
+    missingRequestedBrowserOperations(claimed, new Set(["open"])),
+    ["type", "click", "verify"],
+  );
+  assert.deepEqual(
+    [
+      ...claimedBrowserOperations(
+        "尚未打开页面，也没有输入账号、点击按钮或验证结果。",
+      ),
+    ],
+    [],
+  );
+  assert.deepEqual(
+    [...claimedBrowserOperations("如果已经点击提交，就检查页面结果。")],
+    [],
+  );
+});
 
 test("detects requested browser actions and ignores capability questions", () => {
   assert.deepEqual(
@@ -50,6 +75,7 @@ test("does not confuse Git commits or UI bug descriptions with browser actions",
     "提交改动并推送 main，再打新版本标签触发打包",
     "修复页面滚动卡顿和点击左侧节点的问题",
     "选择模型后修改代码并提交到 GitHub",
+    "我的页面，右上角门店标签改为切换门店，点击后弹窗，输入账号密码，直接登录另一个账号",
   ])
     assert.deepEqual(
       [

@@ -19,6 +19,7 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { CONTEXT_AUTO_COMPACT_RATIO } from "../../context";
 import { extractGitFileDiff } from "../../git-diff";
+import { normalizeActivity } from "../../activity-view-model";
 import { activityTarget, formatDuration, workingPhase } from "../../lib/format";
 import {
   normalizeEffort,
@@ -78,6 +79,9 @@ export interface StatusPanelProps {
   usedContextCount: number;
   selectedContextWindow?: number;
   contextTokens: number;
+  contextTokenSource: "reported" | "estimated";
+  nextRequestTokens: number;
+  contextWindowEstimated: boolean;
   calibrationFactor: number;
   compactActiveConversation(): void | Promise<void>;
   summaryOpen: boolean;
@@ -90,11 +94,10 @@ export interface StatusPanelProps {
 }
 
 function resultStatus(activity: AgentActivity) {
-  if (activity.status === "running") return "执行中";
-  if (activity.status === "waiting") return "待确认";
-  if (activity.status === "failed") return "失败";
-  if (activity.status === "denied") return "已拒绝";
-  return "通过";
+  const view = normalizeActivity(activity);
+  if (view.status === "waiting") return "待确认";
+  if (view.status === "denied") return "已拒绝";
+  return view.successful ? "通过" : view.statusLabel;
 }
 
 function statusHeadline(runStatus: TaskRunStatus, hasActivities: boolean) {
@@ -168,6 +171,9 @@ export function StatusPanel({
   usedContextCount,
   selectedContextWindow,
   contextTokens,
+  contextTokenSource,
+  nextRequestTokens,
+  contextWindowEstimated,
   calibrationFactor,
   compactActiveConversation,
   summaryOpen,
@@ -207,6 +213,12 @@ export function StatusPanel({
   ).length;
   const contextPercent = selectedContextWindow
     ? Math.min(100, Math.round((contextTokens / selectedContextWindow) * 100))
+    : 0;
+  const nextRequestPercent = selectedContextWindow
+    ? Math.min(
+        100,
+        Math.round((nextRequestTokens / selectedContextWindow) * 100),
+      )
     : 0;
   const autoCompactPercent = Math.round(CONTEXT_AUTO_COMPACT_RATIO * 100);
   const totalTokens = usage.input + usage.output;
@@ -525,7 +537,14 @@ export function StatusPanel({
           {selectedContextWindow ? (
             <div className="context-usage">
               <div>
-                <span>当前上下文占用</span>
+                <span>
+                  当前上下文
+                  <em className="context-source-label">
+                    {contextTokenSource === "reported"
+                      ? "渠道实测"
+                      : "本地估算"}
+                  </em>
+                </span>
                 <strong>{contextPercent}%</strong>
               </div>
               <div className="context-usage-bar">
@@ -539,14 +558,25 @@ export function StatusPanel({
                 <small>
                   {contextTokens.toLocaleString()} /{" "}
                   {selectedContextWindow.toLocaleString()} Token
+                  {contextWindowEstimated ? "（窗口推测值）" : ""}
                 </small>
-                <small>{autoCompactPercent}% 时自动压缩</small>
+              </div>
+              <div className="context-next-budget">
+                <span>
+                  下次请求预算
+                  <small>含附件与输出预留</small>
+                </span>
+                <strong>{nextRequestPercent}%</strong>
+                <small>{nextRequestTokens.toLocaleString()} Token</small>
+              </div>
+              <div className="context-auto-compact-note">
+                {autoCompactPercent}% 时自动压缩较早对话
               </div>
             </div>
           ) : (
             <div className="context-usage">
               <div>
-                <span>当前上下文占用</span>
+                <span>当前上下文</span>
                 <strong>未配置</strong>
               </div>
               <small>请在模型设置中填写上下文窗口</small>
@@ -696,7 +726,11 @@ export function StatusPanel({
                 ) : fileDiffError ? (
                   <pre className="git-diff-empty">{fileDiffError}</pre>
                 ) : selectedDiffText ? (
-                  <DiffView text={selectedDiffText} wrapLines={wrapDiffLines} />
+                  <DiffView
+                    text={selectedDiffText}
+                    wrapLines={wrapDiffLines}
+                    virtualize
+                  />
                 ) : (
                   <pre className="git-diff-empty">
                     {selectedDiffPath

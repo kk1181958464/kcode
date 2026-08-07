@@ -24,6 +24,8 @@ function renderConversationRun(running: boolean, finalResponse = false) {
     input: {},
     command: "npm test",
     textOffset: processText.length,
+    agentRole: "executor",
+    modelDisplayName: "GPT-5.6 Luna",
   };
   return renderToStaticMarkup(
     React.createElement(ConversationHistory, {
@@ -65,6 +67,8 @@ test("collapses completed process output and keeps only the final result visible
   assert.match(markup, /completed-process-trigger/);
   assert.match(markup, /已处理/);
   assert.match(markup, /1m 0s/);
+  assert.match(markup, /1 个步骤/);
+  assert.match(markup, /GPT-5\.6 Luna/);
   assert.match(markup, /最终结果：三个问题都已处理/);
   assert.doesNotMatch(markup, /先检查工作区/);
   assert.doesNotMatch(markup, /execution-summary/);

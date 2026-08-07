@@ -6,12 +6,14 @@ function stream(
   content: string,
   updatedAt: number,
   requestId = "request-1",
+  sequence = updatedAt,
 ): LiveStreamEvent {
   return {
     type: "task.event",
     event: "stream",
     taskId: "task-1",
     requestId,
+    sequence,
     content,
     updatedAt,
   };
@@ -26,6 +28,13 @@ test("retains the latest live output for reconnecting mobile clients", () => {
     { deviceId: "device-1", ...stream("new", 200) },
   ]);
   assert.equal(cache.list("another-user", undefined, 202).length, 0);
+});
+
+test("rejects a delayed stream snapshot by sequence even with a newer clock", () => {
+  const cache = new LiveStreamCache();
+  cache.update("user-1", "device-1", stream("latest", 100, "request-1", 3));
+  cache.update("user-1", "device-1", stream("late", 200, "request-1", 2));
+  assert.equal(cache.list("user-1", "device-1", 201)[0].content, "latest");
 });
 
 test("clears output after a matching task snapshot finishes", () => {

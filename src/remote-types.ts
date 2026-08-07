@@ -18,6 +18,8 @@ export type RemoteControlState = {
   configured: boolean;
   enabled: boolean;
   connected: boolean;
+  connectionPhase?:
+    "disabled" | "offline" | "connecting" | "online" | "superseded";
   serverUrl: string;
   username?: string;
   deviceId: string;
@@ -54,6 +56,7 @@ export type RemoteTaskStreamEvent = {
   event: "stream";
   taskId: string;
   requestId: string;
+  sequence: number;
   content: string;
   reasoning?: string;
   progress?: string;

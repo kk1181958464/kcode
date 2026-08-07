@@ -6,6 +6,7 @@ dist-electron/
 .env
 .env.*
 release/
+artifacts/
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal

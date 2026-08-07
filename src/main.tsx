@@ -2,7 +2,6 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
 import "./styles.css";
-import "./theme-dark.css";
 
 const savedTheme = localStorage.getItem("kcode.theme");
 const initialTheme =

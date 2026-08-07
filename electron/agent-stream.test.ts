@@ -130,6 +130,24 @@ test("keeps ordinary GLM-compatible delta chunks incremental", () => {
   a.consume({ choices: [{ delta: { content: "已更新" } }] });
   assert.equal(a.finish().text, "确认：工作区已更新");
 });
+test("auto-detects growing cumulative chunks from compatible relays", () => {
+  const a = new AgentStreamAssembler("openai-chat", undefined, undefined, {
+    chatChunkMode: "auto",
+  });
+  a.consume({ choices: [{ delta: { content: "正在读取" } }] });
+  a.consume({ choices: [{ delta: { content: "正在读取工作区" } }] });
+  a.consume({ choices: [{ delta: { content: "正在读取工作区" } }] });
+  assert.equal(a.finish().text, "正在读取工作区");
+});
+
+test("auto mode preserves short ordinary delta chunks", () => {
+  const a = new AgentStreamAssembler("openai-chat", undefined, undefined, {
+    chatChunkMode: "auto",
+  });
+  a.consume({ choices: [{ delta: { content: "a" } }] });
+  a.consume({ choices: [{ delta: { content: "apple" } }] });
+  assert.equal(a.finish().text, "aapple");
+});
 test("routes inline thinking tags to reasoning across fragmented chunks", () => {
   let streamedText = "";
   let streamedReasoning = "";

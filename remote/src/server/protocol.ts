@@ -250,11 +250,15 @@ export function parseRemoteTaskEvent(value: unknown) {
   const updatedAt = Number(value.updatedAt);
   if (!Number.isFinite(updatedAt) || updatedAt <= 0)
     throw new Error("实时事件时间无效");
+  const sequence = value.sequence === undefined ? 0 : Number(value.sequence);
+  if (!Number.isInteger(sequence) || sequence < 0)
+    throw new Error("实时事件序号无效");
   return {
     type: "task.event" as const,
     event: "stream" as const,
     taskId: stringValue(value.taskId, "任务 ID"),
     requestId: stringValue(value.requestId, "请求 ID"),
+    sequence,
     content: optionalText(value.content, "实时正文", 96_000) ?? "",
     reasoning: optionalText(value.reasoning, "实时思考", 8_000),
     progress: optionalText(value.progress, "实时状态", 1_000),

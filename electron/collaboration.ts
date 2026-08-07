@@ -19,6 +19,7 @@ const PLANNER_DISABLED_TOOLS = new Set<AgentToolName>([
   "browser_record_start",
   "browser_record_stop",
   "ssh_connect",
+  "ssh_set_workspace",
   "ssh_run",
   "ssh_list_directory",
   "ssh_read_file",
@@ -41,6 +42,41 @@ const PLANNER_DISABLED_TOOLS = new Set<AgentToolName>([
   "run_command",
 ]);
 
+const REMOTE_PLANNER_READ_TOOLS = new Set<AgentToolName>([
+  "ssh_list_directory",
+  "ssh_read_file",
+]);
+
+const REMOTE_WORKSPACE_DISABLED_TOOLS = new Set<AgentToolName>([
+  "list_directory",
+  "glob_files",
+  "read_many_files",
+  "path_info",
+  "read_file",
+  "search_code",
+  "apply_patch",
+  "write_file",
+  "make_directory",
+  "move_path",
+  "delete_path",
+  "git_status",
+  "git_remote_status",
+  "git_diff",
+  "git_log",
+  "git_show",
+  "start_process",
+  "process_output",
+  "stop_process",
+  "diagnostics",
+  "run_command",
+  "ssh_connect",
+  "ssh_set_workspace",
+  "ssh_disconnect",
+  "mysql_connect_via_ssh",
+  "sqlserver_connect_via_ssh",
+  "mongodb_connect_via_ssh",
+]);
+
 export function isPlannerCoordinator(
   request: Pick<ModelRequest, "agentRole" | "collaboration">,
 ) {
@@ -50,8 +86,18 @@ export function isPlannerCoordinator(
   );
 }
 
-export function plannerToolAllowed(tool: AgentToolName) {
-  return !PLANNER_DISABLED_TOOLS.has(tool);
+export function plannerToolAllowed(
+  tool: AgentToolName,
+  managedSshRemote = false,
+) {
+  return (
+    !PLANNER_DISABLED_TOOLS.has(tool) ||
+    (managedSshRemote && REMOTE_PLANNER_READ_TOOLS.has(tool))
+  );
+}
+
+export function remoteWorkspaceToolAllowed(tool: AgentToolName) {
+  return !REMOTE_WORKSPACE_DISABLED_TOOLS.has(tool);
 }
 
 export function executorModelOverrides(

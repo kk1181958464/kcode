@@ -4,6 +4,14 @@ import type {
   RemoteTaskStreamEvent,
   RemoteTaskSnapshot,
 } from "./remote-types";
+import type {
+  SshRemoteConnectInput,
+  SshRemoteEntry,
+  SshRemoteFile,
+  SshRemoteProfile,
+  SshRemoteState,
+  SshRemoteWorkspace,
+} from "./ssh-remote-types";
 
 export type Protocol =
   | "openai-responses"
@@ -55,6 +63,7 @@ export type AgentToolName =
   | "browser_record_start"
   | "browser_record_stop"
   | "ssh_connect"
+  | "ssh_set_workspace"
   | "ssh_run"
   | "ssh_list_directory"
   | "ssh_read_file"
@@ -107,6 +116,27 @@ export type ModelConfig = {
   contextWindow?: number;
   reasoningMode?: ReasoningMode;
   reasoningEfforts?: ReasoningEffort[];
+  supportsTools?: boolean;
+  supportsResponses?: boolean;
+  streamMode?: "delta" | "cumulative" | "auto";
+};
+
+export type ProviderProfile = {
+  checkedAt: number;
+  status: "healthy" | "degraded" | "auth-error" | "unreachable";
+  protocolFamily: "openai" | "anthropic" | "gemini";
+  normalizedBaseUrl: string;
+  latencyMs?: number;
+  supportsModelListing: boolean;
+  supportsResponses: "supported" | "unsupported" | "unknown";
+  streamMode?: "delta" | "cumulative" | "auto";
+  message?: string;
+};
+
+export type ProviderProbeResult = {
+  profile: ProviderProfile;
+  models: ModelConfig[];
+  suggestedProtocol?: Protocol;
 };
 
 export function inferReasoningConfig(
@@ -190,6 +220,7 @@ export type ProviderConfig = {
   enabled: boolean;
   hasApiKey: boolean;
   models: ModelConfig[];
+  profile?: ProviderProfile;
 };
 
 export type ChatMessage = {
@@ -224,6 +255,7 @@ export type AgentCollaborationConfig = {
 export type ModelRequest = {
   requestId?: string;
   taskId?: string;
+  connectionSessionId?: string;
   providerId: string;
   modelId: string;
   messages: Pick<ChatMessage, "role" | "content" | "images">[];
@@ -231,6 +263,7 @@ export type ModelRequest = {
   permissionMode: PermissionMode;
   permissionPolicy?: PermissionPolicy;
   workspacePath: string;
+  remoteWorkspace?: SshRemoteWorkspace;
   contextWindow?: number;
   agentDepth?: number;
   agentRole?: AgentRole;
@@ -283,6 +316,8 @@ export type AgentActivity = {
   planSteps?: string[];
   planStep?: number;
   output?: string;
+  /** Full output/diff is stored separately and loaded only when expanded. */
+  payloadStored?: boolean;
   errorSummary?: string;
   path?: string;
   command?: string;
@@ -390,6 +425,7 @@ export type SkillStoreItem = {
 export type ModelEvent =
   | { type: "text"; delta: string }
   | { type: "text_reset" }
+  | { type: "reasoning_reset" }
   | { type: "final_response"; textOffset: number; startedAt: number }
   | { type: "reasoning"; delta: string }
   | { type: "progress"; message: string }
@@ -403,7 +439,7 @@ export type ModelEvent =
   | { type: "error"; message: string }
   | { type: "done"; outcome?: "completed" | "blocked" };
 
-export type AgentEvent =
+type AgentEventPayload =
   | ModelEvent
   | { type: "activity"; activity: AgentActivity }
   | {
@@ -412,6 +448,7 @@ export type AgentEvent =
       mode: "append" | "replace";
       value: string;
     };
+export type AgentEvent = AgentEventPayload & { sequence?: number };
 
 export type AppUpdateState = {
   status:
@@ -461,6 +498,7 @@ export type KCodeApi = {
     compact(): Promise<{ tasks: number; bytes: number; path: string }>;
     taskHeaders(): Promise<unknown[]>;
     loadTask(id: string): Promise<unknown | null>;
+    loadActivityPayload(activityId: string): Promise<unknown | null>;
     saveTask(id: string, value: unknown): Promise<void>;
     saveTaskOrder(ids: string[]): Promise<void>;
     deleteTask(id: string): Promise<void>;
@@ -475,6 +513,7 @@ export type KCodeApi = {
     save(provider: ProviderConfig, apiKey?: string): Promise<ProviderConfig[]>;
     remove(id: string): Promise<ProviderConfig[]>;
     discover(id: string): Promise<ModelConfig[]>;
+    probe(id: string): Promise<ProviderProbeResult>;
   };
   skills: {
     list(refresh?: boolean): Promise<SkillStoreItem[]>;
@@ -516,6 +555,33 @@ export type KCodeApi = {
     gitState(path: string, includeDiff?: boolean): Promise<GitWorkspaceState>;
     gitFileDiff(path: string, filePath: string): Promise<GitFileDiff>;
     showFolderMenu(path: string): Promise<void>;
+  };
+  sshRemote: {
+    profiles(): Promise<SshRemoteProfile[]>;
+    connect(input: SshRemoteConnectInput): Promise<SshRemoteState>;
+    adopt(taskId: string, rootPath: string): Promise<SshRemoteState>;
+    connectSaved(taskId: string, profileId: string): Promise<SshRemoteState>;
+    state(taskId: string, profileId?: string): Promise<SshRemoteState>;
+    disconnect(taskId: string): Promise<SshRemoteState>;
+    forget(profileId: string): Promise<SshRemoteProfile[]>;
+    list(
+      taskId: string,
+      profileId: string,
+      remotePath?: string,
+    ): Promise<SshRemoteEntry[]>;
+    read(
+      taskId: string,
+      profileId: string,
+      remotePath: string,
+    ): Promise<SshRemoteFile>;
+    write(
+      taskId: string,
+      profileId: string,
+      remotePath: string,
+      content: string,
+      expectedContent?: string | null,
+    ): Promise<SshRemoteFile>;
+    pickPrivateKey(): Promise<string | null>;
   };
   browser: {
     activate(sessionId?: string): Promise<void>;

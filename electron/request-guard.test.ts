@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { fetchWithRetry, readStreamChunk } from "./request-guard";
+import { ModelAttemptBudget } from "./model-attempt-budget";
 
 test("retries one transient upstream response", async () => {
   let attempts = 0;
@@ -111,4 +112,39 @@ test("fails and cancels a model stream after an idle timeout", async () => {
     /响应流长时间没有新数据/,
   );
   assert.equal(cancelled, true);
+});
+
+test("does not multiply retries across calls sharing one model budget", async () => {
+  const budget = new ModelAttemptBudget(3);
+  let attempts = 0;
+  const fetchImpl = (async () => {
+    attempts += 1;
+    return new Response("unavailable", { status: 502 });
+  }) as typeof fetch;
+  for (let call = 0; call < 2; call += 1)
+    await fetchWithRetry(
+      "https://provider.example/v1/messages",
+      { method: "POST" },
+      {
+        signal: new AbortController().signal,
+        retries: 1,
+        retryDelayMs: 0,
+        attemptBudget: budget,
+        fetchImpl,
+      },
+    );
+  assert.equal(attempts, 3);
+  assert.equal(budget.remaining, 0);
+  await assert.rejects(
+    fetchWithRetry(
+      "https://provider.example/v1/messages",
+      { method: "POST" },
+      {
+        signal: new AbortController().signal,
+        attemptBudget: budget,
+        fetchImpl,
+      },
+    ),
+    /重试预算/,
+  );
 });

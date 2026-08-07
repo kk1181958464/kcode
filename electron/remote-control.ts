@@ -12,6 +12,10 @@ import type {
   RemoteTaskSnapshot,
 } from "../src/remote-types";
 import { normalizeRemoteDeviceName } from "../src/remote-device";
+import {
+  REMOTE_SUPERSEDED_CLOSE_CODE,
+  shouldReconnectRemote,
+} from "../src/remote-connection";
 import { exportProviderVault, importProviderVault } from "./store";
 
 type RemotePersisted = {
@@ -48,6 +52,7 @@ let socket: WebSocket | undefined;
 let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 let reconnectDelay = 1_000;
 let stopped = false;
+let connectionPhase: RemoteControlState["connectionPhase"] = "disabled";
 let pendingTasks: RemoteTaskSnapshot[] | undefined;
 let lastSyncedAt: number | undefined;
 const pendingResults: Array<{ id: string; ok: boolean; error?: string }> = [];
@@ -58,6 +63,7 @@ function stateFromPersisted(error?: string): RemoteControlState {
     configured: Boolean(persisted.username && persisted.encryptedToken),
     enabled: persisted.enabled,
     connected: socket?.readyState === WebSocket.OPEN,
+    connectionPhase,
     serverUrl: persisted.serverUrl,
     username: persisted.username,
     deviceId: persisted.deviceId,
@@ -88,6 +94,7 @@ async function readPersisted() {
     persisted = defaultPersisted();
   }
   loaded = true;
+  connectionPhase = persisted.enabled ? "offline" : "disabled";
   publishState();
 }
 
@@ -159,6 +166,7 @@ function sendSocket(value: unknown) {
 
 function scheduleReconnect() {
   if (stopped || !persisted.enabled || reconnectTimer) return;
+  connectionPhase = "connecting";
   reconnectTimer = setTimeout(() => {
     reconnectTimer = undefined;
     void connect();
@@ -168,6 +176,7 @@ function scheduleReconnect() {
 
 async function connect() {
   if (!loaded || stopped || !persisted.enabled || !token()) {
+    connectionPhase = persisted.enabled ? "offline" : "disabled";
     publishState();
     return;
   }
@@ -178,18 +187,25 @@ async function connect() {
     return;
   const accessToken = token();
   if (!accessToken) return;
+  let candidate: WebSocket;
   try {
-    socket = new WebSocket(websocketUrl(), [
+    candidate = new WebSocket(websocketUrl(), [
       "kcode-v1",
       `kcode-token.${accessToken}`,
     ]);
+    socket = candidate;
+    connectionPhase = "connecting";
+    publishState();
   } catch (error) {
+    connectionPhase = "offline";
     publishState(error instanceof Error ? error.message : "远程连接失败");
     scheduleReconnect();
     return;
   }
-  socket.addEventListener("open", () => {
+  candidate.addEventListener("open", () => {
+    if (socket !== candidate) return;
     reconnectDelay = 1_000;
+    connectionPhase = "online";
     publishState();
     if (pendingTasks) {
       sendSocket({ type: "tasks.replace", tasks: pendingTasks });
@@ -198,7 +214,8 @@ async function connect() {
     for (const result of pendingResults.splice(0))
       sendSocket({ type: "command.result", ...result });
   });
-  socket.addEventListener("message", (event) => {
+  candidate.addEventListener("message", (event) => {
+    if (socket !== candidate) return;
     try {
       const message = JSON.parse(String(event.data)) as Record<string, unknown>;
       if (message.type === "command") {
@@ -224,12 +241,32 @@ async function connect() {
       publishState(error instanceof Error ? error.message : "远程消息格式无效");
     }
   });
-  socket.addEventListener("close", () => {
+  candidate.addEventListener("close", (event) => {
+    if (socket !== candidate) return;
     socket = undefined;
+    if (event.code === REMOTE_SUPERSEDED_CLOSE_CODE) {
+      stopped = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      reconnectTimer = undefined;
+      connectionPhase = "superseded";
+      publishState();
+      return;
+    }
+    const reconnect = shouldReconnectRemote(
+      persisted.enabled,
+      stopped,
+      event.code,
+    );
+    connectionPhase = reconnect
+      ? "connecting"
+      : persisted.enabled
+        ? "offline"
+        : "disabled";
     publishState();
-    scheduleReconnect();
+    if (reconnect) scheduleReconnect();
   });
-  socket.addEventListener("error", () => {
+  candidate.addEventListener("error", () => {
+    if (socket !== candidate) return;
     publishState("远程连接暂时不可用");
   });
 }
@@ -282,6 +319,7 @@ async function finishLogin(response: Response, username: string) {
     .toString("base64");
   persisted.enabled = true;
   stopped = false;
+  connectionPhase = "connecting";
   await writePersisted();
   publishState();
   await syncProviderVault();
@@ -314,8 +352,12 @@ export async function setRemoteEnabled(enabled: boolean) {
   await writePersisted();
   if (enabled) {
     stopped = false;
+    connectionPhase = "connecting";
     void connect();
-  } else closeRemoteConnection();
+  } else {
+    connectionPhase = "disabled";
+    closeRemoteConnection();
+  }
   publishState();
 }
 
@@ -330,6 +372,7 @@ export async function setRemoteDeviceName(value: string) {
   closeRemoteConnection();
   if (shouldReconnect) {
     stopped = false;
+    connectionPhase = "connecting";
     reconnectDelay = 1_000;
     scheduleReconnect();
   }
@@ -341,8 +384,10 @@ export function closeRemoteConnection() {
   stopped = true;
   if (reconnectTimer) clearTimeout(reconnectTimer);
   reconnectTimer = undefined;
-  socket?.close();
+  const current = socket;
   socket = undefined;
+  current?.close();
+  connectionPhase = persisted.enabled ? "offline" : "disabled";
 }
 
 export async function syncRemoteTasks(tasks: RemoteTaskSnapshot[]) {

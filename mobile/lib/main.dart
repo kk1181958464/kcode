@@ -111,6 +111,9 @@ class _RemoteControlScreenState extends State<RemoteControlScreen>
   String? _loadError;
   bool _pageReady = false;
   bool _choosingFiles = false;
+  Timer? _retryTimer;
+  int _retryAttempt = 0;
+  bool _retryScheduled = false;
 
   @override
   void initState() {
@@ -124,19 +127,46 @@ class _RemoteControlScreenState extends State<RemoteControlScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _retryTimer?.cancel();
     super.dispose();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed && _pageReady) {
-      unawaited(
-        _controller.runJavaScript(
-          "window.dispatchEvent(new Event('focus'));"
-          "window.dispatchEvent(new Event('online'));",
-        ),
-      );
+    if (state != AppLifecycleState.resumed) return;
+    if (!_pageReady) {
+      _scheduleRetry(immediate: true);
+      return;
     }
+    unawaited(
+      _controller.runJavaScript(
+        "window.dispatchEvent(new Event('focus'));"
+        "window.dispatchEvent(new Event('online'));",
+      ),
+    );
+  }
+
+  void _scheduleRetry({bool immediate = false}) {
+    if (_pageReady || !mounted) return;
+    _retryTimer?.cancel();
+    const delays = <Duration>[
+      Duration(seconds: 2),
+      Duration(seconds: 4),
+      Duration(seconds: 8),
+      Duration(seconds: 12),
+      Duration(seconds: 20),
+    ];
+    final retryIndex = _retryAttempt < delays.length
+        ? _retryAttempt
+        : delays.length - 1;
+    final delay = immediate ? Duration.zero : delays[retryIndex];
+    if (!immediate) _retryAttempt += 1;
+    setState(() => _retryScheduled = true);
+    _retryTimer = Timer(delay, () {
+      if (!mounted || _pageReady) return;
+      setState(() => _retryScheduled = false);
+      unawaited(_reload(resetBackoff: false));
+    });
   }
 
   WebViewController _buildController() {
@@ -161,18 +191,27 @@ class _RemoteControlScreenState extends State<RemoteControlScreen>
           },
           onPageStarted: (_) {
             if (!mounted) return;
+            _retryTimer?.cancel();
             setState(() {
               _loadError = null;
               _pageReady = false;
               _progress = 0;
+              _retryScheduled = false;
             });
           },
           onPageFinished: (_) {
             if (!mounted) return;
+            final loaded = _loadError == null;
+            if (loaded) {
+              _retryTimer?.cancel();
+              _retryAttempt = 0;
+            }
             setState(() {
-              _pageReady = _loadError == null;
+              _pageReady = loaded;
               _progress = 100;
+              if (loaded) _retryScheduled = false;
             });
+            if (!loaded) _scheduleRetry();
           },
           onWebResourceError: (error) {
             if (error.isForMainFrame != true || !mounted) return;
@@ -180,6 +219,7 @@ class _RemoteControlScreenState extends State<RemoteControlScreen>
               _loadError = error.description;
               _pageReady = false;
             });
+            _scheduleRetry();
           },
           onNavigationRequest: (request) {
             final uri = Uri.tryParse(request.url);
@@ -264,10 +304,13 @@ class _RemoteControlScreenState extends State<RemoteControlScreen>
     await SystemNavigator.pop();
   }
 
-  Future<void> _reload() async {
+  Future<void> _reload({bool resetBackoff = true}) async {
+    _retryTimer?.cancel();
+    if (resetBackoff) _retryAttempt = 0;
     setState(() {
       _loadError = null;
       _pageReady = false;
+      _retryScheduled = false;
     });
     await _controller.loadRequest(_endpoint);
   }
@@ -389,7 +432,8 @@ class _RemoteControlScreenState extends State<RemoteControlScreen>
                   Positioned.fill(
                     child: _ConnectionErrorView(
                       details: _loadError!,
-                      onRetry: _reload,
+                      retryScheduled: _retryScheduled,
+                      onRetry: () => _reload(),
                       onSettings: _showEndpointEditor,
                     ),
                   ),
@@ -426,11 +470,13 @@ class _LaunchView extends StatelessWidget {
 class _ConnectionErrorView extends StatelessWidget {
   const _ConnectionErrorView({
     required this.details,
+    required this.retryScheduled,
     required this.onRetry,
     required this.onSettings,
   });
 
   final String details;
+  final bool retryScheduled;
   final Future<void> Function() onRetry;
   final Future<void> Function() onSettings;
 
@@ -477,6 +523,17 @@ class _ConnectionErrorView extends StatelessWidget {
                     height: 1.5,
                   ),
                 ),
+                if (retryScheduled) ...[
+                  const SizedBox(height: 10),
+                  const Text(
+                    '网络恢复后会自动重新连接',
+                    style: TextStyle(
+                      color: _accent,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
                 const SizedBox(height: 20),
                 Row(
                   mainAxisAlignment: MainAxisAlignment.center,

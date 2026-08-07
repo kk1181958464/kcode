@@ -34,6 +34,7 @@ import { LatestWriteQueue } from "./latest-write-queue";
 import {
   cancelContextSummary,
   discoverModels,
+  probeProvider,
   summarizeContext,
 } from "./gateway";
 import {
@@ -60,6 +61,7 @@ import {
   compactStateDatabase,
   deleteTask,
   listTaskHeaders,
+  loadActivityPayload,
   loadTask,
   loadState,
   saveTask,
@@ -89,9 +91,25 @@ import {
   modelRequestSchema,
   optionalIdSchema,
   stateKeySchema,
+  sshRemoteConnectSchema,
+  sshRemoteContentSchema,
+  sshRemoteExpectedContentSchema,
+  sshRemotePathSchema,
   urlSchema,
   workspacePathSchema,
 } from "./ipc-validation";
+import {
+  adoptActiveSshRemote,
+  connectSavedSshRemote,
+  connectSshRemote,
+  disconnectSshRemote,
+  forgetSshRemoteProfile,
+  listSshRemoteDirectory,
+  listSshRemoteProfiles,
+  readSshRemoteFile,
+  sshRemoteState,
+  writeSshRemoteFile,
+} from "./ssh-remote";
 import { resolveRevealPath } from "./reveal-path";
 import { initializeAppUpdater, scheduleUpdateChecks } from "./app-updater";
 import { createSkillStore, type ListedSkill } from "./skill-store";
@@ -569,6 +587,9 @@ app.whenReady().then(async () => {
   ipcMain.handle("state:load-task", (_e, id: string) =>
     loadTask(idSchema.parse(id)),
   );
+  ipcMain.handle("state:load-activity-payload", (_e, activityId: string) =>
+    loadActivityPayload(idSchema.parse(activityId)),
+  );
   ipcMain.handle("state:save-task", (_e, id: string, value: unknown) =>
     saveTask(idSchema.parse(id), value),
   );
@@ -644,6 +665,7 @@ app.whenReady().then(async () => {
     return result;
   });
   ipcMain.handle("providers:discover", (_e, id: string) => discoverModels(id));
+  ipcMain.handle("providers:probe", (_e, id: string) => probeProvider(id));
   ipcMain.handle("skills:list", (_e, refresh?: boolean) =>
     listPublicSkills(Boolean(refresh)),
   );
@@ -731,6 +753,90 @@ app.whenReady().then(async () => {
   ipcMain.handle("chat:summarize", (_e, request: ContextSummaryRequest) =>
     summarizeContext(request),
   );
+  ipcMain.handle("ssh-remote:profiles", () => listSshRemoteProfiles());
+  ipcMain.handle("ssh-remote:connect", (_e, input: unknown) =>
+    connectSshRemote(sshRemoteConnectSchema.parse(input)),
+  );
+  ipcMain.handle(
+    "ssh-remote:adopt",
+    (_e, taskId: string, rootPath: string) =>
+      adoptActiveSshRemote(
+        idSchema.parse(taskId),
+        sshRemotePathSchema.parse(rootPath),
+      ),
+  );
+  ipcMain.handle(
+    "ssh-remote:connect-saved",
+    (_e, taskId: string, profileId: string) =>
+      connectSavedSshRemote(
+        idSchema.parse(taskId),
+        idSchema.parse(profileId),
+      ),
+  );
+  ipcMain.handle(
+    "ssh-remote:state",
+    (_e, taskId: string, profileId?: string) =>
+      sshRemoteState(
+        idSchema.parse(taskId),
+        profileId ? idSchema.parse(profileId) : undefined,
+      ),
+  );
+  ipcMain.handle("ssh-remote:disconnect", (_e, taskId: string) =>
+    disconnectSshRemote(idSchema.parse(taskId)),
+  );
+  ipcMain.handle("ssh-remote:forget", (_e, profileId: string) =>
+    forgetSshRemoteProfile(idSchema.parse(profileId)),
+  );
+  ipcMain.handle(
+    "ssh-remote:list",
+    (_e, taskId: string, profileId: string, remotePath?: string) =>
+      listSshRemoteDirectory(
+        idSchema.parse(taskId),
+        idSchema.parse(profileId),
+        remotePath ? sshRemotePathSchema.parse(remotePath) : undefined,
+      ),
+  );
+  ipcMain.handle(
+    "ssh-remote:read",
+    (_e, taskId: string, profileId: string, remotePath: string) =>
+      readSshRemoteFile(
+        idSchema.parse(taskId),
+        idSchema.parse(profileId),
+        sshRemotePathSchema.parse(remotePath),
+      ),
+  );
+  ipcMain.handle(
+    "ssh-remote:write",
+    (
+      _e,
+      taskId: string,
+      profileId: string,
+      remotePath: string,
+      content: string,
+      expectedContent?: string | null,
+    ) =>
+      writeSshRemoteFile(
+        idSchema.parse(taskId),
+        idSchema.parse(profileId),
+        sshRemotePathSchema.parse(remotePath),
+        sshRemoteContentSchema.parse(content),
+        sshRemoteExpectedContentSchema.parse(expectedContent),
+      ),
+  );
+  ipcMain.handle("ssh-remote:pick-private-key", async (event) => {
+    const owner = BrowserWindow.fromWebContents(event.sender);
+    if (!owner || owner.isDestroyed())
+      throw new Error("无法确认 SSH 私钥选择窗口");
+    const result = await dialog.showOpenDialog(owner, {
+      title: "选择 SSH 私钥",
+      properties: ["openFile"],
+      filters: [
+        { name: "SSH 私钥", extensions: ["pem", "key", "ppk"] },
+        { name: "所有文件", extensions: ["*"] },
+      ],
+    });
+    return result.canceled ? null : (result.filePaths[0] ?? null);
+  });
   ipcMain.handle("chat:cancel-summary", (_e, taskId: string) =>
     cancelContextSummary(taskId),
   );
@@ -1054,10 +1160,14 @@ app.whenReady().then(async () => {
     const id = request.requestId ?? randomUUID();
     const controller = new AbortController();
     const startedAt = Date.now();
+    let eventSequence = 0;
     controllers.set(id, controller);
     const rendererEvents = new RendererEventBatcher((item: AgentEvent) => {
       if (!event.sender.isDestroyed())
-        event.sender.send("chat:event", id, item);
+        event.sender.send("chat:event", id, {
+          ...item,
+          sequence: ++eventSequence,
+        });
     });
     const removeSubagentEventSink = setSubagentEventSink(id, (item) =>
       rendererEvents.push(item),

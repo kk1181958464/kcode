@@ -1,4 +1,10 @@
-import { memo, useEffect, useState, type RefObject } from "react";
+import {
+  memo,
+  useEffect,
+  useState,
+  type RefObject,
+  type WheelEvent,
+} from "react";
 import { createPortal } from "react-dom";
 import { Bot, ChevronDown, ChevronUp, Settings } from "lucide-react";
 import type { ConversationTurn } from "../../conversation-window";
@@ -24,7 +30,8 @@ type TurnPreviewState = ConversationTurn & {
 export interface ConversationAreaProps {
   conversationRef: RefObject<HTMLElement | null>;
   handleConversationScroll(target: HTMLElement): void;
-  interruptBottomSettle(): void;
+  handleConversationWheel(event: WheelEvent<HTMLElement>): void;
+  interruptBottomSettle(userInitiated?: boolean): void;
   conversationTurns: ConversationTurn[];
   turnRailRef: RefObject<HTMLElement | null>;
   turnRailOverflow: { up: boolean; down: boolean };
@@ -56,6 +63,7 @@ const TURN_RAIL_OVERSCAN = 12;
 export const ConversationArea = memo(function ConversationArea({
   conversationRef,
   handleConversationScroll,
+  handleConversationWheel,
   interruptBottomSettle,
   conversationTurns,
   turnRailRef,
@@ -156,9 +164,9 @@ export const ConversationArea = memo(function ConversationArea({
       ref={conversationRef}
       className="conversation"
       onScroll={(event) => handleConversationScroll(event.currentTarget)}
-      onWheelCapture={interruptBottomSettle}
-      onTouchStart={interruptBottomSettle}
-      onPointerDown={interruptBottomSettle}
+      onWheelCapture={handleConversationWheel}
+      onTouchStart={() => interruptBottomSettle(true)}
+      onPointerDown={() => interruptBottomSettle()}
     >
       {conversationTurns.length > 1 && (
         <nav

@@ -7,6 +7,26 @@ export const urlSchema = z.string().trim().min(1).max(8192);
 export const workspacePathSchema = z.string().trim().min(1).max(32767);
 export const localPathSchema = z.string().trim().min(1).max(32767);
 export const browserWidthSchema = z.number().finite().min(200).max(4096);
+export const sshRemoteConnectSchema = z.object({
+  taskId: idSchema,
+  profileId: idSchema.optional(),
+  name: z.string().trim().max(160).optional(),
+  host: z.string().trim().min(1).max(255),
+  port: z.number().int().min(1).max(65_535).optional(),
+  username: z.string().trim().min(1).max(255),
+  rootPath: z.string().trim().max(32_767).optional(),
+  authType: z.enum(["password", "private-key"]),
+  password: z.string().max(16_384).optional(),
+  privateKeyPath: z.string().max(32_767).optional(),
+  privateKey: z.string().max(2_000_000).optional(),
+  passphrase: z.string().max(16_384).optional(),
+  remember: z.boolean().optional(),
+});
+export const sshRemotePathSchema = z.string().trim().min(1).max(32_767);
+export const sshRemoteContentSchema = z.string().max(2_000_000);
+export const sshRemoteExpectedContentSchema = sshRemoteContentSchema
+  .nullable()
+  .optional();
 
 const imageSchema = z.object({
   id: z.string(),
@@ -39,7 +59,8 @@ const collaborationSchema = z.object({
 
 export const modelRequestSchema = z.object({
   requestId: idSchema.optional(),
-  taskId: z.string().optional(),
+  taskId: idSchema.optional(),
+  connectionSessionId: idSchema.optional(),
   providerId: idSchema,
   modelId: idSchema,
   messages: z.array(
@@ -62,6 +83,19 @@ export const modelRequestSchema = z.object({
     })
     .optional(),
   workspacePath: workspacePathSchema,
+  remoteWorkspace: z
+    .object({
+      id: idSchema,
+      name: z.string().trim().min(1).max(160),
+      host: z.string().trim().min(1).max(255),
+      port: z.number().int().min(1).max(65_535),
+      username: z.string().trim().min(1).max(255),
+      rootPath: sshRemotePathSchema,
+      authType: z.enum(["password", "private-key"]),
+      hostFingerprint: z.string().trim().min(1).max(512).optional(),
+      remembered: z.boolean(),
+    })
+    .optional(),
   contextWindow: z.number().int().positive().optional(),
   agentRole: z.enum(["planner", "executor"]).optional(),
   collaboration: collaborationSchema.optional(),

@@ -14,6 +14,7 @@ export type AssembledTurn = {
 type PendingCall = { id: string; name: string; args: string; raw?: any };
 type AgentStreamAssemblerOptions = {
   normalizeCumulativeChatChunks?: boolean;
+  chatChunkMode?: "delta" | "cumulative" | "auto";
 };
 
 const INLINE_REASONING_OPEN_TAGS = ["<think>", "<thinking>"];
@@ -371,11 +372,15 @@ export class AgentStreamAssembler {
   }
   private normalizeChatChunk(current: string, chunk?: string) {
     if (!chunk) return "";
+    const mode =
+      this.options.chatChunkMode ??
+      (this.options.normalizeCumulativeChatChunks ? "cumulative" : "delta");
     if (
       this.protocol === "openai-chat" &&
-      this.options.normalizeCumulativeChatChunks &&
       current &&
-      chunk.startsWith(current)
+      chunk.startsWith(current) &&
+      (mode === "cumulative" ||
+        (mode === "auto" && (chunk === current || current.length >= 4)))
     )
       return chunk.slice(current.length);
     return chunk;

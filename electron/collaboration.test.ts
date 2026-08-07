@@ -5,6 +5,7 @@ import {
   isPlannerCoordinator,
   plannerCollaborationInstruction,
   plannerToolAllowed,
+  remoteWorkspaceToolAllowed,
 } from "./collaboration";
 import type { ModelRequest } from "../src/types";
 
@@ -36,6 +37,22 @@ test("recognizes planner coordination and restricts mutation tools", () => {
   assert.equal(plannerToolAllowed("apply_patch"), false);
   assert.equal(plannerToolAllowed("run_command"), false);
   assert.equal(plannerToolAllowed("ssh_write_file"), false);
+  assert.equal(plannerToolAllowed("ssh_set_workspace"), false);
+  assert.equal(plannerToolAllowed("ssh_read_file"), false);
+  assert.equal(plannerToolAllowed("ssh_read_file", true), true);
+  assert.equal(plannerToolAllowed("ssh_list_directory", true), true);
+  assert.equal(plannerToolAllowed("ssh_run", true), false);
+});
+
+test("managed SSH Remote tasks cannot fall back to local workspace tools", () => {
+  assert.equal(remoteWorkspaceToolAllowed("read_file"), false);
+  assert.equal(remoteWorkspaceToolAllowed("run_command"), false);
+  assert.equal(remoteWorkspaceToolAllowed("ssh_connect"), false);
+  assert.equal(remoteWorkspaceToolAllowed("ssh_set_workspace"), false);
+  assert.equal(remoteWorkspaceToolAllowed("ssh_read_file"), true);
+  assert.equal(remoteWorkspaceToolAllowed("ssh_write_file"), true);
+  assert.equal(remoteWorkspaceToolAllowed("ssh_run"), true);
+  assert.equal(remoteWorkspaceToolAllowed("web_search"), true);
 });
 
 test("routes an executor subagent to its configured model", () => {
