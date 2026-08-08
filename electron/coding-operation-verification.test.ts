@@ -4,6 +4,7 @@ import {
   claimedCodingOperations,
   claimsTaskCompletion,
   claimsNoChangeNeeded,
+  codingOperationsRequiringToolEvidence,
   compactOperationEvidenceResult,
   hasRequestedUserInputEvidence,
   hasSuccessfulToolEvidence,
@@ -824,7 +825,7 @@ test("treats a direct external API probe as inspection and execution only", () =
   );
 });
 
-test("does not force an unrequested edit after a verified API probe", () => {
+test("rejects an unrequested edit claim after a verified API probe", () => {
   const history = [
     {
       kind: "calls" as const,
@@ -869,7 +870,7 @@ test("does not force an unrequested edit after a verified API probe", () => {
       history,
       requested,
     ),
-    [],
+    ["modify"],
   );
 });
 
@@ -1195,18 +1196,31 @@ test("accepts ordered subagent evidence and invalidates it after a later parent 
 });
 
 test("assistant prose and legacy outputs are not execution evidence", () => {
+  const history = [
+    {
+      kind: "message" as const,
+      role: "assistant" as const,
+      content: "已经修改完成",
+    },
+    {
+      kind: "calls" as const,
+      calls: [{ id: "edit", name: "write_file", input: { path: "a.ts" } }],
+    },
+    { kind: "result" as const, callId: "edit", content: "修改成功" },
+  ];
+  const evidence = successfulCodingEvidence(history);
+  const claimed = claimedCodingOperations("已经修改完成");
+
+  assert.deepEqual([...evidence], []);
   assert.deepEqual(
-    [
-      ...successfulCodingEvidence([
-        { kind: "message", role: "assistant", content: "已经修改完成" },
-        {
-          kind: "calls",
-          calls: [{ id: "edit", name: "write_file", input: { path: "a.ts" } }],
-        },
-        { kind: "result", callId: "edit", content: "修改成功" },
-      ]),
-    ],
-    [],
+    missingVerifiedCodingOperations(
+      claimed,
+      claimed,
+      evidence,
+      history,
+      new Set(),
+    ),
+    ["modify"],
   );
 });
 
@@ -1230,4 +1244,16 @@ test("requires Kimi K3 to make the first tool call for explicit coding work", ()
     false,
   );
   assert.equal(shouldRequireCodingTool("kimi-k3", new Set(), new Set()), false);
+});
+
+test("does not turn an inspection-only explanation into a tool failure", () => {
+  const inspectionOnly = new Set<CodingOperation>(["inspect"]);
+  assert.deepEqual(
+    [...codingOperationsRequiringToolEvidence(inspectionOnly)],
+    [],
+  );
+  assert.equal(
+    shouldRequireCodingTool("kimi-k3", inspectionOnly, new Set()),
+    false,
+  );
 });

@@ -12,6 +12,12 @@ import type {
   SshRemoteState,
   SshRemoteWorkspace,
 } from "./ssh-remote-types";
+import type {
+  RuntimeEventPage,
+  RuntimeThreadStatus,
+  RuntimeTaskStatusSnapshot,
+  RuntimeTurnStatus,
+} from "./runtime-protocol";
 
 export type Protocol =
   | "openai-responses"
@@ -154,6 +160,17 @@ export type ManagedProcessInfo = {
   requestId: string;
   workspacePath: string;
   startedAt: number;
+};
+
+export type AgentRuntimeInfo = {
+  taskId: string;
+  requestId: string;
+  active: boolean;
+  threadStatus: RuntimeThreadStatus;
+  turnStatus: RuntimeTurnStatus;
+  lastSequence: number;
+  startedAt: number;
+  updatedAt: number;
 };
 
 export type ContextFile = {
@@ -441,6 +458,8 @@ export type AgentActivity = {
   undone?: boolean;
   /** Structured proof metadata used by the runtime completion verifier. */
   changed?: boolean;
+  /** Stable tool lifecycle identity, independent of the activity row ID. */
+  toolCallId?: string;
   /** Transient state that should also be visible on remote task views. */
   liveStatus?: string;
   executed?: boolean;
@@ -541,13 +560,28 @@ export type ModelEvent =
   | { type: "reasoning"; delta: string }
   | { type: "progress"; message: string }
   | {
+      type: "context_compaction";
+      phase: "started" | "completed";
+      windowId: string;
+      beforeItems: number;
+      afterItems?: number;
+      promptTokens: number;
+      changed?: boolean;
+    }
+  | {
       type: "usage";
       input: number;
       output: number;
       cached?: number;
       promptTokens?: number;
     }
-  | { type: "error"; message: string }
+  | {
+      type: "error";
+      message: string;
+      code?: string;
+      retryable?: boolean;
+      userAction?: "retry" | "change_provider" | "provide_input" | "none";
+    }
   | { type: "done"; outcome?: "completed" | "blocked" };
 
 type AgentEventPayload =
@@ -559,7 +593,18 @@ type AgentEventPayload =
       mode: "append" | "replace";
       value: string;
     };
-export type AgentEvent = AgentEventPayload & { sequence?: number };
+export type AgentEvent = AgentEventPayload & {
+  /** Optional runtime metadata added by the main-process journal. */
+  sequence?: number;
+  protocolVersion?: number;
+  eventId?: string;
+  itemId?: string;
+  taskId?: string;
+  requestId?: string;
+  emittedAt?: number;
+  eventKind?: string;
+  itemStatus?: string;
+};
 
 export type AppUpdateState = {
   status:
@@ -618,6 +663,15 @@ export type KCodeApi = {
       id: string,
       options?: TaskItemPageOptions,
     ): Promise<TaskItemPage<AgentActivity>>;
+    runtimeEvents(
+      taskId: string,
+      options?: {
+        requestId?: string;
+        afterSequence?: number;
+        limit?: number;
+      },
+    ): Promise<RuntimeEventPage>;
+    runtimeStatuses(): Promise<RuntimeTaskStatusSnapshot[]>;
     taskActivitiesForRequests(
       id: string,
       requestIds: string[],
@@ -668,11 +722,13 @@ export type KCodeApi = {
   };
   runtime: {
     processes(): Promise<ManagedProcessInfo[]>;
+    statuses(taskId?: string): Promise<AgentRuntimeInfo[]>;
     stopProcess(id: string): Promise<ManagedProcessInfo[]>;
     stopAll(): Promise<ManagedProcessInfo[]>;
   };
   chat: {
     start(request: ModelRequest): Promise<string>;
+    steer(requestId: string, content: string): Promise<void>;
     cancel(requestId: string): Promise<void>;
     onEvent(
       callback: (requestId: string, event: AgentEvent) => void,

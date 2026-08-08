@@ -2,6 +2,42 @@ export const MOBILE_MESSAGE_BATCH = 36;
 export const MOBILE_TASK_BATCH = 60;
 export const MOBILE_LIVE_TEXT_LIMIT = 24_000;
 
+export type LiveStreamOrder = {
+  requestId: string;
+  sequence?: number;
+  runtimeEventId?: string;
+  runtimeSequence?: number;
+  updatedAt: number;
+};
+
+/** Prefer the canonical runtime journal order when a stream carries it. */
+export function newerLiveStream<T extends LiveStreamOrder>(
+  current: T | undefined,
+  next: T,
+) {
+  if (!current) return true;
+  if (
+    current.requestId === next.requestId &&
+    current.runtimeEventId &&
+    next.runtimeEventId &&
+    current.runtimeEventId === next.runtimeEventId
+  )
+    return false;
+  if (
+    current.requestId === next.requestId &&
+    current.runtimeSequence !== undefined &&
+    next.runtimeSequence !== undefined
+  )
+    return next.runtimeSequence > current.runtimeSequence;
+  if (
+    current.requestId === next.requestId &&
+    current.sequence !== undefined &&
+    next.sequence !== undefined
+  )
+    return next.sequence > current.sequence;
+  return next.updatedAt >= current.updatedAt;
+}
+
 type ProcessActivity = {
   textOffset?: number;
   subagentId?: string;

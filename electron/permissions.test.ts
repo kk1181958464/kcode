@@ -1,9 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  evaluateCommandPolicy,
   isPermissionPolicyCustomized,
   permissionCategoryForCommand,
   resolvePermissionDecision,
+  tokenizeShellCommand,
 } from "../src/permissions";
 import type { PermissionPolicy } from "../src/types";
 
@@ -81,5 +83,26 @@ test("reports policy overrides as a custom permission setup", () => {
       gitPublish: "confirm",
     }),
     true,
+  );
+});
+
+test("tokenizes quoted PowerShell paths and shell segments", () => {
+  assert.deepEqual(
+    tokenizeShellCommand('& "C:\\Program Files\\Git\\cmd\\git.exe" -C repo commit -m test; npm test'),
+    [["C:\\Program Files\\Git\\cmd\\git.exe", "-C", "repo", "commit", "-m", "test"], ["npm", "test"]],
+  );
+});
+
+test("matches allow and deny rules by token prefix", () => {
+  const result = evaluateCommandPolicy("git status", [
+    { action: "allow", match: ["git", "status"] },
+    { action: "deny", match: ["git", "push"] },
+  ]);
+  assert.equal(result.action, "allow");
+  assert.equal(
+    evaluateCommandPolicy("git push origin main", [
+      { action: "deny", match: ["git", "push"] },
+    ]).action,
+    "deny",
   );
 });

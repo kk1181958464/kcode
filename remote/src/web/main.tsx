@@ -52,6 +52,7 @@ import {
   mergeLiveContent,
   MOBILE_MESSAGE_BATCH,
   MOBILE_TASK_BATCH,
+  newerLiveStream,
   reconcileById,
   visibleMessageWindow,
 } from "./mobile-ui";
@@ -109,6 +110,7 @@ type Task = {
   updatedAt: number;
   runningId?: string;
   runStatus?: string;
+  runtimeStatus?: string;
   modelSelection?: string;
   executorModelSelection?: string;
   messages: TaskMessage[];
@@ -156,19 +158,13 @@ type LiveStream = {
   content: string;
   reasoning?: string;
   progress?: string;
+  runtimeEventId?: string;
+  runtimeEventKind?: string;
+  runtimeItemStatus?: string;
+  runtimeSequence?: number;
+  runtimeProtocolVersion?: number;
   updatedAt: number;
 };
-
-function newerLiveStream(current: LiveStream | undefined, next: LiveStream) {
-  if (!current) return true;
-  if (
-    current.requestId === next.requestId &&
-    current.sequence !== undefined &&
-    next.sequence !== undefined
-  )
-    return next.sequence > current.sequence;
-  return next.updatedAt >= current.updatedAt;
-}
 
 function liveStreamKey(taskId: string, requestId: string) {
   return `${taskId}:${requestId}`;
@@ -219,6 +215,7 @@ function formatTime(timestamp: number) {
 }
 
 function statusText(task: Task) {
+  if (task.runtimeStatus === "waiting") return "等待确认";
   if (task.runStatus === "running" || task.runningId) return "运行中";
   if (task.runStatus === "failed") return "失败";
   if (task.runStatus === "cancelled") return "已停止";
@@ -229,6 +226,7 @@ function statusText(task: Task) {
 }
 
 function statusClass(task: Task) {
+  if (task.runtimeStatus === "waiting") return "blocked";
   if (task.runStatus === "running" || task.runningId) return "running";
   if (task.runStatus === "failed") return "failed";
   if (task.runStatus === "blocked") return "blocked";
@@ -544,6 +542,12 @@ const RemoteMessageView = memo(function RemoteMessageView({
     message.completedAt ?? message.finalResponseStartedAt,
     activities,
   );
+  const liveStatusLabel =
+    live?.runtimeItemStatus === "waiting"
+      ? "等待确认"
+      : live?.runtimeEventKind === "activity"
+        ? live?.progress || "正在执行工具"
+        : liveLabel || live?.progress || "正在生成";
   return (
     <article className={`remote-message ${message.role}`}>
       <div className="message-meta">
@@ -612,7 +616,7 @@ const RemoteMessageView = memo(function RemoteMessageView({
         {running && (
           <small className="live-generation-state">
             <i />
-            <span>{liveLabel || live?.progress || "正在生成"}</span>
+            <span>{liveStatusLabel}</span>
           </small>
         )}
         {message.imageCount ? (
@@ -843,8 +847,12 @@ function App() {
       if (newerLiveStream(current, stream))
         latestByTask.set(stream.taskId, stream);
       const task = taskStateRef.current.get(stream.taskId);
+      const turnTerminal =
+        stream.runtimeEventKind === "turn_completed" ||
+        stream.runtimeEventKind === "turn_failed" ||
+        stream.runtimeEventKind === "turn_interrupted";
       taskStateRef.current.set(stream.taskId, {
-        runningId: stream.requestId,
+        runningId: turnTerminal ? undefined : stream.requestId,
         updatedAt: Math.max(task?.updatedAt || 0, stream.updatedAt),
       });
     }
@@ -857,12 +865,35 @@ function App() {
             task.updatedAt > stream.updatedAt)
         )
           return task;
+        const turnTerminal =
+          stream.runtimeEventKind === "turn_completed" ||
+          stream.runtimeEventKind === "turn_failed" ||
+          stream.runtimeEventKind === "turn_interrupted";
+        if (turnTerminal)
+          return {
+            ...task,
+            runningId: undefined,
+            runStatus:
+              stream.runtimeEventKind === "turn_failed"
+                ? "failed"
+                : stream.runtimeEventKind === "turn_interrupted"
+                  ? "cancelled"
+                : "completed",
+            runtimeStatus:
+              stream.runtimeEventKind === "turn_failed"
+                ? "failed"
+                : stream.runtimeEventKind === "turn_interrupted"
+                  ? "interrupted"
+                : "completed",
+          };
         if (task.runningId === stream.requestId && task.runStatus === "running")
           return task;
         return {
           ...task,
           runningId: stream.requestId,
           runStatus: "running",
+          runtimeStatus:
+            stream.runtimeItemStatus === "waiting" ? "waiting" : "running",
         };
       }),
     );
@@ -1360,6 +1391,11 @@ function App() {
             content?: string;
             reasoning?: string;
             progress?: string;
+            runtimeEventId?: string;
+            runtimeEventKind?: string;
+            runtimeItemStatus?: string;
+            runtimeSequence?: number;
+            runtimeProtocolVersion?: number;
             updatedAt?: number;
             message?: string;
           };
@@ -1387,6 +1423,11 @@ function App() {
               content: message.content,
               reasoning: message.reasoning,
               progress: message.progress,
+              runtimeEventId: message.runtimeEventId,
+              runtimeEventKind: message.runtimeEventKind,
+              runtimeItemStatus: message.runtimeItemStatus,
+              runtimeSequence: message.runtimeSequence,
+              runtimeProtocolVersion: message.runtimeProtocolVersion,
               updatedAt: message.updatedAt,
             };
             queueLiveStreams([stream], message.deviceId);

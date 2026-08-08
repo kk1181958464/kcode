@@ -1,18 +1,34 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   CircleAlert,
+  Bot,
   FolderOpen,
   RefreshCw,
   Square,
   Terminal,
   Trash2,
 } from "lucide-react";
-import type { AgentCheckpoint, ManagedProcessInfo } from "../../types";
+import type {
+  AgentCheckpoint,
+  AgentRuntimeInfo,
+  ManagedProcessInfo,
+} from "../../types";
 import { errorMessage } from "../../lib/format";
+
+const runtimeStatusLabels: Record<string, string> = {
+  not_loaded: "未加载",
+  idle: "空闲",
+  running: "运行中",
+  waiting: "等待确认",
+  completed: "已完成",
+  failed: "失败",
+  interrupted: "已中断",
+};
 
 export function RuntimeSettings() {
   const [processes, setProcesses] = useState<ManagedProcessInfo[]>([]);
   const [checkpoints, setCheckpoints] = useState<AgentCheckpoint[]>([]);
+  const [runs, setRuns] = useState<AgentRuntimeInfo[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -20,12 +36,18 @@ export function RuntimeSettings() {
     if (!window.kcode?.runtime) return;
     setError("");
     try {
-      const [active, saved] = await Promise.all([
+      // Keep the settings page usable while an older preload is still loaded.
+      const runtimeStatuses = window.kcode.runtime.statuses
+        ? window.kcode.runtime.statuses()
+        : Promise.resolve<AgentRuntimeInfo[]>([]);
+      const [active, saved, runtimeRuns] = await Promise.all([
         window.kcode.runtime.processes(),
         window.kcode.chat.checkpoints(),
+        runtimeStatuses,
       ]);
       setProcesses(active);
       setCheckpoints(saved);
+      setRuns(runtimeRuns);
     } catch (reason) {
       setError(errorMessage(reason));
     }
@@ -93,6 +115,33 @@ export function RuntimeSettings() {
         </div>
       )}
       <div className="runtime-settings-grid">
+        <div className="settings-group runtime-group">
+          <header>
+            <span>
+              <Bot size={15} />
+              <strong>Agent 运行时</strong>
+            </span>
+            <small>{runs.filter((run) => run.active).length} 个活动</small>
+          </header>
+          {runs.length ? (
+            runs.slice(0, 20).map((run) => (
+              <div className="runtime-row" key={run.requestId}>
+                <span>
+                  <strong>
+                    {runtimeStatusLabels[run.threadStatus] ?? run.threadStatus}
+                  </strong>
+                  <small title={run.requestId}>
+                    {run.taskId} · #{run.lastSequence}
+                  </small>
+                </span>
+                <time>{new Date(run.updatedAt).toLocaleString()}</time>
+                <i className={run.active ? "runtime-online" : "runtime-idle"} />
+              </div>
+            ))
+          ) : (
+            <div className="settings-empty">当前没有 Agent 运行记录</div>
+          )}
+        </div>
         <div className="settings-group runtime-group">
           <header>
             <span>

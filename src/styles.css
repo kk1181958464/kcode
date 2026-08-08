@@ -488,6 +488,18 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.runtime-row > .runtime-online,
+.runtime-row > .runtime-idle {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 8px;
+  border-radius: 50%;
+  background: var(--success);
+}
+.runtime-row > .runtime-idle {
+  background: var(--muted);
+  opacity: 0.5;
+}
 .runtime-log-button {
   margin-top: 12px;
 }
@@ -10596,17 +10608,23 @@ button[aria-busy="true"] {
 /* SSH Remote */
 .new-task-actions {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 34px;
+  grid-template-columns: minmax(0, 1fr) 36px;
+  align-items: stretch;
   gap: 5px;
+  margin: 3px 8px 11px;
 }
 
 .new-task-actions .new-task {
+  width: 100%;
+  height: 36px;
   min-width: 0;
+  min-height: 36px;
+  margin: 0;
 }
 
 .new-ssh-remote {
-  width: 34px;
-  height: 34px;
+  width: 36px;
+  height: 36px;
   display: grid;
   place-items: center;
   padding: 0;

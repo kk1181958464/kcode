@@ -16,6 +16,7 @@ import {
   readSshFile,
   resolveSshRoot,
   sshSessionInfo,
+  sshSessionRecovery,
   writeSshFile,
 } from "./ssh";
 import { resolveSshWorkspacePath } from "./ssh-remote-path";
@@ -142,6 +143,7 @@ async function connectWithProfile(
         privateKey: secret.privateKey,
         passphrase: secret.passphrase,
         hostFingerprint: profile.hostFingerprint,
+        rememberForRemoteWorkspace: profile.remembered,
       },
       signal,
     );
@@ -299,9 +301,23 @@ export async function adoptActiveSshRemote(
   const profileId = bindings.get(taskId) || randomUUID();
   const runtime = runtimeProfiles.get(profileId);
   const stored = profiles.get(profileId);
+  const recovery = sshSessionRecovery(taskId);
+  const secret = runtime?.secret ?? recovery?.secret;
   const previousProfile =
     runtime?.profile ?? (stored ? publicProfile(stored) : undefined);
-  const profile: SshRemoteProfile = {
+  let encryptedSecret = stored?.encryptedSecret;
+  if (
+    !encryptedSecret &&
+    recovery?.rememberForRemoteWorkspace &&
+    secret
+  ) {
+    try {
+      encryptedSecret = encryptSecret(secret);
+    } catch {
+      // The active session remains usable when secure persistence is unavailable.
+    }
+  }
+  let profile: SshRemoteProfile = {
     id: profileId,
     name: previousProfile?.name || `${session.username}@${session.host}`,
     host: session.host,
@@ -310,15 +326,27 @@ export async function adoptActiveSshRemote(
     rootPath,
     authType: session.authType,
     hostFingerprint: session.hostFingerprint,
-    remembered: previousProfile?.remembered ?? false,
+    remembered: Boolean(encryptedSecret),
   };
   runtimeProfiles.set(profileId, {
     profile,
-    secret: runtime?.secret,
+    secret,
   });
   bindings.set(taskId, profileId);
   connectionErrors.delete(taskId);
   await mkdir(cachePath(profileId), { recursive: true });
+  if (encryptedSecret) {
+    const previousStored = profiles.get(profileId);
+    profiles.set(profileId, storedProfile(profile, encryptedSecret));
+    try {
+      await persistProfiles();
+    } catch {
+      if (previousStored) profiles.set(profileId, previousStored);
+      else profiles.delete(profileId);
+      profile = { ...profile, remembered: Boolean(previousStored) };
+      runtimeProfiles.set(profileId, { profile, secret });
+    }
+  }
   return sshRemoteState(taskId, profileId);
 }
 

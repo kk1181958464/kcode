@@ -66,3 +66,19 @@ test("quarantines a corrupt registry instead of blocking startup", async () => {
   assert.equal(await registry.recover(), 0);
   assert.deepEqual(await registry.snapshot(), []);
 });
+
+test("prunes exited records without terminating live processes", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "kcode-process-prune-"));
+  const registry = new ManagedProcessRegistry(
+    path.join(root, "processes.json"),
+    async () => undefined,
+    (pid) => pid === 302,
+  );
+  await registry.register(record("exited", 301));
+  await registry.register(record("live", 302));
+  assert.equal(await registry.pruneExited(), 1);
+  assert.deepEqual(
+    (await registry.snapshot()).map((item) => item.id),
+    ["live"],
+  );
+});

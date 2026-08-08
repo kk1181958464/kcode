@@ -125,6 +125,36 @@ test("validates bounded live stream replacement events", () => {
       updatedAt: 100,
     }),
   );
+  assert.deepEqual(
+    parseRemoteTaskEvent({
+      type: "task.event",
+      event: "stream",
+      taskId: "task-1",
+      requestId: "request-1",
+      sequence: 8,
+      content: "",
+      runtimeEventId: "request-1:12",
+      runtimeEventKind: "activity",
+      runtimeItemStatus: "waiting",
+      runtimeSequence: 12,
+      runtimeProtocolVersion: 1,
+      updatedAt: 101,
+    }),
+    {
+      type: "task.event",
+      event: "stream",
+      taskId: "task-1",
+      requestId: "request-1",
+      sequence: 8,
+      content: "",
+      runtimeEventId: "request-1:12",
+      runtimeEventKind: "activity",
+      runtimeItemStatus: "waiting",
+      runtimeSequence: 12,
+      runtimeProtocolVersion: 1,
+      updatedAt: 101,
+    },
+  );
   assert.throws(() =>
     parseRemoteTaskEvent({
       type: "task.event",

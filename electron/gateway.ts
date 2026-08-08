@@ -89,7 +89,22 @@ export async function summarizeContext(
   summaryControllers.set(request.taskId, controller);
   const startedAt = Date.now();
   const timer = setTimeout(() => controller.abort(), 120_000);
-  const prompt = `Compress this coding-agent history. Return JSON only with shape {"summary":"markdown","ledger":{"goals":[],"decisions":[],"changedFiles":[],"validations":[],"failures":[],"pending":[],"connections":[]}}. Preserve explicit constraints, current goal, file paths, commands that matter, validation results, failures, and unfinished work. Keep established connection coordinates (protocol, host, port and user), but never include passwords, tokens, keys, cookies or other credentials. Remove repetition.\n\nExisting ledger:\n${JSON.stringify(request.ledger)}\n\nHistory:\n${boundedContextSource(request.source)}`;
+  const prompt = `Create a context-checkpoint handoff for the next coding model. Return JSON only with shape {"summary":"markdown","ledger":{"goals":[],"decisions":[],"changedFiles":[],"validations":[],"failures":[],"pending":[],"connections":[]}}.
+
+The summary must be concise and structured around:
+- current objective, progress, and user preferences;
+- decisions and constraints that still govern the task;
+- verified file/tool results, including paths and useful commands;
+- failures, unresolved risks, and explicit next steps;
+- critical examples or references needed to continue without repeating work.
+
+Treat successful tool records as facts. Mark unsupported model claims as unverified instead of presenting them as completed work. Preserve non-secret connection coordinates such as protocol, host, port, and username, but never include passwords, tokens, private keys, cookies, authorization headers, or other credentials. Later facts override conflicting earlier facts. Remove repetition.
+
+Existing ledger:
+${JSON.stringify(request.ledger)}
+
+History:
+${boundedContextSource(request.source)}`;
   try {
     let url = "",
       headers: Record<string, string> = { "Content-Type": "application/json" },

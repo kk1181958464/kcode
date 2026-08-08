@@ -37,6 +37,23 @@ test("rejects a delayed stream snapshot by sequence even with a newer clock", ()
   assert.equal(cache.list("user-1", "device-1", 201)[0].content, "latest");
 });
 
+test("prefers runtime journal order over a delayed UI stream sequence", () => {
+  const cache = new LiveStreamCache();
+  cache.update("user-1", "device-1", {
+    ...stream("latest", 100, "request-1", 3),
+    runtimeEventId: "request-1:8",
+    runtimeSequence: 8,
+    runtimeProtocolVersion: 1,
+  });
+  cache.update("user-1", "device-1", {
+    ...stream("late", 200, "request-1", 4),
+    runtimeEventId: "request-1:7",
+    runtimeSequence: 7,
+    runtimeProtocolVersion: 1,
+  });
+  assert.equal(cache.list("user-1", "device-1", 201)[0].content, "latest");
+});
+
 test("clears output after a matching task snapshot finishes", () => {
   const cache = new LiveStreamCache();
   cache.update("user-1", "device-1", stream("working", 200), 200);

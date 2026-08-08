@@ -18,20 +18,24 @@ import { errorMessage } from "../../lib/format";
 
 export function SshRemoteDialog({
   taskId,
+  initialProfile,
   onConnected,
   onClose,
 }: {
   taskId: string;
+  initialProfile?: SshRemoteProfile;
   onConnected(state: SshRemoteState): void;
   onClose(): void;
 }) {
   const [profiles, setProfiles] = useState<SshRemoteProfile[]>([]);
-  const [name, setName] = useState("");
-  const [host, setHost] = useState("");
-  const [port, setPort] = useState("22");
-  const [username, setUsername] = useState("");
-  const [rootPath, setRootPath] = useState("~");
-  const [authType, setAuthType] = useState<SshRemoteAuthType>("private-key");
+  const [name, setName] = useState(initialProfile?.name ?? "");
+  const [host, setHost] = useState(initialProfile?.host ?? "");
+  const [port, setPort] = useState(String(initialProfile?.port ?? 22));
+  const [username, setUsername] = useState(initialProfile?.username ?? "");
+  const [rootPath, setRootPath] = useState(initialProfile?.rootPath ?? "~");
+  const [authType, setAuthType] = useState<SshRemoteAuthType>(
+    initialProfile?.authType ?? "private-key",
+  );
   const [password, setPassword] = useState("");
   const [privateKeyPath, setPrivateKeyPath] = useState("");
   const [passphrase, setPassphrase] = useState("");
@@ -89,6 +93,7 @@ export function SshRemoteDialog({
     }
     const input: SshRemoteConnectInput = {
       taskId,
+      profileId: initialProfile?.id,
       name,
       host,
       port: numericPort,
@@ -142,7 +147,9 @@ export function SshRemoteDialog({
           </span>
           <span>
             <strong id="ssh-remote-title">SSH Remote</strong>
-            <small>连接远程工作区</small>
+            <small>
+              {initialProfile ? "重新验证远程工作区凭据" : "连接远程工作区"}
+            </small>
           </span>
           <button
             type="button"

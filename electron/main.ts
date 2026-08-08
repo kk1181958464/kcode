@@ -40,14 +40,19 @@ import {
 import {
   cleanupAllBackgroundProcesses,
   cleanupAgentRecords,
+  clearAgentSteering,
+  clearAgentToolTraces,
   resolveApproval,
   runAgent,
   stopBackgroundProcessById,
+  steerAgent,
   undoActivity,
 } from "./agent";
 import {
   initializeManagedProcessRegistry,
   managedProcessSnapshot,
+  startManagedProcessSupervisor,
+  stopManagedProcessSupervisor,
 } from "./process-registry";
 import { closeAllSshSessions } from "./ssh";
 import { closeAllMysqlSessions } from "./mysql";
@@ -66,6 +71,8 @@ import {
   closeStateDatabase,
   compactStateDatabase,
   deleteTask,
+  appendRuntimeEvents,
+  interruptStaleRuntimeEvents,
   listTaskHeaders,
   loadActivityPayload,
   loadTaskActivitiesForRequests,
@@ -74,11 +81,16 @@ import {
   loadTaskMessagePage,
   loadTaskWindow,
   loadState,
+  loadRuntimeEvents,
+  loadRuntimeTaskStatuses,
   saveTask,
   saveTaskOrder,
   saveState,
   stateStorageStats,
 } from "./state-db";
+import { RuntimeEventJournal } from "./runtime-event-journal";
+import { agentRuntimeService } from "./runtime-service";
+import { classifyRuntimeError } from "../src/runtime-errors";
 import { installProcessLogging, logsDirectory, writeLog } from "./logger";
 import {
   activateBrowserSession,
@@ -102,8 +114,10 @@ import {
   optionalIdSchema,
   saveTaskOptionsSchema,
   stateKeySchema,
+  steerContentSchema,
   taskItemPageOptionsSchema,
   taskRequestIdsSchema,
+  runtimeEventPageOptionsSchema,
   sshRemoteConnectSchema,
   sshRemoteContentSchema,
   sshRemoteExpectedContentSchema,
@@ -174,6 +188,7 @@ const controllers = new Map<string, AbortController>();
 // The original text still reaches the logs; only the surfaced message changes.
 function friendlyModelError(raw: string): string {
   const text = raw.trim();
+  const classification = classifyRuntimeError(text);
   if (/意外中断|未收到完整响应|工具调用参数不完整/i.test(text))
     return "模型响应流意外中断（上游可能断流），请重试或点击继续。若频繁出现，可压缩上下文或换模型/供应商。";
   if (/stream[_ ]?read[_ ]?error|stream error/i.test(text))
@@ -199,6 +214,10 @@ function friendlyModelError(raw: string): string {
   )
     return "网络连接异常，请检查网络后重试。";
   if (/等待响应超时|长时间没有新数据|超时/i.test(text)) return text;
+  if (classification.kind === "authentication")
+    return "模型供应商认证失败，请检查 API Key 或切换供应商。";
+  if (classification.kind === "invalid_request")
+    return "上游拒绝了请求参数，请检查模型能力、图片附件和消息格式。";
   return text;
 }
 installProcessLogging();
@@ -482,11 +501,6 @@ function createWindow() {
     },
     onUserClose: (requestId) => {
       controllers.get(requestId)?.abort();
-      if (!win.isDestroyed())
-        win.webContents.send("chat:event", requestId, {
-          type: "error",
-          message: "网页已关闭，浏览器任务已停止",
-        });
     },
     onVerificationRequired: notifyBrowserVerification,
   });
@@ -527,9 +541,15 @@ function createWindow() {
 
 app.whenReady().then(async () => {
   configureMcpServers(loadState("mcpServers") ?? []);
+  const interruptedRuns = interruptStaleRuntimeEvents();
+  if (interruptedRuns)
+    writeLog("warn", "runtime.stale-runs-interrupted", {
+      count: interruptedRuns,
+    });
   const recoveredProcesses = await initializeManagedProcessRegistry(
     app.getPath("userData"),
   );
+  startManagedProcessSupervisor();
   if (recoveredProcesses)
     writeLog("warn", "process.recovered", { count: recoveredProcesses });
   await removeLegacyDevelopmentShortcut();
@@ -637,6 +657,15 @@ app.whenReady().then(async () => {
         taskItemPageOptionsSchema.parse(options ?? {}),
       ),
   );
+  ipcMain.handle(
+    "state:runtime-events",
+    (_e, id: string, options: unknown) =>
+      loadRuntimeEvents(
+        idSchema.parse(id),
+        runtimeEventPageOptionsSchema.parse(options ?? {}),
+      ),
+  );
+  ipcMain.handle("state:runtime-statuses", () => loadRuntimeTaskStatuses());
   ipcMain.handle(
     "state:task-activities-for-requests",
     (_e, id: string, requestIds: unknown) =>
@@ -795,6 +824,11 @@ app.whenReady().then(async () => {
     listMcpTools(idSchema.parse(id)),
   );
   ipcMain.handle("runtime:processes", () => managedProcessSnapshot());
+  ipcMain.handle("runtime:statuses", (_e, rawTaskId?: unknown) =>
+    agentRuntimeService.list(
+      rawTaskId === undefined ? undefined : idSchema.parse(rawTaskId),
+    ),
+  );
   ipcMain.handle("runtime:stop-process", async (_e, id: string) => {
     await stopBackgroundProcessById(idSchema.parse(id));
     return managedProcessSnapshot();
@@ -1375,19 +1409,41 @@ app.whenReady().then(async () => {
       return path.resolve(result.filePaths[0]);
     },
   );
-  ipcMain.handle("chat:start", (event, rawRequest: ModelRequest) => {
+  ipcMain.handle("chat:start", (_event, rawRequest: ModelRequest) => {
     const request = modelRequestSchema.parse(rawRequest) as ModelRequest;
     const id = request.requestId ?? randomUUID();
     const controller = new AbortController();
     const startedAt = Date.now();
-    let eventSequence = 0;
     controllers.set(id, controller);
+    const runtimeTaskId = request.taskId ?? id;
+    agentRuntimeService.start(runtimeTaskId, id, startedAt);
+    const runtimeJournal = new RuntimeEventJournal(
+      runtimeTaskId,
+      id,
+      (events) => {
+        for (const event of events)
+          agentRuntimeService.apply(event.taskId, event.requestId, event);
+        appendRuntimeEvents(events);
+      },
+      100,
+      (error) =>
+        writeLog("error", "runtime.journal.write-failed", {
+          id,
+          taskId: runtimeTaskId,
+          error: error instanceof Error ? error.message : String(error),
+        }),
+    );
+    // Persist the turn before provider setup so a crash during startup does
+    // not leave the task with no recoverable runtime status.
+    runtimeJournal.append(
+      { type: "progress", message: "任务已进入运行队列" },
+      startedAt,
+    );
     const rendererEvents = new RendererEventBatcher((item: AgentEvent) => {
-      if (!event.sender.isDestroyed())
-        event.sender.send("chat:event", id, {
-          ...item,
-          sequence: ++eventSequence,
-        });
+      const journaled = runtimeJournal.append(item);
+      for (const window of BrowserWindow.getAllWindows())
+        if (!window.isDestroyed() && !window.webContents.isDestroyed())
+          window.webContents.send("chat:event", id, { ...journaled });
     });
     const removeSubagentEventSink = setSubagentEventSink(id, (item) =>
       rendererEvents.push(item),
@@ -1401,7 +1457,6 @@ app.whenReady().then(async () => {
       subagents: [],
     });
     void (async () => {
-      await checkpointReady;
       const events: unknown[] = [];
       let checkpointStatus: "running" | "paused" | "done" = "running";
       const checkpointWriter = new LatestWriteQueue((snapshot: unknown) =>
@@ -1424,6 +1479,7 @@ app.whenReady().then(async () => {
         checkpointWriter.enqueue(snapshot);
       };
       try {
+        await checkpointReady;
         for await (const item of runAgent(id, request, controller.signal)) {
           if (item.type === "done" || item.type === "error")
             terminalEventSent = true;
@@ -1492,14 +1548,47 @@ app.whenReady().then(async () => {
           notifyTask("error", friendly);
         }
       } finally {
+        if (controller.signal.aborted && !terminalEventSent) {
+          const item = {
+            type: "error",
+            message: "任务已停止",
+            code: "cancelled",
+            retryable: false,
+            userAction: "none",
+          } as const;
+          terminalEventSent = true;
+          checkpointStatus = "paused";
+          events.push(compactCheckpointEvent(item));
+          if (events.length > 100) events.shift();
+          queueCheckpoint(true);
+          rendererEvents.push(item);
+        }
         await stopSubagentsForParent(id, false);
-        rendererEvents.close();
+        try {
+          rendererEvents.close();
+        } catch (error) {
+          writeLog("error", "renderer.events.close-failed", {
+            id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        runtimeJournal.close();
         if (checkpointStatus !== "done") {
           checkpointStatus = "paused";
           queueCheckpoint(true);
-          await checkpointWriter.waitForIdle();
+          try {
+            await checkpointWriter.waitForIdle();
+          } catch (error) {
+            writeLog("error", "checkpoint.final-write-failed", {
+              id,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
         }
         releaseSubagentRecords(id);
+        agentRuntimeService.markInactive(id);
+        clearAgentSteering(id);
+        clearAgentToolTraces(id);
         removeSubagentEventSink();
         controllers.delete(id);
       }
@@ -1508,6 +1597,15 @@ app.whenReady().then(async () => {
   });
   ipcMain.handle("chat:cancel", (_e, id: string) =>
     controllers.get(id)?.abort(),
+  );
+  ipcMain.handle(
+    "chat:steer",
+    (_e, rawRequestId: string, rawContent: string) => {
+      const requestId = idSchema.parse(rawRequestId);
+      if (!controllers.has(requestId))
+        throw new Error("当前轮次已经结束，无法追加指令");
+      steerAgent(requestId, steerContentSchema.parse(rawContent));
+    },
   );
   ipcMain.handle(
     "chat:cleanup",
@@ -1546,6 +1644,7 @@ app.on("before-quit", () => {
   quitting = true;
   closeMcpServers();
   for (const controller of controllers.values()) controller.abort();
+  stopManagedProcessSupervisor();
   void cleanupAllBackgroundProcesses().catch((error) =>
     writeLog("error", "process.cleanup.failed", error),
   );

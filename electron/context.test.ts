@@ -4,8 +4,11 @@ import {
   acceptModelContextSummary,
   boundedContextSource,
   compactConversation,
+  containsDurableConnectionDetails,
   contextSummarySource,
   estimateMessageTokens,
+  retainedCompactedUserMessages,
+  retainedCompactionContext,
 } from "../src/context";
 import type { AgentActivity, ChatMessage } from "../src/types";
 
@@ -167,6 +170,86 @@ test("redacts credentials already present in an older ledger", () => {
   assert.doesNotMatch(
     result.contextLedger.connections.join("\n"),
     /old-secret/,
+  );
+});
+
+test("retains compacted SSH credentials outside the redacted summary", () => {
+  const messages = [
+    message(
+      "user",
+      'ssh：122.51.15.198 用户名：ubuntu 密码："ssh-secret" 密钥："C:\\Users\\Administrator\\.ssh\\id_ed25519"',
+      1,
+    ),
+    message("assistant", "已连接服务器", 2),
+    ...Array.from({ length: 8 }, (_, index) =>
+      message(
+        index % 2 ? "assistant" : "user",
+        `后续工作 ${index} ${"实现细节".repeat(500)}`,
+        index + 3,
+      ),
+    ),
+  ];
+  const compacted = compactConversation(
+    { messages, activities: [] },
+    8_000,
+    true,
+  );
+  assert.ok(compacted);
+  assert.doesNotMatch(compacted.contextSummary, /ssh-secret/);
+
+  const retained = retainedCompactionContext(
+    messages,
+    compacted.compactedMessageCount,
+    8_000,
+  );
+  assert.match(retained, /122\.51\.15\.198/);
+  assert.match(retained, /ubuntu/);
+  assert.match(retained, /ssh-secret/);
+  assert.match(retained, /id_ed25519/);
+});
+
+test("reserves retention budget for old connection facts", () => {
+  const credentials = message(
+    "user",
+    "服务器地址：203.0.113.7 用户名：admin 密码：correct-horse",
+    1,
+  );
+  const messages = [
+    credentials,
+    ...Array.from({ length: 12 }, (_, index) =>
+      message("user", `普通后续消息 ${index} ${"x".repeat(1_500)}`, index + 2),
+    ),
+  ];
+  const retained = retainedCompactedUserMessages(
+    messages,
+    messages.length,
+    8_000,
+  );
+  assert.ok(retained.some((item) => item.id === credentials.id));
+  assert.match(
+    retained.find((item) => item.id === credentials.id)?.content ?? "",
+    /correct-horse/,
+  );
+});
+
+test("does not duplicate credentials that remain in recent context", () => {
+  const messages = [
+    message("user", "较早任务", 1),
+    message("assistant", "较早回复", 2),
+    message("user", "SSH：10.0.0.8 用户名：root 密码：recent-secret", 3),
+  ];
+  const retained = retainedCompactionContext(messages, 2, 8_000);
+  assert.doesNotMatch(retained, /recent-secret/);
+});
+
+test("does not treat generic login UI copy as connection credentials", () => {
+  assert.equal(
+    containsDurableConnectionDetails("把用户名和密码输入框的样式改整齐"),
+    false,
+  );
+  assert.equal(
+    containsDurableConnectionDetails("用户名：deploy 密码：secret"),
+    true,
   );
 });
 

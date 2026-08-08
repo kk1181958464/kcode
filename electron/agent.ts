@@ -101,6 +101,7 @@ import {
 } from "./git-operation-verification";
 import {
   claimedCodingOperations,
+  codingOperationsRequiringToolEvidence,
   compactOperationEvidenceResult,
   hasRequestedUserInputEvidence,
   isAdvisoryOnlyRequest,
@@ -128,6 +129,9 @@ import { AsyncQueue } from "./async-queue";
 import { readSseJson } from "./sse-stream";
 import { resolveModelCompatibility } from "./model-compatibility";
 import { ModelAttemptBudget } from "./model-attempt-budget";
+import { toolRegistry } from "./tool-registry";
+import { agentHooks } from "./agent-hooks";
+import { turnSteeringQueue } from "./turn-steering";
 import { providerApiEndpoint } from "./provider-url";
 import { mutationChangedFromOutput } from "./mutation-evidence";
 import { hasUserSuppliedVerificationCode } from "./browser-cdp";
@@ -164,6 +168,7 @@ import {
   resolveSshWorkspacePath,
   sshWorkspaceCommand,
 } from "./ssh-remote-path";
+import { privateKeyForSshTool } from "./ssh-tool-input";
 import {
   adoptMysqlSession,
   cleanupMysqlSessions,
@@ -998,7 +1003,7 @@ const tools = [
   {
     name: "ssh_connect",
     description:
-      "Connect this task to an SSH server using credentials explicitly supplied by the user and attach an editable remote workspace. The privateKey value must be the key content, not a local path. Set rootPath to the remote project directory when it is known; otherwise the server home directory is used. Host keys are not verified. The connection remains available while switching tasks.",
+      "Connect this task to an SSH server using credentials explicitly supplied by the user and attach an editable remote workspace. Use privateKey for key content, or privateKeyPath only for an absolute local path explicitly written by the user in the conversation. Set rootPath to the remote project directory when it is known; otherwise the server home directory is used. Host keys are not verified. By default credentials are stored with the operating system's secure encryption so the remote workspace can reconnect after restart; set remember to false only when the user requests a temporary connection.",
     parameters: {
       type: "object",
       properties: {
@@ -1007,7 +1012,17 @@ const tools = [
         username: { type: "string" },
         password: { type: "string" },
         privateKey: { type: "string" },
+        privateKeyPath: {
+          type: "string",
+          description:
+            "Absolute local private-key path explicitly supplied by the user.",
+        },
         passphrase: { type: "string" },
+        remember: {
+          type: "boolean",
+          description:
+            "Store credentials with operating-system encryption for future reconnects. Defaults to true.",
+        },
         rootPath: {
           type: "string",
           description: "Remote project directory to open in the editor.",
@@ -1537,6 +1552,18 @@ export function resolveApproval(
       approvals.delete(key);
       return;
     }
+}
+
+export function steerAgent(requestId: string, content: string) {
+  turnSteeringQueue.push(requestId, content);
+}
+
+export function clearAgentSteering(requestId: string) {
+  turnSteeringQueue.clear(requestId);
+}
+
+export function clearAgentToolTraces(requestId: string) {
+  toolRegistry.clearRequest(requestId);
 }
 
 export async function undoActivity(
@@ -2503,6 +2530,7 @@ async function execute(
       ),
     };
   if (call.name === "ssh_connect") {
+    const privateKey = await privateKeyForSshTool(call.input, request.messages);
     const result = await connectSsh(
       browserSessionId,
       requestId,
@@ -2514,14 +2542,12 @@ async function execute(
           typeof call.input.password === "string"
             ? call.input.password
             : undefined,
-        privateKey:
-          typeof call.input.privateKey === "string"
-            ? call.input.privateKey
-            : undefined,
+        privateKey,
         passphrase:
           typeof call.input.passphrase === "string"
             ? call.input.passphrase
             : undefined,
+        rememberForRemoteWorkspace: call.input.remember !== false,
       },
       signal,
     );
@@ -4195,6 +4221,21 @@ async function modelTurn(
   };
 }
 
+function blockedVerificationEvents(
+  textOffset: number,
+  message: string,
+): AgentEvent[] {
+  return [
+    {
+      type: "final_response",
+      textOffset,
+      startedAt: Date.now(),
+    },
+    { type: "text", delta: message },
+    { type: "done", outcome: "blocked" },
+  ];
+}
+
 export async function* runAgent(
   requestId: string,
   request: ModelRequest,
@@ -4226,11 +4267,13 @@ export async function* runAgent(
   const activeConnectionFacts = new Map<string, string>();
   const requestedGitOps = requestedGitOperations(history);
   const requestedCodingOps = requestedCodingOperations(history);
+  const requestedCodingEvidenceOps =
+    codingOperationsRequiringToolEvidence(requestedCodingOps);
   const requestedBrowserOps = requestedBrowserOperations(history);
   const executionRequired =
     requestedBrowserOps.size > 0 ||
     requestedGitOps.size > 0 ||
-    requestedCodingOps.size > 0;
+    requestedCodingEvidenceOps.size > 0;
   const toolsEnabled = !isCasualGreeting(request.messages.at(-1));
   const latestUserRequest = relevantVerificationRequestContent(history);
   const advisoryOnly = isAdvisoryOnlyRequest(latestUserRequest);
@@ -4251,6 +4294,11 @@ export async function* runAgent(
       .filter(Boolean)
       .join("\n\n"),
   };
+  await agentHooks.run(
+    "SessionStart",
+    { requestId, taskId: request.taskId },
+    signal,
+  );
   const requestContainsImages = hasImageAttachments(history);
   const selectedRuntimeModel = modelRuntime.provider.models.find(
     (model) => model.modelId === request.modelId,
@@ -4288,6 +4336,7 @@ export async function* runAgent(
   let imageFallbackNoticeSent = false;
   while (!signal.aborted) {
     const pendingParentInstructions = drainSubagentMessages(requestId);
+    const pendingSteering = turnSteeringQueue.drain(requestId);
     const codingEvidenceAtRoundStart =
       successfulCodingEvidence(evidenceHistory);
     const browserEvidenceAtRoundStart =
@@ -4297,7 +4346,7 @@ export async function* runAgent(
       unavailableGitOperations(evidenceHistory);
     const evidenceComplete =
       missingRequestedCodingOperations(
-        requestedCodingOps,
+        requestedCodingEvidenceOps,
         codingEvidenceAtRoundStart,
       ).length === 0 &&
       missingRequestedBrowserOperations(
@@ -4314,7 +4363,8 @@ export async function* runAgent(
       completedRounds: round,
       elapsedMs: Date.now() - runStartedAt,
       evidenceComplete,
-      hasPendingInstructions: pendingParentInstructions.length > 0,
+      hasPendingInstructions:
+        pendingParentInstructions.length > 0 || pendingSteering.length > 0,
     });
     round += 1;
     yield {
@@ -4334,13 +4384,38 @@ export async function* runAgent(
       lastPromptTokens >= request.contextWindow * 0.92
     ) {
       const before = history.length;
-      if (
-        compactRuntimeHistory(
-          history,
-          lastPromptTokens >= request.contextWindow * 0.99,
-          activeConnectionFacts.values(),
-        )
-      ) {
+      const compactionWindowId = `${requestId}:context:${round}`;
+      yield {
+        type: "context_compaction",
+        phase: "started",
+        windowId: compactionWindowId,
+        beforeItems: before,
+        promptTokens: lastPromptTokens,
+      };
+      await agentHooks.run(
+        "BeforeCompact",
+        {
+          requestId,
+          taskId: request.taskId,
+          payload: { historyItems: before, promptTokens: lastPromptTokens },
+        },
+        signal,
+      );
+      const contextCompacted = compactRuntimeHistory(
+        history,
+        lastPromptTokens >= request.contextWindow * 0.99,
+        activeConnectionFacts.values(),
+      );
+      yield {
+        type: "context_compaction",
+        phase: "completed",
+        windowId: compactionWindowId,
+        beforeItems: before,
+        afterItems: history.length,
+        promptTokens: lastPromptTokens,
+        changed: contextCompacted,
+      };
+      if (contextCompacted) {
         const activity: AgentActivity = {
           id: randomUUID(),
           requestId,
@@ -4357,6 +4432,19 @@ export async function* runAgent(
           round,
           progress: "advanced",
         };
+        await agentHooks.run(
+          "AfterCompact",
+          {
+            requestId,
+            taskId: request.taskId,
+            payload: {
+              beforeItems: before,
+              afterItems: history.length,
+              promptTokens: lastPromptTokens,
+            },
+          },
+          signal,
+        );
         yield { type: "activity", activity };
         lastPromptTokens = 0;
       }
@@ -4366,6 +4454,12 @@ export async function* runAgent(
         kind: "message",
         role: "user",
         content: `<parent_instruction>${message}</parent_instruction>`,
+      });
+    for (const message of pendingSteering)
+      history.push({
+        kind: "message",
+        role: "user",
+        content: `<user_steer>${message}</user_steer>`,
       });
     if (finalizationMode)
       history.push({
@@ -4384,7 +4478,7 @@ export async function* runAgent(
       browserIsOpen(browserSessionId) ||
       requestedBrowserOps.size > 0 ||
       requestedGitOps.size > 0 ||
-      requestedCodingOps.size > 0 ||
+      requestedCodingEvidenceOps.size > 0 ||
       unverifiedBrowserClaims > 0 ||
       unverifiedGitClaims > 0 ||
       unverifiedCodingClaims > 0 ||
@@ -4416,7 +4510,7 @@ export async function* runAgent(
             ? false
             : shouldRequireCodingTool(
                 request.modelId,
-                requestedCodingOps,
+                requestedCodingEvidenceOps,
                 successfulCodingEvidence(evidenceHistory),
               ),
           modelRuntime,
@@ -4599,10 +4693,21 @@ export async function* runAgent(
         yield { type: "text_reset" };
       }
       closeSubagentMessageQueue(requestId);
-      yield {
-        type: "error",
-        message: `网页操作未完成：缺少 ${missingBrowserEvidence.map((operation) => browserLabels[operation]).join("、")} 的成功工具记录。`,
-      };
+      const missingBrowserLabels = missingBrowserEvidence
+        .map((operation) => browserLabels[operation])
+        .join("、");
+      const blockedBrowserMessage =
+        !unsupportedOverallCompletion &&
+        !unsupportedBrowserClaims.length &&
+        turn.text.trim()
+          ? `${turn.text.trim()}\n\n本轮未得到${missingBrowserLabels}的成功浏览器工具记录，任务已暂停；未确认页面交互已经完成。`
+          : `本轮未得到${missingBrowserLabels}的成功浏览器工具记录，任务已暂停；未确认页面交互已经完成。`;
+      timelineTextLength = turnTextStartOffset + blockedBrowserMessage.length;
+      for (const event of blockedVerificationEvents(
+        turnTextStartOffset,
+        blockedBrowserMessage,
+      ))
+        yield event;
       return;
     }
     const gitEvidence = successfulGitEvidence(evidenceHistory);
@@ -4670,10 +4775,18 @@ export async function* runAgent(
         yield { type: "text_reset" };
       }
       closeSubagentMessageQueue(requestId);
-      yield {
-        type: "error",
-        message: `Git/发布操作未完成：缺少 ${missingGitEvidence.join(", ")} 的成功执行记录。`,
-      };
+      const blockedGitMessage =
+        !unsupportedOverallCompletion &&
+        !unsupportedGitClaims.length &&
+        turn.text.trim()
+          ? `${turn.text.trim()}\n\n本轮未得到 ${missingGitEvidence.join(", ")} 的成功 Git 工具记录，任务已暂停；未执行未经确认的提交、推送或发布。`
+          : `本轮未得到 ${missingGitEvidence.join(", ")} 的成功 Git 工具记录，任务已暂停；未执行未经确认的提交、推送或发布。`;
+      timelineTextLength = turnTextStartOffset + blockedGitMessage.length;
+      for (const event of blockedVerificationEvents(
+        turnTextStartOffset,
+        blockedGitMessage,
+      ))
+        yield event;
       return;
     }
     const codingEvidence = successfulCodingEvidence(evidenceHistory);
@@ -4689,8 +4802,11 @@ export async function* runAgent(
       evidenceHistory,
       requestedCodingOps,
     );
-    const unsupportedCodingClaims = missingCodingEvidence.filter((operation) =>
-      claimedCodingOps.has(operation),
+    const missingActionCodingEvidence = missingCodingEvidence.filter(
+      (operation) => operation !== "inspect",
+    );
+    const unsupportedCodingClaims = missingActionCodingEvidence.filter(
+      (operation) => claimedCodingOps.has(operation),
     );
     const codingLabels = {
       inspect: "检查",
@@ -4707,8 +4823,12 @@ export async function* runAgent(
       !unsupportedOverallCompletion &&
       (finalizationMode === "limit-reached" ||
         requestedUserInput ||
-        reportsBlockedCodingOperations(turn.text, missingCodingEvidence));
-    if (!turn.calls.length && missingCodingEvidence.length && !codingBlocked) {
+        reportsBlockedCodingOperations(turn.text, missingActionCodingEvidence));
+    if (
+      !turn.calls.length &&
+      missingActionCodingEvidence.length &&
+      !codingBlocked
+    ) {
       if (unverifiedCodingClaims < 2) {
         unverifiedCodingClaims += 1;
         if (!bufferModelText && streamedText) {
@@ -4729,8 +4849,8 @@ export async function* runAgent(
           kind: "message",
           role: "user",
           content: plannerCoordinator
-            ? `<runtime_verification>${unsupportedClaimNotice}协作任务仍缺少执行模型的成功工具结果：${missingCodingEvidence.join(", ")}。你是规划与复核 Agent，不能直接修改或运行命令。属于用户要求的操作请立即调用 spawn_agent，将完整计划、目标文件、约束和验收命令交给 role=\"executor\" 的执行 Agent，然后调用 wait_agent 收集并复核真实结果；如果相关操作实际未发生且并非用户要求，请明确撤回声明。</runtime_verification>`
-            : `<runtime_verification>${unsupportedClaimNotice}本次编码任务仍缺少成功工具结果：${missingCodingEvidence.join(", ")}。不要继续总结或假设文件已经改变；属于用户要求的操作请立即使用工作区工具实际检查和修改，并用 diagnostics 或真实命令验证。如果相关操作实际未发生且并非用户要求，请明确撤回声明。如果只读工具已经确认目标内容正确、问题位于工作区之外或没有可执行的修改目标，请调用 report_no_change 记录具体证据，再明确说明“无需修改”；不要制造无意义改动。若确实缺少无法自行获取的文件、需求、接口字段、外部环境、权限或连接信息，请调用 request_user_input，准确列出需要用户补充的内容。</runtime_verification>`,
+            ? `<runtime_verification>${unsupportedClaimNotice}协作任务仍缺少执行模型的成功工具结果：${missingActionCodingEvidence.join(", ")}。你是规划与复核 Agent，不能直接修改或运行命令。属于用户要求的操作请立即调用 spawn_agent，将完整计划、目标文件、约束和验收命令交给 role=\"executor\" 的执行 Agent，然后调用 wait_agent 收集并复核真实结果；如果相关操作实际未发生且并非用户要求，请明确撤回声明。</runtime_verification>`
+            : `<runtime_verification>${unsupportedClaimNotice}本次编码任务仍缺少成功工具结果：${missingActionCodingEvidence.join(", ")}。不要继续总结或假设文件已经改变；属于用户要求的操作请立即使用工作区工具实际检查和修改，并用 diagnostics 或真实命令验证。如果相关操作实际未发生且并非用户要求，请明确撤回声明。如果只读工具已经确认目标内容正确、问题位于工作区之外或没有可执行的修改目标，请调用 report_no_change 记录具体证据，再明确说明“无需修改”；不要制造无意义改动。若确实缺少无法自行获取的文件、需求、接口字段、外部环境、权限或连接信息，请调用 request_user_input，准确列出需要用户补充的内容。</runtime_verification>`,
         });
         continue;
       }
@@ -4740,10 +4860,23 @@ export async function* runAgent(
         yield { type: "text_reset" };
       }
       closeSubagentMessageQueue(requestId);
-      yield {
-        type: "error",
-        message: `编码任务未完成：缺少 ${missingCodingEvidence.map((operation) => codingLabels[operation]).join("、")} 的成功工具记录。`,
-      };
+      const missingCodingLabels = missingActionCodingEvidence
+        .map((operation) => codingLabels[operation])
+        .join("、");
+      const blockedCodingMessage =
+        !unsupportedOverallCompletion &&
+        !unsupportedCodingClaims.length &&
+        turn.text.trim()
+          ? `${turn.text.trim()}\n\n本轮未得到${missingCodingLabels}的成功工具记录，任务已暂停；未确认实际修改、执行或验证已经发生。`
+          : unsupportedCodingClaims.length
+            ? `已撤回未经工具结果证实的“${unsupportedCodingClaims.map((operation) => codingLabels[operation]).join("、")}”声明。本轮未得到${missingCodingLabels}的成功工具记录，任务已暂停。`
+            : `本轮未得到${missingCodingLabels}的成功工具记录，任务已暂停；未确认实际修改、执行或验证已经发生。`;
+      timelineTextLength = turnTextStartOffset + blockedCodingMessage.length;
+      for (const event of blockedVerificationEvents(
+        turnTextStartOffset,
+        blockedCodingMessage,
+      ))
+        yield event;
       return;
     }
     if (!turn.calls.length && unsupportedOverallCompletion) {
@@ -4774,10 +4907,15 @@ export async function* runAgent(
         yield { type: "text_reset" };
       }
       closeSubagentMessageQueue(requestId);
-      yield {
-        type: "error",
-        message: "任务完成声明缺少任何成功工具记录，KCode 已阻止该结果。",
-      };
+      const blockedCompletionMessage =
+        "已撤回未经工具结果证实的完成声明。本轮没有成功工具记录，任务已暂停，未将该结果视为完成。";
+      timelineTextLength =
+        turnTextStartOffset + blockedCompletionMessage.length;
+      for (const event of blockedVerificationEvents(
+        turnTextStartOffset,
+        blockedCompletionMessage,
+      ))
+        yield event;
       return;
     }
     if (!turn.calls.length) {
@@ -4853,7 +4991,7 @@ export async function* runAgent(
       Boolean(
         missingBrowserEvidence.length ||
         missingGitEvidence.length ||
-        missingCodingEvidence.length,
+        missingActionCodingEvidence.length,
       );
     const willAutoContinue =
       !turn.calls.length &&
@@ -5060,6 +5198,25 @@ export async function* runAgent(
         round,
       };
       activity.narrative ||= activityExecutionNarrative(activity);
+      const toolTrace = toolRegistry.start({
+        requestId,
+        activityId: activity.id,
+        tool: call.name,
+        args: activity.input,
+        startedAt: activity.startedAt,
+      });
+      activity.toolCallId = toolTrace.callId;
+      await agentHooks.run(
+        "BeforeTool",
+        {
+          requestId,
+          taskId: request.taskId,
+          tool: call.name,
+          activityId: activity.id,
+          payload: activity.input,
+        },
+        signal,
+      );
       const browserTool = call.name.startsWith("browser_");
       const mysqlSql =
         call.name === "mysql_query" ? String(call.input.sql || "").trim() : "";
@@ -5147,6 +5304,7 @@ export async function* runAgent(
           request.permissionMode === "read-only"
             ? "只读模式已阻止此操作"
             : "当前权限策略已阻止此操作";
+        toolRegistry.finish(toolTrace.callId, "denied");
         yield { type: "activity", activity };
         roundLastActivity = activity;
         roundFailedActivity = activity;
@@ -5159,6 +5317,7 @@ export async function* runAgent(
       }
       if (decision === "confirm") {
         activity.status = "waiting";
+        toolRegistry.markWaiting(toolTrace.callId);
         yield { type: "activity", activity };
         const approvalKey = `${requestId}:${activity.id}`;
         const allowed = await new Promise<boolean>((resolve) => {
@@ -5172,6 +5331,7 @@ export async function* runAgent(
           activity.status = "denied";
           activity.completedAt = Date.now();
           activity.output = "用户拒绝了此操作";
+          toolRegistry.finish(toolTrace.callId, "denied");
           yield { type: "activity", activity };
           roundLastActivity = activity;
           roundFailedActivity = activity;
@@ -5183,6 +5343,7 @@ export async function* runAgent(
           continue;
         }
         activity.status = "running";
+        toolRegistry.markRunning(toolTrace.callId);
         yield { type: "activity", activity };
       } else yield { type: "activity", activity };
       let finishMutationClaim: ((committed: boolean) => void) | undefined;
@@ -5223,6 +5384,7 @@ export async function* runAgent(
             break;
           }
           const nextOutput = step.value;
+          toolRegistry.progress(toolTrace.callId, nextOutput);
           const verificationStatus = /^\[等待人工验证\]\s*([^。]+)/.exec(
             nextOutput,
           )?.[1];
@@ -5286,6 +5448,25 @@ export async function* runAgent(
               : undefined,
           liveStatus: undefined,
         });
+        toolRegistry.finish(
+          toolTrace.callId,
+          activity.status === "failed" ? "failed" : "success",
+        );
+        await agentHooks.run(
+          "AfterTool",
+          {
+            requestId,
+            taskId: request.taskId,
+            tool: call.name,
+            activityId: activity.id,
+            payload: {
+              status: activity.status,
+              changed: resultEvidence.changed,
+              executed: resultEvidence.executed,
+            },
+          },
+          signal,
+        );
         for (const childActivity of childActivities ?? [])
           yield {
             type: "activity",
@@ -5322,6 +5503,18 @@ export async function* runAgent(
           ? "操作已停止"
           : failureSummary(call, failureOutput);
         activity.liveStatus = undefined;
+        toolRegistry.fail(toolTrace.callId, failureOutput, cancelled);
+        await agentHooks.run(
+          "AfterTool",
+          {
+            requestId,
+            taskId: request.taskId,
+            tool: call.name,
+            activityId: activity.id,
+            payload: { status: activity.status, error: failureOutput },
+          },
+          signal,
+        );
       }
       const fingerprint = JSON.stringify({
         tool: call.name,
@@ -5429,4 +5622,5 @@ export async function* runAgent(
       return;
     }
   }
+  turnSteeringQueue.clear(requestId);
 }

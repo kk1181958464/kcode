@@ -81,6 +81,10 @@ import type {
   RemoteTaskStreamEvent,
 } from "./remote-types";
 import type { SshRemoteState } from "./ssh-remote-types";
+import {
+  isSshRemoteCredentialsRequired,
+  restoreSshRemoteConnection,
+} from "./ssh-remote-recovery";
 import { sshWorkspaceRootFromActivity } from "./ssh-workspace-activity";
 import {
   attachSshWorkspace,
@@ -103,8 +107,14 @@ import {
   contextSummarySource,
   estimateMessageTokens,
   estimateTextTokens,
+  retainedCompactionContext,
 } from "./context";
 import type { ContextLedger } from "./context";
+import {
+  markContextCompacted,
+  contextUsageTokens,
+  observeContextWindow,
+} from "./context-window";
 import {
   ACCENT_OPTIONS,
   EMPTY_ACTIVITIES,
@@ -280,6 +290,7 @@ function estimateRequestContextTokens({
   attachmentTokens,
   outputReserve,
   calibrationFactor,
+  retainedContext,
 }: {
   messages: ChatMessage[];
   compactedMessageCount: number;
@@ -287,13 +298,15 @@ function estimateRequestContextTokens({
   attachmentTokens: number;
   outputReserve: number;
   calibrationFactor: number;
+  retainedContext?: string;
 }) {
   return Math.ceil(
     (AGENT_STATIC_TOKENS +
       attachmentTokens +
       outputReserve +
       estimateMessageTokens(messages.slice(compactedMessageCount)) +
-      estimateTextTokens(contextSummary ?? "")) *
+      estimateTextTokens(contextSummary ?? "") +
+      estimateTextTokens(retainedContext ?? "")) *
       calibrationFactor,
   );
 }
@@ -672,6 +685,18 @@ export default function App() {
   const remoteSyncTimerRef = useRef<number | undefined>(undefined);
   const remoteStreamTimersRef = useRef(new Map<string, number>());
   const remoteStreamSequencesRef = useRef(new Map<string, number>());
+  const remoteRuntimeMetaRef = useRef(
+    new Map<
+      string,
+      {
+        eventId?: string;
+        eventKind?: string;
+        itemStatus?: string;
+        sequence?: number;
+        protocolVersion?: number;
+      }
+    >(),
+  );
   const agentEventSequencesRef = useRef(new Map<string, number>());
   const hydratedTaskIdsRef = useRef(new Set(tasks.map((task) => task.id)));
   const taskPagingRef = useRef(new Map<string, TaskPagingState>());
@@ -845,7 +870,8 @@ export default function App() {
   );
   useEffect(() => {
     const remote = activeTask?.remoteWorkspace;
-    if (!activeTask || !remote || !window.kcode?.sshRemote) {
+    const api = window.kcode?.sshRemote;
+    if (!activeTask || !remote || !api) {
       setSshRemoteState(undefined);
       return;
     }
@@ -858,20 +884,26 @@ export default function App() {
       profile: remote,
       cachePath: activeTask.workspacePath,
     }));
-    void window.kcode.sshRemote
-      .state(activeTask.id, remote.id)
-      .then((state) =>
-        state.connected
-          ? state
-          : window.kcode.sshRemote.connectSaved(activeTask.id, remote.id),
-      )
-      .then((state) => active && setSshRemoteState(state))
-      .catch(async () => {
-        const state = await window.kcode.sshRemote.state(
-          activeTask.id,
-          remote.id,
-        );
-        if (active) setSshRemoteState(state);
+    void restoreSshRemoteConnection(api, activeTask.id, remote)
+      .then((state) => {
+        if (!active) return;
+        attachConnectedSshState(activeTask.id, state);
+        setSshRemoteState(state);
+      })
+      .catch(async (error) => {
+        const state = await api
+          .state(activeTask.id, remote.id)
+          .catch(() => undefined);
+        if (active)
+          setSshRemoteState({
+            taskId: activeTask.id,
+            connected: false,
+            connecting: false,
+            ...state,
+            profile: state?.profile ?? remote,
+            cachePath: state?.cachePath ?? activeTask.workspacePath,
+            error: errorMessage(error),
+          });
       });
     return () => {
       active = false;
@@ -895,33 +927,100 @@ export default function App() {
       .taskHeaders()
       .then(async (storedHeaders) => {
         if (cancelled) return;
+        const runtimeStatuses = window.kcode.state.runtimeStatuses
+          ? await window.kcode.state.runtimeStatuses().catch(() => [])
+          : [];
+        const runtimeByTask = new Map(
+          runtimeStatuses.map((status) => [status.taskId, status] as const),
+        );
+        for (const runtime of runtimeStatuses) {
+          if (runtime.turnStatus !== "in_progress") continue;
+          requestTasksRef.current.set(runtime.requestId, runtime.taskId);
+          agentEventSequencesRef.current.set(
+            runtime.requestId,
+            Math.max(
+              agentEventSequencesRef.current.get(runtime.requestId) ?? 0,
+              runtime.lastSequence,
+            ),
+          );
+        }
+        const restoreRuntimeStatus = (task: TaskRecord): TaskRecord => {
+          const runtime = runtimeByTask.get(task.id);
+          if (!runtime) return task;
+          if (
+            runtime.turnStatus === "in_progress" &&
+            (runtime.status === "running" || runtime.status === "waiting")
+          ) {
+            taskRuntimeStore.ensureRunning(task.id, runtime.requestId, runtime.updatedAt);
+            return {
+              ...task,
+              runningId: runtime.requestId,
+              runStatus: "running",
+              runtimeStatus: runtime.status,
+              startedAt: task.startedAt ?? runtime.updatedAt,
+            };
+          }
+          if (
+            (task.runningId && task.runningId !== runtime.requestId) ||
+            (!task.runningId && task.updatedAt > runtime.updatedAt)
+          )
+            return task;
+          return {
+            ...task,
+            runningId: undefined,
+            runtimeStatus: runtime.status,
+            runStatus:
+              runtime.status === "waiting"
+                ? "blocked"
+                : runtime.status === "failed"
+                  ? "failed"
+                  : runtime.status === "interrupted"
+                    ? "cancelled"
+                    : "completed",
+          };
+        };
         if (Array.isArray(storedHeaders) && storedHeaders.length) {
           const headers = (storedHeaders as TaskRecord[]).map((task) =>
-            normalizeStoredTask({ ...task, messages: [], activities: [] }),
+            restoreRuntimeStatus(
+              normalizeStoredTask({ ...task, messages: [], activities: [] }),
+            ),
           );
           const selectedHeader =
             headers.find(
               (task) => task.id === localStorage.getItem("kcode.activeTaskId"),
             ) ?? headers[0];
-          const storedWindow = selectedHeader
-            ? await window.kcode.state.loadTaskWindow(selectedHeader.id)
-            : null;
-          const storedTask = storedWindow?.task ?? null;
+          const hydrateTaskIds = new Set(
+            runtimeStatuses
+              .filter((status) => status.turnStatus === "in_progress")
+              .map((status) => status.taskId),
+          );
+          if (selectedHeader) hydrateTaskIds.add(selectedHeader.id);
+          const storedWindows = await Promise.all(
+            [...hydrateTaskIds].map(async (taskId) => ({
+              taskId,
+              window: await window.kcode.state.loadTaskWindow(taskId),
+            })),
+          );
           if (cancelled) return;
-          if (selectedHeader && storedWindow)
-            rememberTaskPaging(selectedHeader.id, storedWindow.paging);
-          const selectedTask = storedTask
-            ? normalizeStoredTask(storedTask as TaskRecord)
-            : selectedHeader;
-          const loaded = headers.map((task) =>
-            task.id === selectedTask?.id ? selectedTask : task,
+          const hydratedTasks = new Map<string, TaskRecord>();
+          for (const stored of storedWindows) {
+            if (!stored.window) continue;
+            rememberTaskPaging(stored.taskId, stored.window.paging);
+            hydratedTasks.set(
+              stored.taskId,
+              restoreRuntimeStatus(
+                normalizeStoredTask(stored.window.task as TaskRecord),
+              ),
+            );
+          }
+          const selectedTask = selectedHeader
+            ? (hydratedTasks.get(selectedHeader.id) ?? selectedHeader)
+            : undefined;
+          const loaded = headers.map(
+            (task) => hydratedTasks.get(task.id) ?? task,
           );
-          hydratedTaskIdsRef.current = new Set(
-            selectedTask ? [selectedTask.id] : [],
-          );
-          persistedTaskRefsRef.current = new Map(
-            selectedTask ? [[selectedTask.id, selectedTask]] : [],
-          );
+          hydratedTaskIdsRef.current = new Set(hydratedTasks.keys());
+          persistedTaskRefsRef.current = new Map(hydratedTasks);
           persistedTaskOrderRef.current = JSON.stringify(
             loaded.map((task) => task.id),
           );
@@ -931,8 +1030,9 @@ export default function App() {
           setMessages(selectedTask?.messages ?? []);
           setActivities(selectedTask?.activities ?? []);
           setInput(initialDrafts.current[selectedTask?.id ?? ""] ?? "");
-          setRunningId(undefined);
-          currentRequest.current = undefined;
+          setRunningId(selectedTask?.runningId);
+          currentRequest.current = selectedTask?.runningId;
+          requestStartedRef.current = selectedTask?.startedAt;
         } else {
           const initial = tasksRef.current;
           hydratedTaskIdsRef.current = new Set(initial.map((task) => task.id));
@@ -2170,6 +2270,10 @@ export default function App() {
         .flatMap((p) => p.models.map((m) => ({ provider: p, model: m }))),
     [providers],
   );
+  const modelsRef = useRef(models);
+  useEffect(() => {
+    modelsRef.current = models;
+  }, [models]);
   useEffect(() => {
     if (!models.length) {
       setSelected("");
@@ -2270,6 +2374,13 @@ export default function App() {
         -8_000,
       ),
       progress: getStreamingText(streamingProgressKey(requestId)).slice(-1_000),
+      runtimeEventId: remoteRuntimeMetaRef.current.get(requestId)?.eventId,
+      runtimeEventKind: remoteRuntimeMetaRef.current.get(requestId)?.eventKind,
+      runtimeItemStatus:
+        remoteRuntimeMetaRef.current.get(requestId)?.itemStatus,
+      runtimeSequence: remoteRuntimeMetaRef.current.get(requestId)?.sequence,
+      runtimeProtocolVersion:
+        remoteRuntimeMetaRef.current.get(requestId)?.protocolVersion,
       updatedAt: Date.now(),
     };
     void remote.syncTaskEvent(event).catch(() => undefined);
@@ -2422,8 +2533,18 @@ export default function App() {
           )
         )
           return;
-        const taskId = requestTasksRef.current.get(id);
+        const taskId = requestTasksRef.current.get(id) ?? event.taskId;
         if (!taskId) return;
+        if (!requestTasksRef.current.has(id))
+          requestTasksRef.current.set(id, taskId);
+        if (event.eventId)
+          remoteRuntimeMetaRef.current.set(id, {
+            eventId: event.eventId,
+            eventKind: event.eventKind,
+            itemStatus: event.itemStatus,
+            sequence: event.sequence,
+            protocolVersion: event.protocolVersion,
+          });
         const isActive = isTaskViewCurrent(
           activeTaskIdRef.current,
           displayedTaskIdRef.current,
@@ -2437,7 +2558,7 @@ export default function App() {
           const startedAt =
             tasksRef.current.find((task) => task.id === taskId)?.startedAt ??
             Date.now();
-          taskRuntimeStore.ensureRunning(taskId, id, startedAt);
+          taskRuntimeStore.applyEvent(taskId, id, event);
         }
         if (event.type === "activity_output") {
           if (event.mode === "append")
@@ -2467,6 +2588,7 @@ export default function App() {
               ...task,
               runningId: id,
               runStatus: "running",
+              runtimeStatus: taskRuntimeStore.get(taskId)?.state.threadStatus,
             };
             return next;
           });
@@ -2565,6 +2687,18 @@ export default function App() {
           scheduleRemoteStreamSync(id);
           return;
         }
+        if (event.type === "context_compaction") {
+          replaceStreamingText(
+            streamingProgressKey(id),
+            event.phase === "started"
+              ? "上下文接近预算，正在压缩较早运行记录…"
+              : event.changed
+                ? `上下文已压缩：${event.beforeItems} → ${event.afterItems ?? event.beforeItems} 条，继续执行…`
+                : "上下文仍在预算内，继续执行…",
+          );
+          scheduleRemoteStreamSync(id);
+          return;
+        }
         if (event.type === "text_reset") {
           // Upstream broke mid-answer and the agent is retrying: discard the
           // partial text we streamed so far, both buffered and already
@@ -2600,6 +2734,10 @@ export default function App() {
             promptTokens: event.promptTokens ?? event.input,
           };
           const task = tasksRef.current.find((item) => item.id === taskId);
+          const taskModel = modelsRef.current.find(
+            (item) =>
+              `${item.provider.id}|${item.model.id}` === task?.modelSelection,
+          )?.model;
           // Calibrate against the last round's prompt tokens (the real context
           // occupancy), not the accumulated billing total which grows every round.
           const observedInput = event.promptTokens ?? event.input;
@@ -2632,6 +2770,18 @@ export default function App() {
                 ? {
                     ...item,
                     usage: nextUsage,
+                    contextWindowState: observeContextWindow(
+                      item.contextWindowState,
+                      {
+                        taskId,
+                        limit:
+                          taskModel?.contextWindow ??
+                          inferContextWindow(taskModel?.modelId ?? ""),
+                        observedTokens: observedInput,
+                        estimatedTokens: observedInput,
+                        source: "reported",
+                      },
+                    ),
                     usageResolved: true,
                     pendingTokenEstimate: undefined,
                     pendingCalibrationKey: undefined,
@@ -2645,6 +2795,9 @@ export default function App() {
           }
         }
         if (event.type === "error") {
+          const interrupted =
+            event.code === "cancelled" ||
+            event.eventKind === "turn_interrupted";
           taskRuntimeStore.finish(taskId, id);
           clearStreamingProgress(id);
           clearPendingReasoning(id);
@@ -2662,7 +2815,7 @@ export default function App() {
                 ? {
                     ...message,
                     content: message.content + finalText,
-                    error: event.message,
+                    error: interrupted ? undefined : event.message,
                     completedAt,
                   }
                 : message,
@@ -2677,8 +2830,16 @@ export default function App() {
                     ...finishTaskRequest(
                       task.runningId,
                       id,
-                      task.runStatus === "cancelled" ? "cancelled" : "failed",
+                      task.runStatus === "cancelled" || interrupted
+                        ? "cancelled"
+                        : "failed",
                     ),
+                    runtimeStatus:
+                      task.runningId && task.runningId !== id
+                        ? "running"
+                        : task.runStatus === "cancelled" || interrupted
+                          ? "interrupted"
+                          : "failed",
                     updatedAt: completedAt,
                   }
                 : task,
@@ -2705,6 +2866,7 @@ export default function App() {
           );
           if (isActive) setUsageResolved(true);
           requestTasksRef.current.delete(id);
+          remoteRuntimeMetaRef.current.delete(id);
         }
         if (event.type === "done") {
           taskRuntimeStore.finish(taskId, id);
@@ -2753,6 +2915,12 @@ export default function App() {
                 ...task,
                 messages: committedMessages,
                 ...finishTaskRequest(task.runningId, id, finishedStatus),
+                runtimeStatus:
+                  task.runningId && task.runningId !== id
+                    ? "running"
+                    : event.outcome === "blocked"
+                      ? "waiting"
+                      : "completed",
                 usageResolved: true,
                 imageSemantics,
                 updatedAt: completedAt,
@@ -2774,6 +2942,7 @@ export default function App() {
             setUsageResolved(true);
           }
           requestTasksRef.current.delete(id);
+          remoteRuntimeMetaRef.current.delete(id);
         }
       }) ?? (() => undefined),
     [],
@@ -2899,6 +3068,28 @@ export default function App() {
     setSshRemoteDialogTaskId(uid());
   }
 
+  function attachConnectedSshState(taskId: string, state: SshRemoteState) {
+    if (!state.profile || !state.cachePath) return;
+    setTasks((all) =>
+      all.map((task) => {
+        if (task.id !== taskId) return task;
+        const current = task.remoteWorkspace;
+        if (
+          task.workspacePath === state.cachePath &&
+          current?.id === state.profile!.id &&
+          current.rootPath === state.profile!.rootPath &&
+          current.hostFingerprint === state.profile!.hostFingerprint &&
+          current.remembered === state.profile!.remembered
+        )
+          return task;
+        return attachSshWorkspace(task, {
+          profile: state.profile!,
+          cachePath: state.cachePath!,
+        });
+      }),
+    );
+  }
+
   function createSshRemoteTask(state: SshRemoteState) {
     if (!state.profile || !state.cachePath) {
       setContextError("SSH Remote 连接未返回有效工作区信息。");
@@ -2906,18 +3097,10 @@ export default function App() {
     }
     const existing = tasksRef.current.find((task) => task.id === state.taskId);
     if (existing) {
-      setTasks((all) =>
-        all.map((task) =>
-          task.id === state.taskId
-            ? attachSshWorkspace(task, {
-                profile: state.profile!,
-                cachePath: state.cachePath!,
-              })
-            : task,
-        ),
-      );
+      attachConnectedSshState(state.taskId, state);
       setSshRemoteState(state);
       setWorkspaceView("editor");
+      setContextError("");
       setSshRemoteDialogTaskId(undefined);
       return;
     }
@@ -3160,16 +3343,25 @@ export default function App() {
     );
     const now = Date.now();
     const taskId = uid();
+    let targetWorkspacePath = workspacePath;
     let remoteWorkspace = sourceTask?.remoteWorkspace;
     if (remoteWorkspace && window.kcode?.sshRemote) {
       try {
-        const state = await window.kcode.sshRemote.connectSaved(
+        const state = await restoreSshRemoteConnection(
+          window.kcode.sshRemote,
           taskId,
-          remoteWorkspace.id,
+          remoteWorkspace,
         );
         remoteWorkspace = state.profile ?? remoteWorkspace;
+        targetWorkspacePath = state.cachePath ?? targetWorkspacePath;
       } catch (error) {
-        setContextError(`SSH Remote 连接失败：${errorMessage(error)}`);
+        if (isSshRemoteCredentialsRequired(error) && sourceTask)
+          setSshRemoteDialogTaskId(sourceTask.id);
+        setContextError(
+          isSshRemoteCredentialsRequired(error)
+            ? "SSH Remote 凭据需要重新确认；连接信息已填入，重新连接后再创建会话。"
+            : `SSH Remote 连接失败：${errorMessage(error)}`,
+        );
         return;
       }
     }
@@ -3177,7 +3369,7 @@ export default function App() {
       id: taskId,
       name: "新对话",
       workspaceName: sourceTask ? taskWorkspaceName(sourceTask) : undefined,
-      workspacePath,
+      workspacePath: targetWorkspacePath,
       remoteWorkspace,
       createdAt: now,
       updatedAt: now,
@@ -3650,6 +3842,11 @@ export default function App() {
       attachmentTokens: 0,
       outputReserve: 0,
       calibrationFactor,
+      retainedContext: retainedCompactionContext(
+        task.messages,
+        task.compactedMessageCount ?? 0,
+        selectedContextWindow,
+      ),
     });
     setSummarizingTasks((current) => new Set(current).add(task.id));
     let finalCompacted = compacted;
@@ -3687,7 +3884,28 @@ export default function App() {
       attachmentTokens: 0,
       outputReserve: 0,
       calibrationFactor,
+      retainedContext: retainedCompactionContext(
+        task.messages,
+        finalCompacted.compactedMessageCount ??
+          compacted.compactedMessageCount,
+        selectedContextWindow,
+      ),
     });
+    setTasks((all) =>
+      all.map((item) =>
+        item.id === task.id
+          ? {
+              ...item,
+              contextWindowState: markContextCompacted(
+                item.contextWindowState,
+                item.id,
+                afterTokens,
+                selectedContextWindow,
+              ),
+            }
+          : item,
+      ),
+    );
     flashContextToast(
       `已压缩 ${finalCompacted.compactedMessageCount} 条较早消息：${formatContextPercent(beforeTokens, selectedContextWindow)} → ${formatContextPercent(afterTokens, selectedContextWindow)}，最近对话和关键状态继续保留`,
     );
@@ -3971,7 +4189,7 @@ export default function App() {
     }
     const taskMessages = requestTask
       ? taskIsCurrent()
-        ? messages
+        ? prependUniqueItems(requestTask.messages, messages)
         : requestTask.messages
       : [];
     const taskSelection = requestTask?.modelSelection || selected;
@@ -3991,25 +4209,45 @@ export default function App() {
       taskSummaryBusy
     )
       return;
-    if (requestTask.remoteWorkspace && window.kcode?.sshRemote) {
+    const requestRemoteWorkspace = requestTask.remoteWorkspace;
+    if (requestRemoteWorkspace && window.kcode?.sshRemote) {
       try {
-        const remoteState = await window.kcode.sshRemote.state(
+        const connected = await restoreSshRemoteConnection(
+          window.kcode.sshRemote,
           taskId,
-          requestTask.remoteWorkspace.id,
+          requestRemoteWorkspace,
         );
-        const connected = remoteState.connected
-          ? remoteState
-          : await window.kcode.sshRemote.connectSaved(
-              taskId,
-              requestTask.remoteWorkspace.id,
-            );
+        if (connected.profile && connected.cachePath) {
+          requestTask = attachSshWorkspace(requestTask, {
+            profile: connected.profile,
+            cachePath: connected.cachePath,
+          });
+          attachConnectedSshState(taskId, connected);
+        }
         if (taskIsCurrent()) setSshRemoteState(connected);
       } catch (error) {
         if (taskIsCurrent()) {
-          setContextError(`SSH Remote 连接失败：${errorMessage(error)}`);
-          setWorkspaceView("editor");
+          const credentialsRequired = isSshRemoteCredentialsRequired(error);
+          const message =
+            credentialsRequired
+              ? "SSH Remote 暂未连接；消息仍会发送，远程操作时将使用本轮提供的凭据重连。"
+              : `SSH Remote 暂未连接：${errorMessage(error)}；消息仍会发送。`;
+          const disconnected = await window.kcode.sshRemote
+            .state(taskId, requestRemoteWorkspace.id)
+            .catch(() => undefined);
+          setSshRemoteState({
+            taskId,
+            connected: false,
+            connecting: false,
+            ...disconnected,
+            profile:
+              disconnected?.profile ?? requestRemoteWorkspace,
+            cachePath: disconnected?.cachePath ?? requestTask.workspacePath,
+            error: errorMessage(error),
+          });
+          setContextError("");
+          flashContextToast(message);
         }
-        return;
       }
     }
     const requestedCollaboration = requestTask.collaboration;
@@ -4153,6 +4391,11 @@ export default function App() {
     const requestCalibrationKey = `${target.provider.id}|${target.model.modelId}`;
     const requestCalibrationFactor =
       tokenCalibration[requestCalibrationKey] ?? 1;
+    let retainedContext = retainedCompactionContext(
+      nextMessages,
+      compactedCount,
+      requestContextWindow,
+    );
     let rawEstimatedTokens = estimateRequestContextTokens({
       messages: nextMessages,
       compactedMessageCount: compactedCount,
@@ -4160,6 +4403,7 @@ export default function App() {
       attachmentTokens,
       outputReserve,
       calibrationFactor: 1,
+      retainedContext,
     });
     // Use the last round's prompt tokens as the observed floor, not the
     // accumulated billing total (usage.input) which grows every round and would
@@ -4209,6 +4453,11 @@ export default function App() {
         requestSummary = finalCompacted.contextSummary;
         requestLedger = finalCompacted.contextLedger;
         compactedCount = finalCompacted.compactedMessageCount ?? compactedCount;
+        retainedContext = retainedCompactionContext(
+          nextMessages,
+          compactedCount,
+          requestContextWindow,
+        );
         rawEstimatedTokens = estimateRequestContextTokens({
           messages: nextMessages,
           compactedMessageCount: compactedCount,
@@ -4216,6 +4465,7 @@ export default function App() {
           attachmentTokens,
           outputReserve,
           calibrationFactor: 1,
+          retainedContext,
         });
         const afterEstimatedTokens = Math.ceil(
           rawEstimatedTokens * requestCalibrationFactor,
@@ -4226,6 +4476,12 @@ export default function App() {
               ? {
                   ...task,
                   ...finalCompacted,
+                  contextWindowState: markContextCompacted(
+                    task.contextWindowState,
+                    task.id,
+                    afterEstimatedTokens,
+                    requestContextWindow,
+                  ),
                   usage: clearPromptTokenSnapshot(task.usage),
                   summarySnapshots: summarySnapshot(task),
                   summaryMeta:
@@ -4263,7 +4519,14 @@ export default function App() {
     if (requestSummary) {
       history.unshift({
         role: "user",
-        content: `<conversation_summary>\n以下是较早对话的压缩摘要，请延续其中的目标、决策和执行状态：\n${requestSummary}\n${requestLedger ? `\n<fact_ledger>${JSON.stringify(requestLedger)}</fact_ledger>` : ""}\n</conversation_summary>`,
+        content: `<conversation_summary>\n这是较早对话的压缩检查点，由另一个模型交接而来。请延续其中的目标、约束、决策、已验证结果与未完成步骤，不要重复已经完成的工作：\n${requestSummary}\n${requestLedger ? `\n<fact_ledger>${JSON.stringify(requestLedger)}</fact_ledger>` : ""}\n</conversation_summary>`,
+        images: undefined,
+      });
+    }
+    if (retainedContext) {
+      history.unshift({
+        role: "user",
+        content: retainedContext,
         images: undefined,
       });
     }
@@ -4697,6 +4960,7 @@ export default function App() {
                   activities: stopActivities(task.activities),
                   runningId: undefined,
                   runStatus: "cancelled",
+                  runtimeStatus: "interrupted",
                   updatedAt: completedAt,
                 }
               : task,
@@ -4791,6 +5055,7 @@ export default function App() {
                       ...item,
                       runningId: undefined,
                       runStatus: "cancelled",
+                      runtimeStatus: "interrupted",
                       updatedAt: completedAt,
                       messages: item.messages.map((message) =>
                         message.id === `assistant:${task.runningId}`
@@ -4927,27 +5192,49 @@ export default function App() {
     : "";
   const calibrationFactor = tokenCalibration[selectedCalibrationKey] ?? 1;
   const deferredMessages = useDeferredValue(messages);
+  const compactedMessageCount = activeTask?.compactedMessageCount ?? 0;
+  const retainedContextBoundaryId =
+    deferredMessages[Math.max(0, compactedMessageCount - 1)]?.id;
+  const retainedCheckpointContext = useMemo(
+    () =>
+      retainedCompactionContext(
+        deferredMessages,
+        compactedMessageCount,
+        selectedContextWindow,
+      ),
+    [
+      activeTaskId,
+      compactedMessageCount,
+      retainedContextBoundaryId,
+      selectedContextWindow,
+    ],
+  );
   const localContextTokens = useMemo(
     () =>
       Math.ceil(
         (AGENT_STATIC_TOKENS +
           estimateTextTokens(activeTask?.contextSummary ?? "") +
+          estimateTextTokens(retainedCheckpointContext) +
           estimateMessageTokens(
-            deferredMessages.slice(activeTask?.compactedMessageCount ?? 0),
+            deferredMessages.slice(compactedMessageCount),
           )) *
           calibrationFactor,
       ),
     [
-      activeTask?.compactedMessageCount,
       activeTask?.contextSummary,
       calibrationFactor,
+      compactedMessageCount,
       deferredMessages,
+      retainedCheckpointContext,
     ],
   );
   // The context gauge must reflect what the model actually reads each turn (the
   // last prompt token count), not usage.input, which accumulates every turn's
   // prompt and balloons far past the window in a multi-round agentic run.
-  const contextTokens = usage.promptTokens ?? localContextTokens;
+  const contextTokens = contextUsageTokens(
+    activeTask?.contextWindowState,
+    usage.promptTokens ?? localContextTokens,
+  );
   const contextTokenSource =
     usage.promptTokens !== undefined
       ? "reported"
@@ -4974,7 +5261,7 @@ export default function App() {
   const nextRequestTokens = useMemo(() => {
     const estimated = estimateRequestContextTokens({
       messages: deferredMessages,
-      compactedMessageCount: activeTask?.compactedMessageCount ?? 0,
+      compactedMessageCount,
       contextSummary: activeTask?.contextSummary,
       attachmentTokens: draftAttachmentTokens,
       outputReserve: outputTokenReserve(
@@ -4982,14 +5269,16 @@ export default function App() {
         supportsReasoning,
       ),
       calibrationFactor,
+      retainedContext: retainedCheckpointContext,
     });
     return Math.max(estimated, usage.promptTokens ?? 0);
   }, [
-    activeTask?.compactedMessageCount,
     activeTask?.contextSummary,
     calibrationFactor,
+    compactedMessageCount,
     deferredMessages,
     draftAttachmentTokens,
+    retainedCheckpointContext,
     selectedContextWindow,
     supportsReasoning,
     usage.promptTokens,
@@ -5809,7 +6098,12 @@ export default function App() {
         {sshRemoteDialogTaskId && (
           <Suspense fallback={null}>
             <SshRemoteDialog
+              key={sshRemoteDialogTaskId}
               taskId={sshRemoteDialogTaskId}
+              initialProfile={
+                tasks.find((task) => task.id === sshRemoteDialogTaskId)
+                  ?.remoteWorkspace
+              }
               onConnected={createSshRemoteTask}
               onClose={() => setSshRemoteDialogTaskId(undefined)}
             />

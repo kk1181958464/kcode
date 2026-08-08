@@ -12,6 +12,7 @@ import {
   normalizeSshPrivateKey,
   runSshCommand,
   sshSessionInfo,
+  sshSessionRecovery,
 } from "./ssh";
 
 test("normalizes escaped newlines in SSH private keys", () => {
@@ -45,6 +46,7 @@ test("records and verifies an SSH host fingerprint", async () => {
     port: address.port,
     username: "test",
     password: "test",
+    rememberForRemoteWorkspace: true,
   };
   const result = await connectSsh(
     "fingerprint-task",
@@ -54,8 +56,17 @@ test("records and verifies an SSH host fingerprint", async () => {
   );
   assert.equal(result.connected, true);
   assert.equal(sshSessionInfo("fingerprint-task").authType, "password");
+  assert.deepEqual(sshSessionRecovery("fingerprint-task"), {
+    secret: {
+      password: "test",
+      privateKey: undefined,
+      passphrase: undefined,
+    },
+    rememberForRemoteWorkspace: true,
+  });
   assert.match(result.hostFingerprint || "", /^[a-f0-9]+$/i);
   assert.equal(disconnectSsh("fingerprint-task"), true);
+  assert.equal(sshSessionRecovery("fingerprint-task"), undefined);
   const verified = await connectSsh(
     "fingerprint-task-verified",
     "request-2",

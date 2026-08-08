@@ -2,6 +2,8 @@ import type { AgentActivity, ChatMessage, ReasoningEffort } from "./types";
 import type { ContextLedger } from "./context";
 import type { TaskRunStatus } from "./task-status";
 import type { SshRemoteWorkspace } from "./ssh-remote-types";
+import type { ContextWindowState } from "./context-window";
+import type { RuntimeThreadStatus } from "./runtime-protocol";
 
 export const uid = () => crypto.randomUUID();
 export const EMPTY_ACTIVITIES: AgentActivity[] = [];
@@ -55,6 +57,7 @@ export type TaskRecord = {
   reasoningEffort?: ReasoningEffort;
   contextDirectory?: string;
   runningId?: string;
+  runtimeStatus?: RuntimeThreadStatus;
   runStatus?: TaskRunStatus;
   startedAt?: number;
   usage?: {
@@ -69,6 +72,7 @@ export type TaskRecord = {
   contextLedger?: ContextLedger;
   pendingTokenEstimate?: number;
   pendingCalibrationKey?: string;
+  contextWindowState?: ContextWindowState;
   summarySnapshots?: {
     id: string;
     createdAt: number;

@@ -25,6 +25,12 @@ type SshSession = {
   username: string;
   authType: "password" | "private-key";
   hostFingerprint?: string;
+  recoverySecret: {
+    password?: string;
+    privateKey?: string;
+    passphrase?: string;
+  };
+  rememberForRemoteWorkspace: boolean;
 };
 
 type RemoteUndoSnapshot = {
@@ -48,6 +54,7 @@ export type SshConnectInput = {
   privateKey?: string;
   passphrase?: string;
   hostFingerprint?: string;
+  rememberForRemoteWorkspace?: boolean;
 };
 
 export function sshSessionInfo(sessionId: string) {
@@ -62,6 +69,15 @@ export function sshSessionInfo(sessionId: string) {
         hostFingerprint: session.hostFingerprint,
       }
     : { connected: false as const };
+}
+
+export function sshSessionRecovery(sessionId: string) {
+  const session = sessions.get(sessionId);
+  if (!session) return undefined;
+  return {
+    secret: { ...session.recoverySecret },
+    rememberForRemoteWorkspace: session.rememberForRemoteWorkspace,
+  };
 }
 
 const sessions = new Map<string, SshSession>();
@@ -220,6 +236,12 @@ export async function connectSsh(
     username,
     authType: privateKey ? "private-key" : "password",
     hostFingerprint,
+    recoverySecret: {
+      password: input.password,
+      privateKey,
+      passphrase: input.passphrase,
+    },
+    rememberForRemoteWorkspace: Boolean(input.rememberForRemoteWorkspace),
   };
   sessions.set(sessionId, session);
   client.on("close", () => {

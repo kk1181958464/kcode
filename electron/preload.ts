@@ -33,6 +33,9 @@ const api: KCodeApi = {
       ipcRenderer.invoke("state:task-message-page", id, options),
     taskActivityPage: (id, options) =>
       ipcRenderer.invoke("state:task-activity-page", id, options),
+    runtimeEvents: (id, options) =>
+      ipcRenderer.invoke("state:runtime-events", id, options),
+    runtimeStatuses: () => ipcRenderer.invoke("state:runtime-statuses"),
     taskActivitiesForRequests: (id, requestIds) =>
       ipcRenderer.invoke("state:task-activities-for-requests", id, requestIds),
     loadActivityPayload: (activityId) =>
@@ -78,11 +81,14 @@ const api: KCodeApi = {
   },
   runtime: {
     processes: () => ipcRenderer.invoke("runtime:processes"),
+    statuses: (taskId) => ipcRenderer.invoke("runtime:statuses", taskId),
     stopProcess: (id) => ipcRenderer.invoke("runtime:stop-process", id),
     stopAll: () => ipcRenderer.invoke("runtime:stop-all"),
   },
   chat: {
     start: (request) => ipcRenderer.invoke("chat:start", request),
+    steer: (requestId, content) =>
+      ipcRenderer.invoke("chat:steer", requestId, content),
     cancel: (id) => ipcRenderer.invoke("chat:cancel", id),
     approve: (requestId, activityId, allowed) =>
       ipcRenderer.invoke("chat:approve", requestId, activityId, allowed),

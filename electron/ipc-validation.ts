@@ -6,6 +6,7 @@ export const stateKeySchema = z.enum([
   "scheduledTasks",
 ]);
 export const idSchema = z.string().trim().min(1).max(256);
+export const steerContentSchema = z.string().trim().min(1).max(20_000);
 export const optionalIdSchema = idSchema.optional();
 export const taskItemPageOptionsSchema = z
   .object({
@@ -20,6 +21,11 @@ export const saveTaskOptionsSchema = z.object({
   preserveUnloadedItems: z.boolean().optional(),
 });
 export const taskRequestIdsSchema = z.array(idSchema).max(100);
+export const runtimeEventPageOptionsSchema = z.object({
+  requestId: idSchema.optional(),
+  afterSequence: z.number().int().min(0).optional(),
+  limit: z.number().int().min(1).max(500).optional(),
+});
 export const urlSchema = z.string().trim().min(1).max(8192);
 export const workspacePathSchema = z.string().trim().min(1).max(32767);
 export const localPathSchema = z.string().trim().min(1).max(32767);

@@ -259,7 +259,9 @@ export function shouldRequireCodingTool(
 ) {
   return (
     /(?:^|[\W_])kimi[.-]?k3(?:$|[\W_])/i.test(modelId) &&
-    [...requested].some((operation) => !evidence.has(operation))
+    [...requested]
+      .filter((operation) => operation !== "inspect")
+      .some((operation) => !evidence.has(operation))
   );
 }
 
@@ -714,12 +716,26 @@ export function missingRequestedCodingOperations(
   return [...requested].filter((operation) => !evidence.has(operation));
 }
 
+/**
+ * Inspection is useful evidence when tools are available, but it is not a
+ * side effect. A screenshot, attachment, or supplied error can be answered
+ * without opening the workspace, so inspection alone must not become a failed
+ * task.
+ */
+export function codingOperationsRequiringToolEvidence(
+  operations: ReadonlySet<CodingOperation>,
+) {
+  return new Set(
+    [...operations].filter((operation) => operation !== "inspect"),
+  );
+}
+
 export function missingVerifiedCodingOperations(
   required: ReadonlySet<CodingOperation>,
   claimed: ReadonlySet<CodingOperation>,
   evidence: ReadonlySet<CodingOperation>,
   history: CodingVerificationHistoryItem[],
-  requested: ReadonlySet<CodingOperation> = required,
+  _requested: ReadonlySet<CodingOperation> = required,
 ) {
   const noChangeEvidence = hasVerifiedNoChangeEvidence(history);
   const noChangeReport = hasVerifiedNoChangeReport(history);
@@ -728,7 +744,7 @@ export function missingVerifiedCodingOperations(
       !(
         (operation === "modify" &&
           noChangeEvidence &&
-          (!claimed.has("modify") || !requested.has("modify"))) ||
+          !claimed.has("modify")) ||
         (operation === "validate" && noChangeReport && !claimed.has("validate"))
       ),
   );

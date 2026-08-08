@@ -60,6 +60,11 @@ export type RemoteTaskStreamEvent = {
   content: string;
   reasoning?: string;
   progress?: string;
+  runtimeEventId?: string;
+  runtimeEventKind?: string;
+  runtimeItemStatus?: string;
+  runtimeSequence?: number;
+  runtimeProtocolVersion?: number;
   updatedAt: number;
 };
 
@@ -71,6 +76,7 @@ export type RemoteTaskSnapshot = {
   updatedAt: number;
   runningId?: string;
   runStatus?: string;
+  runtimeStatus?: string;
   modelSelection?: string;
   executorModelSelection?: string;
   messages: Array<{
@@ -90,6 +96,7 @@ export type RemoteTaskSnapshot = {
     id: string;
     requestId: string;
     tool: string;
+    toolCallId?: string;
     status: string;
     title: string;
     narrative?: string;

@@ -56,6 +56,7 @@ export type RemoteTaskSnapshot = {
   updatedAt: number;
   runningId?: string;
   runStatus?: string;
+  runtimeStatus?: string;
   modelSelection?: string;
   executorModelSelection?: string;
   messages: Array<{
@@ -75,6 +76,7 @@ export type RemoteTaskSnapshot = {
     id: string;
     requestId: string;
     tool: string;
+    toolCallId?: string;
     status: string;
     title: string;
     narrative?: string;
@@ -253,6 +255,43 @@ export function parseRemoteTaskEvent(value: unknown) {
   const sequence = value.sequence === undefined ? 0 : Number(value.sequence);
   if (!Number.isInteger(sequence) || sequence < 0)
     throw new Error("实时事件序号无效");
+  const runtimeSequence =
+    value.runtimeSequence === undefined
+      ? undefined
+      : Number(value.runtimeSequence);
+  if (
+    runtimeSequence !== undefined &&
+    (!Number.isInteger(runtimeSequence) || runtimeSequence < 0)
+  )
+    throw new Error("运行事件序号无效");
+  const runtimeProtocolVersion =
+    value.runtimeProtocolVersion === undefined
+      ? undefined
+      : Number(value.runtimeProtocolVersion);
+  if (
+    runtimeProtocolVersion !== undefined &&
+    (!Number.isInteger(runtimeProtocolVersion) ||
+      runtimeProtocolVersion < 1 ||
+      runtimeProtocolVersion > 100)
+  )
+    throw new Error("运行协议版本无效");
+  const reasoning = optionalText(value.reasoning, "实时思考", 8_000);
+  const progress = optionalText(value.progress, "实时状态", 1_000);
+  const runtimeEventId = optionalText(
+    value.runtimeEventId,
+    "运行事件 ID",
+    256,
+  );
+  const runtimeEventKind = optionalText(
+    value.runtimeEventKind,
+    "运行事件类型",
+    128,
+  );
+  const runtimeItemStatus = optionalText(
+    value.runtimeItemStatus,
+    "运行项目状态",
+    64,
+  );
   return {
     type: "task.event" as const,
     event: "stream" as const,
@@ -260,8 +299,15 @@ export function parseRemoteTaskEvent(value: unknown) {
     requestId: stringValue(value.requestId, "请求 ID"),
     sequence,
     content: optionalText(value.content, "实时正文", 96_000) ?? "",
-    reasoning: optionalText(value.reasoning, "实时思考", 8_000),
-    progress: optionalText(value.progress, "实时状态", 1_000),
+    ...(reasoning === undefined ? {} : { reasoning }),
+    ...(progress === undefined ? {} : { progress }),
+    ...(runtimeEventId === undefined ? {} : { runtimeEventId }),
+    ...(runtimeEventKind === undefined ? {} : { runtimeEventKind }),
+    ...(runtimeItemStatus === undefined ? {} : { runtimeItemStatus }),
+    ...(runtimeSequence === undefined ? {} : { runtimeSequence }),
+    ...(runtimeProtocolVersion === undefined
+      ? {}
+      : { runtimeProtocolVersion }),
     updatedAt,
   };
 }

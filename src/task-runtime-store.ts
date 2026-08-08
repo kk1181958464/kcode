@@ -1,9 +1,16 @@
 import type { TaskRecord } from "./models";
+import type { AgentEvent } from "./types";
+import {
+  initialRuntimeState,
+  reduceRuntimeState,
+  type RuntimeState,
+} from "./runtime-state-machine";
 
 export type ActiveTaskRuntime = {
   taskId: string;
   requestId: string;
   startedAt: number;
+  state: RuntimeState;
 };
 
 type RuntimeListener = () => void;
@@ -38,14 +45,42 @@ export class TaskRuntimeStore {
       current.startedAt === startedAt
     )
       return;
-    this.active.set(taskId, { taskId, requestId, startedAt });
+    this.active.set(taskId, {
+      taskId,
+      requestId,
+      startedAt,
+      state: initialRuntimeState(requestId, startedAt),
+    });
     this.publish();
   }
 
   ensureRunning(taskId: string, requestId: string, startedAt = Date.now()) {
     const current = this.active.get(taskId);
     if (current?.requestId === requestId) return;
-    this.active.set(taskId, { taskId, requestId, startedAt });
+    this.active.set(taskId, {
+      taskId,
+      requestId,
+      startedAt,
+      state: initialRuntimeState(requestId, startedAt),
+    });
+    this.publish();
+  }
+
+  applyEvent(taskId: string, requestId: string, event: AgentEvent): void {
+    const current = this.active.get(taskId);
+    if (!current || current.requestId !== requestId) {
+      this.ensureRunning(taskId, requestId);
+      this.applyEvent(taskId, requestId, event);
+      return;
+    }
+    const nextState = reduceRuntimeState(
+      current.state,
+      event,
+      event.sequence ?? current.state.lastSequence + 1,
+      event.emittedAt,
+    );
+    if (nextState === current.state) return;
+    this.active.set(taskId, { ...current, state: nextState });
     this.publish();
   }
 
@@ -75,6 +110,7 @@ export class TaskRuntimeStore {
         runningId: runtime.requestId,
         runStatus: "running" as const,
         startedAt: runtime.startedAt,
+        runtimeStatus: runtime.state.threadStatus,
       };
     });
   }
@@ -87,4 +123,3 @@ export class TaskRuntimeStore {
 }
 
 export const taskRuntimeStore = new TaskRuntimeStore();
-

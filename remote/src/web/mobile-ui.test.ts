@@ -6,6 +6,7 @@ import {
   completedProcessTextLength,
   formatCompactDuration,
   mergeLiveContent,
+  newerLiveStream,
   reconcileById,
   visibleMessageWindow,
 } from "./mobile-ui";
@@ -62,4 +63,34 @@ test("reuses unchanged snapshot items by id", () => {
   );
   assert.equal(result[0], first);
   assert.notEqual(result[1], second);
+});
+
+test("orders live streams by the canonical runtime event sequence", () => {
+  const current = {
+    requestId: "request-1",
+    sequence: 20,
+    runtimeEventId: "request-1:8",
+    runtimeSequence: 8,
+    updatedAt: 100,
+  };
+  assert.equal(
+    newerLiveStream(current, {
+      ...current,
+      sequence: 21,
+      runtimeEventId: "request-1:7",
+      runtimeSequence: 7,
+      updatedAt: 200,
+    }),
+    false,
+  );
+  assert.equal(
+    newerLiveStream(current, {
+      ...current,
+      runtimeEventId: "request-1:9",
+      runtimeSequence: 9,
+      updatedAt: 90,
+    }),
+    true,
+  );
+  assert.equal(newerLiveStream(current, { ...current }), false);
 });

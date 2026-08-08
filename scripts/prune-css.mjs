@@ -66,7 +66,7 @@ const [result] = await new PurgeCSS().purge({
       "orange",
       "mono",
     ],
-    deep: [/^cm-/, /^diff-/, /^hljs-/, /^virtuoso/],
+    deep: [/^cm-/, /^diff-/, /^hljs-/, /^virtuoso/, /^katex/],
     greedy: [/data-theme/, /data-accent/, /data-truncated/, /data-has-static/],
     variables: [],
     keyframes: [],

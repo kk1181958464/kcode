@@ -7,6 +7,17 @@ import {
   type DeferredActivityPayload,
 } from "../src/activity-payload";
 import { TASK_MESSAGE_PAGE_SIZE } from "../src/task-history-paging";
+import type {
+  AgentEventEnvelope,
+  RuntimeEventPage,
+  RuntimeTaskStatusSnapshot,
+} from "../src/runtime-protocol";
+import {
+  createRuntimeEventEnvelope,
+  isAgentEventEnvelope,
+  runtimeThreadStatus,
+  runtimeTurnStatus,
+} from "../src/runtime-protocol";
 
 let database: DatabaseSync | undefined;
 const databasePath = () => path.join(app.getPath("userData"), "kcode.sqlite");
@@ -61,6 +72,20 @@ function db() {
         ON task_activities(task_id, position);
       CREATE INDEX IF NOT EXISTS task_activities_request
         ON task_activities(task_id, json_extract(value, '$.requestId'));
+      CREATE TABLE IF NOT EXISTS runtime_events (
+        event_order INTEGER PRIMARY KEY AUTOINCREMENT,
+        task_id TEXT NOT NULL,
+        request_id TEXT NOT NULL,
+        sequence INTEGER NOT NULL,
+        event_id TEXT NOT NULL UNIQUE,
+        value TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        UNIQUE(request_id, sequence)
+      );
+      CREATE INDEX IF NOT EXISTS runtime_events_task_order
+        ON runtime_events(task_id, event_order);
+      CREATE INDEX IF NOT EXISTS runtime_events_request_sequence
+        ON runtime_events(request_id, sequence);
     `);
     ensureTaskHeaderColumn(database);
     migrateLegacyTasks(database);
@@ -500,6 +525,195 @@ export function loadTaskActivitiesForRequests(
   return loadTaskActivitiesForRequestsFromDatabase(db(), taskId, requestIds);
 }
 
+/**
+ * Append-only runtime journal. The event id and request/sequence pair make
+ * retries and reconnects idempotent without asking the renderer to reconcile
+ * two competing snapshots.
+ */
+export function appendRuntimeEventsToDatabase(
+  connection: DatabaseSync,
+  events: readonly AgentEventEnvelope[],
+) {
+  if (!events.length) return;
+  const insert = connection.prepare(
+    `INSERT OR IGNORE INTO runtime_events
+      (task_id, request_id, sequence, event_id, value, created_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  );
+  connection.exec("BEGIN IMMEDIATE");
+  try {
+    for (const event of events)
+      insert.run(
+        event.taskId,
+        event.requestId,
+        event.sequence,
+        event.eventId,
+        JSON.stringify(event),
+        event.emittedAt,
+      );
+    connection.exec("COMMIT");
+  } catch (error) {
+    connection.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+export function appendRuntimeEvents(events: readonly AgentEventEnvelope[]) {
+  appendRuntimeEventsToDatabase(db(), events);
+}
+
+export type RuntimeEventPageOptions = {
+  requestId?: string;
+  afterSequence?: number;
+  limit?: number;
+};
+
+function parseStoredRuntimeEvent(value: string) {
+  try {
+    const event = JSON.parse(value) as unknown;
+    return isAgentEventEnvelope(event) ? event : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function loadRuntimeEventsFromDatabase(
+  connection: DatabaseSync,
+  taskId: string,
+  options: RuntimeEventPageOptions = {},
+): RuntimeEventPage {
+  const limit = Math.min(500, Math.max(1, options.limit ?? 200));
+  const afterSequence = Math.max(0, Math.floor(options.afterSequence ?? 0));
+  const rows = options.requestId
+    ? (connection
+        .prepare(
+          `SELECT value FROM runtime_events
+           WHERE task_id = ? AND request_id = ? AND sequence > ?
+           ORDER BY sequence ASC LIMIT ?`,
+        )
+        .all(taskId, options.requestId, afterSequence, limit + 1) as {
+        value: string;
+      }[])
+    : (connection
+        .prepare(
+          `SELECT value FROM runtime_events
+           WHERE task_id = ?
+           ORDER BY event_order ASC LIMIT ?`,
+        )
+        .all(taskId, limit + 1) as { value: string }[]);
+  const hasMore = rows.length > limit;
+  const events = rows
+    .slice(0, limit)
+    .map((row) => parseStoredRuntimeEvent(row.value))
+    .filter((event): event is AgentEventEnvelope => Boolean(event));
+  return {
+    events,
+    hasMore,
+    nextSequence: options.requestId ? events.at(-1)?.sequence : undefined,
+  };
+}
+
+export function loadRuntimeEvents(
+  taskId: string,
+  options: RuntimeEventPageOptions = {},
+): RuntimeEventPage {
+  return loadRuntimeEventsFromDatabase(db(), taskId, options);
+}
+
+export function runtimeEventStats(taskId?: string) {
+  const row = taskId
+    ? (db()
+        .prepare(
+          "SELECT COUNT(*) AS total, COALESCE(SUM(LENGTH(value)), 0) AS bytes FROM runtime_events WHERE task_id = ?",
+        )
+        .get(taskId) as { total: number; bytes: number })
+    : (db()
+        .prepare(
+          "SELECT COUNT(*) AS total, COALESCE(SUM(LENGTH(value)), 0) AS bytes FROM runtime_events",
+        )
+        .get() as { total: number; bytes: number });
+  return { events: Number(row.total), bytes: Number(row.bytes) };
+}
+
+export function loadRuntimeTaskStatusesFromDatabase(
+  connection: DatabaseSync,
+): RuntimeTaskStatusSnapshot[] {
+  const rows = connection
+    .prepare(
+      `SELECT event.task_id, event.request_id, event.sequence,
+              event.created_at, event.value
+       FROM runtime_events event
+       INNER JOIN (
+         SELECT task_id, MAX(event_order) AS event_order
+         FROM runtime_events
+         GROUP BY task_id
+       ) latest ON latest.event_order = event.event_order
+       ORDER BY event.created_at DESC`,
+    )
+    .all() as {
+    task_id: string;
+    request_id: string;
+    sequence: number;
+    created_at: number;
+    value: string;
+  }[];
+  return rows.flatMap((row) => {
+    const event = parseStoredRuntimeEvent(row.value);
+    return event
+      ? [
+          {
+            taskId: row.task_id,
+            requestId: row.request_id,
+            status: runtimeThreadStatus(event),
+            turnStatus: runtimeTurnStatus(event) ?? "in_progress",
+            lastSequence: row.sequence,
+            updatedAt: row.created_at,
+          },
+        ]
+      : [];
+  });
+}
+
+export function loadRuntimeTaskStatuses(): RuntimeTaskStatusSnapshot[] {
+  return loadRuntimeTaskStatusesFromDatabase(db());
+}
+
+/** Mark turns left in progress by a previous main-process lifetime. */
+export function interruptStaleRuntimeEventsInDatabase(
+  connection: DatabaseSync,
+  now = Date.now(),
+) {
+  const stale = loadRuntimeTaskStatusesFromDatabase(connection).filter(
+    (status) => status.turnStatus === "in_progress",
+  );
+  if (!stale.length) return 0;
+  appendRuntimeEventsToDatabase(
+    connection,
+    stale.map((status) =>
+      createRuntimeEventEnvelope(
+        {
+          type: "error",
+          message: "应用已重新启动，上一轮运行已中断",
+          code: "cancelled",
+          retryable: true,
+          userAction: "retry",
+        },
+        {
+          taskId: status.taskId,
+          requestId: status.requestId,
+          sequence: status.lastSequence + 1,
+          emittedAt: now,
+        },
+      ),
+    ),
+  );
+  return stale.length;
+}
+
+export function interruptStaleRuntimeEvents(now = Date.now()) {
+  return interruptStaleRuntimeEventsInDatabase(db(), now);
+}
+
 function pageMetadata(page: TaskItemPage): Omit<TaskItemPage, "items"> {
   const { items: _items, ...metadata } = page;
   return metadata;
@@ -639,7 +853,16 @@ export function saveTaskOrder(ids: string[]) {
 }
 
 export function deleteTask(id: string) {
-  db().prepare("DELETE FROM tasks WHERE id = ?").run(id);
+  const connection = db();
+  connection.exec("BEGIN IMMEDIATE");
+  try {
+    connection.prepare("DELETE FROM runtime_events WHERE task_id = ?").run(id);
+    connection.prepare("DELETE FROM tasks WHERE id = ?").run(id);
+    connection.exec("COMMIT");
+  } catch (error) {
+    connection.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 export function loadState(key: string): unknown | null {

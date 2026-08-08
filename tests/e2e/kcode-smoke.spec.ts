@@ -12,6 +12,15 @@ test.describe("KCode workbench smoke flow", () => {
     await expect(page.getByText("当前运行环境不支持 MCP 管理。")).toBeVisible();
   });
 
+  test("shows the runtime control plane in settings", async ({ page }) => {
+    await page.goto("/");
+    await page.getByRole("button", { name: "设置" }).click();
+    await page.getByRole("button", { name: "运行恢复" }).click();
+    await expect(page.getByText("Agent 运行时", { exact: true })).toBeVisible();
+    await expect(page.getByText("后台进程", { exact: true })).toBeVisible();
+    await expect(page.getByText("恢复记录", { exact: true })).toBeVisible();
+  });
+
   test("keeps the composer usable on a narrow viewport", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto("/");

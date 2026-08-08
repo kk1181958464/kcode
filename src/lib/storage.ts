@@ -13,6 +13,7 @@ export function normalizeStoredTask(task: TaskRecord): TaskRecord {
     workspaceName: task.workspaceName?.trim() || taskWorkspaceName(task),
     messages: recoverOrphanedFailure(task.messages, runStatus, task.updatedAt),
     runningId: undefined,
+    runtimeStatus: undefined,
     startedAt: undefined,
     runStatus,
     activities: recoverInterruptedActivities(task.activities, task.updatedAt),

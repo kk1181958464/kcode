@@ -7,6 +7,11 @@ export type LiveStreamEvent = {
   content: string;
   reasoning?: string;
   progress?: string;
+  runtimeEventId?: string;
+  runtimeEventKind?: string;
+  runtimeItemStatus?: string;
+  runtimeSequence?: number;
+  runtimeProtocolVersion?: number;
   updatedAt: number;
 };
 
@@ -58,11 +63,23 @@ export class LiveStreamCache {
     const current = this.entries.get(key);
     if (current) {
       const sameRequest = current.event.requestId === event.requestId;
+      const sameRuntimeEvent =
+        sameRequest &&
+        Boolean(current.event.runtimeEventId) &&
+        current.event.runtimeEventId === event.runtimeEventId;
+      const runtimeOrdered =
+        sameRequest &&
+        current.event.runtimeSequence !== undefined &&
+        event.runtimeSequence !== undefined;
       const ordered =
         sameRequest && current.event.sequence > 0 && event.sequence > 0;
-      const stale = ordered
-        ? event.sequence <= current.event.sequence
-        : event.updatedAt < current.event.updatedAt;
+      const stale = sameRuntimeEvent
+        ? true
+        : runtimeOrdered
+          ? event.runtimeSequence! <= current.event.runtimeSequence!
+          : ordered
+            ? event.sequence <= current.event.sequence
+            : event.updatedAt < current.event.updatedAt;
       if (stale) return { deviceId, ...current.event };
     }
     this.entries.delete(key);

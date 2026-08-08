@@ -53,6 +53,166 @@ export const estimateMessageTokens = (items: ChatMessage[]) =>
     ) / 3,
   );
 
+// Codex keeps a bounded set of real user messages next to the handoff summary.
+// KCode additionally reserves part of that budget for connection details because
+// an SSH/database session may need to be recreated in a later request.
+export const COMPACTION_RETAINED_USER_MAX_TOKENS = 20_000;
+const COMPACTION_RETAINED_USER_MIN_TOKENS = 2_000;
+const COMPACTION_CONNECTION_MAX_TOKENS = 8_000;
+
+const concreteCredentialAssignment =
+  /(?:用户名|账号|密码|口令|密钥|私钥|访问令牌|令牌|username|password|passphrase|private[ _-]?key|api[ _-]?key|access[ _-]?token|token)\s*(?:[:：=]|是|为)\s*(?:"[^"\r\n]+"|'[^'\r\n]+'|`[^`\r\n]+`|[^\s,，;；]+)/i;
+const concreteConnectionAssignment =
+  /(?:ssh|sftp|服务器(?:地址)?|主机(?:地址)?|IP\s*地址|端口|host(?:name)?|ip(?:\s*address)?|port)\s*(?:[:：=]|是|为)\s*(?:"[^"\r\n]+"|'[^'\r\n]+'|`[^`\r\n]+`|[^\s,，;；]+)/i;
+const connectionUri =
+  /\b(?:ssh|sftp|mysql|mongodb(?:\+srv)?|postgres(?:ql)?|redis):\/\/[^\s]+/i;
+const sshTarget =
+  /\b(?:ssh|sftp)\b[^\r\n]{0,120}(?:[\w.-]+@)?(?:\d{1,3}\.){3}\d{1,3}/i;
+const privateKeyBlock =
+  /-----BEGIN [^-\r\n]*PRIVATE KEY-----[\s\S]*?-----END [^-\r\n]*PRIVATE KEY-----/i;
+
+export function containsDurableConnectionDetails(text: string) {
+  return (
+    concreteCredentialAssignment.test(text) ||
+    concreteConnectionAssignment.test(text) ||
+    connectionUri.test(text) ||
+    sshTarget.test(text) ||
+    privateKeyBlock.test(text)
+  );
+}
+
+function retainedUserTokenBudget(contextWindow?: number) {
+  if (!contextWindow) return COMPACTION_RETAINED_USER_MAX_TOKENS;
+  return Math.max(
+    COMPACTION_RETAINED_USER_MIN_TOKENS,
+    Math.min(
+      COMPACTION_RETAINED_USER_MAX_TOKENS,
+      Math.floor(contextWindow * 0.08),
+    ),
+  );
+}
+
+function truncateRetainedMessage(message: ChatMessage, maxTokens: number) {
+  return {
+    ...message,
+    content: boundedContextSource(message.content, Math.max(1, maxTokens) * 3),
+    images: undefined,
+    contextAttachments: undefined,
+  };
+}
+
+/**
+ * Select real user messages from the already compacted prefix. Newest messages
+ * fill the general budget, while concrete connection/credential messages get a
+ * reserved budget so an old SSH target is not displaced by later conversation.
+ */
+export function retainedCompactedUserMessages(
+  messages: ChatMessage[],
+  compactUntil: number,
+  contextWindow?: number,
+) {
+  if (compactUntil <= 0) return [];
+  const candidates = messages
+    .slice(0, Math.min(compactUntil, messages.length))
+    .map((message, index) => ({ message, index }))
+    .filter(
+      (item) =>
+        item.message.role === "user" && Boolean(item.message.content.trim()),
+    );
+  if (!candidates.length) return [];
+
+  const totalBudget = retainedUserTokenBudget(contextWindow);
+  const connectionBudget = Math.min(
+    COMPACTION_CONNECTION_MAX_TOKENS,
+    Math.max(1_000, Math.floor(totalBudget * 0.4)),
+  );
+  const selected = new Map<
+    string,
+    { message: ChatMessage; index: number; tokens: number }
+  >();
+  let connectionRemaining = connectionBudget;
+
+  for (const item of [...candidates].reverse()) {
+    if (!containsDurableConnectionDetails(item.message.content)) continue;
+    const tokens = estimateMessageTokens([item.message]);
+    if (tokens <= connectionRemaining) {
+      selected.set(item.message.id, { ...item, tokens });
+      connectionRemaining -= tokens;
+      continue;
+    }
+    if (connectionRemaining > 0) {
+      const message = truncateRetainedMessage(
+        item.message,
+        connectionRemaining,
+      );
+      selected.set(item.message.id, {
+        message,
+        index: item.index,
+        tokens: estimateMessageTokens([message]),
+      });
+      connectionRemaining = 0;
+    }
+    break;
+  }
+
+  let remaining = Math.max(
+    0,
+    totalBudget -
+      [...selected.values()].reduce((total, item) => total + item.tokens, 0),
+  );
+  for (const item of [...candidates].reverse()) {
+    if (selected.has(item.message.id) || remaining <= 0) continue;
+    const tokens = estimateMessageTokens([item.message]);
+    if (tokens <= remaining) {
+      selected.set(item.message.id, { ...item, tokens });
+      remaining -= tokens;
+      continue;
+    }
+    const message = truncateRetainedMessage(item.message, remaining);
+    selected.set(item.message.id, {
+      message,
+      index: item.index,
+      tokens: estimateMessageTokens([message]),
+    });
+    remaining = 0;
+  }
+
+  return [...selected.values()]
+    .sort((left, right) => left.index - right.index)
+    .map(({ message }) => ({
+      ...message,
+      images: undefined,
+      contextAttachments: undefined,
+    }));
+}
+
+/**
+ * This block is assembled only for the outgoing model request. It is never
+ * stored in the redacted summary or fact ledger; the source messages already
+ * exist in the task history. Packing the retained messages into the first
+ * request item also lets the runtime compactor preserve the whole checkpoint.
+ */
+export function retainedCompactionContext(
+  messages: ChatMessage[],
+  compactUntil: number,
+  contextWindow?: number,
+) {
+  const retained = retainedCompactedUserMessages(
+    messages,
+    compactUntil,
+    contextWindow,
+  );
+  if (!retained.length) return "";
+  const payload = JSON.stringify(
+    retained.map((message) => ({
+      sourceMessageId: message.id,
+      createdAt: message.createdAt,
+      content: message.content,
+    })),
+  ).replace(/<\/retained_user_messages>/gi, "<\\/retained_user_messages>");
+  return `<retained_user_messages>\n这些是压缩检查点保留的真实用户消息，仅用于延续当前任务。后出现的值覆盖先前值；连接参数可直接复用，不要向用户重复索取，也不要在回复中复述密码、令牌或私钥。\n${payload}\n</retained_user_messages>`;
+}
+
 const sensitiveConnectionKey =
   /password|passphrase|secret|token|api.?key|private.?key|credential|cookie|authorization/i;
 
@@ -63,13 +223,15 @@ export function redactSensitiveText(text: string) {
       "[私钥已隐藏]",
     )
     .replace(
-      /((?:password|passphrase|secret|token|api.?key|private.?key|credential|cookie|authorization)["']?\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;}\]]+)/gi,
+      /((?:密码|口令|密钥|私钥|访问令牌|令牌|password|passphrase|secret|token|api.?key|private.?key|credential|cookie|authorization)["']?\s*(?:[:：=]|是|为)\s*)("[^"]*"|'[^']*'|`[^`]*`|[^\s,，;；}\]]+)/gi,
       (_match, prefix: string, value: string) => {
         const quote = value.startsWith('"')
           ? '"'
           : value.startsWith("'")
             ? "'"
-            : "";
+            : value.startsWith("`")
+              ? "`"
+              : "";
         return `${prefix}${quote}[已隐藏]${quote}`;
       },
     )

@@ -83,6 +83,7 @@ export class ManagedProcessRegistry {
   constructor(
     private readonly filePath: string,
     private readonly terminate: ProcessTerminator = terminateRegisteredProcess,
+    private readonly isAlive: (pid: number) => boolean = processExists,
   ) {}
 
   private async load() {
@@ -170,6 +171,18 @@ export class ManagedProcessRegistry {
     return true;
   }
 
+  /** Remove records whose process exited without sending an explicit cleanup. */
+  async pruneExited() {
+    await this.load();
+    const exited = [...this.records.values()].filter(
+      (record) => !this.isAlive(record.pid),
+    );
+    if (!exited.length) return 0;
+    exited.forEach((record) => this.records.delete(record.id));
+    await this.persist();
+    return exited.length;
+  }
+
   async snapshot() {
     await this.load();
     return [...this.records.values()];
@@ -177,12 +190,27 @@ export class ManagedProcessRegistry {
 }
 
 let registry: ManagedProcessRegistry | undefined;
+let supervisorTimer: ReturnType<typeof setInterval> | undefined;
 
 export async function initializeManagedProcessRegistry(userDataPath: string) {
+  stopManagedProcessSupervisor();
   registry = new ManagedProcessRegistry(
     path.join(userDataPath, "runtime", "managed-processes.json"),
   );
   return registry.recover();
+}
+
+export function startManagedProcessSupervisor(intervalMs = 30_000) {
+  stopManagedProcessSupervisor();
+  supervisorTimer = setInterval(() => {
+    void registry?.pruneExited().catch(() => undefined);
+  }, Math.max(5_000, intervalMs));
+  supervisorTimer.unref?.();
+}
+
+export function stopManagedProcessSupervisor() {
+  if (supervisorTimer) clearInterval(supervisorTimer);
+  supervisorTimer = undefined;
 }
 
 export async function registerManagedProcess(record: ManagedProcessRecord) {
