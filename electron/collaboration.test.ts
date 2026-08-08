@@ -47,7 +47,7 @@ test("recognizes planner coordination and restricts mutation tools", () => {
 test("managed SSH Remote tasks cannot fall back to local workspace tools", () => {
   assert.equal(remoteWorkspaceToolAllowed("read_file"), false);
   assert.equal(remoteWorkspaceToolAllowed("run_command"), false);
-  assert.equal(remoteWorkspaceToolAllowed("ssh_connect"), false);
+  assert.equal(remoteWorkspaceToolAllowed("ssh_connect"), true);
   assert.equal(remoteWorkspaceToolAllowed("ssh_set_workspace"), false);
   assert.equal(remoteWorkspaceToolAllowed("ssh_read_file"), true);
   assert.equal(remoteWorkspaceToolAllowed("ssh_write_file"), true);

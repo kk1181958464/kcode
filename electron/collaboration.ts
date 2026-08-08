@@ -70,7 +70,6 @@ const REMOTE_WORKSPACE_DISABLED_TOOLS = new Set<AgentToolName>([
   "stop_process",
   "diagnostics",
   "run_command",
-  "ssh_connect",
   "ssh_set_workspace",
   "ssh_disconnect",
   "mysql_connect_via_ssh",

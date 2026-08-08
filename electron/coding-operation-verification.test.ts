@@ -1067,6 +1067,28 @@ test("requires successful tools for remote connections and transfers", () => {
   );
 });
 
+test("inherits SSH details for a direct reconnect without requiring a file edit", () => {
+  const requested = requestedCodingOperations([
+    {
+      kind: "message",
+      role: "user",
+      content:
+        "现在我的想法就是注册完成后提取链接，怎么实现？ssh：203.0.113.10 用户名：root 私钥：C:\\Users\\Example\\.ssh\\id_ed25519",
+    },
+    {
+      kind: "message",
+      role: "assistant",
+      content: "当前 SSH 会话未连接。",
+    },
+    { kind: "message", role: "user", content: "你直接连接啊" },
+  ]);
+  assert.equal(requested.has("connect"), true);
+  assert.equal(requested.has("modify"), false);
+  assert.deepEqual([...codingOperationsRequiringToolEvidence(requested)], [
+    "connect",
+  ]);
+});
+
 test("treats missing SSH details as a blocked remote deployment", () => {
   const requested = requestedCodingOperations([
     {

@@ -68,6 +68,9 @@ const CONTINUATION_REQUEST =
 const CORRECTIVE_CONTINUATION_REQUEST =
   /(?:^|\n)\s*(?:还是|仍然|依然|仍旧|又|现在还是|目前还是)(?:不对|不行|有问题|没好|没有好|未解决|不正常|不生效|看不到|不显示|显示错误|报错|卡住)|(?:^|\n)\s*(?:问题|故障|错误|这个问题)(?:还在|仍在|依然存在|没有解决|没解决)/i;
 
+const REMOTE_CONTINUATION_REQUEST =
+  /^(?:你)?(?:直接|重新|再次|再)?(?:连接|连上|重连)(?:一下)?(?:吧|啊|呀)?[。！!，,\s]*$/i;
+
 export function isAdvisoryOnlyRequest(content: string) {
   const normalized = content.replace(/\s+/g, "");
   if (
@@ -111,6 +114,12 @@ export function relevantVerificationRequestContent(
     latestIndex -= 1;
   const latest = messages[latestIndex]?.content ?? "";
   if (CORRECTIVE_CONTINUATION_REQUEST.test(latest.trim())) {
+    const previousUser = [...messages.slice(0, latestIndex)]
+      .reverse()
+      .find((message) => message.role === "user");
+    return previousUser ? `${previousUser.content}\n${latest}` : latest;
+  }
+  if (REMOTE_CONTINUATION_REQUEST.test(latest.trim())) {
     const previousUser = [...messages.slice(0, latestIndex)]
       .reverse()
       .find((message) => message.role === "user");
@@ -183,7 +192,7 @@ export function requestedCodingOperations(
       content.trim(),
     );
   const explicitRemoteRequest =
-    /(?:帮我|请|麻烦|要你|开始|继续|把|替我).{0,40}(?:连接|连上|上传|下载|connect|upload|download)/i.test(
+    /(?:帮我|请|麻烦|要你|开始|继续|把|替我|直接|重新|再次|再).{0,40}(?:连接|连上|重连|上传|下载|connect|reconnect|upload|download)/i.test(
       content,
     );
   const remoteActionContent =
@@ -228,7 +237,11 @@ export function requestedCodingOperations(
   if (
     /(?:连接|连上|登录到).{0,20}(?:SSH|服务器|主机|MySQL|SQL Server|MongoDB|数据库)|(?:部署|发布到).{0,20}(?:服务器|远程|主机)|\bconnect(?:\s+to)?\s+(?:ssh|server|host|mysql|sql server|mongodb|database)\b|\bdeploy(?:\s+to)?\s+(?:server|host|remote)\b/i.test(
       remoteActionContent,
-    )
+    ) ||
+    (explicitRemoteRequest &&
+      /(?:SSH|服务器|主机|IP(?:\s*地址)?|端口|用户名|username|密码|password|私钥|密钥|private[ -]?key|credential)/i.test(
+        remoteActionContent,
+      ))
   )
     operations.add("connect");
   if (
