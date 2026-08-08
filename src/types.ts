@@ -88,7 +88,73 @@ export type AgentToolName =
   | "message_agent"
   | "wait_agent"
   | "stop_agent"
+  | "mcp_list_tools"
+  | "mcp_call_tool"
   | "run_command";
+
+export type McpServerTransport =
+  | {
+      type: "stdio";
+      command: string;
+      args?: string[];
+      env?: Record<string, string>;
+    }
+  | {
+      type: "http";
+      url: string;
+      headers?: Record<string, string>;
+    }
+  | {
+      type: "sse";
+      url: string;
+      headers?: Record<string, string>;
+    };
+
+export type McpServerConfig = {
+  id: string;
+  name: string;
+  description?: string;
+  enabled: boolean;
+  transport: McpServerTransport;
+  createdAt: number;
+  updatedAt: number;
+};
+
+export type McpToolDescriptor = {
+  name: string;
+  description?: string;
+  inputSchema?: Record<string, unknown>;
+};
+
+export type McpServerStatus = {
+  id: string;
+  connected: boolean;
+  tools: McpToolDescriptor[];
+  error?: string;
+  checkedAt?: number;
+};
+
+export type ScheduledTask = {
+  id: string;
+  name: string;
+  prompt: string;
+  workspacePath: string;
+  modelSelection?: string;
+  reasoningEffort?: ReasoningEffort;
+  intervalMinutes: number;
+  enabled: boolean;
+  nextRunAt: number;
+  lastRunAt?: number;
+  lastError?: string;
+};
+
+export type ManagedProcessInfo = {
+  id: string;
+  pid: number;
+  requestId: string;
+  workspacePath: string;
+  startedAt: number;
+};
 
 export type ContextFile = {
   id: string;
@@ -96,6 +162,10 @@ export type ContextFile = {
   path: string;
   content: string;
   size: number;
+  /** Original source format when the file was converted to text. */
+  format?: "text" | "pdf" | "docx" | "xlsx" | "pptx";
+  sourceSize?: number;
+  truncated?: boolean;
 };
 
 export type ImageAttachment = {
@@ -300,6 +370,19 @@ export type ModelRequest = {
 };
 
 export type WorkspaceFolder = { name: string; path: string };
+export type WorkspaceEntry = {
+  name: string;
+  path: string;
+  type: "file" | "directory";
+  size: number;
+  modifiedAt: number;
+};
+export type WorkspaceTextFile = {
+  path: string;
+  content: string;
+  size: number;
+  modifiedAt: number;
+};
 export type GitWorkspaceState = {
   available: boolean;
   branch?: string;
@@ -568,6 +651,26 @@ export type KCodeApi = {
     uninstall(id: string): Promise<SkillStoreItem[]>;
     setEnabled(id: string, enabled: boolean): Promise<SkillStoreItem[]>;
   };
+  mcp: {
+    list(): Promise<McpServerConfig[]>;
+    save(server: McpServerConfig): Promise<McpServerConfig[]>;
+    remove(id: string): Promise<McpServerConfig[]>;
+    test(id: string): Promise<McpServerStatus>;
+    tools(id: string): Promise<McpToolDescriptor[]>;
+  };
+  files: {
+    parse(path: string): Promise<ContextFile>;
+    saveText(
+      suggestedName: string,
+      content: string,
+      format: "md" | "json",
+    ): Promise<string | null>;
+  };
+  runtime: {
+    processes(): Promise<ManagedProcessInfo[]>;
+    stopProcess(id: string): Promise<ManagedProcessInfo[]>;
+    stopAll(): Promise<ManagedProcessInfo[]>;
+  };
   chat: {
     start(request: ModelRequest): Promise<string>;
     cancel(requestId: string): Promise<void>;
@@ -600,6 +703,14 @@ export type KCodeApi = {
     gitState(path: string, includeDiff?: boolean): Promise<GitWorkspaceState>;
     gitFileDiff(path: string, filePath: string): Promise<GitFileDiff>;
     showFolderMenu(path: string): Promise<void>;
+    list(root: string, directory?: string): Promise<WorkspaceEntry[]>;
+    read(root: string, filePath: string): Promise<WorkspaceTextFile>;
+    write(
+      root: string,
+      filePath: string,
+      content: string,
+      expectedContent?: string | null,
+    ): Promise<WorkspaceTextFile>;
   };
   sshRemote: {
     profiles(): Promise<SshRemoteProfile[]>;

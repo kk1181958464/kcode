@@ -174,11 +174,17 @@ export async function getProviderWithKey(id: string) {
   const provider = (await readStored()).find((item) => item.id === id);
   if (!provider) throw new Error("供应商不存在");
   if (!provider.encryptedApiKey) throw new Error("请先配置 API Key");
+  const raw = safeStorage.decryptString(
+    Buffer.from(provider.encryptedApiKey, "base64"),
+  );
+  const apiKeys = raw
+    .split(/[\r\n,]/)
+    .map((key) => key.trim())
+    .filter(Boolean);
   return {
     ...provider,
-    apiKey: safeStorage.decryptString(
-      Buffer.from(provider.encryptedApiKey, "base64"),
-    ),
+    apiKey: apiKeys[0] ?? raw,
+    apiKeys: apiKeys.length ? apiKeys : [raw],
   };
 }
 

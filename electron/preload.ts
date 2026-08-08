@@ -64,6 +64,23 @@ const api: KCodeApi = {
     setEnabled: (id, enabled) =>
       ipcRenderer.invoke("skills:set-enabled", id, enabled),
   },
+  mcp: {
+    list: () => ipcRenderer.invoke("mcp:list"),
+    save: (server) => ipcRenderer.invoke("mcp:save", server),
+    remove: (id) => ipcRenderer.invoke("mcp:remove", id),
+    test: (id) => ipcRenderer.invoke("mcp:test", id),
+    tools: (id) => ipcRenderer.invoke("mcp:tools", id),
+  },
+  files: {
+    parse: (filePath) => ipcRenderer.invoke("context:parse-file", filePath),
+    saveText: (suggestedName, content, format) =>
+      ipcRenderer.invoke("files:save-text", suggestedName, content, format),
+  },
+  runtime: {
+    processes: () => ipcRenderer.invoke("runtime:processes"),
+    stopProcess: (id) => ipcRenderer.invoke("runtime:stop-process", id),
+    stopAll: () => ipcRenderer.invoke("runtime:stop-all"),
+  },
   chat: {
     start: (request) => ipcRenderer.invoke("chat:start", request),
     cancel: (id) => ipcRenderer.invoke("chat:cancel", id),
@@ -100,6 +117,18 @@ const api: KCodeApi = {
       ipcRenderer.invoke("workspace:git-file-diff", path, filePath),
     showFolderMenu: (path) =>
       ipcRenderer.invoke("workspace:show-folder-menu", path),
+    list: (root, directory) =>
+      ipcRenderer.invoke("workspace:list", root, directory),
+    read: (root, filePath) =>
+      ipcRenderer.invoke("workspace:read", root, filePath),
+    write: (root, filePath, content, expectedContent) =>
+      ipcRenderer.invoke(
+        "workspace:write",
+        root,
+        filePath,
+        content,
+        expectedContent,
+      ),
   },
   sshRemote: {
     profiles: () => ipcRenderer.invoke("ssh-remote:profiles"),

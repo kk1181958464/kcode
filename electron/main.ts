@@ -42,9 +42,13 @@ import {
   cleanupAgentRecords,
   resolveApproval,
   runAgent,
+  stopBackgroundProcessById,
   undoActivity,
 } from "./agent";
-import { initializeManagedProcessRegistry } from "./process-registry";
+import {
+  initializeManagedProcessRegistry,
+  managedProcessSnapshot,
+} from "./process-registry";
 import { closeAllSshSessions } from "./ssh";
 import { closeAllMysqlSessions } from "./mysql";
 import { closeAllSqlServerSessions } from "./sqlserver";
@@ -125,14 +129,26 @@ import { createSkillStore, type ListedSkill } from "./skill-store";
 import { clearAgentSkillCache, configureAgentSkills } from "./agent-skills";
 import { networkFetch } from "./network";
 import { existingDirectory } from "./dialog-path";
+import {
+  closeMcpServers,
+  configureMcpServers,
+  listMcpServerConfigs,
+  listMcpTools,
+  removeMcpServerConfig,
+  saveMcpServerConfig,
+  testMcpServer,
+} from "./mcp";
 import { countTextLines, parseGitNumstat } from "./git-workspace-state";
 import {
   CONTEXT_FILE_DIALOG_EXTENSIONS,
   MAX_CONTEXT_FILES,
   MAX_CONTEXT_FILE_BYTES,
+  MAX_CONTEXT_SOURCE_BYTES,
+  MAX_CONTEXT_TOTAL_SOURCE_BYTES,
   MAX_CONTEXT_TOTAL_BYTES,
   isSupportedContextFile,
 } from "../src/attachments";
+import { parseContextFile } from "./document-parser";
 import {
   closeRemoteConnection,
   initializeRemoteControl,
@@ -510,6 +526,7 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  configureMcpServers(loadState("mcpServers") ?? []);
   const recoveredProcesses = await initializeManagedProcessRegistry(
     app.getPath("userData"),
   );
@@ -760,6 +777,32 @@ app.whenReady().then(async () => {
       return listPublicSkills();
     },
   );
+  ipcMain.handle("mcp:list", () => listMcpServerConfigs());
+  ipcMain.handle("mcp:save", async (_e, server: unknown) => {
+    const next = saveMcpServerConfig(server as any);
+    await saveState("mcpServers", next);
+    return next;
+  });
+  ipcMain.handle("mcp:remove", async (_e, id: string) => {
+    const next = removeMcpServerConfig(idSchema.parse(id));
+    await saveState("mcpServers", next);
+    return next;
+  });
+  ipcMain.handle("mcp:test", (_e, id: string) =>
+    testMcpServer(idSchema.parse(id)),
+  );
+  ipcMain.handle("mcp:tools", (_e, id: string) =>
+    listMcpTools(idSchema.parse(id)),
+  );
+  ipcMain.handle("runtime:processes", () => managedProcessSnapshot());
+  ipcMain.handle("runtime:stop-process", async (_e, id: string) => {
+    await stopBackgroundProcessById(idSchema.parse(id));
+    return managedProcessSnapshot();
+  });
+  ipcMain.handle("runtime:stop-all", async () => {
+    await cleanupAllBackgroundProcesses();
+    return managedProcessSnapshot();
+  });
   ipcMain.handle("browser:activate", (_e, sessionId?: string) =>
     activateBrowserSession(optionalIdSchema.parse(sessionId)),
   );
@@ -956,6 +999,122 @@ app.whenReady().then(async () => {
       throw new Error("文件路径必须位于当前工作区内");
     return { target, relative: relative.replaceAll("\\", "/") };
   };
+  const resolveWorkspaceTarget = (
+    rawRoot: string,
+    rawPath?: string,
+    allowRoot = false,
+  ) => {
+    const root = path.resolve(workspacePathSchema.parse(rawRoot));
+    const target = rawPath
+      ? path.resolve(
+          path.isAbsolute(rawPath) ? rawPath : path.join(root, rawPath),
+        )
+      : root;
+    const relative = path.relative(root, target);
+    if (
+      (!allowRoot && !relative) ||
+      relative === ".." ||
+      relative.startsWith(`..${path.sep}`) ||
+      path.isAbsolute(relative)
+    )
+      throw new Error("文件路径必须位于当前工作区内");
+    return { root, target, relative: relative.replaceAll("\\", "/") };
+  };
+  ipcMain.handle(
+    "workspace:list",
+    async (_event, rawRoot: string, rawDirectory?: string) => {
+      const { target } = resolveWorkspaceTarget(rawRoot, rawDirectory, true);
+      const info = await stat(target);
+      if (!info.isDirectory()) throw new Error("目标不是文件夹");
+      const hidden = new Set([
+        ".git",
+        "node_modules",
+        "dist",
+        "dist-electron",
+        "release",
+        ".next",
+        ".cache",
+      ]);
+      const entries = (await readdir(target, { withFileTypes: true }))
+        .filter((entry) => !hidden.has(entry.name))
+        .slice(0, 2_000);
+      return Promise.all(
+        entries.map(async (entry) => {
+          const fullPath = path.join(target, entry.name);
+          const item = await stat(fullPath);
+          return {
+            name: entry.name,
+            path: fullPath,
+            type: entry.isDirectory()
+              ? ("directory" as const)
+              : ("file" as const),
+            size: item.size,
+            modifiedAt: item.mtimeMs,
+          };
+        }),
+      ).then((items) =>
+        items.sort((left, right) =>
+          left.type === right.type
+            ? left.name.localeCompare(right.name)
+            : left.type === "directory"
+              ? -1
+              : 1,
+        ),
+      );
+    },
+  );
+  ipcMain.handle(
+    "workspace:read",
+    async (_event, rawRoot: string, rawPath: string) => {
+      const { target } = resolveWorkspaceTarget(rawRoot, rawPath);
+      const info = await stat(target);
+      if (!info.isFile()) throw new Error("目标不是普通文件");
+      if (info.size > 5 * 1024 * 1024)
+        throw new Error("文件超过 5 MB，暂不在编辑器中打开");
+      const buffer = await readFile(target);
+      if (buffer.includes(0))
+        throw new Error("二进制文件不能在文本编辑器中打开");
+      return {
+        path: target,
+        content: buffer.toString("utf8"),
+        size: info.size,
+        modifiedAt: info.mtimeMs,
+      };
+    },
+  );
+  ipcMain.handle(
+    "workspace:write",
+    async (
+      _event,
+      rawRoot: string,
+      rawPath: string,
+      content: string,
+      expectedContent?: string | null,
+    ) => {
+      const { target } = resolveWorkspaceTarget(rawRoot, rawPath);
+      if (typeof content !== "string" || content.length > 5 * 1024 * 1024)
+        throw new Error("编辑内容超过 5 MB");
+      let existing: string | undefined;
+      try {
+        existing = await readFile(target, "utf8");
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+      if (expectedContent === null && existing !== undefined)
+        throw new Error("文件已经存在");
+      if (typeof expectedContent === "string" && existing !== expectedContent)
+        throw new Error("文件已被其他程序修改，请重新打开后再保存");
+      await mkdir(path.dirname(target), { recursive: true });
+      await writeFile(target, content, "utf8");
+      const info = await stat(target);
+      return {
+        path: target,
+        content,
+        size: info.size,
+        modifiedAt: info.mtimeMs,
+      };
+    },
+  );
   const untrackedDiff = (relative: string, text: string) => {
     const lines = text.replace(/\r\n?/g, "\n").split("\n");
     if (lines.at(-1) === "") lines.pop();
@@ -1146,37 +1305,58 @@ app.whenReady().then(async () => {
       const fileStats = await Promise.all(
         selectedPaths.map((filePath) => stat(filePath)),
       );
-      if (
-        fileStats.reduce((total, info) => total + info.size, 0) >
-        MAX_CONTEXT_TOTAL_BYTES
-      )
-        throw new Error("上下文文件总大小不能超过 2 MB");
-      const files = await Promise.all(
-        selectedPaths.map(async (filePath, index) => {
-          if (!isSupportedContextFile(filePath))
-            throw new Error(
-              `${path.basename(filePath)} 不是支持的文本或代码文件`,
-            );
-          const info = fileStats[index];
-          if (!info.isFile())
-            throw new Error(`${path.basename(filePath)} 不是普通文件`);
-          if (info.size > MAX_CONTEXT_FILE_BYTES)
-            throw new Error(
-              `${path.basename(filePath)} 超过 512 KB，无法作为上下文添加`,
-            );
-          const content = await readFile(filePath, "utf8");
-          if (content.includes("\0"))
-            throw new Error(`${path.basename(filePath)} 不是有效的文本文件`);
-          return {
-            id: randomUUID(),
-            name: path.basename(filePath),
-            path: filePath,
-            content,
-            size: info.size,
-          };
-        }),
+      const sourceBytes = fileStats.reduce(
+        (total, info) => total + info.size,
+        0,
       );
+      if (sourceBytes > MAX_CONTEXT_TOTAL_SOURCE_BYTES)
+        throw new Error(
+          `所选文件原始大小不能超过 ${Math.round(MAX_CONTEXT_TOTAL_SOURCE_BYTES / 1024 / 1024)} MB`,
+        );
+      const files = await Promise.all(selectedPaths.map(parseContextFile));
+      const extractedBytes = files.reduce(
+        (total, file) => total + file.size,
+        0,
+      );
+      if (extractedBytes > MAX_CONTEXT_TOTAL_BYTES)
+        throw new Error("解析后的上下文总大小不能超过 2 MB");
       return files;
+    },
+  );
+  ipcMain.handle("context:parse-file", (_event, rawPath: string) =>
+    parseContextFile(localPathSchema.parse(rawPath)),
+  );
+  ipcMain.handle(
+    "files:save-text",
+    async (
+      event,
+      suggestedName: string,
+      content: string,
+      format: "md" | "json",
+    ) => {
+      const owner = BrowserWindow.fromWebContents(event.sender);
+      if (!owner || owner.isDestroyed()) throw new Error("无法确认保存窗口");
+      if (typeof content !== "string" || content.length > 20 * 1024 * 1024)
+        throw new Error("导出内容超过 20 MB");
+      const safeName =
+        String(suggestedName || "kcode-export")
+          .replace(/[<>:\"/\\|?*\x00-\x1F]/g, "-")
+          .replace(/\.+$/g, "") || "kcode-export";
+      const extension = format === "json" ? ".json" : ".md";
+      const result = await dialog.showSaveDialog(owner, {
+        title: "导出会话",
+        defaultPath: safeName.endsWith(extension)
+          ? safeName
+          : `${safeName}${extension}`,
+        filters: [
+          format === "json"
+            ? { name: "JSON", extensions: ["json"] }
+            : { name: "Markdown", extensions: ["md"] },
+        ],
+      });
+      if (result.canceled || !result.filePath) return null;
+      await writeFile(result.filePath, content, "utf8");
+      return result.filePath;
     },
   );
   ipcMain.handle(
@@ -1364,6 +1544,7 @@ app.whenReady().then(async () => {
 });
 app.on("before-quit", () => {
   quitting = true;
+  closeMcpServers();
   for (const controller of controllers.values()) controller.abort();
   void cleanupAllBackgroundProcesses().catch((error) =>
     writeLog("error", "process.cleanup.failed", error),

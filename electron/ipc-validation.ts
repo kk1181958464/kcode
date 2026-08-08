@@ -1,6 +1,10 @@
 import { z } from "zod";
 
-export const stateKeySchema = z.literal("tasks");
+export const stateKeySchema = z.enum([
+  "tasks",
+  "mcpServers",
+  "scheduledTasks",
+]);
 export const idSchema = z.string().trim().min(1).max(256);
 export const optionalIdSchema = idSchema.optional();
 export const taskItemPageOptionsSchema = z

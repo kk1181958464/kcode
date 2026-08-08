@@ -7,7 +7,15 @@ export const uid = () => crypto.randomUUID();
 export const EMPTY_ACTIVITIES: AgentActivity[] = [];
 
 export type SettingsSection =
-  "general" | "models" | "skills" | "permissions" | "recordings" | "remote";
+  | "general"
+  | "models"
+  | "skills"
+  | "permissions"
+  | "recordings"
+  | "remote"
+  | "mcp"
+  | "automation"
+  | "runtime";
 export type ThemePreference = "system" | "light" | "dark";
 export type AccentPreference =
   "indigo" | "violet" | "emerald" | "blue" | "orange" | "mono";
@@ -35,6 +43,7 @@ export type TaskCollaboration = {
 export type TaskRecord = {
   id: string;
   name: string;
+  workspaceName?: string;
   workspacePath: string;
   remoteWorkspace?: SshRemoteWorkspace;
   createdAt: number;
@@ -79,12 +88,16 @@ export type TaskRecord = {
   durationMs?: number;
   usedContextCount?: number;
   archived?: boolean;
+  parentTaskId?: string;
+  forkedFromMessageId?: string;
+  scheduledTaskId?: string;
 };
 
 export type SidebarTask = Pick<
   TaskRecord,
   | "id"
   | "name"
+  | "workspaceName"
   | "workspacePath"
   | "remoteWorkspace"
   | "archived"

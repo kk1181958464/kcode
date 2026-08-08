@@ -40,6 +40,7 @@ const PLANNER_DISABLED_TOOLS = new Set<AgentToolName>([
   "mongodb_execute",
   "mongodb_disconnect",
   "run_command",
+  "mcp_call_tool",
 ]);
 
 const REMOTE_PLANNER_READ_TOOLS = new Set<AgentToolName>([

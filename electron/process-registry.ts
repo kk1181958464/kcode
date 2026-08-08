@@ -160,6 +160,16 @@ export class ManagedProcessRegistry {
     return active.length;
   }
 
+  async terminateOne(id: string) {
+    await this.load();
+    const record = this.records.get(id);
+    if (!record) return false;
+    await this.terminate(record);
+    this.records.delete(id);
+    await this.persist();
+    return true;
+  }
+
   async snapshot() {
     await this.load();
     return [...this.records.values()];
@@ -185,4 +195,13 @@ export async function unregisterManagedProcess(id: string) {
 
 export async function terminateAllManagedProcesses() {
   return (await registry?.terminateAll()) ?? 0;
+}
+
+export async function managedProcessSnapshot() {
+  return (await registry?.snapshot()) ?? [];
+}
+
+export async function terminateManagedProcess(id: string) {
+  await registry?.terminateOne(id);
+  return managedProcessSnapshot();
 }

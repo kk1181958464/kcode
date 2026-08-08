@@ -1,4 +1,5 @@
 import type { SidebarTask, SidebarWorkspaceGroup, TaskRecord } from "./models";
+import { taskWorkspaceName } from "./task-workspace";
 
 export type SidebarProjection = {
   taskQuery: string;
@@ -15,6 +16,7 @@ function sidebarFieldsMatch(task: TaskRecord, snapshot: SidebarTask) {
   return (
     task.id === snapshot.id &&
     task.name === snapshot.name &&
+    task.workspaceName === snapshot.workspaceName &&
     task.workspacePath === snapshot.workspacePath &&
     task.remoteWorkspace?.id === snapshot.remoteWorkspace?.id &&
     Boolean(task.archived) === Boolean(snapshot.archived) &&
@@ -51,6 +53,7 @@ export function projectSidebarWorkspaceGroups(
     : tasks.map((task) => ({
         id: task.id,
         name: task.name,
+        workspaceName: task.workspaceName,
         workspacePath: task.workspacePath,
         remoteWorkspace: task.remoteWorkspace,
         archived: Boolean(task.archived),
@@ -83,13 +86,9 @@ export function projectSidebarWorkspaceGroups(
         const remote = conversations[0]?.remoteWorkspace;
         return {
           workspacePath: conversations[0]?.workspacePath ?? "",
-          name:
-            remote?.name ||
-            conversations[0]?.workspacePath
-              .split(/[\\/]/)
-              .filter(Boolean)
-              .at(-1) ||
-            "工作区",
+          name: conversations[0]
+            ? taskWorkspaceName(conversations[0])
+            : "工作区",
           conversations,
           remote: Boolean(remote),
         };

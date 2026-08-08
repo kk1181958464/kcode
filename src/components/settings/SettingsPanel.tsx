@@ -4,6 +4,7 @@ import {
   Check,
   ChevronDown,
   CircleHelp,
+  Clock3,
   Cloud,
   Cpu,
   Download,
@@ -16,12 +17,14 @@ import {
   Monitor,
   Moon,
   Plus,
+  Plug,
   RefreshCw,
   Search,
   ShieldCheck,
   SlidersHorizontal,
   Smartphone,
   Sun,
+  Terminal,
   Trash2,
   Wifi,
   X,
@@ -48,6 +51,9 @@ import { isPermissionPolicyCustomized } from "../../permissions";
 import { ProviderModal } from "./ProviderModal";
 import type { RemoteControlState } from "../../remote-types";
 import { MAX_REMOTE_DEVICE_NAME_LENGTH } from "../../remote-device";
+import { McpSettings } from "./McpSettings";
+import { AutomationSettings } from "./AutomationSettings";
+import { RuntimeSettings } from "./RuntimeSettings";
 
 function remoteConnectionLabel(state: RemoteControlState) {
   const phase =
@@ -479,8 +485,43 @@ export function SettingsPanel({
               <span>录制</span>
               <span className="settings-nav-count">{recordings.length}</span>
             </button>
+            <button
+              className={section === "mcp" ? "active" : ""}
+              onClick={() => setSection("mcp")}
+            >
+              <Plug size={16} />
+              <span>MCP</span>
+            </button>
+            <button
+              className={section === "automation" ? "active" : ""}
+              onClick={() => setSection("automation")}
+            >
+              <Clock3 size={16} />
+              <span>定时任务</span>
+            </button>
+            <button
+              className={section === "runtime" ? "active" : ""}
+              onClick={() => setSection("runtime")}
+            >
+              <Terminal size={16} />
+              <span>运行恢复</span>
+            </button>
           </nav>
           <div className="settings-content">
+            {section === "mcp" && <McpSettings />}
+            {section === "automation" && (
+              <AutomationSettings
+                modelOptions={providers
+                  .filter((provider) => provider.enabled)
+                  .flatMap((provider) =>
+                    provider.models.map((model) => ({
+                      value: `${provider.id}|${model.id}`,
+                      label: `${provider.name} / ${model.displayName}`,
+                    })),
+                  )}
+              />
+            )}
+            {section === "runtime" && <RuntimeSettings />}
             {section === "remote" && (
               <section className="settings-section remote-settings-section">
                 <div className="settings-section-header">

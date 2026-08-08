@@ -19,6 +19,7 @@ import {
   requestedCodingOperations,
   shouldRequireCodingTool,
   successfulCodingEvidence,
+  type CodingOperation,
 } from "./coding-operation-verification";
 
 test("keeps explicit no-edit architecture questions out of coding verification", () => {
@@ -771,6 +772,104 @@ test("does not turn coding status questions into execution requests", () => {
       ]),
     ],
     ["inspect", "modify", "execute", "validate"],
+  );
+});
+
+test("treats a direct external API probe as inspection and execution only", () => {
+  const content =
+    "他是怎么调用api.puremarketing.ai的模型的，你直接测试一下，是需要什么请求方式";
+  assert.deepEqual(
+    [
+      ...requestedCodingOperations([
+        { kind: "message", role: "user", content },
+      ]),
+    ],
+    ["inspect", "execute"],
+  );
+  assert.deepEqual(
+    [
+      ...requestedCodingOperations([
+        {
+          kind: "message",
+          role: "user",
+          content: "怎么调用这个 API？",
+        },
+      ]),
+    ],
+    [],
+  );
+  assert.deepEqual(
+    [
+      ...requestedCodingOperations([
+        {
+          kind: "message",
+          role: "user",
+          content: "请测试一下这个 API 是否返回 Anthropic 格式",
+        },
+      ]),
+    ],
+    ["inspect", "execute"],
+  );
+  assert.deepEqual(
+    [
+      ...requestedCodingOperations([
+        {
+          kind: "message",
+          role: "user",
+          content: "把接口修复好，然后测试 API 并运行单元测试",
+        },
+      ]),
+    ],
+    ["modify", "execute", "validate"],
+  );
+});
+
+test("does not force an unrequested edit after a verified API probe", () => {
+  const history = [
+    {
+      kind: "calls" as const,
+      calls: [
+        { id: "read", name: "read_file", input: { path: "proxy.py" } },
+        {
+          id: "probe",
+          name: "run_command",
+          input: { command: "curl.exe https://api.example.com/v1/messages" },
+        },
+        {
+          id: "no-change",
+          name: "report_no_change",
+          input: {
+            reason:
+              "用户只要求测试外部 API，源码与真实请求已经确认请求格式，不存在获授权的文件修改目标。",
+          },
+        },
+      ],
+    },
+    compactOperationEvidenceResult("read", "read_file", true, {}),
+    compactOperationEvidenceResult("probe", "run_command", false, {
+      executed: true,
+      exitCode: 1,
+      output: "HTTP 401 API key is invalid",
+    }),
+    compactOperationEvidenceResult("no-change", "report_no_change", true, {
+      changed: false,
+      noChangeReported: true,
+    }),
+  ];
+  const requested = new Set<CodingOperation>(["inspect", "execute"]);
+  const evidence = successfulCodingEvidence(history);
+  const claimed = new Set<CodingOperation>(["modify"]);
+
+  assert.deepEqual([...evidence], ["inspect", "execute"]);
+  assert.deepEqual(
+    missingVerifiedCodingOperations(
+      new Set([...requested, ...claimed]),
+      claimed,
+      evidence,
+      history,
+      requested,
+    ),
+    [],
   );
 });
 

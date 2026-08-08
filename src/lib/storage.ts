@@ -4,11 +4,13 @@ import {
   recoverTaskRunStatus,
 } from "../task-status";
 import type { TaskRecord } from "../models";
+import { taskWorkspaceName } from "../task-workspace";
 
 export function normalizeStoredTask(task: TaskRecord): TaskRecord {
   const runStatus = recoverTaskRunStatus(task);
   return {
     ...task,
+    workspaceName: task.workspaceName?.trim() || taskWorkspaceName(task),
     messages: recoverOrphanedFailure(task.messages, runStatus, task.updatedAt),
     runningId: undefined,
     startedAt: undefined,

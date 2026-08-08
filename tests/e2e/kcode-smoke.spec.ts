@@ -1,0 +1,37 @@
+import { expect, test } from "@playwright/test";
+
+test.describe("KCode workbench smoke flow", () => {
+  test("opens settings and switches to MCP", async ({ page }) => {
+    await page.goto("/");
+    await expect(
+      page.getByText("KCode", { exact: true }).first(),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "设置" }).click();
+    await expect(page.locator(".settings-panel")).toBeVisible();
+    await page.getByRole("button", { name: "MCP" }).click();
+    await expect(page.getByText("当前运行环境不支持 MCP 管理。")).toBeVisible();
+  });
+
+  test("keeps the composer usable on a narrow viewport", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto("/");
+    const composer = page.locator(".composer");
+    await expect(composer).toBeVisible();
+    await expect(composer).toHaveCSS("max-width", /.+/);
+    await expect(page.getByPlaceholder(/描述一个任务/)).toBeVisible();
+  });
+
+  test("forks and exports the current task", async ({ page }) => {
+    await page.goto("/");
+    await page.getByRole("button", { name: "从当前会话创建分支" }).click();
+    await expect(
+      page.getByRole("heading", { name: /新对话 · 分支/ }),
+    ).toBeVisible();
+
+    await page.getByRole("button", { name: "导出当前会话" }).click();
+    const downloadPromise = page.waitForEvent("download");
+    await page.getByRole("menuitem", { name: /JSON/ }).click();
+    const download = await downloadPromise;
+    expect(download.suggestedFilename()).toMatch(/\.json$/);
+  });
+});

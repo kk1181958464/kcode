@@ -10,6 +10,7 @@ test("builds a bounded remote task snapshot without absolute workspace paths", (
   const task: TaskRecord = {
     id: "task-1",
     name: "远程任务",
+    workspaceName: "保留的项目名",
     workspacePath: "D:\\projects\\private\\kcode",
     createdAt: 1,
     updatedAt: 2,
@@ -65,7 +66,7 @@ test("builds a bounded remote task snapshot without absolute workspace paths", (
 
   const snapshot = remoteTaskSnapshot(task);
   const serialized = JSON.stringify(snapshot);
-  assert.equal(snapshot.workspaceName, "kcode");
+  assert.equal(snapshot.workspaceName, "保留的项目名");
   assert.equal(snapshot.executorModelSelection, "executor|luna");
   assert.equal(snapshot.messages[0].imageCount, 1);
   assert.deepEqual(snapshot.messages[0].files, [

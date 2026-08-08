@@ -8,8 +8,10 @@ import {
 import {
   registerManagedProcess,
   terminateAllManagedProcesses,
+  terminateManagedProcess,
   unregisterManagedProcess,
 } from "./process-registry";
+import { apiKeyCooldownPool } from "./api-key-cooldown";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import {
@@ -131,6 +133,7 @@ import { mutationChangedFromOutput } from "./mutation-evidence";
 import { hasUserSuppliedVerificationCode } from "./browser-cdp";
 import { applyUpdatePatch, normalizeLineEndings } from "./text-patch";
 import { getProviderWithKey, updateModelCapabilities } from "./store";
+import { callMcpTool, listMcpServerConfigs, listMcpTools } from "./mcp";
 import {
   bindBrowserRequest,
   browserIsOpen,
@@ -286,6 +289,8 @@ type ModelTurnRuntime = {
   provider: Awaited<ReturnType<typeof getProviderWithKey>>;
   activeSkills: string;
   omitImageInputs?: boolean;
+  keyIndex?: number;
+  triedKeyIndexes?: number[];
 };
 type HistoryItem =
   | {
@@ -1390,6 +1395,32 @@ const tools = [
     },
   },
   {
+    name: "mcp_list_tools",
+    description:
+      "List the tools exposed by a configured MCP server. Use this before calling an external MCP tool so you know its exact name and input schema.",
+    parameters: {
+      type: "object",
+      properties: { server: { type: "string" } },
+      required: ["server"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "mcp_call_tool",
+    description:
+      "Call a tool on a configured Model Context Protocol (MCP) server. The server must be enabled in KCode settings; arguments must match the schema returned by mcp_list_tools.",
+    parameters: {
+      type: "object",
+      properties: {
+        server: { type: "string" },
+        tool: { type: "string" },
+        arguments: { type: "object" },
+      },
+      required: ["server", "tool"],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "run_command",
     description:
       "Run a Windows PowerShell 5.1 command in the workspace. This is not Bash: do not use <<EOF heredocs or &&/|| chains. Prefer browser tools for page interaction, responsive screenshots, and DOM inspection; do not launch Chrome/Edge from this tool. Use start_process for background services.",
@@ -1479,6 +1510,14 @@ export async function cleanupAllBackgroundProcesses() {
     terminateChildProcess(backgroundProcess.child);
   backgroundProcesses.clear();
   await terminateAllManagedProcesses();
+}
+export async function stopBackgroundProcessById(id: string) {
+  const backgroundProcess = backgroundProcesses.get(id);
+  if (backgroundProcess) {
+    terminateChildProcess(backgroundProcess.child);
+    backgroundProcesses.delete(id);
+  }
+  await terminateManagedProcess(id);
 }
 export function resolveApproval(
   requestId: string,
@@ -3069,6 +3108,43 @@ async function execute(
       userInputRequested: true,
     };
   }
+  if (call.name === "mcp_list_tools") {
+    const server = String(call.input.server || "").trim();
+    if (!server) throw new Error("缺少 MCP 服务名称");
+    const tools = await listMcpTools(server, signal);
+    return {
+      output: JSON.stringify(
+        {
+          server,
+          tools,
+          hint: "下一步使用 mcp_call_tool，并把工具名和 arguments 按 schema 传入。",
+        },
+        null,
+        2,
+      ),
+      executed: true,
+    };
+  }
+  if (call.name === "mcp_call_tool") {
+    const server = String(call.input.server || "").trim();
+    const tool = String(call.input.tool || "").trim();
+    if (!server || !tool) throw new Error("MCP 调用缺少 server 或 tool");
+    const result = await callMcpTool(
+      server,
+      tool,
+      call.input.arguments && typeof call.input.arguments === "object"
+        ? (call.input.arguments as Record<string, unknown>)
+        : {},
+      signal,
+      onProgress,
+    );
+    return {
+      output: result.isError
+        ? `MCP 工具返回错误：${result.output}`
+        : result.output,
+      executed: true,
+    };
+  }
   if (call.name === "diagnostics") {
     const kind = String(call.input.kind || "");
     if (!new Set(["typecheck", "test", "lint", "build"]).has(kind))
@@ -3461,6 +3537,26 @@ async function modelTurn(
 ): Promise<Turn> {
   const provider =
     runtime?.provider ?? (await getProviderWithKey(request.providerId));
+  const apiKeys = provider.apiKeys?.length
+    ? provider.apiKeys
+    : [provider.apiKey];
+  const requestedKeyIndex =
+    runtime?.keyIndex ?? apiKeyCooldownPool.select(provider.id, apiKeys.length);
+  const keyIndex = Math.min(
+    Math.max(0, requestedKeyIndex),
+    Math.max(0, apiKeys.length - 1),
+  );
+  const activeApiKey = apiKeys[keyIndex] || provider.apiKey;
+  const triedKeyIndexes = new Set(runtime?.triedKeyIndexes ?? []);
+  const nextApiKeyIndex = () => {
+    triedKeyIndexes.add(keyIndex);
+    return apiKeyCooldownPool.next(
+      provider.id,
+      apiKeys.length,
+      keyIndex,
+      triedKeyIndexes,
+    );
+  };
   if (!provider.enabled) throw new Error("当前供应商已停用");
   if (!provider.models.some((model) => model.modelId === request.modelId))
     throw new Error("模型不属于当前供应商或已被移除");
@@ -3514,11 +3610,17 @@ async function modelTurn(
     : [];
   const isolation = createConversationIsolation(request.taskId, requestId);
   const latestUserRequest = relevantVerificationRequestContent(history);
+  const enabledMcpServers = listMcpServerConfigs().filter(
+    (server) => server.enabled,
+  );
   const activeSkills = [
     runtime?.activeSkills ??
       (await loadActiveSkillInstructions(latestUserRequest)),
     plannerCollaborationInstruction(request),
     "When a task has multiple independent phases, begin with a short numbered plan (1., 2., 3. …). Before every tool-call group, write no more than two concise user-facing progress sentences explaining which plan step you are executing and why; keep this preamble under 240 characters. Never dump a full implementation monologue, speculative patch, or repeated plan into the chat. Put the structured plan in numbered steps, then call the relevant tools in the same turn. A non-final turn must include a tool call instead of only describing what you will do. After a failed tool result, briefly explain how you are adjusting the approach before the next tool call. Never claim success before a tool result confirms it.",
+    enabledMcpServers.length
+      ? `KCode 已启用这些 MCP 服务：${enabledMcpServers.map((server) => `${server.name}（server=${server.id}）`).join("、")}。需要使用外部扩展能力时，先用对应 server ID 调用 mcp_list_tools 获取真实 schema，再调用 mcp_call_tool；不要凭空捏造 MCP 工具结果。MCP 工具活动和错误必须如实展示给用户。`
+      : "当前没有启用 MCP 扩展；不要声称调用了 MCP 工具。",
     "Past-tense claims about real workspace or external actions are checked against successful structured tool results. Do not say that a file was changed, a command ran, a test passed, a remote connection or transfer completed, a browser action happened, or a Git action completed unless the corresponding tool evidence exists in this run. Informational answers, explanations, planning, and content generation that require no real action may finish without calling a tool; do not invent an action claim merely to create evidence. If an earlier statement was wrong, retract it explicitly instead of inventing evidence.",
     request.remoteWorkspace
       ? "This is a managed SSH Remote task. Use ssh_run for shell work; its shell and operating system are determined by the remote server. Do not use local workspace tools or reconnect/disconnect the managed SSH session."
@@ -3550,11 +3652,11 @@ async function modelTurn(
     ...isolation.headers,
   };
   if (protocol === "anthropic-messages") {
-    headers["x-api-key"] = provider.apiKey;
+    headers["x-api-key"] = activeApiKey;
     headers["anthropic-version"] = "2023-06-01";
   } else if (protocol === "gemini-generate-content") {
     /* Gemini uses a query-string key. */
-  } else headers.Authorization = `Bearer ${provider.apiKey}`;
+  } else headers.Authorization = `Bearer ${activeApiKey}`;
   let url = "",
     body: Record<string, unknown> = {};
   if (protocol === "openai-chat") {
@@ -3747,7 +3849,7 @@ async function modelTurn(
         : {}),
     };
   } else {
-    url = `${providerApiEndpoint(provider.baseUrl, protocol, `models/${encodeURIComponent(request.modelId)}:streamGenerateContent`)}?alt=sse&key=${encodeURIComponent(provider.apiKey)}`;
+    url = `${providerApiEndpoint(provider.baseUrl, protocol, `models/${encodeURIComponent(request.modelId)}:streamGenerateContent`)}?alt=sse&key=${encodeURIComponent(activeApiKey)}`;
     const contents: { role: string; parts: unknown[] }[] = [];
     for (const item of payloadHistory) {
       if (item.kind === "message")
@@ -3825,22 +3927,58 @@ async function modelTurn(
   const firstByteTimeoutMs =
     reasoning.reasoningMode !== "none" ? 300_000 : 90_000;
   const serializedBody = JSON.stringify(body);
-  const response = await fetchWithRetry(
-    url,
-    {
-      method: "POST",
-      headers,
-      body: serializedBody,
-    },
-    {
-      signal,
-      firstByteTimeoutMs,
-      retries: 1,
-      retryDelayMs: 2_000,
-      onProgress,
-      attemptBudget,
-    },
-  );
+  let response: Response;
+  try {
+    response = await fetchWithRetry(
+      url,
+      {
+        method: "POST",
+        headers,
+        body: serializedBody,
+      },
+      {
+        signal,
+        firstByteTimeoutMs,
+        retries: 1,
+        retryDelayMs: 2_000,
+        onProgress,
+        attemptBudget,
+      },
+    );
+  } catch (error) {
+    const retryableKeyError =
+      apiKeys.length > 1 && isRetryableStreamError(error);
+    if (retryableKeyError)
+      apiKeyCooldownPool.markUnavailable(provider.id, keyIndex);
+    const nextKeyIndex = retryableKeyError ? nextApiKeyIndex() : undefined;
+    if (nextKeyIndex !== undefined && !signal.aborted) {
+      onProgress?.(
+        `当前 API Key 暂时不可用，自动切换备用 Key（${nextKeyIndex + 1}/${apiKeys.length}）…`,
+      );
+      return modelTurn(
+        root,
+        requestId,
+        request,
+        history,
+        signal,
+        toolsEnabled,
+        requireToolCall,
+        onText,
+        onReasoning,
+        onProgress,
+        protocolOverride,
+        {
+          provider,
+          activeSkills: runtime?.activeSkills ?? "",
+          omitImageInputs: runtime?.omitImageInputs,
+          keyIndex: nextKeyIndex,
+          triedKeyIndexes: [...triedKeyIndexes],
+        },
+        attemptBudget,
+      );
+    }
+    throw error;
+  }
   writeLog("info", "model.response", {
     requestId: isolation.traceId,
     taskScopeId: isolation.taskScopeId,
@@ -3908,10 +4046,45 @@ async function modelTurn(
       attemptBudget,
     );
   }
+  const retryableKeyStatus =
+    apiKeys.length > 1 &&
+    /^(401|403|408|425|429|5\d\d)$/.test(String(response.status));
+  if (retryableKeyStatus)
+    apiKeyCooldownPool.markUnavailable(provider.id, keyIndex);
+  const nextKeyIndex = retryableKeyStatus ? nextApiKeyIndex() : undefined;
+  if (!response.ok)
+    if (nextKeyIndex !== undefined && !signal.aborted) {
+      void response.body?.cancel().catch(() => undefined);
+      onProgress?.(
+        `上游返回 ${response.status}，自动切换备用 API Key（${nextKeyIndex + 1}/${apiKeys.length}）…`,
+      );
+      return modelTurn(
+        root,
+        requestId,
+        request,
+        history,
+        signal,
+        toolsEnabled,
+        requireToolCall,
+        onText,
+        onReasoning,
+        onProgress,
+        protocolOverride,
+        {
+          provider,
+          activeSkills: runtime?.activeSkills ?? "",
+          omitImageInputs: runtime?.omitImageInputs,
+          keyIndex: nextKeyIndex,
+          triedKeyIndexes: [...triedKeyIndexes],
+        },
+        attemptBudget,
+      );
+    }
   if (!response.ok)
     throw new Error(
       `请求失败 (${response.status}): ${(responseErrorText ?? (await readResponseText(response, signal))).slice(0, 500)}`,
     );
+  apiKeyCooldownPool.markHealthy(provider.id, keyIndex);
   if (/text\/event-stream/i.test(response.headers.get("content-type") || ""))
     return parseStreamedTurn(
       protocol,
@@ -4514,6 +4687,7 @@ export async function* runAgent(
       claimedCodingOps,
       codingEvidence,
       evidenceHistory,
+      requestedCodingOps,
     );
     const unsupportedCodingClaims = missingCodingEvidence.filter((operation) =>
       claimedCodingOps.has(operation),
@@ -4827,6 +5001,8 @@ export async function* runAgent(
         message_agent: "追加子 Agent 指令",
         wait_agent: "等待子 Agent",
         stop_agent: "停止子 Agent",
+        mcp_list_tools: "读取 MCP 工具",
+        mcp_call_tool: "调用 MCP 工具",
         run_command: "运行命令",
       };
       const activity: AgentActivity = {
@@ -4920,6 +5096,8 @@ export async function* runAgent(
       const category =
         call.name === "web_search" ||
         call.name === "fetch_url" ||
+        call.name === "mcp_list_tools" ||
+        call.name === "mcp_call_tool" ||
         call.name === "git_remote_status" ||
         browserTool ||
         call.name === "ssh_connect" ||

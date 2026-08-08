@@ -1,9 +1,11 @@
-import React, { memo, useMemo, useState } from "react";
+import React, { memo, useEffect, useId, useMemo, useState } from "react";
 import ReactMarkdown, {
   defaultUrlTransform,
   type Components,
 } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
 import { Code2, Copy } from "lucide-react";
 import { copyWithToast } from "../../lib/toast";
 import {
@@ -12,11 +14,63 @@ import {
 } from "../../lib/reveal-path";
 import { openExternalUrl } from "./external";
 
+const MermaidDiagram = memo(function MermaidDiagram({
+  chart,
+}: {
+  chart: string;
+}) {
+  const id = `kcode-mermaid-${useId().replace(/[^a-zA-Z0-9_-]/g, "")}`;
+  const [svg, setSvg] = useState("");
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let active = true;
+    setSvg("");
+    setError("");
+    void import("mermaid")
+      .then(async ({ default: mermaid }) => {
+        mermaid.initialize({
+          startOnLoad: false,
+          securityLevel: "strict",
+          theme: "default",
+        });
+        const result = await mermaid.render(id, chart.trim());
+        if (active) setSvg(result.svg);
+      })
+      .catch(
+        (reason) =>
+          active &&
+          setError(reason instanceof Error ? reason.message : String(reason)),
+      );
+    return () => {
+      active = false;
+    };
+  }, [chart, id]);
+  if (error)
+    return (
+      <div className="mermaid-error">
+        <span>Mermaid 渲染失败</span>
+        <code>{error}</code>
+        <pre>{chart}</pre>
+      </div>
+    );
+  if (!svg) return <div className="mermaid-loading">正在绘制流程图…</div>;
+  return (
+    <div
+      className="mermaid-diagram"
+      dangerouslySetInnerHTML={{ __html: svg }}
+    />
+  );
+});
+
 const baseMarkdownComponents: Components = {
   pre: ({ children }) => {
-    const code = String(
-      (children as { props?: { children?: unknown } })?.props?.children ?? "",
-    ).replace(/\n$/, "");
+    const child = Array.isArray(children) ? children[0] : children;
+    const childProps = (
+      child as { props?: { className?: string; children?: unknown } }
+    )?.props;
+    const code = String(childProps?.children ?? "").replace(/\n$/, "");
+    const language = childProps?.className?.match(/language-([\w-]+)/)?.[1];
+    if (language === "mermaid") return <MermaidDiagram chart={code} />;
     return (
       <div className="code-block">
         <div className="code-toolbar">
@@ -107,7 +161,8 @@ const MarkdownBlock = memo(function MarkdownBlock({
   return (
     <div className="markdown-block">
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={[remarkGfm, remarkMath]}
+        rehypePlugins={[rehypeKatex]}
         components={components}
         urlTransform={(url) =>
           localPathFromMarkdownHref(url) ? url : defaultUrlTransform(url)

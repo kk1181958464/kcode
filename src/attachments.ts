@@ -92,6 +92,12 @@ export const CONTEXT_FILE_EXTENSIONS = [
   ".csv",
   ".tsv",
   ".log",
+  ".pdf",
+  ".docx",
+  ".xlsx",
+  ".xlsm",
+  ".pptx",
+  ".ppsx",
 ] as const;
 
 const CONTEXT_FILE_NAMES = new Set([
@@ -134,6 +140,9 @@ export const CONTEXT_FILE_DIALOG_EXTENSIONS = CONTEXT_FILE_EXTENSIONS.map(
 export const MAX_CONTEXT_FILES = 9;
 export const MAX_CONTEXT_FILE_BYTES = 512 * 1024;
 export const MAX_CONTEXT_TOTAL_BYTES = 2 * 1024 * 1024;
+/** Binary documents may be larger on disk; the extracted text still follows the context limits. */
+export const MAX_CONTEXT_SOURCE_BYTES = 20 * 1024 * 1024;
+export const MAX_CONTEXT_TOTAL_SOURCE_BYTES = 40 * 1024 * 1024;
 export const MAX_IMAGE_FILES = 9;
 export const MAX_IMAGE_FILE_BYTES = 5 * 1024 * 1024;
 
@@ -158,6 +167,24 @@ export function isSupportedContextFile(name: string) {
   return CONTEXT_FILE_EXTENSIONS.some((extension) =>
     lowerName.endsWith(extension),
   );
+}
+
+export type ContextDocumentFormat = "pdf" | "docx" | "xlsx" | "pptx";
+
+export function contextDocumentFormat(
+  name: string,
+): ContextDocumentFormat | undefined {
+  const lowerName =
+    name.toLowerCase().replace(/\\/g, "/").split("/").at(-1) || "";
+  if (lowerName.endsWith(".pdf")) return "pdf";
+  if (lowerName.endsWith(".docx")) return "docx";
+  if (lowerName.endsWith(".xlsx") || lowerName.endsWith(".xlsm")) return "xlsx";
+  if (lowerName.endsWith(".pptx") || lowerName.endsWith(".ppsx")) return "pptx";
+  return undefined;
+}
+
+export function isBinaryContextFile(name: string) {
+  return Boolean(contextDocumentFormat(name));
 }
 
 export function mergeContextFiles(

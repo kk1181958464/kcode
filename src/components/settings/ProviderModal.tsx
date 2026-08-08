@@ -1,5 +1,14 @@
 import { useEffect, useState } from "react";
-import { CheckCircle2, Cpu, Plus, RefreshCw, Trash2, X } from "lucide-react";
+import {
+  CheckCircle2,
+  Cpu,
+  Eye,
+  EyeOff,
+  Plus,
+  RefreshCw,
+  Trash2,
+  X,
+} from "lucide-react";
 import { inferContextWindow, inferReasoningConfig } from "../../types";
 import type { ModelConfig, ProviderConfig } from "../../types";
 import { uid } from "../../models";
@@ -26,6 +35,7 @@ export function ProviderModal({
     },
   );
   const [apiKey, setApiKey] = useState("");
+  const [showApiKeys, setShowApiKeys] = useState(false);
   const [modelId, setModelId] = useState("");
   const [busy, setBusy] = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -211,15 +221,31 @@ export function ProviderModal({
             />
           </label>
           <label className="wide">
-            API Key
-            <input
-              type="password"
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              placeholder={
-                provider.hasApiKey ? "已安全保存，留空则不修改" : "sk-..."
-              }
-            />
+            API Key（支持多 Key 轮换）
+            <div className="provider-key-field">
+              <textarea
+                className={`provider-api-keys ${showApiKeys ? "" : "masked"}`}
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                placeholder={
+                  provider.hasApiKey
+                    ? "已安全保存，留空则不修改"
+                    : "每行或逗号分隔多个 Key"
+                }
+              />
+              <button
+                type="button"
+                className="icon"
+                onClick={() => setShowApiKeys((value) => !value)}
+                title={showApiKeys ? "隐藏 API Key" : "显示 API Key"}
+                aria-label={showApiKeys ? "隐藏 API Key" : "显示 API Key"}
+              >
+                {showApiKeys ? <EyeOff size={14} /> : <Eye size={14} />}
+              </button>
+            </div>
+            <small className="field-hint">
+              遇到限流、临时不可用或认证失败时自动切换下一个 Key。
+            </small>
           </label>
         </div>
         <div className="model-editor">

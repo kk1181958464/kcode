@@ -1,8 +1,12 @@
-import { memo } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import {
+  Braces,
+  FileText,
   MessagesSquare,
   Code2,
   GitBranch,
+  GitFork,
+  Download,
   PanelLeftClose,
   PanelLeftOpen,
   PanelRightClose,
@@ -10,7 +14,10 @@ import {
   Server,
 } from "lucide-react";
 import type { GitWorkspaceState } from "../../types";
-import type { SshRemoteState, SshRemoteWorkspace } from "../../ssh-remote-types";
+import type {
+  SshRemoteState,
+  SshRemoteWorkspace,
+} from "../../ssh-remote-types";
 
 export interface TopBarProps {
   taskName: string;
@@ -21,8 +28,11 @@ export interface TopBarProps {
   gitState: GitWorkspaceState;
   remoteWorkspace?: SshRemoteWorkspace;
   remoteState?: SshRemoteState;
+  editorAvailable: boolean;
   workspaceView: "chat" | "editor";
   setWorkspaceView(value: "chat" | "editor"): void;
+  forkTask(): void;
+  exportTask(format: "md" | "json"): void;
 }
 
 export const TopBar = memo(function TopBar({
@@ -34,9 +44,30 @@ export const TopBar = memo(function TopBar({
   gitState,
   remoteWorkspace,
   remoteState,
+  editorAvailable,
   workspaceView,
   setWorkspaceView,
+  forkTask,
+  exportTask,
 }: TopBarProps) {
+  const [exportOpen, setExportOpen] = useState(false);
+  const exportRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!exportOpen) return;
+    const close = (event: PointerEvent) => {
+      if (!exportRef.current?.contains(event.target as Node))
+        setExportOpen(false);
+    };
+    window.addEventListener("pointerdown", close);
+    return () => window.removeEventListener("pointerdown", close);
+  }, [exportOpen]);
+
+  const chooseExport = (format: "md" | "json") => {
+    setExportOpen(false);
+    exportTask(format);
+  };
+
   return (
     <header className="topbar">
       <div className="topbar-left">
@@ -72,8 +103,12 @@ export const TopBar = memo(function TopBar({
           )}
         </div>
       </div>
-      {remoteWorkspace && (
-        <div className="workspace-view-switch" role="tablist" aria-label="工作区视图">
+      {editorAvailable && (
+        <div
+          className="workspace-view-switch"
+          role="tablist"
+          aria-label="工作区视图"
+        >
           <button
             type="button"
             role="tab"
@@ -97,6 +132,44 @@ export const TopBar = memo(function TopBar({
         </div>
       )}
       <div className="top-actions">
+        <button
+          className="icon framed"
+          onClick={forkTask}
+          title="从当前会话创建分支"
+          aria-label="从当前会话创建分支"
+        >
+          <GitFork size={16} />
+        </button>
+        <div className="topbar-export" ref={exportRef}>
+          <button
+            className="icon framed"
+            onClick={() => setExportOpen((value) => !value)}
+            title="导出当前会话"
+            aria-label="导出当前会话"
+            aria-expanded={exportOpen}
+            aria-haspopup="menu"
+          >
+            <Download size={16} />
+          </button>
+          {exportOpen && (
+            <div className="topbar-export-menu" role="menu">
+              <button role="menuitem" onClick={() => chooseExport("md")}>
+                <FileText size={15} />
+                <div>
+                  <strong>Markdown</strong>
+                  <small>便于阅读和归档</small>
+                </div>
+              </button>
+              <button role="menuitem" onClick={() => chooseExport("json")}>
+                <Braces size={15} />
+                <div>
+                  <strong>JSON</strong>
+                  <small>保留完整任务数据</small>
+                </div>
+              </button>
+            </div>
+          )}
+        </div>
         <button
           className="icon framed status-toggle"
           onClick={() => updateStatusPanel(!statusOpen)}

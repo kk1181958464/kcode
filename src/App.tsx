@@ -22,6 +22,7 @@ import {
   ArrowDown,
   ArrowLeft,
   ArrowRight,
+  ArrowUp,
   Bot,
   Blocks,
   BrainCircuit,
@@ -43,6 +44,7 @@ import {
   GitCompareArrows,
   GripVertical,
   LockOpen,
+  ListOrdered,
   LoaderCircle,
   Monitor,
   Minus,
@@ -80,6 +82,12 @@ import type {
 } from "./remote-types";
 import type { SshRemoteState } from "./ssh-remote-types";
 import { sshWorkspaceRootFromActivity } from "./ssh-workspace-activity";
+import {
+  attachSshWorkspace,
+  defaultRemoteWorkspaceName,
+  taskWorkspaceName,
+  workspaceNameFromPath,
+} from "./task-workspace";
 import {
   materializeRemoteAttachments,
   remoteAttachmentPrompt,
@@ -154,9 +162,11 @@ import { latestRequestActivities } from "./status-summary";
 import {
   MAX_CONTEXT_FILES,
   MAX_CONTEXT_FILE_BYTES,
+  MAX_CONTEXT_SOURCE_BYTES,
   MAX_IMAGE_FILES,
   MAX_IMAGE_FILE_BYTES,
   imageMediaType,
+  isBinaryContextFile,
   isSupportedContextFile,
   mergeContextFiles,
 } from "./attachments";
@@ -177,6 +187,9 @@ const SshRemoteDialog = lazy(() =>
 );
 const SshRemoteEditor = lazy(
   () => import("./components/remote/SshRemoteEditor"),
+);
+const LocalWorkspaceEditor = lazy(
+  () => import("./components/editor/LocalWorkspaceEditor"),
 );
 import { ConversationArea } from "./components/conversation/ConversationArea";
 import { ConversationSearch } from "./components/conversation/ConversationSearch";
@@ -254,6 +267,7 @@ import type {
   ImageAttachment,
   ReasoningMode,
   SkillStoreItem,
+  ScheduledTask,
   TaskWindow,
 } from "./types";
 
@@ -512,6 +526,9 @@ export default function App() {
   const [contextDirectory, setContextDirectory] = useState(
     () => localStorage.getItem("kcode.contextDirectory") || "",
   );
+  const [scheduledTasks, setScheduledTasks] = useState<ScheduledTask[]>([]);
+  const scheduledTasksRef = useRef<ScheduledTask[]>([]);
+  const scheduledRunsRef = useRef(new Set<string>());
   const [contextError, setContextError] = useState("");
   const [remoteControlState, setRemoteControlState] =
     useState<RemoteControlState>(() => ({
@@ -2126,6 +2143,26 @@ export default function App() {
     }
     window.kcode.providers.list().then(setProviders);
   }, []);
+  const reloadScheduledTasks = useCallback(() => {
+    if (!window.kcode?.state) return;
+    void window.kcode.state
+      .load("scheduledTasks")
+      .then((value) => {
+        const next = Array.isArray(value) ? (value as ScheduledTask[]) : [];
+        scheduledTasksRef.current = next;
+        setScheduledTasks(next);
+      })
+      .catch(() => undefined);
+  }, []);
+  useEffect(() => {
+    reloadScheduledTasks();
+    window.addEventListener("kcode:schedules-updated", reloadScheduledTasks);
+    return () =>
+      window.removeEventListener(
+        "kcode:schedules-updated",
+        reloadScheduledTasks,
+      );
+  }, [reloadScheduledTasks]);
   const models = useMemo(
     () =>
       providers
@@ -2335,12 +2372,10 @@ export default function App() {
         setTasks((all) =>
           all.map((task) =>
             task.id === taskId
-              ? {
-                  ...task,
-                  workspacePath: state.cachePath!,
-                  remoteWorkspace: state.profile,
-                  updatedAt: Date.now(),
-                }
+              ? attachSshWorkspace(task, {
+                  profile: state.profile!,
+                  cachePath: state.cachePath!,
+                })
               : task,
           ),
         );
@@ -2874,13 +2909,10 @@ export default function App() {
       setTasks((all) =>
         all.map((task) =>
           task.id === state.taskId
-            ? {
-                ...task,
-                name: state.profile!.name,
-                workspacePath: state.cachePath!,
-                remoteWorkspace: state.profile,
-                updatedAt: Date.now(),
-              }
+            ? attachSshWorkspace(task, {
+                profile: state.profile!,
+                cachePath: state.cachePath!,
+              })
             : task,
         ),
       );
@@ -2893,6 +2925,7 @@ export default function App() {
     const task: TaskRecord = {
       id: state.taskId,
       name: state.profile.name,
+      workspaceName: defaultRemoteWorkspaceName(state.profile),
       workspacePath: state.cachePath,
       remoteWorkspace: state.profile,
       createdAt: now,
@@ -2933,6 +2966,7 @@ export default function App() {
     const task: TaskRecord = {
       id: uid(),
       name: newTaskName.trim() || pendingFolder.name,
+      workspaceName: pendingFolder.name,
       workspacePath: pendingFolder.path,
       createdAt: now,
       updatedAt: now,
@@ -3142,6 +3176,7 @@ export default function App() {
     const task: TaskRecord = {
       id: taskId,
       name: "新对话",
+      workspaceName: sourceTask ? taskWorkspaceName(sourceTask) : undefined,
       workspacePath,
       remoteWorkspace,
       createdAt: now,
@@ -3179,6 +3214,108 @@ export default function App() {
     pendingScrollRestoreRef.current = undefined;
     autoFollowRef.current = true;
     setShowScrollToBottom(false);
+  }
+
+  async function forkActiveTask() {
+    if (!activeTask) return;
+    try {
+      const source = await ensureTaskLoaded(activeTask);
+      const full = await ensureFullTaskHistory(source);
+      const now = Date.now();
+      const fork: TaskRecord = {
+        ...full,
+        id: uid(),
+        name: `${full.name} · 分支`,
+        createdAt: now,
+        updatedAt: now,
+        messages: full.messages.map((message) => ({
+          ...message,
+          images: message.images?.map((image) => ({ ...image })),
+        })),
+        // Execution activities belong to the source run. A branch keeps the
+        // conversation context but starts with a clean execution ledger.
+        activities: [],
+        runningId: undefined,
+        runStatus: "idle",
+        startedAt: undefined,
+        durationMs: 0,
+        usage: { input: 0, output: 0, cached: 0 },
+        usageResolved: false,
+        parentTaskId: full.id,
+        forkedFromMessageId: full.messages.at(-1)?.id,
+      };
+      hydratedTaskIdsRef.current.add(fork.id);
+      setTasks((all) => [fork, ...all]);
+      claimTaskView(fork.id);
+      setActiveTaskId(fork.id);
+      setWorkspaceView(fork.remoteWorkspace ? "editor" : "chat");
+      setMessages(fork.messages);
+      setActivities([]);
+      setInput(initialDrafts.current[fork.id] ?? "");
+      setAttachedFiles([]);
+      setAttachedImages([]);
+      setUsage(fork.usage ?? { input: 0, output: 0, cached: 0 });
+      setUsageResolved(false);
+      setDurationMs(0);
+      setUsedContextCount(fork.usedContextCount ?? 0);
+      currentRequest.current = undefined;
+      setRunningId(undefined);
+      requestStartedRef.current = undefined;
+      contextByMessageRef.current.clear();
+      autoFollowRef.current = true;
+      setShowScrollToBottom(false);
+      flashContextToast("已从当前会话创建分支");
+    } catch (error) {
+      setContextError(`创建会话分支失败：${errorMessage(error)}`);
+    }
+  }
+
+  async function exportActiveTask(format: "md" | "json") {
+    if (!activeTask) return;
+    try {
+      const source = await ensureFullTaskHistory(await ensureTaskLoaded(activeTask));
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const baseName = `${source.name || "kcode-session"}-${stamp}`;
+      const content =
+        format === "json"
+          ? JSON.stringify(source, null, 2)
+          : [
+              `# ${source.name}`,
+              "",
+              `- 工作区：${source.workspacePath || "未设置"}`,
+              `- 创建时间：${new Date(source.createdAt).toLocaleString()}`,
+              `- 导出时间：${new Date().toLocaleString()}`,
+              "",
+              ...source.messages.flatMap((message) => [
+                `## ${message.role === "user" ? "用户" : `助手 · ${message.model || "Agent"}`}`,
+                "",
+                message.content || "（空消息）",
+                "",
+              ]),
+              "## 执行记录",
+              "",
+              ...source.activities.map(
+                (activity) =>
+                  `- ${activity.status === "success" ? "完成" : activity.status === "failed" ? "失败" : activity.status}：${activity.title}${activity.path ? ` · ${activity.path}` : ""}${activity.output ? `\n\n  ${activity.output.slice(-2_000).replace(/\n/g, "\n  ")}` : ""}`,
+              ),
+              "",
+            ].join("\n");
+      if (window.kcode?.files?.saveText) {
+        const saved = await window.kcode.files.saveText(baseName, content, format);
+        if (saved) flashAppToast(`已导出到 ${saved}`);
+        return;
+      }
+      const blob = new Blob([content], {
+        type: format === "json" ? "application/json" : "text/markdown",
+      });
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = `${baseName}.${format}`;
+      link.click();
+      URL.revokeObjectURL(link.href);
+    } catch (error) {
+      setContextError(`导出会话失败：${errorMessage(error)}`);
+    }
   }
 
   async function removeTask(task: TaskRecord) {
@@ -3365,8 +3502,13 @@ export default function App() {
         errors.push(`${file.name} 不是支持的文本或代码文件`);
         continue;
       }
-      if (file.size > MAX_CONTEXT_FILE_BYTES) {
-        errors.push(`${file.name} 超过 512 KB，无法作为上下文添加`);
+      const binaryDocument = isBinaryContextFile(file.name);
+      if (file.size > (binaryDocument ? MAX_CONTEXT_SOURCE_BYTES : MAX_CONTEXT_FILE_BYTES)) {
+        errors.push(
+          binaryDocument
+            ? `${file.name} 超过 ${Math.round(MAX_CONTEXT_SOURCE_BYTES / 1024 / 1024)} MB，无法解析`
+            : `${file.name} 超过 512 KB，无法作为上下文添加`,
+        );
         continue;
       }
       eligible.push({ file, path });
@@ -3374,6 +3516,11 @@ export default function App() {
     const selectedFiles = eligible.slice(0, MAX_CONTEXT_FILES);
     const settled = await Promise.allSettled(
       selectedFiles.map(async ({ file, path }): Promise<ContextFile> => {
+        if (isBinaryContextFile(file.name)) {
+          if (!window.kcode?.files?.parse)
+            throw new Error(`${file.name} 需要桌面版文档解析支持`);
+          return window.kcode.files.parse(path);
+        }
         const content = await file.text();
         if (content.includes("\0"))
           throw new Error(`${file.name} 不是有效的文本文件`);
@@ -3750,6 +3897,52 @@ export default function App() {
     scrollAfterSendRef.current = true;
     setShowScrollToBottom(false);
     flashContextToast("消息已排队，将在当前回复完成后发送");
+  }
+
+  function removeQueuedMessage(messageId: string) {
+    if (!activeTask) return;
+    contextByMessageRef.current.delete(messageId);
+    setMessages((all) => all.filter((message) => message.id !== messageId));
+    setTasks((all) =>
+      all.map((task) =>
+        task.id === activeTask.id
+          ? {
+              ...task,
+              messages: task.messages.filter((message) => message.id !== messageId),
+              updatedAt: Date.now(),
+            }
+          : task,
+      ),
+    );
+  }
+
+  function prioritizeQueuedMessage(messageId: string) {
+    if (!activeTask) return;
+    const moveFirst = (all: ChatMessage[]) => {
+      const item = all.find((message) => message.id === messageId);
+      if (!item) return all;
+      return [
+        ...all.filter(
+          (message) =>
+            message.id !== messageId &&
+            !(message.role === "user" && (message as QueuedChatMessage).queued),
+        ),
+        item,
+        ...all.filter(
+          (message) =>
+            message.id !== messageId &&
+            message.role === "user" && (message as QueuedChatMessage).queued,
+        ),
+      ];
+    };
+    setMessages(moveFirst);
+    setTasks((all) =>
+      all.map((task) =>
+        task.id === activeTask.id
+          ? { ...task, messages: moveFirst(task.messages), updatedAt: Date.now() }
+          : task,
+      ),
+    );
   }
 
   async function send(
@@ -4316,6 +4509,129 @@ export default function App() {
       });
     }
   }, [models, summarizingTasks, tasks]);
+
+  async function triggerScheduledTask(schedule: ScheduledTask) {
+    if (scheduledRunsRef.current.has(schedule.id)) return;
+    scheduledRunsRef.current.add(schedule.id);
+    const updateSchedule = async (patch: Partial<ScheduledTask>) => {
+      const next = scheduledTasksRef.current.map((item) =>
+        item.id === schedule.id ? { ...item, ...patch } : item,
+      );
+      scheduledTasksRef.current = next;
+      setScheduledTasks(next);
+      await window.kcode?.state.save("scheduledTasks", next);
+    };
+    try {
+      const selection =
+        schedule.modelSelection &&
+        models.some(
+          (item) =>
+            `${item.provider.id}|${item.model.id}` === schedule.modelSelection,
+        )
+          ? schedule.modelSelection
+          : models.some(
+                (item) => `${item.provider.id}|${item.model.id}` === selected,
+              )
+            ? selected
+            : models[0]
+              ? `${models[0].provider.id}|${models[0].model.id}`
+              : "";
+      if (!selection) throw new Error("没有可用模型");
+      let task = tasksRef.current.find(
+        (item) => item.scheduledTaskId === schedule.id,
+      );
+      if (task?.runningId || task?.runStatus === "running")
+        throw new Error("上一次定时运行尚未完成");
+      if (!task) {
+        const now = Date.now();
+        task = {
+          id: uid(),
+          name: schedule.name,
+          workspaceName: workspaceNameFromPath(schedule.workspacePath),
+          workspacePath: schedule.workspacePath,
+          createdAt: now,
+          updatedAt: now,
+          messages: [],
+          activities: [],
+          modelSelection: selection,
+          reasoningEffort: schedule.reasoningEffort ?? defaultReasoningEffort,
+          runStatus: "idle",
+          scheduledTaskId: schedule.id,
+        };
+        hydratedTaskIdsRef.current.add(task.id);
+        const nextTasks = [task, ...tasksRef.current];
+        tasksRef.current = nextTasks;
+        setTasks(nextTasks);
+      } else if (task.modelSelection !== selection) {
+        task = { ...task, modelSelection: selection };
+        const nextTasks = tasksRef.current.map((item) =>
+          item.id === task!.id ? task! : item,
+        );
+        tasksRef.current = nextTasks;
+        setTasks(nextTasks);
+      }
+      const message: QueuedChatMessage = {
+        id: uid(),
+        role: "user",
+        content: schedule.prompt,
+        createdAt: Date.now(),
+        queued: true,
+      };
+      contextByMessageRef.current.set(message.id, []);
+      const nextTask = {
+        ...task,
+        messages: [...task.messages, message],
+        updatedAt: Date.now(),
+      };
+      const nextTasks = tasksRef.current.map((item) =>
+        item.id === nextTask.id ? nextTask : item,
+      );
+      tasksRef.current = nextTasks;
+      setTasks(nextTasks);
+      startingQueuedRef.current.add(nextTask.id);
+      try {
+        await send(undefined, message.id, nextTask.id);
+      } finally {
+        startingQueuedRef.current.delete(nextTask.id);
+      }
+      await updateSchedule({ lastRunAt: Date.now(), lastError: undefined });
+    } catch (error) {
+      await updateSchedule({
+        lastRunAt: Date.now(),
+        lastError: errorMessage(error),
+      });
+    } finally {
+      scheduledRunsRef.current.delete(schedule.id);
+    }
+  }
+
+  useEffect(() => {
+    if (!taskStorageReady || !models.length || !window.kcode?.state) return;
+    const tick = () => {
+      const now = Date.now();
+      const due = scheduledTasksRef.current.filter(
+        (item) => item.enabled && item.nextRunAt <= now,
+      );
+      if (!due.length) return;
+      const ids = new Set(due.map((item) => item.id));
+      const next = scheduledTasksRef.current.map((item) =>
+        ids.has(item.id)
+          ? {
+              ...item,
+              nextRunAt:
+                now + Math.max(1, item.intervalMinutes) * 60_000,
+            }
+          : item,
+      );
+      scheduledTasksRef.current = next;
+      setScheduledTasks(next);
+      void window.kcode.state.save("scheduledTasks", next);
+      for (const item of due) void triggerScheduledTask(item);
+    };
+    tick();
+    const timer = window.setInterval(tick, 15_000);
+    return () => window.clearInterval(timer);
+  }, [models, taskStorageReady]);
   async function cancel() {
     if (runningId) {
       const requestId = runningId;
@@ -4703,6 +5019,14 @@ export default function App() {
       if (messages[index].role === "user") return messages[index];
     return undefined;
   }, [messages]);
+  const queuedMessages = useMemo(
+    () =>
+      messages.filter(
+        (message): message is QueuedChatMessage =>
+          message.role === "user" && Boolean((message as QueuedChatMessage).queued),
+      ),
+    [messages],
+  );
   const runStatus: TaskRunStatus = runningId
     ? "running"
     : (activeTask?.runStatus ?? "idle");
@@ -4859,7 +5183,7 @@ export default function App() {
           startSidebarResize={onStartSidebarResize}
         />
         <main
-          className={`main ${workspaceView === "editor" && activeTask?.remoteWorkspace ? "remote-editor-mode" : ""}`}
+          className={`main ${workspaceView === "editor" ? "workspace-editor-mode" : ""} ${workspaceView === "editor" && activeTask?.remoteWorkspace ? "remote-editor-mode" : ""}`}
         >
           <TopBar
             taskName={activeTask?.name || "新任务"}
@@ -4870,8 +5194,11 @@ export default function App() {
             gitState={gitState}
             remoteWorkspace={activeTask?.remoteWorkspace}
             remoteState={sshRemoteState}
+            editorAvailable={Boolean(activeTask?.workspacePath)}
             workspaceView={workspaceView}
             setWorkspaceView={onWorkspaceViewChange}
+            forkTask={() => void forkActiveTask()}
+            exportTask={(format) => void exportActiveTask(format)}
           />
           {workspaceView === "editor" && activeTask?.remoteWorkspace && (
             <Suspense
@@ -4891,6 +5218,23 @@ export default function App() {
               />
             </Suspense>
           )}
+          {workspaceView === "editor" &&
+            activeTask?.workspacePath &&
+            !activeTask.remoteWorkspace && (
+              <Suspense
+                fallback={
+                  <div className="ssh-editor-loading">
+                    <LoaderCircle className="spinning" size={18} />
+                  </div>
+                }
+              >
+                <LocalWorkspaceEditor
+                  key={`${activeTask.id}:${activeTask.workspacePath}`}
+                  taskId={activeTask.id}
+                  root={activeTask.workspacePath}
+                />
+              </Suspense>
+            )}
           <ConversationSearch
             open={conversationSearchOpen}
             live={Boolean(runningId)}
@@ -5002,7 +5346,13 @@ export default function App() {
                       </span>
                       <span>
                         <strong>{file.name}</strong>
-                        <small>{formatBytes(file.size)}</small>
+                        <small>
+                          {formatBytes(file.size)}
+                          {file.format && file.format !== "text"
+                            ? ` · ${file.format.toUpperCase()} 已解析`
+                            : ""}
+                          {file.truncated ? " · 已截断" : ""}
+                        </small>
                       </span>
                       <button
                         title={`移除 ${file.name}`}
@@ -5031,6 +5381,36 @@ export default function App() {
                 <div className="context-toast" role="status">
                   <CircleAlert size={13} />
                   {contextToast}
+                </div>
+              )}
+              {queuedMessages.length > 0 && (
+                <div className="queued-message-panel" aria-label="发送队列">
+                  <header>
+                    <span><ListOrdered size={14} /> 发送队列</span>
+                    <small>{queuedMessages.length} 条</small>
+                  </header>
+                  {queuedMessages.map((message, index) => (
+                    <div className="queued-message-row" key={message.id}>
+                      <span className="queued-message-index">{index + 1}</span>
+                      <span title={message.content}>{message.content || "图片附件"}</span>
+                      <button
+                        type="button"
+                        title="移到队首"
+                        aria-label="移到队首"
+                        onClick={() => prioritizeQueuedMessage(message.id)}
+                      >
+                        <ArrowUp size={13} />
+                      </button>
+                      <button
+                        type="button"
+                        title="移除排队消息"
+                        aria-label="移除排队消息"
+                        onClick={() => removeQueuedMessage(message.id)}
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
+                  ))}
                 </div>
               )}
               <ComposerTextarea

@@ -156,6 +156,17 @@ export function requestedCodingOperations(
     /(?:帮我|请|麻烦|要你|开始|继续|把|替我|重新|再次|并|然后).{0,40}(?:验证|测试|类型检查|构建|打包|verify|test|typecheck|lint|build)/i.test(
       validationContent,
     );
+  const externalProbeRequest =
+    /(?:直接|实际|请|帮我|麻烦|替我|测试一下|试一下|测一下|探测)/i.test(
+      content,
+    ) &&
+    /(?:(?:你)?(?:直接|实际|帮我|请|麻烦|替我)?(?:调用|请求|访问|测试|试一下|测一下|探测)).{0,40}(?:https?:\/\/|API|接口|端点|endpoint|URL)|(?:https?:\/\/|API|接口|端点|endpoint|URL).{0,40}(?:直接|实际)?(?:调用|请求|访问|测试|试一下|测一下|探测)/i.test(
+      content,
+    );
+  const explicitCodeValidationRequest =
+    /(?:单元测试|自动化测试|测试用例|类型检查|检查构建|构建|打包|typecheck|lint|build|unit tests?)/i.test(
+      validationContent,
+    );
   const modifyContent =
     (asksForCodingInformation || describesObservedState) &&
     !explicitModifyRequest
@@ -190,6 +201,7 @@ export function requestedCodingOperations(
   )
     operations.add("inspect");
   if (correctiveImplementationRequest) operations.add("inspect");
+  if (externalProbeRequest) operations.add("inspect");
   if (
     /(?:改一下|修改|改为|改成|修改成|切换为|替换为|修改|修复|解决|优化|适配|增加|新增|添加|加上|删除|移除|重构|实现|落地|调整|替换|换成|设计一下|开始改|弄一下|弄好|做一个|做个|创建|新建|生成|写入|编写|开发|搭建|制作|配置|接入|集成|迁移|美化|弹窗|页面交互|处理一下|完善|补齐|补上|收尾)|\b(?:edit|change|modify|fix|implement|add|remove|refactor|optimi[sz]e|update|create|write|develop|configure|integrate|migrate)\b|\bbuild\s+(?:(?:a|an|the|this|new)\s+)?(?:app|application|page|site|feature|component|tool|service|project)\b/i.test(
       modifyContent,
@@ -203,10 +215,14 @@ export function requestedCodingOperations(
     )
   )
     operations.add("execute");
+  if (externalProbeRequest) operations.add("execute");
   if (
     /(?:验证|测试|检查构建|类型检查|构建|打包)|\b(?:verify|test|typecheck|lint|build)\b/i.test(
       actionableValidationContent,
-    )
+    ) &&
+    (!externalProbeRequest ||
+      explicitModifyRequest ||
+      explicitCodeValidationRequest)
   )
     operations.add("validate");
   if (
@@ -703,6 +719,7 @@ export function missingVerifiedCodingOperations(
   claimed: ReadonlySet<CodingOperation>,
   evidence: ReadonlySet<CodingOperation>,
   history: CodingVerificationHistoryItem[],
+  requested: ReadonlySet<CodingOperation> = required,
 ) {
   const noChangeEvidence = hasVerifiedNoChangeEvidence(history);
   const noChangeReport = hasVerifiedNoChangeReport(history);
@@ -711,7 +728,7 @@ export function missingVerifiedCodingOperations(
       !(
         (operation === "modify" &&
           noChangeEvidence &&
-          !claimed.has("modify")) ||
+          (!claimed.has("modify") || !requested.has("modify"))) ||
         (operation === "validate" && noChangeReport && !claimed.has("validate"))
       ),
   );

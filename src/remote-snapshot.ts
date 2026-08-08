@@ -2,11 +2,7 @@ import type { RemoteTaskSnapshot } from "./remote-types";
 import type { AgentActivity } from "./types";
 import type { TaskRecord } from "./models";
 import { visibleAssistantContent } from "./conversation-rendering";
-
-function workspaceName(value: string) {
-  const parts = value.split(/[\\/]/).filter(Boolean);
-  return parts.at(-1) || "未设置工作区";
-}
+import { taskWorkspaceName } from "./task-workspace";
 
 function safePath(value: string | undefined) {
   if (!value) return undefined;
@@ -96,7 +92,7 @@ export function remoteTaskSnapshot(task: TaskRecord): RemoteTaskSnapshot {
   return {
     id: task.id,
     name: task.name.slice(0, 240),
-    workspaceName: workspaceName(task.workspacePath),
+    workspaceName: taskWorkspaceName(task),
     createdAt: task.createdAt,
     updatedAt: task.updatedAt,
     runningId: task.runningId,
