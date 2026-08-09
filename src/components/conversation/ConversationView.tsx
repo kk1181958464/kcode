@@ -487,11 +487,55 @@ const ActivityItem = memo(function ActivityItem({
               <button
                 className="allow"
                 onClick={() =>
-                  void window.kcode.chat.approve(requestId, activity.id, true)
+                  void window.kcode.chat.approveWithScope(
+                    requestId,
+                    activity.id,
+                    true,
+                    "once",
+                    activity.command,
+                    undefined,
+                    workspacePath,
+                  )
                 }
               >
                 允许
               </button>
+              {activity.command && (
+                <>
+                  <button
+                    className="allow session"
+                    onClick={() =>
+                      void window.kcode.chat.approveWithScope(
+                        requestId,
+                        activity.id,
+                        true,
+                        "session",
+                        activity.command,
+                        undefined,
+                        workspacePath,
+                      )
+                    }
+                  >
+                    本次会话允许
+                  </button>
+                  <button
+                    className="allow permanent"
+                    onClick={() =>
+                      void window.kcode.chat.approveWithScope(
+                        requestId,
+                        activity.id,
+                        true,
+                        "permanent",
+                        activity.command,
+                        undefined,
+                        workspacePath,
+                      )
+                    }
+                  >
+                    永久允许
+                  </button>
+                </>
+              )}
             </div>
           )}
           {activity.status === "failed" && (

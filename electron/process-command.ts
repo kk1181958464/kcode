@@ -1,8 +1,22 @@
 ﻿import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { middleOutTruncate } from "./middle-out-truncate";
 
 const FORCE_RESOLVE_AFTER_KILL_MS = 4_000;
 const HEARTBEAT_INTERVAL_MS = 5_000;
 const OUTPUT_PROGRESS_INTERVAL_MS = 250;
+/**
+ * Hard cap on total bytes ever received from a process. Once exceeded, we
+ * destroy the child's stdio streams to signal back-pressure and prevent the
+ * kernel pipe buffer from growing unbounded. Distinct from maxOutputBytes
+ * (which controls how much we *keep* after truncation).
+ */
+const DEFAULT_MAX_TOTAL_BYTES = 10 * 1024 * 1024; // 10 MB
+/**
+ * After sending SIGTERM/taskkill, wait this long for any remaining buffered
+ * IO to arrive before force-resolving. Shorter than FORCE_RESOLVE_AFTER_KILL_MS
+ * because we only need the final flush, not a graceful shutdown.
+ */
+const IO_DRAIN_TIMEOUT_MS = 500;
 
 export function terminateChildProcess(
   child: ChildProcessWithoutNullStreams | { pid?: number; kill: (signal?: NodeJS.Signals) => boolean },
@@ -50,6 +64,8 @@ export type SpawnedCommandResult = {
   timedOut: boolean;
   cancelled: boolean;
   idleTimedOut?: boolean;
+  /** True when output exceeded maxTotalBytes and streams were destroyed early. */
+  outputCapped?: boolean;
 };
 
 function formatSeconds(ms: number) {
@@ -69,6 +85,8 @@ export function runSpawnedCommand(options: {
   heartbeatIntervalMs?: number;
   onOutput?: (output: string) => void;
   maxOutputBytes?: number;
+  /** Hard cap on total bytes received. Streams are destroyed when exceeded. Default: 10 MB. */
+  maxTotalBytes?: number;
 }): Promise<SpawnedCommandResult> {
   const {
     executable,
@@ -81,6 +99,7 @@ export function runSpawnedCommand(options: {
     heartbeatIntervalMs = HEARTBEAT_INTERVAL_MS,
     onOutput,
     maxOutputBytes = 100_000,
+    maxTotalBytes = DEFAULT_MAX_TOTAL_BYTES,
   } = options;
 
   return new Promise<SpawnedCommandResult>((resolve, reject) => {
@@ -92,6 +111,8 @@ export function runSpawnedCommand(options: {
     });
     const chunks: Buffer[] = [];
     let byteLength = 0;
+    let totalBytesReceived = 0;
+    let streamsCapped = false;
     let timedOut = false;
     let idleTimedOut = false;
     let forceResolved = false;
@@ -109,7 +130,14 @@ export function runSpawnedCommand(options: {
       }
     };
 
-    const processOutput = () => decode(Buffer.concat(chunks)).slice(-maxOutputBytes);
+    const processOutput = () => {
+      const text = middleOutTruncate(decode(Buffer.concat(chunks)), { maxLength: maxOutputBytes });
+      if (streamsCapped) {
+        const mb = (totalBytesReceived / 1_048_576).toFixed(1);
+        return `${text}\n[输出已截断：进程总输出超过 ${mb} MB 硬上限，流已关闭]`;
+      }
+      return text;
+    };
 
     const progressText = () => {
       const base = processOutput().trimEnd();
@@ -141,6 +169,18 @@ export function runSpawnedCommand(options: {
     };
 
     const append = (chunk: Buffer) => {
+      totalBytesReceived += chunk.length;
+      // Hard cap: once total bytes received exceeds limit, destroy streams
+      // to stop the process from wasting CPU writing to a dead pipe.
+      if (totalBytesReceived > maxTotalBytes && !streamsCapped) {
+        streamsCapped = true;
+        child.stdout.destroy();
+        child.stderr.destroy();
+      }
+      if (streamsCapped) {
+        lastOutputAt = Date.now();
+        return;
+      }
       chunks.push(chunk);
       byteLength += chunk.length;
       while (byteLength > maxOutputBytes && chunks.length > 1)
@@ -179,6 +219,7 @@ export function runSpawnedCommand(options: {
         timedOut: timedOut || idleTimedOut,
         cancelled,
         idleTimedOut,
+        outputCapped: streamsCapped,
       });
     };
 
@@ -257,6 +298,7 @@ export function runSpawnedCommand(options: {
           timedOut: true,
           cancelled: false,
           idleTimedOut,
+          outputCapped: streamsCapped,
         });
       else if (signal.aborted)
         finish({
@@ -264,6 +306,7 @@ export function runSpawnedCommand(options: {
           exitCode: code ?? -1,
           timedOut: false,
           cancelled: true,
+          outputCapped: streamsCapped,
         });
       else
         finish({
@@ -271,6 +314,7 @@ export function runSpawnedCommand(options: {
           exitCode: code ?? -1,
           timedOut: false,
           cancelled: false,
+          outputCapped: streamsCapped,
         });
     });
 

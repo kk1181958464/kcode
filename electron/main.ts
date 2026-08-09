@@ -43,11 +43,13 @@ import {
   clearAgentSteering,
   clearAgentToolTraces,
   resolveApproval,
+  resolveApprovalWithScope,
   runAgent,
   stopBackgroundProcessById,
   steerAgent,
   undoActivity,
 } from "./agent";
+import { approvalCache } from "./approval-cache";
 import {
   initializeManagedProcessRegistry,
   managedProcessSnapshot,
@@ -540,6 +542,7 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  approvalCache.load();
   configureMcpServers(loadState("mcpServers") ?? []);
   const interruptedRuns = interruptStaleRuntimeEvents();
   if (interruptedRuns)
@@ -1622,6 +1625,21 @@ app.whenReady().then(async () => {
     "chat:approve",
     (_e, requestId: string, activityId: string, allowed: boolean) =>
       resolveApproval(requestId, activityId, allowed),
+  );
+  ipcMain.handle(
+    "chat:approveWithScope",
+    (
+      _e,
+      requestId: string,
+      activityId: string,
+      scope: "session" | "permanent",
+      command: string,
+      category: string,
+      workspace: string,
+    ) => {
+      approvalCache.approve(command, scope, category, workspace);
+      resolveApproval(requestId, activityId, true);
+    },
   );
   createWindow();
   await initializeRemoteControl({

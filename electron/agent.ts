@@ -12,6 +12,23 @@ import {
   unregisterManagedProcess,
 } from "./process-registry";
 import { apiKeyCooldownPool } from "./api-key-cooldown";
+import { approvalCache } from "./approval-cache";
+import { TurnDiffTracker } from "./turn-diff-tracker";
+import { buildTurnSummary, type ToolCallRecord } from "./tool-call-recorder";
+import { createDefaultStopHooks, type StopHookContext } from "./stop-hooks";
+import { WorldStateDiffTracker, buildSegments } from "./world-state-diff";
+import { turnDiffId, isSyntheticId } from "./synthetic-id";
+import { normalizeHistory } from "./history-normalize";
+import { loadProjectInstructions } from "./project-instructions";
+import { fileHistory } from "./file-history";
+import { FileReadCache, fileUnchangedNotice } from "./file-read-cache";
+import { getStaleFileHint } from "./stale-file-hint";
+import { runHooks, collectInjections, isBlocked, getBlockReason } from "./hook-lifecycle";
+import { ConversationWriter } from "./conversation-persist";
+import { partitionForDispatch, classifyTool, parallelWithLimit } from "./parallel-dispatch";
+import { PlanSemanticAuth, type SemanticPermission } from "./plan-semantic-auth";
+import { processLargeOutput } from "./output-spill";
+import { resetToolStats, getToolStats } from "./tool-stats";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import {
@@ -104,6 +121,7 @@ import {
   codingOperationsRequiringToolEvidence,
   compactOperationEvidenceResult,
   hasRequestedUserInputEvidence,
+  hasSuccessfulToolEvidence,
   isAdvisoryOnlyRequest,
   isUnsupportedTaskCompletionClaim,
   missingRequestedCodingOperations,
@@ -550,6 +568,12 @@ const publicPageCache = new Map<string, CachedPublicPage>();
 const PUBLIC_PAGE_CACHE_TTL_MS = 60_000;
 const PUBLIC_PAGE_CACHE_LIMIT = 24;
 
+/** Module-level tracker for system prompt segment diffing (cache analytics). */
+const worldStateTracker = new WorldStateDiffTracker();
+
+/** Module-level file read cache for deduplication across turns. */
+let fileReadCache = new FileReadCache();
+
 function rememberPublicPage(key: string, page: CachedPublicPage) {
   publicPageCache.delete(key);
   publicPageCache.set(key, page);
@@ -731,7 +755,7 @@ const tools = [
   {
     name: "apply_patch",
     description:
-      "Apply a Begin Patch text patch for precise file edits. Never invoke apply_patch through run_command; call this tool directly. Supports Update File, Add File, and Delete File sections. LF, CRLF, and CR files are matched automatically, and existing line endings are preserved.",
+      "Apply a Begin Patch text patch for precise file edits. Never invoke apply_patch through run_command; call this tool directly. Supports Update File, Add File, and Delete File sections. LF, CRLF, and CR files are matched automatically, and existing line endings are preserved. Use @@ lines with scope hints (e.g. '@@ functionName' or '@@ ClassName.methodName') to target specific code blocks when duplicate context lines exist in the file.",
     parameters: {
       type: "object",
       properties: { patch: { type: "string" } },
@@ -898,6 +922,16 @@ const tools = [
         },
       },
       required: ["question", "fields"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "get_context_remaining",
+    description:
+      "Query how much context window budget remains for this conversation. Returns the estimated remaining tokens. Use this to decide whether to compress output, skip verbose explanations, or request context compaction.",
+    parameters: {
+      type: "object",
+      properties: {},
       additionalProperties: false,
     },
   },
@@ -1554,6 +1588,35 @@ export function resolveApproval(
     }
 }
 
+/**
+ * Resolve an approval and optionally cache it for future auto-approval.
+ * @param scope - 'once' (no cache), 'session' (memory), 'permanent' (persisted)
+ * @param command - The command string to cache a rule for
+ * @param category - Permission category
+ * @param workspace - Workspace path for scoping permanent rules
+ */
+export function resolveApprovalWithScope(
+  requestId: string,
+  activityId: string,
+  allowed: boolean,
+  scope: "once" | "session" | "permanent",
+  command?: string,
+  category?: string,
+  workspace?: string,
+) {
+  // Cache the approval if scope is session or permanent
+  if (allowed && scope !== "once" && command) {
+    approvalCache.approve(
+      command,
+      scope,
+      category ?? "runCommands",
+      workspace,
+    );
+  }
+  // Resolve the pending approval
+  resolveApproval(requestId, activityId, allowed);
+}
+
 export function steerAgent(requestId: string, content: string) {
   turnSteeringQueue.push(requestId, content);
 }
@@ -1864,6 +1927,8 @@ async function applyPatch(
       await mkdir(path.dirname(change.file), { recursive: true });
       await writeFile(change.file, change.after, "utf8");
     }
+    // Invalidate read cache for modified files
+    fileReadCache.invalidate(change.file);
   }
   if (actualChanges.length === 1 && actualChanges[0].action !== "Delete") {
     const change = actualChanges[0];
@@ -2040,11 +2105,25 @@ async function execute(
     const file = workspacePath(root, call.input.path);
     const content = await readFile(file, "utf8");
     const normalizedContent = normalizeLineEndings(content);
+    const relativePath = path.relative(root, file);
+
+    // File read deduplication: skip re-sending unchanged content
     const start = Math.max(1, Number(call.input.startLine) || 1),
       end = Math.min(
         normalizedContent.split("\n").length,
         Number(call.input.endLine) || start + 399,
       );
+    const isFullRead = start === 1 && end >= normalizedContent.split("\n").length;
+    if (isFullRead && fileReadCache.check(file, normalizedContent)) {
+      return {
+        output: `[文件未变化] ${relativePath} 内容与上次读取完全相同，无需重复展示。`,
+        path: relativePath,
+      };
+    }
+    if (isFullRead) {
+      fileReadCache.record(file, normalizedContent);
+    }
+
     return {
       output: normalizedContent
         .split("\n")
@@ -2052,7 +2131,7 @@ async function execute(
         .map((line, i) => `${start + i}: ${line}`)
         .join("\n")
         .slice(0, 80_000),
-      path: path.relative(root, file),
+      path: relativePath,
     };
   }
   if (call.name === "search_code") {
@@ -2107,6 +2186,7 @@ async function execute(
     const changed = !existed || before !== content;
     if (changed) {
       await writeFile(file, content, "utf8");
+      fileReadCache.invalidate(file); // Invalidate cached read after write
       undoSnapshots.set(activityId, {
         root,
         requestId,
@@ -3607,9 +3687,9 @@ async function modelTurn(
   const imageSupport = imageInputSupport(selectedModel, protocol);
   const omitImageInputs =
     runtime?.omitImageInputs === true || imageSupport === "unsupported";
-  const payloadHistory = omitImageInputs
-    ? historyWithoutImages(history)
-    : history;
+  const payloadHistory = normalizeHistory(
+    omitImageInputs ? historyWithoutImages(history) : history,
+  ) as typeof history;
   const reasoning = {
     ...inferReasoningConfig(selectedModel.modelId, protocol),
     reasoningMode:
@@ -3672,7 +3752,20 @@ async function modelTurn(
   )
     ? "\n\nThe user explicitly supplied a numeric SMS, email, OTP, or 2FA code in this conversation. You may enter that supplied code with browser_type and submit it; this narrow exception is not permission to retrieve, guess, solve, or bypass any verification."
     : "";
-  const payloadSystem = `${system}${suppliedVerificationCodeNotice}${imageInputNotice}`;
+  const projectInstructions = loadProjectInstructions(root);
+  const projectInstructionsSection = projectInstructions
+    ? `\n\n<project_instructions>\n${projectInstructions}\n</project_instructions>`
+    : "";
+  const payloadSystem = `${system}${suppliedVerificationCodeNotice}${imageInputNotice}${projectInstructionsSection}`;
+  // Track system prompt segment changes for cache optimization analytics
+  worldStateTracker.recordRound(buildSegments([
+    { name: "identity", content: isolation.boundary },
+    { name: "tools", content: "tools" }, // stable — schema is constant per request
+    { name: "permissions", content: request.permissionPolicy ? JSON.stringify(request.permissionPolicy) : "" },
+    { name: "workspace", content: root },
+    { name: "skills", content: activeSkills },
+    { name: "notices", content: `${suppliedVerificationCodeNotice}${imageInputNotice}` },
+  ]));
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...isolation.headers,
@@ -3965,8 +4058,9 @@ async function modelTurn(
       {
         signal,
         firstByteTimeoutMs,
-        retries: 1,
+        retries: 2,
         retryDelayMs: 2_000,
+        maxBackoffMs: 30_000,
         onProgress,
         attemptBudget,
       },
@@ -4264,6 +4358,24 @@ export async function* runAgent(
   // Runtime history may be compacted during long tasks, but completion proof
   // must survive until the request actually finishes.
   const evidenceHistory: HistoryItem[] = [];
+  const turnDiffTracker = new TurnDiffTracker(root);
+  fileReadCache = new FileReadCache(); // Reset module-level cache for new request
+  const stopHooks = createDefaultStopHooks();
+  // Initialize conversation persistence (append-only JSONL)
+  const conversationWriter = new ConversationWriter(
+    requestId,
+    root,
+    request.modelId ?? "unknown",
+    request.providerId ?? "unknown",
+    request.taskId,
+  );
+  conversationWriter.start();
+  // Fire SessionStart lifecycle hooks (non-blocking, best effort)
+  runHooks("SessionStart", { workspaceRoot: root, requestId }).catch(() => {});
+  // Plan mode semantic authorization — grants semantic permissions after plan approval
+  const planAuth = new PlanSemanticAuth();
+  // Tool stats tracking — reset per session
+  const toolStats = resetToolStats();
   const activeConnectionFacts = new Map<string, string>();
   const requestedGitOps = requestedGitOperations(history);
   const requestedCodingOps = requestedCodingOperations(history);
@@ -4824,10 +4936,15 @@ export async function* runAgent(
       (finalizationMode === "limit-reached" ||
         requestedUserInput ||
         reportsBlockedCodingOperations(turn.text, missingActionCodingEvidence));
+    // Codex-inspired: if the model already called tools successfully during
+    // this run, trust structural evidence over text claims. Only block when
+    // zero tool activity exists (pure text hallucination).
+    const hasToolActivity = hasSuccessfulToolEvidence(evidenceHistory);
     if (
       !turn.calls.length &&
       missingActionCodingEvidence.length &&
-      !codingBlocked
+      !codingBlocked &&
+      !hasToolActivity
     ) {
       if (unverifiedCodingClaims < 2) {
         unverifiedCodingClaims += 1;
@@ -4879,7 +4996,11 @@ export async function* runAgent(
         yield event;
       return;
     }
-    if (!turn.calls.length && unsupportedOverallCompletion) {
+    if (
+      !turn.calls.length &&
+      unsupportedOverallCompletion &&
+      !hasSuccessfulToolEvidence(evidenceHistory)
+    ) {
       if (unverifiedCodingClaims < 2) {
         unverifiedCodingClaims += 1;
         if (!bufferModelText && streamedText) {
@@ -5053,6 +5174,27 @@ export async function* runAgent(
         });
         continue;
       }
+      // Stop hooks: pluggable checks before accepting completion
+      const stopHookResult = stopHooks.evaluate({
+        text: turn.text || "",
+        turnDiff: undefined, // no tool calls this turn, so no diff
+        hadToolCalls: false,
+        round,
+        stalledRounds,
+        mentionedTests: /test|测试|jest|vitest|mocha|pytest/i.test(turn.text || ""),
+        testsWereRun: false, // no tool calls means no tests ran
+        changedFiles: turnDiffTracker.finalizeTurn().changedFiles,
+        userGoal: latestUserRequest,
+        hasAnyToolEvidence: hasSuccessfulToolEvidence(evidenceHistory),
+      });
+      if (stopHookResult.action === "continue" && stopHookResult.inject) {
+        history.push({
+          kind: "message",
+          role: "user",
+          content: `<runtime_hook>${stopHookResult.inject}</runtime_hook>`,
+        });
+        continue;
+      }
       closeSubagentMessageQueue(requestId);
       yield {
         type: "done",
@@ -5077,6 +5219,7 @@ export async function* runAgent(
       rawCalls: [],
     });
     const roundFingerprints: string[] = [];
+    const turnRecords: ToolCallRecord[] = [];
     let roundAdvanced = false;
     let roundLastActivity: AgentActivity | undefined;
     let roundFailedActivity: AgentActivity | undefined;
@@ -5104,6 +5247,7 @@ export async function* runAgent(
         diagnostics: "项目诊断",
         report_no_change: "确认无需修改",
         request_user_input: "等待补充信息",
+        get_context_remaining: "查询上下文余量",
         web_search: "搜索互联网",
         fetch_url: "读取网页",
         browser_open: "打开浏览器",
@@ -5316,35 +5460,61 @@ export async function* runAgent(
         continue;
       }
       if (decision === "confirm") {
-        activity.status = "waiting";
-        toolRegistry.markWaiting(toolTrace.callId);
-        yield { type: "activity", activity };
-        const approvalKey = `${requestId}:${activity.id}`;
-        const allowed = await new Promise<boolean>((resolve) => {
-          approvals.set(approvalKey, resolve);
-          signal.addEventListener("abort", () => resolve(false), {
-            once: true,
-          });
-        });
-        approvals.delete(approvalKey);
-        if (!allowed) {
-          activity.status = "denied";
-          activity.completedAt = Date.now();
-          activity.output = "用户拒绝了此操作";
-          toolRegistry.finish(toolTrace.callId, "denied");
+        // Check approval cache before prompting user
+        const approvalCommand =
+          call.name === "run_command" || call.name === "ssh_run"
+            ? String(call.input.command ?? "")
+            : call.name === "start_process"
+              ? String(call.input.command ?? "")
+              : "";
+        const cachedDecision = approvalCommand
+          ? approvalCache.check(
+              approvalCommand,
+              category ?? "runCommands",
+              root,
+            )
+          : "prompt";
+        if (cachedDecision === "allow") {
+          // Auto-approved by cache — skip dialog
+          activity.status = "running";
+          toolRegistry.markRunning(toolTrace.callId);
           yield { type: "activity", activity };
-          roundLastActivity = activity;
-          roundFailedActivity = activity;
-          history.push({
-            kind: "result",
-            callId: call.id,
-            content: activity.output,
+        } else if (approvalCommand && planAuth.isAuthorized(approvalCommand)) {
+          // Auto-approved by plan semantic auth — skip dialog
+          activity.status = "running";
+          toolRegistry.markRunning(toolTrace.callId);
+          yield { type: "activity", activity };
+        } else {
+          activity.status = "waiting";
+          toolRegistry.markWaiting(toolTrace.callId);
+          yield { type: "activity", activity };
+          const approvalKey = `${requestId}:${activity.id}`;
+          const allowed = await new Promise<boolean>((resolve) => {
+            approvals.set(approvalKey, resolve);
+            signal.addEventListener("abort", () => resolve(false), {
+              once: true,
+            });
           });
-          continue;
+          approvals.delete(approvalKey);
+          if (!allowed) {
+            activity.status = "denied";
+            activity.completedAt = Date.now();
+            activity.output = "用户拒绝了此操作";
+            toolRegistry.finish(toolTrace.callId, "denied");
+            yield { type: "activity", activity };
+            roundLastActivity = activity;
+            roundFailedActivity = activity;
+            history.push({
+              kind: "result",
+              callId: call.id,
+              content: activity.output,
+            });
+            continue;
+          }
+          activity.status = "running";
+          toolRegistry.markRunning(toolTrace.callId);
+          yield { type: "activity", activity };
         }
-        activity.status = "running";
-        toolRegistry.markRunning(toolTrace.callId);
-        yield { type: "activity", activity };
       } else yield { type: "activity", activity };
       let finishMutationClaim: ((committed: boolean) => void) | undefined;
       let resultEvidence: Pick<
@@ -5358,11 +5528,93 @@ export async function* runAgent(
         | "browserOperationEvidence"
       > = {};
       try {
+        // Start tool timing for stats
+        toolStats.startCall(call.id);
+        // Run PreToolUse lifecycle hooks — may block tool execution
+        const preToolResults = await runHooks("PreToolUse", {
+          workspaceRoot: root,
+          toolName: call.name,
+          toolInput: call.input as Record<string, unknown>,
+          requestId,
+        });
+        if (isBlocked(preToolResults)) {
+          const reason = getBlockReason(preToolResults) || "被项目 Hook 阻止";
+          activity.status = "denied";
+          activity.completedAt = Date.now();
+          activity.output = reason;
+          toolRegistry.finish(toolTrace.callId, "denied");
+          yield { type: "activity", activity };
+          roundLastActivity = activity;
+          roundFailedActivity = activity;
+          history.push({
+            kind: "result",
+            callId: call.id,
+            content: reason,
+          });
+          continue;
+        }
         finishMutationClaim = claimSubagentMutation(
           requestId,
           root,
           mutationPaths(call),
         );
+        turnDiffTracker.beforeTool(call.name, call.id, call.input as Record<string, unknown>);
+        // Snapshot files before mutation for undo support
+        if (call.name === "apply_patch" || call.name === "write_file" || call.name === "delete_path" || call.name === "move_path") {
+          const input = call.input as Record<string, unknown>;
+          const paths: string[] = [];
+          if (call.name === "write_file" && typeof input.file_path === "string") paths.push(input.file_path);
+          if (call.name === "delete_path" && typeof input.path === "string") paths.push(input.path);
+          if (call.name === "move_path" && typeof input.source === "string") paths.push(input.source);
+          if (call.name === "apply_patch" && typeof input.patch === "string") {
+            // Extract file paths from patch content
+            const patchPaths = input.patch.match(/\*\*\* (?:Update|Delete|Add) File: (.+)/g);
+            if (patchPaths) {
+              for (const line of patchPaths) {
+                const m = line.match(/\*\*\* (?:Update|Delete) File: (.+)/);
+                if (m) paths.push(m[1].trim());
+              }
+            }
+          }
+          for (const p of paths) {
+            const abs = path.isAbsolute(p) ? p : path.join(root, p);
+            fileHistory(root, requestId).snapshot(abs);
+          }
+        }
+        // Lightweight admin tool: get_context_remaining — no external execution needed
+        if (call.name === "get_context_remaining") {
+          const ctxWindow = request.contextWindow ?? 128_000;
+          const used = lastPromptTokens || 0;
+          const remaining = Math.max(0, ctxWindow - used);
+          const pct = ctxWindow > 0 ? Math.round((used / ctxWindow) * 100) : 0;
+          const resultOutput = JSON.stringify({
+            contextWindow: ctxWindow,
+            usedTokens: used,
+            remainingTokens: remaining,
+            usedPercent: pct,
+          });
+          finishMutationClaim?.(true);
+          turnDiffTracker.afterTool(call.name, call.id, call.input as Record<string, unknown>);
+          Object.assign(activity, {
+            status: "success",
+            completedAt: Date.now(),
+            output: resultOutput,
+          });
+          toolRegistry.finish(toolTrace.callId, "success");
+          history.push({
+            kind: "result",
+            callId: call.id,
+            content: JSON.stringify({ success: true, summary: resultOutput, data: {} }),
+          });
+          evidenceHistory.push({
+            kind: "result",
+            callId: call.id,
+            content: JSON.stringify({ success: true, summary: resultOutput, data: {} }),
+          });
+          yield { type: "activity", activity };
+          roundLastActivity = activity;
+          continue;
+        }
         const execution = streamOperationProgress((report) =>
           execute(
             root,
@@ -5412,6 +5664,7 @@ export async function* runAgent(
           activity.output = nextOutput;
         }
         finishMutationClaim?.(true);
+        turnDiffTracker.afterTool(call.name, call.id, call.input as Record<string, unknown>);
         const childActivities = result.childActivities;
         const subagentUsage = result.subagentUsage;
         const {
@@ -5452,6 +5705,28 @@ export async function* runAgent(
           toolTrace.callId,
           activity.status === "failed" ? "failed" : "success",
         );
+        // Record tool execution for turn summary injection
+        turnRecords.push({
+          toolName: call.name,
+          callId: call.id,
+          primaryArg: String(
+            (call.input as Record<string, unknown>).file_path ??
+            (call.input as Record<string, unknown>).path ??
+            (call.input as Record<string, unknown>).command ??
+            (call.input as Record<string, unknown>).query ??
+            ""
+          ),
+          success: activity.status === "success",
+          exitCode: result.exitCode,
+          error: activity.status === "failed" ? activity.errorSummary : undefined,
+        });
+        // Record tool stats
+        toolStats.finishCall(call.id, call.name, activity.status === "success", {
+          filePath: (call.input as Record<string, unknown>).file_path as string | undefined
+            ?? (call.input as Record<string, unknown>).path as string | undefined,
+          additions: activity.additions,
+          deletions: activity.deletions,
+        });
         await agentHooks.run(
           "AfterTool",
           {
@@ -5467,6 +5742,22 @@ export async function* runAgent(
           },
           signal,
         );
+        // Run PostToolUse lifecycle hooks
+        const postToolResults = await runHooks("PostToolUse", {
+          workspaceRoot: root,
+          toolName: call.name,
+          toolInput: call.input as Record<string, unknown>,
+          toolResult: { success: activity.status === "success", output: activity.output },
+          requestId,
+        });
+        const postToolInjection = collectInjections(postToolResults);
+        if (postToolInjection) {
+          history.push({
+            kind: "result",
+            callId: call.id + "_hook",
+            content: postToolInjection,
+          });
+        }
         for (const childActivity of childActivities ?? [])
           yield {
             type: "activity",
@@ -5535,6 +5826,16 @@ export async function* runAgent(
       roundLastActivity = activity;
       if (activity.status === "failed" || activity.status === "denied")
         roundFailedActivity = activity;
+      // Spill large output to disk to preserve context tokens
+      const spillResult = activity.output
+        ? processLargeOutput(activity.output, {
+            command: activity.command,
+            toolName: call.name,
+            callId: call.id,
+            requestId,
+          })
+        : { spilled: false as const, summary: activity.output ?? "", originalSize: 0, lineCount: 0 };
+      const effectiveOutput = spillResult.summary;
       const structured: StructuredToolResult = {
         success: activity.status === "success",
         summary:
@@ -5545,7 +5846,7 @@ export async function* runAgent(
               : `${activity.title}已执行完成，退出码 ${activity.exitCode ?? "未知"}`
             : `${activity.title}${activity.status === "success" ? "完成" : "未完成"}`),
         data: {
-          output: activity.output,
+          output: effectiveOutput,
           diff: activity.diff,
           path: activity.path,
           command: activity.command,
@@ -5591,6 +5892,49 @@ export async function* runAgent(
           structured.data,
         ),
       );
+      // After command execution, detect files that became stale
+      if (
+        (call.name === "run_command" || call.name === "start_process") &&
+        activity.status === "success"
+      ) {
+        const staleHint = getStaleFileHint(fileReadCache);
+        if (staleHint) {
+          history.push({
+            kind: "result",
+            callId: call.id,
+            content: staleHint,
+          });
+        }
+      }
+    }
+    // Finalize turn diff tracking — provides ground truth of file changes
+    const turnDiff = turnDiffTracker.finalizeTurn();
+    if (turnDiff.hasChanges) {
+      evidenceHistory.push({
+        kind: "result",
+        callId: turnDiffId(round),
+        content: JSON.stringify({
+          success: true,
+          summary: `Turn实际文件变更: ${turnDiff.changedFiles.join(", ")}`,
+          data: { turnDiff: true, files: turnDiff.changedFiles.length },
+        }),
+      });
+    }
+    // Inject tool execution record into context for next round
+    const turnSummary = buildTurnSummary(round, turnRecords, turnDiff);
+    if (turnSummary) {
+      history.push({
+        kind: "message",
+        role: "user",
+        content: `<tool_execution_record>\n${turnSummary}\n</tool_execution_record>`,
+      });
+    }
+    // Persist round events to JSONL
+    for (const call of turn.calls) {
+      conversationWriter.toolCall(call.id, call.name, call.input);
+    }
+    for (const rec of turnRecords) {
+      conversationWriter.toolResult(rec.callId, rec.toolName, rec.success, rec.exitCode != null ? `exit ${rec.exitCode}` : undefined);
     }
     previousRoundActivity = roundLastActivity;
     previousRoundFailure = roundFailedActivity;

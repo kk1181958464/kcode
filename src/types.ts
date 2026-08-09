@@ -96,6 +96,7 @@ export type AgentToolName =
   | "stop_agent"
   | "mcp_list_tools"
   | "mcp_call_tool"
+  | "get_context_remaining"
   | "run_command";
 
 export type McpServerTransport =
@@ -737,6 +738,15 @@ export type KCodeApi = {
       requestId: string,
       activityId: string,
       allowed: boolean,
+    ): Promise<void>;
+    approveWithScope(
+      requestId: string,
+      activityId: string,
+      allowed: boolean,
+      scope: "once" | "session" | "permanent",
+      command?: string,
+      category?: string,
+      workspace?: string,
     ): Promise<void>;
     undo(
       workspacePath: string,

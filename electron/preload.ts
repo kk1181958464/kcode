@@ -92,6 +92,8 @@ const api: KCodeApi = {
     cancel: (id) => ipcRenderer.invoke("chat:cancel", id),
     approve: (requestId, activityId, allowed) =>
       ipcRenderer.invoke("chat:approve", requestId, activityId, allowed),
+    approveWithScope: (requestId, activityId, allowed, scope, command, category, workspace) =>
+      ipcRenderer.invoke("chat:approveWithScope", requestId, activityId, allowed, scope, command, category, workspace),
     undo: (workspacePath, activityId, force) =>
       ipcRenderer.invoke("chat:undo", workspacePath, activityId, force),
     cleanup: (requestIds, activityIds) =>

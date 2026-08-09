@@ -17,6 +17,7 @@ import { networkFetch } from "./network";
 import { inspectProvider } from "./provider-profile";
 import { providerApiEndpoint } from "./provider-url";
 import { boundedContextSource } from "../src/context";
+import { selectCheapModel, HANDOFF_SYSTEM_PROMPT } from "./handoff-prompt";
 
 const trim = (url: string) => url.replace(/\/+$/, "");
 const apiEndpoint = (baseUrl: string, resource: string) =>
@@ -89,22 +90,16 @@ export async function summarizeContext(
   summaryControllers.set(request.taskId, controller);
   const startedAt = Date.now();
   const timer = setTimeout(() => controller.abort(), 120_000);
-  const prompt = `Create a context-checkpoint handoff for the next coding model. Return JSON only with shape {"summary":"markdown","ledger":{"goals":[],"decisions":[],"changedFiles":[],"validations":[],"failures":[],"pending":[],"connections":[]}}.
-
-The summary must be concise and structured around:
-- current objective, progress, and user preferences;
-- decisions and constraints that still govern the task;
-- verified file/tool results, including paths and useful commands;
-- failures, unresolved risks, and explicit next steps;
-- critical examples or references needed to continue without repeating work.
-
-Treat successful tool records as facts. Mark unsupported model claims as unverified instead of presenting them as completed work. Preserve non-secret connection coordinates such as protocol, host, port, and username, but never include passwords, tokens, private keys, cookies, authorization headers, or other credentials. Later facts override conflicting earlier facts. Remove repetition.
+  // Use cheap model for summarization to save cost
+  const cheapModel = selectCheapModel(request.modelId, provider.protocol);
+  const historySource = boundedContextSource(request.source);
+  const prompt = `${HANDOFF_SYSTEM_PROMPT}
 
 Existing ledger:
 ${JSON.stringify(request.ledger)}
 
 History:
-${boundedContextSource(request.source)}`;
+${historySource}`;
   try {
     let url = "",
       headers: Record<string, string> = { "Content-Type": "application/json" },
@@ -113,7 +108,7 @@ ${boundedContextSource(request.source)}`;
       url = apiEndpoint(provider.baseUrl, "chat/completions");
       headers.Authorization = `Bearer ${provider.apiKey}`;
       body = {
-        model: request.modelId,
+        model: cheapModel,
         messages: [{ role: "user", content: prompt }],
         max_tokens: 4000,
         stream: false,
@@ -121,18 +116,18 @@ ${boundedContextSource(request.source)}`;
     } else if (provider.protocol === "openai-responses") {
       url = apiEndpoint(provider.baseUrl, "responses");
       headers.Authorization = `Bearer ${provider.apiKey}`;
-      body = { model: request.modelId, input: prompt, max_output_tokens: 4000 };
+      body = { model: cheapModel, input: prompt, max_output_tokens: 4000 };
     } else if (provider.protocol === "anthropic-messages") {
       url = apiEndpoint(provider.baseUrl, "messages");
       headers["x-api-key"] = provider.apiKey;
       headers["anthropic-version"] = "2023-06-01";
       body = {
-        model: request.modelId,
+        model: cheapModel,
         messages: [{ role: "user", content: prompt }],
         max_tokens: 4000,
       };
     } else {
-      url = `${providerApiEndpoint(provider.baseUrl, provider.protocol, `models/${encodeURIComponent(request.modelId)}:generateContent`)}?key=${encodeURIComponent(provider.apiKey)}`;
+      url = `${providerApiEndpoint(provider.baseUrl, provider.protocol, `models/${encodeURIComponent(cheapModel)}:generateContent`)}?key=${encodeURIComponent(provider.apiKey)}`;
       body = {
         contents: [{ role: "user", parts: [{ text: prompt }] }],
         generationConfig: {

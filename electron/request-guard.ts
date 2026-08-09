@@ -4,16 +4,36 @@ import { ModelAttemptBudget } from "./model-attempt-budget";
 const DEFAULT_FIRST_BYTE_TIMEOUT_MS = 120_000;
 const DEFAULT_IDLE_TIMEOUT_MS = 120_000;
 const WAIT_PROGRESS_INTERVAL_MS = 10_000;
+const DEFAULT_MAX_BACKOFF_MS = 30_000;
 
 type FetchWithRetryOptions = {
   signal: AbortSignal;
   firstByteTimeoutMs?: number;
   retries?: number;
   retryDelayMs?: number;
+  /** Maximum backoff delay cap in ms. Default: 30000 */
+  maxBackoffMs?: number;
   fetchImpl?: typeof fetch;
   onProgress?: (message: string) => void;
   attemptBudget?: ModelAttemptBudget;
 };
+
+/**
+ * Exponential backoff with full jitter (AWS-style).
+ * delay = random(0, min(maxMs, baseMs * 2^attempt))
+ *
+ * Full jitter spreads retry storms better than equal/decorrelated jitter
+ * while keeping the expected delay at half the exponential ceiling.
+ */
+export function exponentialBackoffWithJitter(
+  baseMs: number,
+  attempt: number,
+  maxMs = DEFAULT_MAX_BACKOFF_MS,
+): number {
+  const exponential = Math.min(maxMs, baseMs * 2 ** attempt);
+  // Full jitter: uniform random in [0, exponential]
+  return Math.round(Math.random() * exponential);
+}
 
 function isRetryableStatus(status: number) {
   return status === 408 || status === 425 || status === 429 || status >= 500;
@@ -64,6 +84,7 @@ export async function fetchWithRetry(
     firstByteTimeoutMs = DEFAULT_FIRST_BYTE_TIMEOUT_MS,
     retries = 1,
     retryDelayMs = 500,
+    maxBackoffMs = DEFAULT_MAX_BACKOFF_MS,
     fetchImpl = networkFetch,
     onProgress,
     attemptBudget,
@@ -100,7 +121,11 @@ export async function fetchWithRetry(
         attempt < retries &&
         (!attemptBudget || attemptBudget.canAttempt())
       ) {
-        const delay = retryDelay(response, retryDelayMs * (attempt + 1));
+        // Use server-provided retry-after if available, otherwise exponential backoff + jitter
+        const delay = retryDelay(
+          response,
+          exponentialBackoffWithJitter(retryDelayMs, attempt, maxBackoffMs),
+        );
         onProgress?.(
           `上游返回 ${response.status}，将在 ${Math.max(1, Math.ceil(delay / 1_000))} 秒后重试…`,
         );
@@ -122,7 +147,7 @@ export async function fetchWithRetry(
           (attemptBudget && !attemptBudget.canAttempt())
         )
           throw lastError;
-        const delay = retryDelayMs * (attempt + 1);
+        const delay = exponentialBackoffWithJitter(retryDelayMs, attempt, maxBackoffMs);
         onProgress?.(
           `上游长时间无响应，将在 ${Math.max(1, Math.ceil(delay / 1_000))} 秒后重试…`,
         );
@@ -132,7 +157,10 @@ export async function fetchWithRetry(
       lastError = error;
       if (attempt >= retries || (attemptBudget && !attemptBudget.canAttempt()))
         throw error;
-      await wait(retryDelayMs * (attempt + 1), signal);
+      await wait(
+        exponentialBackoffWithJitter(retryDelayMs, attempt, maxBackoffMs),
+        signal,
+      );
     } finally {
       clearTimeout(timer);
       clearInterval(progress);
