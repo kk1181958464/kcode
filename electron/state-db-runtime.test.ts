@@ -146,3 +146,32 @@ test("startup interrupts only unfinished turns", () => {
   ]);
   database.close();
 });
+
+test("a paused turn is not treated as waiting-for-input", () => {
+  // Verification pauses (browser/git/coding could not be proven, or the round
+  // limit was hit) emit outcome:"paused". They must derive a completed thread
+  // status so the sidebar shows no "待补充" badge — that badge is reserved for
+  // genuine request_user_input turns (outcome:"blocked" -> status "waiting").
+  const database = runtimeDatabase();
+  appendRuntimeEventsToDatabase(database, [
+    createRuntimeEventEnvelope(
+      { type: "done", outcome: "paused" },
+      { taskId: "task-paused", requestId: "request-1", sequence: 1, emittedAt: 10 },
+    ),
+    createRuntimeEventEnvelope(
+      { type: "done", outcome: "blocked" },
+      { taskId: "task-blocked", requestId: "request-2", sequence: 1, emittedAt: 20 },
+    ),
+  ]);
+
+  const statuses = loadRuntimeTaskStatusesFromDatabase(database);
+  const paused = statuses.find((s) => s.taskId === "task-paused");
+  const blocked = statuses.find((s) => s.taskId === "task-blocked");
+  assert.equal(paused?.status, "completed");
+  assert.equal(paused?.turnStatus, "completed");
+  assert.equal(blocked?.status, "waiting");
+  assert.equal(blocked?.turnStatus, "completed");
+  // Neither turn is left in progress, so startup does not interrupt them.
+  assert.equal(interruptStaleRuntimeEventsInDatabase(database, 30), 0);
+  database.close();
+});

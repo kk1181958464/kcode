@@ -91,6 +91,7 @@ export type TaskRecord = {
   };
   durationMs?: number;
   usedContextCount?: number;
+  workspaceView?: "chat" | "editor";
   archived?: boolean;
   parentTaskId?: string;
   forkedFromMessageId?: string;

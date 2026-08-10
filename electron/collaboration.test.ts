@@ -44,15 +44,24 @@ test("recognizes planner coordination and restricts mutation tools", () => {
   assert.equal(plannerToolAllowed("ssh_run", true), false);
 });
 
-test("managed SSH Remote tasks cannot fall back to local workspace tools", () => {
-  assert.equal(remoteWorkspaceToolAllowed("read_file"), false);
-  assert.equal(remoteWorkspaceToolAllowed("run_command"), false);
+test("managed SSH Remote tasks keep local workspace tools in hybrid mode", () => {
+  // Hybrid mode: local file/git/command tools stay available alongside ssh_*
+  // so the agent can build local sources and deploy to the remote server.
+  assert.equal(remoteWorkspaceToolAllowed("read_file"), true);
+  assert.equal(remoteWorkspaceToolAllowed("write_file"), true);
+  assert.equal(remoteWorkspaceToolAllowed("apply_patch"), true);
+  assert.equal(remoteWorkspaceToolAllowed("run_command"), true);
+  assert.equal(remoteWorkspaceToolAllowed("list_directory"), true);
+  assert.equal(remoteWorkspaceToolAllowed("git_status"), true);
   assert.equal(remoteWorkspaceToolAllowed("ssh_connect"), true);
-  assert.equal(remoteWorkspaceToolAllowed("ssh_set_workspace"), false);
   assert.equal(remoteWorkspaceToolAllowed("ssh_read_file"), true);
   assert.equal(remoteWorkspaceToolAllowed("ssh_write_file"), true);
   assert.equal(remoteWorkspaceToolAllowed("ssh_run"), true);
   assert.equal(remoteWorkspaceToolAllowed("web_search"), true);
+  // Managed-session control + via_ssh tunnels stay disabled to protect recovery.
+  assert.equal(remoteWorkspaceToolAllowed("ssh_set_workspace"), false);
+  assert.equal(remoteWorkspaceToolAllowed("ssh_disconnect"), false);
+  assert.equal(remoteWorkspaceToolAllowed("mysql_connect_via_ssh"), false);
 });
 
 test("routes an executor subagent to its configured model", () => {

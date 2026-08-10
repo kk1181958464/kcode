@@ -24,7 +24,7 @@ export function requestedBrowserOperations(
       content,
     );
   const implementationDescription =
-    /(?:修复|修改|改为|改成|切换为|替换为|开发|实现|优化|重构|排查|调试|代码|项目|组件|函数|逻辑|样式|页面交互|前端|弹窗|bug|问题|卡住|卡顿|报错)/i.test(
+    /(?:修复|修改|改为|改成|切换为|替换为|开发|实现|优化|重构|排查|调试|代码|项目|组件|函数|逻辑|样式|页面交互|前端|弹窗|bug|问题|卡住|卡顿|报错|没出来|没有出来|没出现|未出现|没显示|不显示|没渲染|没反应|不生效|没生效|不见了|消失|加载不出|小程序|开发者工具|wxml|wxss)/i.test(
       content,
     );
   const startsWithBrowserAction =
@@ -47,6 +47,17 @@ export function requestedBrowserOperations(
       content,
     );
   if (asksForInformation && !explicitRequest) return operations;
+
+  // Self-report guard: the user describing an action they performed themselves
+  // ("我现在用这个账号登录上去了") is NOT a request for the agent to drive a
+  // browser. Requires a first-person subject + a browser verb immediately
+  // followed by a completion marker (上去/了/过/成功…), and no explicit
+  // agent-directed request phrasing ("帮我登录…").
+  const selfReport =
+    /(?:我|我们|俺|咱)(?:现在|已经|刚|刚才|之前|先|在)?.{0,30}(?:登录|打开|访问|进入|填写|输入|键入|点击|选择|提交|发送)(?:进去|进来|上去|上来)?(?:了|过|好|成功|完成|上去|上来)/i.test(
+      content,
+    );
+  if (selfReport && !explicitRequest) return operations;
 
   const loginPageOnly = /登录(?:页|页面|界面)|\blogin page\b/i.test(content);
   if (

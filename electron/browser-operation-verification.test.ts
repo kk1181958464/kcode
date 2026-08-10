@@ -127,6 +127,51 @@ test("does not confuse Git commits or UI bug descriptions with browser actions",
   );
 });
 
+test("treats a user's own login self-report and UI bug reports as non-browser", () => {
+  // The exact real-world false positive: user describes logging in themselves
+  // and reports a missing button — a mini-program dev bug, not browser work.
+  assert.deepEqual(
+    [
+      ...requestedBrowserOperations([
+        {
+          kind: "message",
+          role: "user",
+          content:
+            "我现在在用 新田乡 xtx123456 这个账号密码登录上去 没有出来添加按钮啊",
+        },
+      ]),
+    ],
+    [],
+  );
+  // Self-report with a completion marker, no agent-directed request phrasing.
+  for (const content of [
+    "我已经登录上去了，页面没显示新按钮",
+    "我现在用测试账号登录进去了，列表不刷新",
+    "我点击了提交，但页面没反应",
+  ])
+    assert.deepEqual(
+      [
+        ...requestedBrowserOperations([
+          { kind: "message", role: "user", content },
+        ]),
+      ],
+      [],
+    );
+  // A genuine agent-directed request must still be detected.
+  assert.deepEqual(
+    [
+      ...requestedBrowserOperations([
+        {
+          kind: "message",
+          role: "user",
+          content: "帮我登录 Gmail，填写账号密码并点击下一步",
+        },
+      ]),
+    ],
+    ["open", "type", "click", "verify"],
+  );
+});
+
 test("recognizes a stale missing-URL reply while a browser session can be reused", () => {
   assert.equal(
     reportsMissingBrowserTarget(

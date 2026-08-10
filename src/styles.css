@@ -7709,7 +7709,10 @@ button[aria-busy="true"] {
 }
 
 .task-flat-row {
-  margin-left: 18px;
+  /* Align 2nd-level (task) name with 1st-level (workspace) name.
+     Workspace name sits ~72px from the row edge (grip+chevron+folder icon);
+     task name = this margin + task-row padding(9) + grip(14) + gap(7). */
+  margin-left: 42px;
   margin-right: 2px;
   padding: 2px 3px 2px 0;
 }

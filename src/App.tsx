@@ -325,6 +325,17 @@ function clearPromptTokenSnapshot(usage: TaskRecord["usage"]) {
   return rest;
 }
 
+// Restore the per-task chat/editor preference. Falls back to the old default
+// (editor for remote workspaces, else chat) when nothing was saved, and never
+// restores "editor" when the task has no workspace to show.
+function resolveWorkspaceView(task: TaskRecord): "chat" | "editor" {
+  const saved = task.workspaceView;
+  const fallback = task.remoteWorkspace ? "editor" : "chat";
+  const desired = saved ?? fallback;
+  if (desired === "editor" && !task.workspacePath) return "chat";
+  return desired;
+}
+
 function formatContextPercent(tokens: number, contextWindow?: number) {
   if (!contextWindow) return "未配置";
   return `${Math.min(100, Math.round((tokens / contextWindow) * 100))}%`;
@@ -2205,7 +2216,7 @@ export default function App() {
         const attachmentDraft = attachmentDraftsRef.current.get(loadedNext.id);
         claimTaskView(loadedNext.id);
         setActiveTaskId(loadedNext.id);
-        setWorkspaceView(loadedNext.remoteWorkspace ? "editor" : "chat");
+        setWorkspaceView(resolveWorkspaceView(loadedNext));
         setMessages(loadedNext.messages);
         setActivities(loadedNext.activities);
         setRunningId(loadedNext.runningId);
@@ -2871,7 +2882,11 @@ export default function App() {
         if (event.type === "done") {
           taskRuntimeStore.finish(taskId, id);
           const finishedStatus =
-            event.outcome === "blocked" ? "blocked" : "completed";
+            event.outcome === "blocked"
+              ? "blocked"
+              : event.outcome === "paused"
+                ? "paused"
+                : "completed";
           clearStreamingProgress(id);
           clearPendingReasoning(id);
           if (textFlushTimerRef.current) {
@@ -3317,7 +3332,7 @@ export default function App() {
     setRunningId(task.runningId);
     requestStartedRef.current = task.startedAt;
     setActiveTaskId(task.id);
-    setWorkspaceView(task.remoteWorkspace ? "editor" : "chat");
+    setWorkspaceView(resolveWorkspaceView(task));
     setSshRemoteState(undefined);
     setMessages(task.messages);
     setActivities(task.activities);
@@ -3546,7 +3561,7 @@ export default function App() {
         const attachmentDraft = attachmentDraftsRef.current.get(loadedNext.id);
         claimTaskView(loadedNext.id);
         setActiveTaskId(loadedNext.id);
-        setWorkspaceView(loadedNext.remoteWorkspace ? "editor" : "chat");
+        setWorkspaceView(resolveWorkspaceView(loadedNext));
         setMessages(loadedNext.messages);
         setActivities(loadedNext.activities);
         setInput(initialDrafts.current[loadedNext.id] ?? "");
@@ -5406,6 +5421,15 @@ export default function App() {
     setWorkspaceView(view);
     setConversationSearchOpen(false);
     if (view === "editor") setStatusOpen(false);
+    // Remember the choice per task so switching back restores this view.
+    // No updatedAt bump — a view toggle shouldn't reorder the sidebar.
+    const taskId = activeTaskIdRef.current;
+    if (taskId)
+      setTasks((all) =>
+        all.map((task) =>
+          task.id === taskId ? { ...task, workspaceView: view } : task,
+        ),
+      );
   });
   const onUpdateStatusPanel = useEventCallback(updateStatusPanel);
   const onSetSidebarDeleteTarget = useEventCallback(

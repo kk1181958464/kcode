@@ -583,7 +583,7 @@ export type ModelEvent =
       retryable?: boolean;
       userAction?: "retry" | "change_provider" | "provide_input" | "none";
     }
-  | { type: "done"; outcome?: "completed" | "blocked" };
+  | { type: "done"; outcome?: "completed" | "blocked" | "paused" };
 
 type AgentEventPayload =
   | ModelEvent

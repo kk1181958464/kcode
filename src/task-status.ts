@@ -25,7 +25,7 @@ export function nextQueuedMessageId(task: {
 export function finishTaskRequest(
   currentRequestId: string | undefined,
   finishedRequestId: string,
-  finishedStatus: Exclude<TaskRunStatus, "idle" | "running" | "paused">,
+  finishedStatus: Exclude<TaskRunStatus, "idle" | "running">,
 ) {
   const hasNewerRequest = Boolean(
     currentRequestId && currentRequestId !== finishedRequestId,

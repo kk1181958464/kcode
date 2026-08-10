@@ -48,28 +48,12 @@ const REMOTE_PLANNER_READ_TOOLS = new Set<AgentToolName>([
   "ssh_read_file",
 ]);
 
+// Hybrid mode: an SSH Remote task keeps its LOCAL file/git/command tools AND
+// the ssh_* tools, so the agent can read/build local sources (D:\... absolute
+// paths) and deploy to the server in one task. Only the managed-session control
+// tools stay disabled — letting the model re-target or drop the managed SSH
+// session mid-task, or open competing via_ssh tunnels, would break recovery.
 const REMOTE_WORKSPACE_DISABLED_TOOLS = new Set<AgentToolName>([
-  "list_directory",
-  "glob_files",
-  "read_many_files",
-  "path_info",
-  "read_file",
-  "search_code",
-  "apply_patch",
-  "write_file",
-  "make_directory",
-  "move_path",
-  "delete_path",
-  "git_status",
-  "git_remote_status",
-  "git_diff",
-  "git_log",
-  "git_show",
-  "start_process",
-  "process_output",
-  "stop_process",
-  "diagnostics",
-  "run_command",
   "ssh_set_workspace",
   "ssh_disconnect",
   "mysql_connect_via_ssh",
