@@ -88,25 +88,32 @@ export function claimedGitOperations(text: string) {
       /(?:如果|若|假如|一旦|\bif\b|\bwhen\b)[^。！？!?\n]{0,160}[。！？!?]?/gi,
       "",
     );
-  const assertedText = proseText.replace(
+  const negatedText = proseText.replace(
     /(?:未|没有|尚未|无法|不能|并未).{0,10}(?:提交|推送|发布|触发|启动|commit|push|release)|\b(?:not|never|did not|could not|unable to)\b[^.!?\n]{0,40}\b(?:commit|push|release|trigger)\b/gi,
+    "",
+  );
+  // Strip future/planning intent so a plan ("稍后提交到两个私有仓库") is not
+  // mistaken for a completed claim. Only unambiguous planning markers are used
+  // (bare 会/之后 are excluded — they also appear in "提交后会显示"/"提交之后").
+  const assertedText = negatedText.replace(
+    /(?:将要?|打算|计划|准备|稍后|待会儿?|等会儿?|过会儿?|接下来|马上|即将|回头|下一步|随后要|然后要).{0,10}(?:提交|推送|发布|触发|启动|commit|push|release)/gi,
     "",
   );
   const operations = new Set<GitOperation>();
   if (
-    /(?:已|成功).{0,12}(?:提交|commit)|(?:我|我们)(?:已经|已)?(?:提交|commit)(?:了|完成)|提交\s*[:：]\s*`?[0-9a-f]{7,40}/i.test(
+    /(?:已|成功).{0,4}(?:提交|commit)|(?:我|我们)(?:已经|已)?(?:提交|commit)(?:了|完成)|提交\s*[:：]\s*`?[0-9a-f]{7,40}/i.test(
       assertedText,
     )
   )
     operations.add("commit");
   if (
-    /(?:已|成功).{0,12}(?:推送|push)|(?:我|我们|并|随后|然后|同时)(?:已经|已)?(?:推送|push)(?:了|完成)|(?:推送|push)(?:了|完成)|(?:分支|标签).{0,10}已推送/i.test(
+    /(?:已|成功).{0,4}(?:推送|push)|(?:我|我们|并|随后|然后|同时)(?:已经|已)?(?:推送|push)(?:了|完成)|(?:推送|push)(?:了|完成)|(?:分支|标签).{0,10}已推送/i.test(
       assertedText,
     )
   )
     operations.add("push");
   if (
-    /(?:已|成功).{0,12}(?:触发|启动).{0,12}(?:打包|发布|Actions|工作流)|(?:我|我们|并|随后|然后|同时)(?:已经|已)?(?:触发|启动)(?:了)?.{0,12}(?:打包|发布|Actions|工作流)|(?:Release|Actions).{0,12}(?:运行中|已创建|已触发)/i.test(
+    /(?:已|成功).{0,4}(?:触发|启动).{0,12}(?:打包|发布|Actions|工作流)|(?:我|我们|并|随后|然后|同时)(?:已经|已)?(?:触发|启动)(?:了)?.{0,12}(?:打包|发布|Actions|工作流)|(?:Release|Actions).{0,12}(?:运行中|已创建|已触发)/i.test(
       assertedText,
     )
   )

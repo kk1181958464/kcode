@@ -47,6 +47,40 @@ test("detects requested and claimed Git release operations", () => {
   );
 });
 
+test("does not mistake planned/future Git work for a completed claim", () => {
+  // The real-world false positive: the model describes a PLAN (create repos,
+  // then commit) and it must NOT be read as an already-completed commit that
+  // demands tool evidence — otherwise the turn is wrongly paused.
+  for (const planning of [
+    "代码已准备好，稍后提交到两个私有仓库",
+    "接下来我会提交并推送到 GitHub",
+    "计划提交前端代码，然后推送到远端",
+    "准备触发打包工作流",
+    "下一步提交 PHP 代码并创建 Release",
+  ])
+    assert.deepEqual([...claimedGitOperations(planning)], [], planning);
+  // Genuine completed claims are still detected after the change.
+  assert.deepEqual(
+    [...claimedGitOperations("已成功提交并推送，Release 工作流已触发")],
+    ["commit", "push", "release"],
+  );
+  assert.deepEqual(
+    [...claimedGitOperations("我已经提交了修改")],
+    ["commit"],
+  );
+  // A description of the plan is not a request for the agent to run Git either.
+  assert.deepEqual(
+    requestedGitOperations([
+      {
+        kind: "message",
+        role: "user",
+        content: "这样吧 php一个仓库 前端一个仓库 都设置私有",
+      },
+    ]),
+    new Set(),
+  );
+});
+
 test("does not mistake application submission language for Git work", () => {
   const nonGitRequests = [
     'index/order/send {"code":2,"msg":"提交微信发货信息失败，请重新发货，错误原因：支付单不存在"} 我去找哪个字段看',
