@@ -30,6 +30,24 @@ test("requires tool evidence for browser actions claimed in final text", () => {
     [...claimedBrowserOperations("如果已经点击提交，就检查页面结果。")],
     [],
   );
+  // Login-FLOW design prose must not be read as a performed browser login.
+  // The bare phrase "登录成功" describing designed behavior previously added
+  // type+click+verify — a false claim that paused the turn.
+  for (const design of [
+    "门店账号登录成功后进入小程序，管理账号登录成功后进入管理页面",
+    "设计上，用户登录成功就跳转到订单列表页",
+    "登录成功后展示所有门店的订单提交记录",
+  ])
+    assert.deepEqual([...claimedBrowserOperations(design)], [], design);
+  // Genuine first-person login claims are still detected.
+  assert.deepEqual(
+    [...claimedBrowserOperations("我已经登录进去了")].sort(),
+    ["click", "type", "verify"],
+  );
+  assert.deepEqual(
+    [...claimedBrowserOperations("已成功登录网站并进入后台")].sort(),
+    ["click", "type", "verify"],
+  );
 });
 
 test("detects requested browser actions and ignores capability questions", () => {

@@ -82,15 +82,19 @@ export function projectSidebarWorkspaceGroups(
     showArchived,
     snapshot,
     workspaceGroups: [...groups.entries()].map(
-      ([_workspaceKey, conversations]) => {
+      ([workspaceKey, conversations]) => {
         const remote = conversations[0]?.remoteWorkspace;
+        const unassigned = workspaceKey === "" && !remote;
         return {
           workspacePath: conversations[0]?.workspacePath ?? "",
-          name: conversations[0]
-            ? taskWorkspaceName(conversations[0])
-            : "工作区",
+          name: unassigned
+            ? "未分配工作区"
+            : conversations[0]
+              ? taskWorkspaceName(conversations[0])
+              : "工作区",
           conversations,
           remote: Boolean(remote),
+          unassigned,
         };
       },
     ),

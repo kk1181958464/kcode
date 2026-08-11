@@ -69,6 +69,7 @@ import {
   Upload,
   UserRound,
   Moon,
+  FolderSearch,
   X,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
@@ -214,7 +215,11 @@ const AppUpdateDialog = lazy(() =>
     default: m.AppUpdateDialog,
   })),
 );
-import { DeleteDialog, NewTaskDialog } from "./components/dialogs/TaskDialogs";
+import {
+  AssignFolderDialog,
+  DeleteDialog,
+  NewTaskDialog,
+} from "./components/dialogs/TaskDialogs";
 import { BrowserPanel } from "./components/browser/BrowserPanel";
 import { TitleBar } from "./components/chrome/TitleBar";
 import { TopBar } from "./components/topbar/TopBar";
@@ -375,6 +380,9 @@ export default function App() {
   const [pendingFolder, setPendingFolder] = useState<WorkspaceFolder | null>(
     null,
   );
+  const [newTaskOpen, setNewTaskOpen] = useState(false);
+  const [assignFolderForTask, setAssignFolderForTask] =
+    useState<TaskRecord | null>(null);
   const [sshRemoteDialogTaskId, setSshRemoteDialogTaskId] = useState<string>();
   const [sshRemoteState, setSshRemoteState] = useState<SshRemoteState>();
   const [workspaceView, setWorkspaceView] = useState<"chat" | "editor">(() =>
@@ -3056,18 +3064,48 @@ export default function App() {
     autoFollowRef.current = true;
   }
 
-  async function startNewTask() {
+  function startNewTask() {
     setContextError("");
     if (!taskStorageReady) return;
+    if (window.kcode && !window.kcode.workspace) {
+      setContextError("桌面主进程版本较旧，请重启应用后再试");
+      return;
+    }
+    setPendingFolder(null);
+    setNewTaskName("");
+    setNewTaskOpen(true);
+  }
+
+  async function pickFolderForNewTask() {
     try {
-      if (window.kcode && !window.kcode.workspace)
-        throw new Error("桌面主进程版本较旧，请重启应用后再试");
+      const folder = window.kcode
+        ? await window.kcode.workspace.pickFolder()
+        : { name: "kcode", path: "D:\\project\\kcode" };
+      if (folder) setPendingFolder(folder);
+    } catch (error) {
+      setContextError(errorMessage(error));
+    }
+  }
+
+  async function pickFolderAndAssign(task: TaskRecord) {
+    setAssignFolderForTask(null);
+    try {
       const folder = window.kcode
         ? await window.kcode.workspace.pickFolder()
         : { name: "kcode", path: "D:\\project\\kcode" };
       if (!folder) return;
-      setPendingFolder(folder);
-      setNewTaskName("");
+      setTasks((all) =>
+        all.map((t) =>
+          t.id === task.id
+            ? {
+                ...t,
+                workspaceName: folder.name,
+                workspacePath: folder.path,
+                updatedAt: Date.now(),
+              }
+            : t,
+        ),
+      );
     } catch (error) {
       setContextError(errorMessage(error));
     }
@@ -3159,13 +3197,12 @@ export default function App() {
   }
 
   async function createTask() {
-    if (!pendingFolder) return;
     const now = Date.now();
     const task: TaskRecord = {
       id: uid(),
-      name: newTaskName.trim() || pendingFolder.name,
-      workspaceName: pendingFolder.name,
-      workspacePath: pendingFolder.path,
+      name: newTaskName.trim() || pendingFolder?.name || "新任务",
+      workspaceName: pendingFolder?.name,
+      workspacePath: pendingFolder?.path ?? "",
       createdAt: now,
       updatedAt: now,
       messages: [],
@@ -3195,6 +3232,7 @@ export default function App() {
     autoFollowRef.current = true;
     setPendingFolder(null);
     setNewTaskName("");
+    setNewTaskOpen(false);
   }
 
   async function ensureTaskLoaded(task: TaskRecord) {
@@ -4225,6 +4263,10 @@ export default function App() {
     )
       return;
     const requestRemoteWorkspace = requestTask.remoteWorkspace;
+    if (!requestTask.workspacePath && !requestRemoteWorkspace) {
+      setAssignFolderForTask(requestTask);
+      return;
+    }
     if (requestRemoteWorkspace && window.kcode?.sshRemote) {
       try {
         const connected = await restoreSshRemoteConnection(
@@ -5585,6 +5627,18 @@ export default function App() {
             endRef={endRef}
             agentReasoning=""
           />
+          {activeTask && !activeTask.workspacePath && !activeTask.remoteWorkspace && (
+            <div className="no-workspace-banner">
+              <FolderSearch size={14} />
+              <span>此任务尚未关联工作区，Agent 无法访问本地文件</span>
+              <button
+                className="no-workspace-assign"
+                onClick={() => void pickFolderAndAssign(activeTask)}
+              >
+                选择文件夹
+              </button>
+            </div>
+          )}
           <div className="composer-wrap">
             {(showScrollToBottom || scrollingToBottom) && (
               <button
@@ -6110,13 +6164,25 @@ export default function App() {
             />
           </Suspense>
         )}
-        {pendingFolder && (
+        {newTaskOpen && (
           <NewTaskDialog
             pendingFolder={pendingFolder}
             newTaskName={newTaskName}
             setNewTaskName={setNewTaskName}
             createTask={createTask}
-            onClose={() => setPendingFolder(null)}
+            onPickFolder={() => void pickFolderForNewTask()}
+            onClose={() => {
+              setNewTaskOpen(false);
+              setPendingFolder(null);
+              setNewTaskName("");
+            }}
+          />
+        )}
+        {assignFolderForTask && (
+          <AssignFolderDialog
+            taskName={assignFolderForTask.name}
+            onPickFolder={() => void pickFolderAndAssign(assignFolderForTask)}
+            onClose={() => setAssignFolderForTask(null)}
           />
         )}
         {sshRemoteDialogTaskId && (

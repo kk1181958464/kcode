@@ -254,6 +254,32 @@ export const Sidebar = memo(function Sidebar({
         computeItemKey={sidebarRowKey}
         itemContent={(_, row) =>
           row.kind === "workspace" ? (
+            row.group.unassigned ? (
+              <div className="workspace-flat-row workspace-unassigned">
+                <header
+                  className="workspace-header"
+                  onClick={() => toggleWorkspace(row.group.workspacePath)}
+                >
+                  <span
+                    className={`workspace-collapse ${collapsedWorkspaces.has(row.group.workspacePath) ? "collapsed" : ""}`}
+                    title={
+                      collapsedWorkspaces.has(row.group.workspacePath)
+                        ? "展开对话"
+                        : "折叠对话"
+                    }
+                    aria-expanded={
+                      !collapsedWorkspaces.has(row.group.workspacePath)
+                    }
+                  >
+                    <ChevronDown size={13} />
+                  </span>
+                  <span className="workspace-name unassigned-label">
+                    {row.group.name}
+                  </span>
+                  <small>{row.group.conversations.length}</small>
+                </header>
+              </div>
+            ) : (
             <div
               className={`workspace-flat-row ${draggedWorkspace === row.group.workspacePath ? "dragging" : ""} ${workspaceDropTarget === row.group.workspacePath && draggedWorkspace !== row.group.workspacePath ? "drop-target" : ""}`}
               draggable
@@ -351,7 +377,8 @@ export const Sidebar = memo(function Sidebar({
                 </button>
               </header>
             </div>
-          ) : (
+          )
+        ) : (
             <div
               draggable
               role="button"

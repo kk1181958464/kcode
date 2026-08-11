@@ -1,4 +1,4 @@
-import { FolderOpen, Trash2, X } from "lucide-react";
+import { FolderOpen, FolderSearch, Trash2, X } from "lucide-react";
 import type { TaskRecord } from "../../models";
 
 interface PendingFolder {
@@ -11,10 +11,11 @@ type DeleteTarget =
   | { kind: "task"; task: TaskRecord };
 
 export interface NewTaskDialogProps {
-  pendingFolder: PendingFolder;
+  pendingFolder?: PendingFolder | null;
   newTaskName: string;
   setNewTaskName(value: string): void;
   createTask(): Promise<void>;
+  onPickFolder(): void;
   onClose(): void;
 }
 
@@ -23,6 +24,7 @@ export function NewTaskDialog({
   newTaskName,
   setNewTaskName,
   createTask,
+  onPickFolder,
   onClose,
 }: NewTaskDialogProps) {
   return (
@@ -52,21 +54,81 @@ export function NewTaskDialog({
             value={newTaskName}
             onChange={(event) => setNewTaskName(event.target.value)}
             onKeyDown={(event) => event.key === "Enter" && void createTask()}
-            placeholder={pendingFolder.name}
+            placeholder={pendingFolder?.name ?? "新任务"}
             maxLength={80}
           />
         </label>
-        <div className="selected-folder">
-          <FolderOpen size={16} />
-          <span>
-            <strong>{pendingFolder.name}</strong>
-            <small>{pendingFolder.path}</small>
-          </span>
-        </div>
+        {pendingFolder ? (
+          <div className="selected-folder">
+            <FolderOpen size={16} />
+            <span>
+              <strong>{pendingFolder.name}</strong>
+              <small>{pendingFolder.path}</small>
+            </span>
+            <button
+              className="icon folder-change-btn"
+              onClick={onPickFolder}
+              title="更换文件夹"
+            >
+              <FolderSearch size={14} />
+            </button>
+          </div>
+        ) : (
+          <button className="pick-folder-btn" onClick={onPickFolder}>
+            <FolderSearch size={15} />
+            选择工作区文件夹
+          </button>
+        )}
         <footer className="task-modal-actions">
           <button onClick={onClose}>取消</button>
           <button className="primary" onClick={() => void createTask()}>
             创建任务
+          </button>
+        </footer>
+      </section>
+    </div>
+  );
+}
+
+export interface AssignFolderDialogProps {
+  taskName: string;
+  onPickFolder(): void;
+  onClose(): void;
+}
+
+export function AssignFolderDialog({
+  taskName,
+  onPickFolder,
+  onClose,
+}: AssignFolderDialogProps) {
+  return (
+    <div
+      className="modal-backdrop"
+      onMouseDown={(event) => event.target === event.currentTarget && onClose()}
+    >
+      <section
+        className="modal task-modal"
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="assign-folder-title"
+      >
+        <header>
+          <div>
+            <span className="eyebrow">发送失败</span>
+            <h2 id="assign-folder-title">需要工作区</h2>
+          </div>
+          <button className="icon" onClick={onClose} title="关闭">
+            <X size={18} />
+          </button>
+        </header>
+        <p className="assign-folder-desc">
+          任务「{taskName}」尚未关联工作区，Agent 无法访问本地文件。请选择一个文件夹后重新发送。
+        </p>
+        <footer className="task-modal-actions">
+          <button onClick={onClose}>稍后再说</button>
+          <button className="primary" onClick={onPickFolder}>
+            <FolderSearch size={14} />
+            选择文件夹
           </button>
         </footer>
       </section>

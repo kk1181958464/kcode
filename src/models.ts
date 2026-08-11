@@ -115,6 +115,7 @@ export type SidebarWorkspaceGroup = {
   name: string;
   conversations: SidebarTask[];
   remote?: boolean;
+  unassigned?: boolean;
 };
 
 export type ConversationScrollState = { top: number; atBottom: boolean };

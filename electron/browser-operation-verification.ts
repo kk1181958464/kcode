@@ -105,10 +105,20 @@ export function claimedBrowserOperations(text: string) {
     "",
   );
   const operations = new Set<BrowserOperation>();
+  // A bare "登录成功" is NOT a browser claim: login-FLOW design prose
+  // ("门店账号登录成功后进入小程序，管理账号登录进管理页面") uses it constantly
+  // to describe DESIGNED behavior, not an action the agent performed. Require
+  // either a first-person subject (我/我们…登录) or a concrete web target
+  // (网站/网页/浏览器/http) so architecture descriptions no longer trip it.
   const loginCompleted =
-    /(?:已|已经)(?:成功)?登录(?!页|页面|界面)|登录成功|\blogged in\b/i.test(
+    /(?:我|我们)(?:现在|已经|已|刚|刚才)?.{0,6}(?:成功)?登录(?!页|页面|界面)/i.test(
       assertedText,
-    );
+    ) ||
+    /(?:已|已经)成功登录(?!页|页面|界面)/i.test(assertedText) ||
+    /登录成功[^。！!？?\n]{0,12}(?:网站|网页|浏览器|https?:\/\/)|(?:网站|网页|浏览器|https?:\/\/)[^。！!？?\n]{0,12}(?:登录成功|已登录)/i.test(
+      assertedText,
+    ) ||
+    /\blogged in\b/i.test(assertedText);
   const directActionLead =
     /(?:我|我们)?(?:已|已经)(?:成功)?(?:打开|访问|进入|导航到|填写|输入|键入|点击|选择|提交|发送|登录)|(?:我|我们)(?:已经|已)?(?:打开|访问|进入|导航到|填写|输入|键入|点击|选择|提交|发送|登录)(?:了|过)|\b(?:i|we)(?:'ve| have)?\s+(?:opened|visited|navigated|filled|entered|typed|clicked|selected|submitted|sent|logged in)\b/i.test(
       assertedText,

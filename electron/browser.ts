@@ -19,6 +19,7 @@ import {
   type BrowserVerification,
   type CdpAxNode,
 } from "./browser-cdp";
+import { browserStoragePartition } from "./browser-profile";
 
 type BrowserState = {
   open: boolean;
@@ -709,7 +710,7 @@ export async function openBrowser(
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: true,
-        partition: `persist:kcode-browser-${sessionId.replace(/[^a-zA-Z0-9_-]/g, "_")}`,
+        partition: browserStoragePartition(sessionId),
       },
     });
     session = {

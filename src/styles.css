@@ -1252,6 +1252,14 @@ button:not(:disabled) {
 .workspace-collapse[aria-expanded="false"] svg {
   transform: rotate(-90deg);
 }
+.workspace-unassigned .workspace-header {
+  cursor: pointer;
+  padding-left: 6px;
+}
+.workspace-unassigned .workspace-name.unassigned-label {
+  color: var(--muted);
+  font-style: italic;
+}
 .task-row {
   display: flex;
   align-items: center;
@@ -4921,6 +4929,10 @@ button:not(:disabled) {
 .task-modal {
   width: min(460px, calc(100vw - 40px));
 }
+.task-modal input {
+  font-size: 13px;
+  padding: 6px 9px;
+}
 .task-name-field {
   display: grid;
   gap: 7px;
@@ -4953,6 +4965,73 @@ button:not(:disabled) {
   white-space: nowrap;
   font-size: 10px;
 }
+.selected-folder > .folder-change-btn {
+  margin-left: auto;
+  flex: 0 0 auto;
+  opacity: 0.55;
+}
+.selected-folder > .folder-change-btn:hover {
+  opacity: 1;
+}
+.pick-folder-btn {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  margin-top: 14px;
+  padding: 10px 12px;
+  border: 1px dashed #c4c8c0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color var(--motion-fast) ease,
+    color var(--motion-fast) ease;
+}
+.pick-folder-btn:hover {
+  border-color: var(--accent);
+  color: var(--ink);
+}
+.assign-folder-desc {
+  margin: 14px 0 0;
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+.no-workspace-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 16px;
+  background: var(--surface-muted, #f2f4f0);
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+  color: var(--muted);
+}
+.no-workspace-banner > svg {
+  flex: 0 0 auto;
+  opacity: 0.7;
+}
+.no-workspace-banner > span {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.no-workspace-assign {
+  flex: 0 0 auto;
+  padding: 3px 10px;
+  border: 1px solid var(--line-strong, #bfc3bb);
+  border-radius: 5px;
+  background: var(--surface-raised);
+  font-size: 11px;
+  color: var(--ink);
+  cursor: pointer;
+}
+.no-workspace-assign:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 .task-modal-actions {
   display: flex;
   justify-content: flex-end;
@@ -11884,6 +11963,17 @@ select:focus-visible {
   background: transparent;
   color: var(--ui-text-secondary);
   box-shadow: none;
+}
+
+/* Align 2nd-level (task) name with 1st-level (workspace) name.
+   The task element carries BOTH .task-row and .task-flat-row; the .task-row
+   `margin: 1px 0` above resets margin-left, so the 42px offset must be
+   re-applied with higher specificity (0,2,0 beats 0,1,0) to survive the
+   cascade. Workspace name starts at 72px (header margin2 + pad4 + grip14 +
+   gap3 + chevron22 + gap3 + icon18 + gap3 + name-pad3); task name =
+   margin(42) + task-row pad-left(9) + grip(14) + gap(7) = 72px. */
+.task-row.task-flat-row {
+  margin-left: 42px;
 }
 
 .task-row:not(.dragging):hover,
