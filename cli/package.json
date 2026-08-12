@@ -1,0 +1,37 @@
+{
+  "name": "@kk1181958464/kcode",
+  "version": "0.1.6",
+  "description": "Multi-provider coding agent, CLI edition — the KCode agent runtime in your terminal.",
+  "bin": {
+    "kcode": "./kcode-cli.cjs"
+  },
+  "files": [
+    "kcode-cli.cjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "cli",
+    "coding-agent",
+    "ai",
+    "llm",
+    "agent",
+    "openai",
+    "anthropic"
+  ],
+  "license": "MIT",
+  "author": {
+    "name": "KCode",
+    "email": "1181958464@qq.com"
+  },
+  "dependencies": {
+    "@vscode/ripgrep": "^1.18.0",
+    "mongodb": "^7.5.0",
+    "mssql": "^12.7.0",
+    "mysql2": "^3.22.6",
+    "ssh2": "^1.17.0"
+  }
+}

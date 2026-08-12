@@ -1,6 +1,6 @@
 {
   "name": "kcode",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "private": true,
   "author": {
     "name": "KCode",
@@ -18,6 +18,8 @@
     "css:prune": "node scripts/prune-css.mjs",
     "css:prune:write": "node scripts/prune-css.mjs --write",
     "icons": "node scripts/generate-icons.mjs",
+    "cli:build": "node cli/build.mjs",
+    "cli:pack": "npm run cli:build && cd cli && npm pack",
     "dist:win": "npm run icons && npm run build && electron-builder --win nsis --publish never",
     "dist:mac": "npm run icons && npm run build && electron-builder --mac dmg zip --publish never",
     "dist:linux": "npm run icons && npm run build && electron-builder --linux AppImage deb --publish never",

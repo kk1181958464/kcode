@@ -96,10 +96,7 @@ export class AgentStreamAssembler {
             args: "",
           };
         if (part.id) current.id = part.id;
-        current.name += this.normalizeChatChunk(
-          current.name,
-          part.function?.name,
-        );
+        current.name = this.appendToolName(current.name, part.function?.name);
         current.args += this.normalizeChatChunk(
           current.args,
           part.function?.arguments,
@@ -369,6 +366,18 @@ export class AgentStreamAssembler {
     if (this.inlineReasoning) this.appendInlineReasoning(this.inlineTextBuffer);
     else this.appendVisibleText(this.inlineTextBuffer);
     this.inlineTextBuffer = "";
+  }
+  // Tool names normally arrive whole in the first delta. Some OpenAI-compatible
+  // relays repeat the full name on every tool_calls fragment; naive `+=` would
+  // yield "read_fileread_file" and break tool resolution. Treat an exact repeat
+  // or a growing prefix as cumulative, otherwise append (genuinely fragmented).
+  private appendToolName(current: string, chunk?: string) {
+    if (!chunk) return current;
+    if (!current) return chunk;
+    if (chunk === current) return current;
+    if (chunk.startsWith(current)) return chunk;
+    if (current.startsWith(chunk)) return current;
+    return current + chunk;
   }
   private normalizeChatChunk(current: string, chunk?: string) {
     if (!chunk) return "";

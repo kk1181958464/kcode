@@ -225,6 +225,7 @@ import {
   beginSubagentCleanup,
   claimSubagentMutation,
   closeSubagentMessageQueue,
+  collectedSubagentSummaries,
   drainSubagentMessages,
   listSubagents,
   messageSubagent,
@@ -3074,6 +3075,15 @@ async function execute(
           .reverse()
           .find((message) => message.images?.length)?.images
       : undefined;
+    // Thread the most recent already-collected executor's conclusion into a
+    // follow-up executor so the planner need not restate everything. Only the
+    // latest collected summary is carried to keep the delegated task focused.
+    const priorExecutorSummary = executorOverride
+      ? collectedSubagentSummaries(requestId).at(-1)
+      : undefined;
+    const priorExecutorContext = priorExecutorSummary
+      ? `\n\n上一执行 Agent（${priorExecutorSummary.name}）的结果摘要，供衔接参考，勿重复其已完成的工作：\n${priorExecutorSummary.transcript.slice(-4_000)}`
+      : "";
     const state = spawnSubagent(
       requestId,
       childName,
@@ -3094,7 +3104,7 @@ async function execute(
             messages: [
               {
                 role: "user",
-                content: `${executorOverride ? `你是协作任务的执行 Agent，当前执行模型为 ${executorOverride.displayName}。严格落实规划 Agent 给出的步骤和验收条件，使用真实工具完成修改与验证，不要只重复规划。` : "你是主 Agent 委派的子 Agent。"}请独立完成以下任务并向主 Agent 返回准确、简洁、可验证的结果。不要等待用户补充信息；遇到阻碍时说明已检查的内容和具体阻碍。避免修改其他子 Agent 可能负责的文件。${delegatedRequestContext ? `\n\n原始用户目标：\n${delegatedRequestContext}` : ""}\n\n委派任务：\n${task}`,
+                content: `${executorOverride ? `你是协作任务的执行 Agent，当前执行模型为 ${executorOverride.displayName}。严格落实规划 Agent 给出的步骤和验收条件，使用真实工具完成修改与验证，不要只重复规划。` : "你是主 Agent 委派的子 Agent。"}请独立完成以下任务并向主 Agent 返回准确、简洁、可验证的结果。不要等待用户补充信息；遇到阻碍时说明已检查的内容和具体阻碍。避免修改其他子 Agent 可能负责的文件。${delegatedRequestContext ? `\n\n原始用户目标：\n${delegatedRequestContext}` : ""}${priorExecutorContext}\n\n委派任务：\n${task}`,
                 images: delegatedImages,
               },
             ],
@@ -3529,6 +3539,61 @@ type TurnStreamEvent =
   | { type: "reasoning"; delta: string }
   | { type: "progress"; message: string }
   | { type: "complete"; turn: Turn };
+
+/**
+ * Injection seam for the model turn. `runAgent` calls a `ModelStreamFn` instead
+ * of `streamModelTurn` directly, so tests can drive the loop with a scripted
+ * fake (no provider, no network) and the CLI/desktop share the same loop with
+ * the real implementation. The default binds to `streamModelTurn` verbatim.
+ */
+export type ModelStreamFn = (args: {
+  root: string;
+  requestId: string;
+  request: ModelRequest;
+  history: HistoryItem[];
+  signal: AbortSignal;
+  toolsEnabled: boolean;
+  requireToolCall: boolean;
+  runtime: ModelTurnRuntime;
+  attemptBudget: ModelAttemptBudget;
+}) => AsyncGenerator<TurnStreamEvent>;
+
+/** Resolves a provider+key. Default = getProviderWithKey (reads the store). */
+export type ProviderResolver = (
+  providerId: string,
+) => Promise<Awaited<ReturnType<typeof getProviderWithKey>>>;
+
+/** Optional dependency overrides for runAgent. All default to production impls. */
+export interface RunAgentDeps {
+  streamTurn?: ModelStreamFn;
+  getProvider?: ProviderResolver;
+}
+
+/** Default model-turn implementation: flattens the injected args onto streamModelTurn. */
+function defaultStreamTurn(args: {
+  root: string;
+  requestId: string;
+  request: ModelRequest;
+  history: HistoryItem[];
+  signal: AbortSignal;
+  toolsEnabled: boolean;
+  requireToolCall: boolean;
+  runtime: ModelTurnRuntime;
+  attemptBudget: ModelAttemptBudget;
+}): AsyncGenerator<TurnStreamEvent> {
+  return streamModelTurn(
+    args.root,
+    args.requestId,
+    args.request,
+    args.history,
+    args.signal,
+    args.toolsEnabled,
+    args.requireToolCall,
+    args.runtime,
+    args.attemptBudget,
+  );
+}
+
 async function* streamModelTurn(
   root: string,
   requestId: string,
@@ -4337,7 +4402,10 @@ export async function* runAgent(
   requestId: string,
   request: ModelRequest,
   signal: AbortSignal,
+  deps: RunAgentDeps = {},
 ): AsyncGenerator<AgentEvent> {
+  const streamTurn = deps.streamTurn ?? defaultStreamTurn;
+  const getProvider = deps.getProvider ?? getProviderWithKey;
   const runStartedAt = Date.now();
   const root = path.resolve(request.workspacePath);
   const browserSessionId =
@@ -4396,7 +4464,7 @@ export async function* runAgent(
   const activeSkillInstructions =
     await loadActiveSkillInstructions(latestUserRequest);
   const modelRuntime: ModelTurnRuntime = {
-    provider: await getProviderWithKey(request.providerId),
+    provider: await getProvider(request.providerId),
     activeSkills: [
       activeSkillInstructions,
       browserIsOpen(browserSessionId)
@@ -4435,19 +4503,35 @@ export async function* runAgent(
   let lastPromptTokens = 0;
   let round = 0,
     stalledRounds = 0,
-    lastFingerprint = "",
-    unverifiedBrowserClaims = 0,
-    unverifiedGitClaims = 0,
-    unverifiedCodingClaims = 0,
-    staleBrowserContextReplies = 0,
-    autoContinues = 0,
-    emptyTurns = 0;
-  let previousRoundActivity: AgentActivity | undefined;
-  let previousRoundFailure: AgentActivity | undefined;
-  let previousToolNarrative = "";
-  let activePlanSteps = defaultExecutionPlan(requestedCodingOps);
-  let fallbackPlanActive = activePlanSteps.length > 0;
-  let planCursor = 0;
+    lastFingerprint = "";
+  // Retry/claim budgets for this run, grouped as the first slice of an explicit
+  // run-state object. Each counter caps how often the loop will re-prompt the
+  // model for a specific unproven claim before giving up.
+  const budgets = {
+    unverifiedBrowserClaims: 0,
+    unverifiedGitClaims: 0,
+    unverifiedCodingClaims: 0,
+    staleBrowserContextReplies: 0,
+    autoContinues: 0,
+    emptyTurns: 0,
+  };
+  // Previous-round context, grouped as a run-state slice: the last activity and
+  // any failure carried into the next round's narrative, plus the last tool
+  // narrative used to de-duplicate repeated progress text.
+  const prevRound: {
+    activity?: AgentActivity;
+    failure?: AgentActivity;
+    toolNarrative: string;
+  } = { toolNarrative: "" };
+  // Execution-plan tracking, grouped as a run-state slice. `steps` is the
+  // active numbered plan, `cursor` the current step, `fallbackActive` whether
+  // the plan was synthesized from requested ops rather than model narration.
+  const plan = {
+    steps: defaultExecutionPlan(requestedCodingOps),
+    cursor: 0,
+    fallbackActive: false,
+  };
+  plan.fallbackActive = plan.steps.length > 0;
   let imageFallbackNoticeSent = false;
   while (!signal.aborted) {
     const pendingParentInstructions = drainSubagentMessages(requestId);
@@ -4482,16 +4566,18 @@ export async function* runAgent(
         pendingParentInstructions.length > 0 || pendingSteering.length > 0,
     });
     round += 1;
+    const finalizationRoleLabel =
+      request.agentRole === "planner" ? "规划模型" : "执行模型";
     yield {
       type: "progress",
       message:
         finalizationMode === "evidence-complete"
-          ? "执行模型已完成主要修改和验证，正在收尾总结…"
+          ? `${finalizationRoleLabel}已完成主要修改和验证，正在收尾总结…`
           : finalizationMode === "limit-reached"
-            ? "执行模型已达到运行上限，正在汇总已有结果和未完成项…"
+            ? `${finalizationRoleLabel}已达到运行上限，正在汇总已有结果和未完成项…`
             : nextExecutionNarrative(
-                previousRoundActivity,
-                previousRoundFailure,
+                prevRound.activity,
+                prevRound.failure,
               ),
     };
     if (
@@ -4582,8 +4668,12 @@ export async function* runAgent(
         role: "user",
         content:
           finalizationMode === "evidence-complete"
-            ? "<runtime_finalization>已有成功工具记录覆盖本次要求，执行预算现在进入收尾阶段。不要再调用工具、不要继续修改，也不要追加重复验证。请仅依据现有工具结果给出简洁最终总结：完成内容、修改文件、验证结果、可用地址和真实残留问题。不得声称未验证的事项。</runtime_finalization>"
-            : "<runtime_finalization>执行 Agent 已达到运行预算上限。不要再调用工具或继续修改。请根据现有工具结果立即汇总：已完成内容、修改文件、成功和失败的验证、可用地址，以及尚未完成或无法确认的事项。必须如实区分完成项与残留项。</runtime_finalization>",
+            ? request.agentRole === "planner"
+              ? "<runtime_finalization>执行模型已返回覆盖本次要求的成功工具证据，规划阶段现在进入收尾。不要再派发新的执行 Agent，也不要重复复核。请依据已收集的执行结果给出简洁最终总结：完成内容、修改文件、验证结果、可用地址和真实残留问题。不得声称未经执行模型证实的事项。</runtime_finalization>"
+              : "<runtime_finalization>已有成功工具记录覆盖本次要求，执行预算现在进入收尾阶段。不要再调用工具、不要继续修改，也不要追加重复验证。请仅依据现有工具结果给出简洁最终总结：完成内容、修改文件、验证结果、可用地址和真实残留问题。不得声称未验证的事项。</runtime_finalization>"
+            : request.agentRole === "planner"
+              ? "<runtime_finalization>规划模型已达到运行预算上限。不要再派发或等待新的执行 Agent。请根据已收集的执行结果立即汇总：已完成内容、修改文件、成功和失败的验证、可用地址，以及尚未完成或无法确认的事项。必须如实区分完成项与残留项。</runtime_finalization>"
+              : "<runtime_finalization>执行 Agent 已达到运行预算上限。不要再调用工具或继续修改。请根据现有工具结果立即汇总：已完成内容、修改文件、成功和失败的验证、可用地址，以及尚未完成或无法确认的事项。必须如实区分完成项与残留项。</runtime_finalization>",
       });
     let turn: Turn | undefined,
       streamedText = "",
@@ -4594,9 +4684,9 @@ export async function* runAgent(
       requestedBrowserOps.size > 0 ||
       requestedGitOps.size > 0 ||
       requestedCodingEvidenceOps.size > 0 ||
-      unverifiedBrowserClaims > 0 ||
-      unverifiedGitClaims > 0 ||
-      unverifiedCodingClaims > 0 ||
+      budgets.unverifiedBrowserClaims > 0 ||
+      budgets.unverifiedGitClaims > 0 ||
+      budgets.unverifiedCodingClaims > 0 ||
       listSubagents(requestId).some((agent) => !agent.collected);
     if (
       requestContainsImages &&
@@ -4614,23 +4704,23 @@ export async function* runAgent(
     const turnAttemptBudget = new ModelAttemptBudget(3);
     for (;;) {
       try {
-        for await (const event of streamModelTurn(
+        for await (const event of streamTurn({
           root,
           requestId,
           request,
           history,
           signal,
-          finalizationMode ? false : toolsEnabled,
-          finalizationMode
+          toolsEnabled: finalizationMode ? false : toolsEnabled,
+          requireToolCall: finalizationMode
             ? false
             : shouldRequireCodingTool(
                 request.modelId,
                 requestedCodingEvidenceOps,
                 successfulCodingEvidence(evidenceHistory),
               ),
-          modelRuntime,
-          turnAttemptBudget,
-        )) {
+          runtime: modelRuntime,
+          attemptBudget: turnAttemptBudget,
+        })) {
           if (event.type === "complete") turn = event.turn;
           else if (event.type === "reasoning") {
             streamedReasoning += event.delta;
@@ -4690,11 +4780,11 @@ export async function* runAgent(
     // the latest round's prompt size, i.e. the real current context occupancy.
     yield { type: "usage", ...usage, promptTokens: lastPromptTokens };
     if (!turn.text.trim() && !turn.calls.length) {
-      if (emptyTurns < 2) {
-        emptyTurns += 1;
+      if (budgets.emptyTurns < 2) {
+        budgets.emptyTurns += 1;
         yield {
           type: "progress",
-          message: `上游返回空响应，正在自动恢复（第 ${emptyTurns + 1} 次尝试）…`,
+          message: `上游返回空响应，正在自动恢复（第 ${budgets.emptyTurns + 1} 次尝试）…`,
         };
         history.push({
           kind: "message",
@@ -4711,7 +4801,7 @@ export async function* runAgent(
       };
       return;
     }
-    emptyTurns = 0;
+    budgets.emptyTurns = 0;
     const requestedUserInput = hasRequestedUserInputEvidence(evidenceHistory);
     const reportsMissingInput = reportsMissingRequiredUserInput(turn.text);
     const unsupportedOverallCompletion = isUnsupportedTaskCompletionClaim(
@@ -4725,8 +4815,8 @@ export async function* runAgent(
       browserIsOpen(browserSessionId) &&
       !browserEvidence.has("verify") &&
       reportsMissingBrowserTarget(turn.text);
-    if (staleBrowserContextReply && staleBrowserContextReplies < 2) {
-      staleBrowserContextReplies += 1;
+    if (staleBrowserContextReply && budgets.staleBrowserContextReplies < 2) {
+      budgets.staleBrowserContextReplies += 1;
       if (!bufferModelText && streamedText) {
         timelineTextLength = turnTextStartOffset;
         streamedText = "";
@@ -4777,8 +4867,8 @@ export async function* runAgent(
       missingBrowserEvidence.length &&
       !browserBlocked
     ) {
-      if (unverifiedBrowserClaims < 2) {
-        unverifiedBrowserClaims += 1;
+      if (budgets.unverifiedBrowserClaims < 2) {
+        budgets.unverifiedBrowserClaims += 1;
         if (!bufferModelText && streamedText) {
           timelineTextLength = turnTextStartOffset;
           streamedText = "";
@@ -4856,8 +4946,8 @@ export async function* runAgent(
         requestedUserInput ||
         reportsMissingInput);
     if (!turn.calls.length && missingGitEvidence.length && !gitBlocked) {
-      if (unverifiedGitClaims < 2) {
-        unverifiedGitClaims += 1;
+      if (budgets.unverifiedGitClaims < 2) {
+        budgets.unverifiedGitClaims += 1;
         if (!bufferModelText && streamedText) {
           timelineTextLength = turnTextStartOffset;
           streamedText = "";
@@ -4949,8 +5039,8 @@ export async function* runAgent(
       !codingBlocked &&
       !hasToolActivity
     ) {
-      if (unverifiedCodingClaims < 2) {
-        unverifiedCodingClaims += 1;
+      if (budgets.unverifiedCodingClaims < 2) {
+        budgets.unverifiedCodingClaims += 1;
         if (!bufferModelText && streamedText) {
           timelineTextLength = turnTextStartOffset;
           streamedText = "";
@@ -5004,8 +5094,8 @@ export async function* runAgent(
       unsupportedOverallCompletion &&
       !hasSuccessfulToolEvidence(evidenceHistory)
     ) {
-      if (unverifiedCodingClaims < 2) {
-        unverifiedCodingClaims += 1;
+      if (budgets.unverifiedCodingClaims < 2) {
+        budgets.unverifiedCodingClaims += 1;
         if (!bufferModelText && streamedText) {
           timelineTextLength = turnTextStartOffset;
           streamedText = "";
@@ -5086,22 +5176,22 @@ export async function* runAgent(
     const roundNarrative =
       turn.calls.length && !hasPrematureCompletionClaim
         ? executionNarrativePreview(
-            dedupeExecutionNarrative(turn.text, previousToolNarrative),
+            dedupeExecutionNarrative(turn.text, prevRound.toolNarrative),
           )
         : "";
-    if (turn.calls.length && roundNarrative) previousToolNarrative = turn.text;
+    if (turn.calls.length && roundNarrative) prevRound.toolNarrative = turn.text;
     const detectedPlan = extractExecutionPlan(turn.text);
     if (
       detectedPlan.length >= 2 &&
-      !sameExecutionPlan(activePlanSteps, detectedPlan)
+      !sameExecutionPlan(plan.steps, detectedPlan)
     ) {
-      activePlanSteps = detectedPlan;
-      fallbackPlanActive = false;
-      planCursor = 0;
+      plan.steps = detectedPlan;
+      plan.fallbackActive = false;
+      plan.cursor = 0;
     }
-    const planSteps = activePlanSteps.length ? activePlanSteps : undefined;
+    const planSteps = plan.steps.length ? plan.steps : undefined;
     const planStep = planSteps
-      ? Math.min(planCursor, planSteps.length - 1)
+      ? Math.min(plan.cursor, planSteps.length - 1)
       : undefined;
     const truncated =
       !turn.calls.length &&
@@ -5110,6 +5200,7 @@ export async function* runAgent(
       !turn.calls.length && isExecutionContinuationNarrative(turn.text || "");
     const collaborationPlanPending =
       plannerCoordinator &&
+      !finalizationMode &&
       !turn.calls.length &&
       detectedPlan.length >= 2 &&
       Boolean(
@@ -5120,7 +5211,7 @@ export async function* runAgent(
     const willAutoContinue =
       !turn.calls.length &&
       (truncated || intendsToContinue || collaborationPlanPending) &&
-      autoContinues < 4;
+      budgets.autoContinues < 4;
     if (!turn.calls.length && !willAutoContinue)
       yield {
         type: "final_response",
@@ -5159,7 +5250,7 @@ export async function* runAgent(
       // Both would otherwise force the user to type "继续". Detect them and
       // auto-continue a bounded number of times.
       if (willAutoContinue) {
-        autoContinues += 1;
+        budgets.autoContinues += 1;
         yield {
           type: "progress",
           message: truncated
@@ -5219,7 +5310,7 @@ export async function* runAgent(
       return;
     }
     // A productive round refreshes the auto-continue budget.
-    autoContinues = 0;
+    budgets.autoContinues = 0;
     history.push({ kind: "calls", calls: turn.calls, rawCalls: turn.rawCalls });
     evidenceHistory.push({
       kind: "calls",
@@ -5329,7 +5420,7 @@ export async function* runAgent(
         narrative: roundNarrative || undefined,
         planSteps,
         planStep:
-          planSteps && fallbackPlanActive
+          planSteps && plan.fallbackActive
             ? fallbackExecutionPlanStep(
                 call.name,
                 call.input,
@@ -5944,17 +6035,17 @@ export async function* runAgent(
     for (const rec of turnRecords) {
       conversationWriter.toolResult(rec.callId, rec.toolName, rec.success, rec.exitCode != null ? `exit ${rec.exitCode}` : undefined);
     }
-    previousRoundActivity = roundLastActivity;
-    previousRoundFailure = roundFailedActivity;
+    prevRound.activity = roundLastActivity;
+    prevRound.failure = roundFailedActivity;
     if (
-      activePlanSteps.length &&
+      plan.steps.length &&
       !roundFailedActivity &&
       roundLastActivity &&
       !["report_no_change", "request_user_input"].includes(
         roundLastActivity.tool,
       )
     )
-      planCursor = Math.min(planCursor + 1, activePlanSteps.length - 1);
+      plan.cursor = Math.min(plan.cursor + 1, plan.steps.length - 1);
     const roundFingerprint = roundFingerprints.join("|");
     const madeProgress = roundAdvanced || roundFingerprint !== lastFingerprint;
     stalledRounds = madeProgress ? 0 : stalledRounds + 1;

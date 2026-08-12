@@ -94,6 +94,9 @@ const ACTIVITY_DETAIL_RENDER_LIMIT = 24_000;
 const ACTIVITY_DETAIL_HEAD_CHARS = 4_000;
 const STREAMING_DOM_CHAR_LIMIT = 96_000;
 const STREAMING_DOM_TRIM_TARGET = 80_000;
+// Cadence for re-rendering the streamed prefix as Markdown during a run. Small
+// enough to feel live, large enough to keep the main thread free.
+const STREAMING_MARKDOWN_THROTTLE_MS = 200;
 const ACTIVITY_LIVE_OUTPUT_LIMIT = 24_000;
 
 function renderedActivityDetail(detail: string) {
@@ -1507,15 +1510,16 @@ const AssistantTimeline = memo(function AssistantTimeline({
     if (!visible) return null;
     const display = intermediate ? executionNarrativePreview(visible) : visible;
     if (!display) return null;
-    return running ? (
-      <div
-        className={`streaming-message-text ${intermediate ? "execution-narration-preview" : ""}`}
-      >
-        {display}
-      </div>
-    ) : (
-      <MarkdownMessage content={display} workspacePath={workspacePath} />
-    );
+    // The transient execution-narrative preview stays plain; the answer body is
+    // rendered as Markdown even while running so streaming output is formatted
+    // live (MarkdownMessage memoizes blocks, so only the last block re-parses).
+    if (running && intermediate)
+      return (
+        <div className="streaming-message-text execution-narration-preview">
+          {display}
+        </div>
+      );
+    return <MarkdownMessage content={display} workspacePath={workspacePath} />;
   };
   const hasActiveActivity = activities.some(
     (activity) =>
@@ -1837,6 +1841,28 @@ const StreamingAssistantTimeline = memo(function StreamingAssistantTimeline({
   onActivityChange(activity: AgentActivity): void;
   reasoning?: string;
 }) {
+  // Throttled re-snapshot: while running, force a re-render at most every
+  // ~200ms so the streamed prefix (rendered as Markdown) grows and formats
+  // live. Between ticks, StreamingTextLeaf absorbs high-frequency tokens as a
+  // short plain-text tail — far cheaper than a React render per token.
+  const [, forceTick] = useState(0);
+  useEffect(() => {
+    if (!running) return;
+    let pending = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const unsubscribe = subscribeStreamingText(requestId, () => {
+      if (pending) return;
+      pending = true;
+      timer = setTimeout(() => {
+        pending = false;
+        forceTick((n) => n + 1);
+      }, STREAMING_MARKDOWN_THROTTLE_MS);
+    });
+    return () => {
+      unsubscribe();
+      if (timer) clearTimeout(timer);
+    };
+  }, [requestId, running]);
   // Capture the already-streamed prefix only when React has another structural
   // reason to render (tool activity, request state). New text is written into a
   // dedicated leaf node so streaming never schedules React work for the timeline.

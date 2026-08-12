@@ -251,6 +251,22 @@ export function listSubagents(parentRequestId: string) {
   return directChildren(parentRequestId).map(publicState);
 }
 
+/**
+ * Retained transcript tails of already-collected subagents, newest last. The
+ * planner uses this to thread the previous executor's conclusion into the next
+ * executor's task so a follow-up round does not restate the whole plan.
+ */
+export function collectedSubagentSummaries(parentRequestId: string) {
+  return directChildren(parentRequestId)
+    .filter((agent) => agent.usageReported && agent.transcript.trim())
+    .sort((a, b) => (a.completedAt ?? 0) - (b.completedAt ?? 0))
+    .map((agent) => ({
+      name: agent.name,
+      status: agent.status,
+      transcript: agent.transcript.trim(),
+    }));
+}
+
 export function closeSubagentMessageQueue(requestId: string) {
   const agent = recordByRequestId(requestId);
   if (agent) agent.acceptingInstructions = false;

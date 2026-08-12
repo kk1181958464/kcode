@@ -24,18 +24,21 @@ export class LatestWriteQueue<T> {
   }
 
   private async run() {
-    try {
-      while (this.pending !== undefined) {
-        const value = this.pending;
-        this.pending = undefined;
-        await this.write(value);
-      }
-    } catch (error) {
+    while (this.pending !== undefined) {
+      const value = this.pending;
       this.pending = undefined;
-      this.failure = error;
-    } finally {
-      this.running = undefined;
-      if (this.pending !== undefined) this.running = this.run();
+      try {
+        await this.write(value);
+        // A successful write clears any prior failure so waitForIdle() does
+        // not report a stale error that has since been superseded.
+        this.failure = undefined;
+      } catch (error) {
+        // Record the error but keep draining: a value enqueued during this
+        // failed write must still get a chance to persist, not be dropped.
+        this.failure = error;
+      }
     }
+    this.running = undefined;
+    if (this.pending !== undefined) this.running = this.run();
   }
 }

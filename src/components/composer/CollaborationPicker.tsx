@@ -146,11 +146,22 @@ export function CollaborationPicker({
               type="button"
               className={enabled ? "active" : ""}
               disabled={!availableExecutors.length}
+              title={
+                availableExecutors.length
+                  ? undefined
+                  : "需要至少一个已配置 API Key 且不同于规划模型的模型作为执行模型"
+              }
               onClick={enableCollaboration}
             >
               规划 → 执行
             </button>
           </div>
+          {!availableExecutors.length && (
+            <p className="collaboration-empty-hint">
+              暂无可用的执行模型：请在「管理模型」中启用另一个已配置 API Key
+              的模型（需与规划模型不同）。
+            </p>
+          )}
           {enabled && (
             <div className="collaboration-model-list" role="listbox">
               <header>执行模型</header>

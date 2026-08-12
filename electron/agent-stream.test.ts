@@ -359,6 +359,78 @@ test("assembles Gemini function calls", () => {
   assert.equal(result.calls[0].name, "git_status");
 });
 
+test("dedupes a repeated full tool name across delta fragments", () => {
+  // Some OpenAI-compatible relays resend the complete function.name on every
+  // tool_calls fragment. Default delta mode must not accumulate it into
+  // "read_fileread_file", which would fail to resolve to a registered tool.
+  const a = new AgentStreamAssembler("openai-chat");
+  a.consume({
+    choices: [
+      {
+        delta: {
+          tool_calls: [
+            {
+              index: 0,
+              id: "dup-call",
+              function: { name: "read_file", arguments: '{"path"' },
+            },
+          ],
+        },
+      },
+    ],
+  });
+  a.consume({
+    choices: [
+      {
+        delta: {
+          tool_calls: [
+            {
+              index: 0,
+              function: { name: "read_file", arguments: ':"README.md"}' },
+            },
+          ],
+        },
+      },
+    ],
+  });
+  assert.deepEqual(a.finish().calls[0], {
+    id: "dup-call",
+    name: "read_file",
+    input: { path: "README.md" },
+  });
+});
+
+test("still assembles a genuinely fragmented tool name in delta mode", () => {
+  const a = new AgentStreamAssembler("openai-chat");
+  a.consume({
+    choices: [
+      {
+        delta: {
+          tool_calls: [
+            {
+              index: 0,
+              id: "frag-call",
+              function: { name: "browser_", arguments: "" },
+            },
+          ],
+        },
+      },
+    ],
+  });
+  a.consume({
+    choices: [
+      {
+        delta: {
+          tool_calls: [
+            { index: 0, function: { name: "click", arguments: "{}" } },
+          ],
+        },
+      },
+    ],
+  });
+  assert.equal(a.finish().calls[0].name, "browser_click");
+});
+
 test("detects silent stream interruption without completion marker", () => {
   const a = new AgentStreamAssembler("openai-chat");
   a.consume({

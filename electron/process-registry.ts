@@ -66,18 +66,31 @@ export async function terminateRegisteredProcess(record: ManagedProcessRecord) {
     record.processGroupId ? -record.processGroupId : undefined,
     record.pid,
   ].filter((target): target is number => typeof target === "number");
-  for (const target of targets) {
-    try {
-      process.kill(target, "SIGTERM");
-    } catch {
-      // The process may have exited between the existence check and the signal.
+  const signal = (sig: NodeJS.Signals) => {
+    for (const target of targets) {
+      try {
+        process.kill(target, sig);
+      } catch {
+        // The process may have exited between the check and the signal.
+      }
     }
+  };
+  signal("SIGTERM");
+  // Give the process a grace period to exit cleanly, then escalate to
+  // SIGKILL so a process that ignores or slowly handles SIGTERM (build
+  // tools, signal-trapping scripts) is actually terminated on stop.
+  const graceMs = 2_000;
+  const deadline = Date.now() + graceMs;
+  while (Date.now() < deadline) {
+    if (!processExists(record.pid)) return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
   }
+  if (processExists(record.pid)) signal("SIGKILL");
 }
 
 export class ManagedProcessRegistry {
   private readonly records = new Map<string, ManagedProcessRecord>();
-  private loaded = false;
+  private loadPromise: Promise<void> | undefined;
   private writeQueue = Promise.resolve();
 
   constructor(
@@ -86,9 +99,16 @@ export class ManagedProcessRegistry {
     private readonly isAlive: (pid: number) => boolean = processExists,
   ) {}
 
-  private async load() {
-    if (this.loaded) return;
-    this.loaded = true;
+  private load() {
+    // Cache the in-flight promise so concurrent callers await the same read
+    // instead of racing: a boolean flag would let a second caller proceed on
+    // an empty map and persist over the on-disk records before readFile lands.
+    if (this.loadPromise) return this.loadPromise;
+    this.loadPromise = this.loadFromDisk();
+    return this.loadPromise;
+  }
+
+  private async loadFromDisk() {
     let raw: string;
     try {
       raw = await readFile(this.filePath, "utf8");

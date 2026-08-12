@@ -827,6 +827,10 @@ export default function App() {
     ((taskId: string, messageId: string) => Promise<void>) | undefined
   >(undefined);
   const startingQueuedRef = useRef(new Set<string>());
+  // Synchronous in-flight lock for manual send(): runningId is only written
+  // to state after several awaits (history load, SSH reconnect), so the
+  // runningId/runStatus guard cannot catch a second click inside that window.
+  const sendingTasksRef = useRef(new Set<string>());
   const modelPickerRef = useRef<HTMLDivElement>(null);
   const effortPickerRef = useRef<HTMLDivElement>(null);
   const modelTriggerRef = useRef<HTMLButtonElement>(null);
@@ -1090,7 +1094,9 @@ export default function App() {
   );
   const conversationTurns = useMemo(
     () => conversationTurnPreviews(messages),
-    [activeTaskId, messages.length, runningId],
+    // Depend on the array itself, not its length: reordering queued messages
+    // (prioritizeQueuedMessage) keeps the length but changes turn indices.
+    [activeTaskId, messages, runningId],
   );
   const visibleMessages = useMemo(() => {
     // Keep the conversation window bounded while tokens are still arriving.
@@ -2213,7 +2219,9 @@ export default function App() {
         removed.map((task) => window.kcode.state.deleteTask(task.id)),
       );
     }
-    const nextTasks = tasks.filter(
+    // Live ref instead of the stale `tasks` closure — awaits above let
+    // concurrent streaming updates land, and a snapshot would revert them.
+    const nextTasks = tasksRef.current.filter(
       (task) => task.workspacePath !== workspacePath,
     );
     setTasks(nextTasks);
@@ -2725,6 +2733,23 @@ export default function App() {
           pendingTextRef.current.delete(id);
           pendingTextSinceRef.current.delete(id);
           resetStreamingText(id);
+          // Text streamed before an intervening tool call is flushed into
+          // message.content (see the "activity" handler); clear that too, or
+          // the retried answer gets appended to the abandoned fragment.
+          const clearCommitted = (all: ChatMessage[]) =>
+            all.map((message) =>
+              message.id === `assistant:${id}` && message.content
+                ? { ...message, content: "" }
+                : message,
+            );
+          setTasks((all) =>
+            all.map((task) =>
+              task.id === taskId
+                ? { ...task, messages: clearCommitted(task.messages) }
+                : task,
+            ),
+          );
+          if (isActive) setMessages(clearCommitted);
           scheduleRemoteStreamSync(id);
           return;
         }
@@ -2732,7 +2757,19 @@ export default function App() {
           clearStreamingProgress(id);
           clearPendingReasoning(id);
           if (!isActive) {
-            appendStreamingText(id, event.delta);
+            // A task switched away mid-stream may still have paced text sitting
+            // in its buffer waiting on the flush timer. Writing this delta
+            // straight to the store would land ahead of that buffered text and
+            // reorder the answer. Drain the buffer in order first.
+            const buffered = pendingTextRef.current.get(id);
+            if (buffered) {
+              buffered.append(event.delta);
+              appendStreamingText(id, buffered.take(true));
+              pendingTextRef.current.delete(id);
+              pendingTextSinceRef.current.delete(id);
+            } else {
+              appendStreamingText(id, event.delta);
+            }
             scheduleRemoteStreamSync(id);
             return;
           }
@@ -3590,7 +3627,10 @@ export default function App() {
       requestIds.forEach((id) => requestTasksRef.current.delete(id));
       await window.kcode.state.deleteTask(task.id);
     }
-    const nextTasks = tasks.filter((item) => item.id !== task.id);
+    // Use the live ref, not the render-time `tasks` closure: awaits above
+    // yield to streaming `onEvent` updates, so a stale snapshot here would
+    // roll back concurrent tasks' progress. Filter off the latest state.
+    const nextTasks = tasksRef.current.filter((item) => item.id !== task.id);
     setTasks(nextTasks);
     if (task.id === activeTaskId) {
       const next = nextTasks[0];
@@ -4217,6 +4257,24 @@ export default function App() {
   }
 
   async function send(
+    override?: string,
+    queuedMessageId?: string,
+    queuedTaskId?: string,
+  ) {
+    const lockTaskId = queuedTaskId ?? activeTask?.id ?? "";
+    // Synchronous re-entrancy guard: the runningId/runStatus checks below
+    // only see state written after several awaits, so a fast second click
+    // (or Enter) would slip through before the first call locks the task.
+    if (lockTaskId && sendingTasksRef.current.has(lockTaskId)) return;
+    if (lockTaskId) sendingTasksRef.current.add(lockTaskId);
+    try {
+      await sendInner(override, queuedMessageId, queuedTaskId);
+    } finally {
+      if (lockTaskId) sendingTasksRef.current.delete(lockTaskId);
+    }
+  }
+
+  async function sendInner(
     override?: string,
     queuedMessageId?: string,
     queuedTaskId?: string,

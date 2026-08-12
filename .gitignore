@@ -7,6 +7,10 @@ dist-electron/
 .env.*
 release/
 artifacts/
+dist-cli/
+cli/kcode-cli.cjs
+cli/kcode-cli.cjs.map
+cli/*.tgz
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal

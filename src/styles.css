@@ -3267,6 +3267,16 @@ button:not(:disabled) {
   opacity: 0.42;
 }
 
+.collaboration-empty-hint {
+  margin: 8px 2px 0;
+  padding: 7px 9px;
+  border-radius: 6px;
+  background: var(--surface-sunken, color-mix(in srgb, var(--ink) 5%, transparent));
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
 .collaboration-model-list {
   max-height: 270px;
   margin-top: 7px;
@@ -4932,6 +4942,14 @@ button:not(:disabled) {
 .task-modal input {
   font-size: 13px;
   padding: 6px 9px;
+}
+/* Single, subtle focus ring — avoid the doubled box-shadow + outline
+   stack that makes the field look elevated. */
+.task-modal input:focus,
+.task-modal input:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--focus-ring);
 }
 .task-name-field {
   display: grid;
