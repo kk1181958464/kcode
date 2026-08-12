@@ -4,8 +4,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const rootPkg = JSON.parse(
-  readFileSync(path.join(root, "package.json"), "utf8"),
+// The CLI has its own npm version line, independent of the desktop app's
+// release version in the root package.json.
+const cliPkg = JSON.parse(
+  readFileSync(path.join(root, "cli", "package.json"), "utf8"),
 );
 
 /**
@@ -35,7 +37,7 @@ await build({
   external: ["ssh2", "mysql2", "mongodb", "mssql", "@vscode/ripgrep"],
   // Surface the published version to app.getVersion() via the shim.
   define: {
-    "process.env.KCODE_VERSION": JSON.stringify(rootPkg.version),
+    "process.env.KCODE_VERSION": JSON.stringify(cliPkg.version),
   },
   logLevel: "info",
   // No sourcemap in the published artifact (the map is ~20MB).
@@ -43,4 +45,4 @@ await build({
   minify: false,
 });
 
-console.log(`CLI bundled → cli/kcode-cli.cjs (v${rootPkg.version})`);
+console.log(`CLI bundled → cli/kcode-cli.cjs (v${cliPkg.version})`);
