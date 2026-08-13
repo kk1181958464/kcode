@@ -56,9 +56,32 @@ export class LiveView {
         this.startSpinner();
         break;
       case "text_reset":
-        // Upstream retried; drop the answer rows streamed so far.
-        this.rows = this.rows.filter((r) => r.kind !== "answer");
-        this.answerTranscript = "";
+        // Upstream retried. Keep the transcript prefix and install the retry's
+        // divergent prefix in one frame instead of flashing an empty answer.
+        {
+          let remaining = Math.max(
+            0,
+            Math.floor(Number(event.textOffset) || 0),
+          );
+          this.rows = this.rows.flatMap((row) => {
+            if (row.kind !== "answer") return [row];
+            if (remaining <= 0) return [];
+            const retained = row.text.slice(0, remaining);
+            remaining -= retained.length;
+            return retained ? [{ ...row, text: retained }] : [];
+          });
+          const replacement = sanitizeTerminalText(event.replacement ?? "");
+          this.answerTranscript =
+            this.answerTranscript.slice(
+              0,
+              Math.max(0, Math.floor(Number(event.textOffset) || 0)),
+            ) + replacement;
+          if (replacement)
+          this.rows.push({
+            kind: "answer",
+              text: replacement,
+          });
+        }
         break;
       case "progress":
         this.setEphemeral("progress", event.message);

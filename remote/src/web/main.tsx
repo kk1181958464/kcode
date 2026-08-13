@@ -54,6 +54,7 @@ import {
   MOBILE_TASK_BATCH,
   newerLiveStream,
   reconcileById,
+  shouldShowCompletedProcess,
   visibleMessageWindow,
 } from "./mobile-ui";
 import { reconnectDelay } from "./reconnect-policy";
@@ -78,6 +79,7 @@ type TaskMessage = {
   completedAt?: number;
   finalResponseOffset?: number;
   finalResponseStartedAt?: number;
+  finalResponseProcess?: "correction";
   model?: string;
   imageCount?: number;
   files?: Array<{ name: string; size: number }>;
@@ -267,6 +269,7 @@ function sameMessage(left: TaskMessage, right: TaskMessage) {
     left.completedAt === right.completedAt &&
     left.finalResponseOffset === right.finalResponseOffset &&
     left.finalResponseStartedAt === right.finalResponseStartedAt &&
+    left.finalResponseProcess === right.finalResponseProcess &&
     left.model === right.model &&
     left.imageCount === right.imageCount &&
     sameFiles(left.files, right.files)
@@ -523,10 +526,13 @@ const RemoteMessageView = memo(function RemoteMessageView({
         Math.max(0, Math.floor(storedFinalResponseOffset)),
       )
     : undefined;
-  const showCompletedProcess =
-    message.role === "assistant" &&
-    activities.length > 0 &&
-    (!running || finalResponseOffset !== undefined);
+  const showCompletedProcess = shouldShowCompletedProcess({
+    role: message.role,
+    activityCount: activities.length,
+    running,
+    finalResponseOffset,
+    finalResponseProcess: message.finalResponseProcess,
+  });
   const processTextLength = showCompletedProcess
     ? (finalResponseOffset ??
       completedProcessTextLength(activities, content.length))

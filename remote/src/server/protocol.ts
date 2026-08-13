@@ -68,6 +68,7 @@ export type RemoteTaskSnapshot = {
     completedAt?: number;
     finalResponseOffset?: number;
     finalResponseStartedAt?: number;
+    finalResponseProcess?: "correction";
     model?: string;
     imageCount?: number;
     files?: Array<{ name: string; size: number }>;

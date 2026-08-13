@@ -22,6 +22,10 @@ kcode [workspacePath]
 
 - `workspacePath` — the project directory the agent operates in. Defaults to the
   current working directory.
+- Interactive startup checks npm for a newer CLI version in the background and
+  never blocks the prompt. Results are cached for 24 hours. Use `/update` to
+  check immediately, or pass `--no-update-check` / set
+  `KCODE_NO_UPDATE_CHECK=1` to disable automatic checks.
 - Piped/non-interactive input runs in `read-only` mode by default. Pass
   `--yolo` or `--full-access` explicitly when an automated run must modify the
   workspace.

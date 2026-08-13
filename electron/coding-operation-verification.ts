@@ -89,11 +89,15 @@ export function isAdvisoryOnlyRequest(content: string) {
 
 function userIntentContent(content: string) {
   return content
+    .replace(/<user_steer>([\s\S]*?)<\/user_steer>/gi, "$1")
     .replace(
       /<interrupted_turn_recovery>[\s\S]*?<\/interrupted_turn_recovery>/gi,
       "",
     )
     .replace(/<runtime_verification>[\s\S]*?<\/runtime_verification>/gi, "")
+    .replace(/<runtime_finalization>[\s\S]*?<\/runtime_finalization>/gi, "")
+    .replace(/<runtime_hook>[\s\S]*?<\/runtime_hook>/gi, "")
+    .replace(/<parent_instruction>[\s\S]*?<\/parent_instruction>/gi, "")
     .replace(/<context_file\b[^>]*>[\s\S]*?<\/context_file>/gi, "")
     .replace(/<conversation_summary>[\s\S]*?<\/conversation_summary>/gi, "")
     .trim();

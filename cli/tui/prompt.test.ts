@@ -102,6 +102,44 @@ test("interactive secret prompt never writes the secret", async () => {
   assert.match(sink.output, /••••/);
 });
 
+test("background notifications preserve the active prompt value", async () => {
+  const input = new FakeInput();
+  const sink = new Sink();
+  const prompt = new TerminalPrompt({
+    input: input as unknown as NodeJS.ReadStream,
+    output: sink,
+  });
+  const pending = prompt.ask({ placeholder: "输入任务", commands });
+
+  for (const ch of "继续修复") key(input, ch);
+  prompt.notify(
+    "发现 KCode CLI 新版本 0.1.8\n更新命令：npm install -g @kk1181958464/kcode@latest",
+  );
+  key(input, "", { name: "return", sequence: "\r" });
+
+  assert.equal(await pending, "继续修复");
+  assert.match(sink.output, /新版本 0\.1\.8/);
+  assert.match(sink.output, /继续修复/);
+});
+
+test("notifications received between prompts are shown on the next prompt", async () => {
+  const input = new FakeInput();
+  const sink = new Sink();
+  const prompt = new TerminalPrompt({
+    input: input as unknown as NodeJS.ReadStream,
+    output: sink,
+  });
+
+  prompt.notify("发现 KCode CLI 新版本 0.1.8");
+  const pending = prompt.ask({ placeholder: "输入任务" });
+  key(input, "确");
+  key(input, "认");
+  key(input, "", { name: "return", sequence: "\r" });
+
+  assert.equal(await pending, "确认");
+  assert.match(sink.output, /新版本 0\.1\.8/);
+});
+
 test("prompt rendering does not emit visible rows wider than the terminal", async () => {
   const input = new FakeInput();
   const sink = new Sink();

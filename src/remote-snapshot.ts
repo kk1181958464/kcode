@@ -78,6 +78,7 @@ function snapshotMessage(message: TaskRecord["messages"][number]) {
             Math.max(0, visibleFinalResponseOffset - contentStart),
           ),
     finalResponseStartedAt: message.finalResponseStartedAt,
+    finalResponseProcess: message.finalResponseProcess,
     model: message.model,
     imageCount: message.images?.length || undefined,
     files: message.contextAttachments?.length

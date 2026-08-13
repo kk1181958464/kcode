@@ -44,6 +44,7 @@ test("builds a bounded remote task snapshot without absolute workspace paths", (
         completedAt: 9,
         finalResponseOffset,
         finalResponseStartedAt: 8,
+        finalResponseProcess: "correction",
       },
     ],
     activities: [
@@ -76,6 +77,7 @@ test("builds a bounded remote task snapshot without absolute workspace paths", (
   assert.equal(snapshot.messages[1].completedAt, 9);
   assert.equal(snapshot.messages[1].finalResponseOffset, "已检查。".length);
   assert.equal(snapshot.messages[1].finalResponseStartedAt, 8);
+  assert.equal(snapshot.messages[1].finalResponseProcess, "correction");
   assert.equal(snapshot.activities[0].path, "kcode/src/App.tsx");
   assert.equal(snapshot.activities[0].textOffset, 6);
   assert.equal(snapshot.activities[0].subagentId, "agent-1");

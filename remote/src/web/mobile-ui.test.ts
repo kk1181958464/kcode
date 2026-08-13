@@ -8,6 +8,7 @@ import {
   mergeLiveContent,
   newerLiveStream,
   reconcileById,
+  shouldShowCompletedProcess,
   visibleMessageWindow,
 } from "./mobile-ui";
 
@@ -48,6 +49,28 @@ test("splits completed mobile output after the last root activity", () => {
   assert.equal(completedProcessTextLength(activities, 40), 12);
   assert.equal(completedProcessDuration(1_000, 6_000, activities), 5_000);
   assert.equal(formatCompactDuration(2_521_000), "42m 1s");
+});
+
+test("collapses corrected prose but not ordinary auto-continuation", () => {
+  assert.equal(
+    shouldShowCompletedProcess({
+      role: "assistant",
+      activityCount: 0,
+      running: false,
+      finalResponseOffset: 20,
+      finalResponseProcess: "correction",
+    }),
+    true,
+  );
+  assert.equal(
+    shouldShowCompletedProcess({
+      role: "assistant",
+      activityCount: 0,
+      running: false,
+      finalResponseOffset: 20,
+    }),
+    false,
+  );
 });
 
 test("reuses unchanged snapshot items by id", () => {

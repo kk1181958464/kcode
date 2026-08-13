@@ -93,6 +93,116 @@ test("runAgent emits text then a completed done for a plain-text turn", async ()
   assert.match(answer, /编码 Agent/);
 });
 
+test("runAgent answers the latest explanation instead of an older upload goal", async () => {
+  const request = await makeRequest();
+  request.messages = [
+    { role: "user", content: "把构建文件上传到 SSH 服务器" },
+    { role: "assistant", content: "上传尚未完成。" },
+    {
+      role: "user",
+      content: "需要说明为什么手机端需要 app，电脑端网页就可以",
+    },
+  ];
+  const requireToolCall: boolean[] = [];
+  const deps: RunAgentDeps = {
+    getProvider: fakeProvider("fake-model"),
+    async *streamTurn(args) {
+      requireToolCall.push(args.requireToolCall);
+      yield {
+        type: "text",
+        delta: "手机端通常需要 App，是为了后台保活、系统权限和原生通知。",
+      };
+      yield {
+        type: "complete",
+        turn: {
+          text: "手机端通常需要 App，是为了后台保活、系统权限和原生通知。",
+          calls: [],
+          rawCalls: [],
+          usage: { input: 20, output: 12, cached: 0 },
+        },
+      };
+    },
+  };
+
+  const events = await collect(
+    runAgent(
+      "test-latest-explanation",
+      request,
+      new AbortController().signal,
+      deps,
+    ),
+  );
+  assert.deepEqual(requireToolCall, [false]);
+  assert.ok(!events.some((event) => event.type === "text_reset"));
+  assert.ok(!events.some((event) => event.type === "error"));
+  assert.ok(
+    events.findIndex((event) => event.type === "text") <
+      events.findIndex((event) => event.type === "final_response"),
+    "an informational answer should stream before it is marked final",
+  );
+  assert.match(
+    events
+      .filter((event) => event.type === "text")
+      .map((event) => (event as Extract<AgentEvent, { type: "text" }>).delta)
+      .join(""),
+    /后台保活/,
+  );
+});
+
+test("inspection questions retain corrected prose as collapsible process text", async () => {
+  const request = await makeRequest();
+  request.messages = [
+    {
+      role: "user",
+      content: "为什么手机端需要 app，电脑端网页就可以？",
+    },
+  ];
+  let round = 0;
+  const deps: RunAgentDeps = {
+    getProvider: fakeProvider("fake-model"),
+    async *streamTurn() {
+      round += 1;
+      const text =
+        round === 1
+          ? "文件已经上传成功，任务已完成。"
+          : "手机端依赖后台保活和系统权限，桌面网页则可借助常驻浏览器环境。";
+      yield { type: "text", delta: text };
+      yield {
+        type: "complete",
+        turn: {
+          text,
+          calls: [],
+          rawCalls: [],
+          usage: { input: 20, output: 12, cached: 0 },
+        },
+      };
+    },
+  };
+
+  const events = await collect(
+    runAgent(
+      "test-buffer-inspection",
+      request,
+      new AbortController().signal,
+      deps,
+    ),
+  );
+  const streamedText = events
+    .filter((event) => event.type === "text")
+    .map((event) => (event as Extract<AgentEvent, { type: "text" }>).delta)
+    .join("");
+  const finalResponse = events.find(
+    (event): event is Extract<AgentEvent, { type: "final_response" }> =>
+      event.type === "final_response",
+  );
+  assert.equal(round, 2);
+  assert.match(streamedText, /上传成功/);
+  assert.match(streamedText, /后台保活/);
+  assert.equal(finalResponse?.textOffset, "文件已经上传成功，任务已完成。".length);
+  assert.equal(finalResponse?.processKind, "correction");
+  assert.ok(!events.some((event) => event.type === "text_reset"));
+});
+
 test("runAgent pauses on confirm mode and resumes on resolveApproval", async () => {
   const request = await makeRequest();
   request.permissionMode = "confirm";
@@ -357,6 +467,7 @@ test("runAgent text resets retain the text before the current model turn", async
   const reset = events.find((event) => event.type === "text_reset");
   assert.ok(reset, "expected a text_reset event");
   assert.equal(reset.textOffset, prefix.length);
+  assert.equal(reset.reason, "stream_retry");
   assert.ok(
     events.some(
       (event) =>

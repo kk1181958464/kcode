@@ -2645,6 +2645,7 @@ export default function App() {
                   Math.max(0, Math.floor(event.textOffset)),
                 ),
                 finalResponseStartedAt: event.startedAt,
+                finalResponseProcess: event.processKind,
               };
             });
           setTasks((all) =>
@@ -2758,6 +2759,7 @@ export default function App() {
                     message,
                     event.textOffset,
                     streamedText,
+                    event.replacement,
                   )
                 : message,
             );

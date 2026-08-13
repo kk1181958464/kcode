@@ -8,6 +8,7 @@ const BOLD = "\x1b[1m";
 const BLUE = "\x1b[38;5;75m";
 const CYAN = "\x1b[36m";
 const GREEN = "\x1b[32m";
+const YELLOW = "\x1b[33m";
 const MUTED = "\x1b[38;5;245m";
 const INVERT = "\x1b[7m";
 
@@ -139,9 +140,28 @@ function inputViewport(
 export class TerminalPrompt {
   private renderedLines = 0;
   private cursorRow = 0;
+  private activeRender: (() => void) | null = null;
+  private pendingNotifications: string[][] = [];
 
   constructor(private readonly io: PromptIO) {
     readline.emitKeypressEvents(io.input);
+  }
+
+  notify(message: string): void {
+    const width = Math.max(24, this.io.output.columns || 80);
+    const lines = sanitizeTerminalText(message)
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((line) => `${YELLOW}${truncateToWidth(line, width)}${RESET}`);
+    if (!lines.length) return;
+    const rerender = this.activeRender;
+    if (!rerender) {
+      this.pendingNotifications.push(lines);
+      return;
+    }
+    this.clearRendered();
+    this.io.output.write(`${lines.join("\r\n")}\r\n`);
+    rerender();
   }
 
   async ask(options: PromptOptions = {}): Promise<string | null> {
@@ -210,12 +230,15 @@ export class TerminalPrompt {
       this.redraw(lines, inputRow, col);
     };
 
+    this.flushPendingNotifications();
     input.setRawMode(true);
     input.resume();
+    this.activeRender = render;
     render();
 
     return new Promise((resolve) => {
       const cleanup = (value: string | null) => {
+        this.activeRender = null;
         input.off("keypress", onKeypress);
         input.setRawMode(false);
         this.clearRendered();
@@ -319,11 +342,14 @@ export class TerminalPrompt {
       this.redraw(lines, lines.length - 1, 0);
     };
 
+    this.flushPendingNotifications();
     input.setRawMode(true);
     input.resume();
+    this.activeRender = render;
     render();
     return new Promise((resolve) => {
       const cleanup = (value: T | null) => {
+        this.activeRender = null;
         input.off("keypress", onKeypress);
         input.setRawMode(false);
         this.clearRendered();
@@ -387,5 +413,12 @@ export class TerminalPrompt {
     this.io.output.write(out);
     this.renderedLines = 0;
     this.cursorRow = 0;
+  }
+
+  private flushPendingNotifications(): void {
+    if (!this.pendingNotifications.length) return;
+    for (const lines of this.pendingNotifications)
+      this.io.output.write(`${lines.join("\r\n")}\r\n`);
+    this.pendingNotifications = [];
   }
 }

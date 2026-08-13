@@ -98,6 +98,32 @@ test("keeps explicit configuration changes actionable after sanitizing metadata"
   );
 });
 
+test("a live user steering request supersedes an older upload goal", () => {
+  const explanation = "需要说明为什么手机端需要 app，电脑端网页就可以";
+  const history = [
+    {
+      kind: "message" as const,
+      role: "user" as const,
+      content: "把构建文件上传到 SSH 服务器",
+    },
+    {
+      kind: "message" as const,
+      role: "assistant" as const,
+      content: "正在处理上传。",
+    },
+    {
+      kind: "message" as const,
+      role: "user" as const,
+      content: `<user_steer>${explanation}</user_steer>\n<runtime_verification>最新指令替代旧目标。</runtime_verification>`,
+    },
+  ];
+
+  assert.equal(relevantVerificationRequestContent(history), explanation);
+  const operations = requestedCodingOperations(history);
+  assert.equal(operations.has("upload"), false);
+  assert.deepEqual([...operations], ["inspect"]);
+});
+
 test("detects coding work requested and falsely claimed by a text-only reply", () => {
   assert.deepEqual(
     [

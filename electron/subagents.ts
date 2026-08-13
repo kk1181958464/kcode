@@ -15,6 +15,13 @@ const MAX_TRANSCRIPT_CHARS = 10_000;
 const MAX_RETAINED_TRANSCRIPT_CHARS = 2_000;
 const MAX_RESULT_ACTIVITIES = 25;
 const STOP_GRACE_MS = 10_000;
+export const DEFAULT_SUBAGENT_WAIT_TIMEOUT_MS = 5 * 60_000;
+
+export type WaitForSubagentsOptions = {
+  timeoutMs?: number;
+  signal?: AbortSignal;
+  onProgress?: (message: string) => void;
+};
 
 export type SubagentExecutionTarget = {
   agentRole: AgentRole;
@@ -235,13 +242,15 @@ export function spawnSubagent(
       record.status = controller.signal.aborted ? "stopped" : "completed";
     } catch (error) {
       record.status = controller.signal.aborted ? "stopped" : "failed";
-      record.error = error instanceof Error ? error.message : String(error);
+      const message = error instanceof Error ? error.message : String(error);
+      record.error = record.error ? `${record.error}\n${message}` : message;
     } finally {
       record.acceptingInstructions = false;
       parentSignal.removeEventListener("abort", stopWithParent);
       record.completedAt = Date.now();
       messageQueues.delete(requestId);
       await stopSubagentsForParent(requestId, false);
+      if (record.usageReported) releaseSubagentMutationClaims(record);
     }
   })();
   return publicState(record);
@@ -338,6 +347,7 @@ function releaseSubagentMutationClaims(agent: SubagentRecord) {
 export async function waitForSubagents(
   parentRequestId: string,
   agentIds?: string[],
+  options: WaitForSubagentsOptions = {},
 ) {
   const selected = agentIds?.length
     ? agentIds.map((id) => {
@@ -348,15 +358,94 @@ export async function waitForSubagents(
       })
     : directChildren(parentRequestId);
   if (!selected.length) throw new Error("当前任务没有可等待的子 Agent。");
-  await Promise.all(selected.map((agent) => agent.promise));
+  const timeoutMs = Math.max(
+    1,
+    Math.floor(options.timeoutMs ?? DEFAULT_SUBAGENT_WAIT_TIMEOUT_MS),
+  );
+  const startedAt = Date.now();
+  const describePending = () =>
+    selected.filter(
+      (agent) => agent.status === "running" || agent.status === "stopping",
+    );
+  const reportProgress = () => {
+    const pending = describePending();
+    if (!pending.length) return;
+    const elapsedSeconds = Math.max(
+      1,
+      Math.floor((Date.now() - startedAt) / 1_000),
+    );
+    options.onProgress?.(
+      `已等待 ${elapsedSeconds} 秒；仍有 ${pending.length} 个子 Agent 在运行：${pending
+        .map((agent) => agent.name)
+        .join("、")}`,
+    );
+  };
+  reportProgress();
+  const progressTimer = options.onProgress
+    ? setInterval(reportProgress, 15_000)
+    : undefined;
+  let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
+  let removeAbortListener: () => void = () => undefined;
+  const waitOutcome = await Promise.race([
+    Promise.allSettled(selected.map((agent) => agent.promise)).then(
+      () => "completed" as const,
+    ),
+    new Promise<"timeout">(
+      (resolve) =>
+        (timeoutTimer = setTimeout(() => resolve("timeout"), timeoutMs)),
+    ),
+    new Promise<"aborted">((resolve) => {
+      const signal = options.signal;
+      if (!signal) return;
+      if (signal.aborted) {
+        resolve("aborted");
+        return;
+      }
+      const onAbort = () => resolve("aborted");
+      signal.addEventListener("abort", onAbort, { once: true });
+      removeAbortListener = () =>
+        signal.removeEventListener("abort", onAbort);
+    }),
+  ]);
+  if (progressTimer) clearInterval(progressTimer);
+  if (timeoutTimer) clearTimeout(timeoutTimer);
+  removeAbortListener();
+
+  if (waitOutcome !== "completed") {
+    const pending = describePending();
+    const reason =
+      waitOutcome === "timeout"
+        ? `等待超过 ${Math.ceil(timeoutMs / 1_000)} 秒，已自动停止以避免无限等待。`
+        : "父任务已取消等待，已向子 Agent 发送停止信号。";
+    for (const agent of pending) {
+      agent.acceptingInstructions = false;
+      if (agent.status === "running") agent.status = "stopping";
+      agent.error = agent.error ? `${agent.error}\n${reason}` : reason;
+      agent.controller.abort();
+    }
+    let graceTimer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      Promise.allSettled(pending.map((agent) => agent.promise)),
+      new Promise<void>(
+        (resolve) =>
+          (graceTimer = setTimeout(resolve, STOP_GRACE_MS)),
+      ),
+    ]);
+    if (graceTimer) clearTimeout(graceTimer);
+    for (const agent of pending)
+      if (agent.status === "stopping")
+        agent.error = `${reason}停止信号已发送，但底层工具仍在退出；后台清理会继续。`;
+  }
+
   return selected.map((agent) => {
     const usageDelta = agent.usageReported
       ? { input: 0, output: 0, cached: 0 }
       : { ...agent.usage };
-    const result = { ...resultState(agent), usageDelta };
     agent.usageReported = true;
+    const result = { ...resultState(agent), usageDelta };
     compactCollectedRecord(agent);
-    releaseSubagentMutationClaims(agent);
+    if (agent.status !== "running" && agent.status !== "stopping")
+      releaseSubagentMutationClaims(agent);
     return result;
   });
 }
@@ -388,8 +477,8 @@ export async function stopSubagent(parentRequestId: string, agentId: string) {
   const usageDelta = agent.usageReported
     ? { input: 0, output: 0, cached: 0 }
     : { ...agent.usage };
-  const result = { ...resultState(agent), usageDelta };
   agent.usageReported = true;
+  const result = { ...resultState(agent), usageDelta };
   compactCollectedRecord(agent);
   if (agent.status !== "stopping") releaseSubagentMutationClaims(agent);
   return result;
@@ -406,7 +495,14 @@ export async function stopSubagentsForParent(
     if (agent.status === "running") agent.status = "stopping";
     if (active) agent.controller.abort();
   }
-  await Promise.allSettled(selected.map((agent) => agent.promise));
+  let settleTimer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    Promise.allSettled(selected.map((agent) => agent.promise)),
+    new Promise<void>(
+      (resolve) => (settleTimer = setTimeout(resolve, STOP_GRACE_MS)),
+    ),
+  ]);
+  if (settleTimer) clearTimeout(settleTimer);
   if (remove)
     for (const agent of selected) {
       agents.delete(agent.id);

@@ -45,6 +45,26 @@ type ProcessActivity = {
   completedAt?: number;
 };
 
+export function shouldShowCompletedProcess(input: {
+  role: "user" | "assistant";
+  activityCount: number;
+  running: boolean;
+  finalResponseOffset?: number;
+  finalResponseProcess?: "correction";
+}) {
+  if (input.role !== "assistant") return false;
+  const offset = Number(input.finalResponseOffset);
+  const hasCorrectionProcess =
+    input.finalResponseProcess === "correction" &&
+    Number.isFinite(offset) &&
+    offset > 0;
+  return (
+    hasCorrectionProcess ||
+    (input.activityCount > 0 &&
+      (!input.running || Number.isFinite(input.finalResponseOffset)))
+  );
+}
+
 export function visibleMessageWindow<T>(items: T[], visibleCount: number) {
   const count = Math.max(1, Math.floor(visibleCount));
   const start = Math.max(0, items.length - count);

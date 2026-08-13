@@ -18,12 +18,14 @@ export function truncateAssistantMessageForTextReset(
   message: ChatMessage,
   textOffset: number | undefined,
   streamingText = "",
+  replacement = "",
 ) {
   const parsedOffset = Number(textOffset);
   const retainedOffset = Number.isFinite(parsedOffset)
     ? Math.max(0, Math.floor(parsedOffset))
     : 0;
-  const content = `${message.content}${streamingText}`.slice(0, retainedOffset);
+  const content =
+    `${message.content}${streamingText}`.slice(0, retainedOffset) + replacement;
   const parsedFinalOffset = Number(message.finalResponseOffset);
   const clearFinalBoundary =
     Number.isFinite(parsedFinalOffset) && parsedFinalOffset >= retainedOffset;
@@ -32,6 +34,7 @@ export function truncateAssistantMessageForTextReset(
   const {
     finalResponseOffset: _finalResponseOffset,
     finalResponseStartedAt: _finalResponseStartedAt,
+    finalResponseProcess: _finalResponseProcess,
     ...rest
   } = message;
   return { ...rest, content };

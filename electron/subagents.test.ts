@@ -355,3 +355,36 @@ test("parent cancellation stops a child and stop returns partial output", async 
   const stopped = await stopSubagent("next-parent", next.id);
   assert.equal(stopped.status, "stopped");
 });
+
+test("wait timeout stops and collects a stuck subagent", async () => {
+  const child = spawnSubagent(
+    "timeout-parent",
+    "卡住的审查",
+    "无限等待",
+    new AbortController().signal,
+    async function* (_requestId, _agentId, signal) {
+      yield { type: "text", delta: "partial" };
+      await new Promise<void>((resolve) =>
+        signal.addEventListener("abort", () => resolve(), { once: true }),
+      );
+    },
+  );
+  const progress: string[] = [];
+  const startedAt = Date.now();
+  const [result] = await waitForSubagents(
+    "timeout-parent",
+    [child.id],
+    {
+      timeoutMs: 20,
+      onProgress: (message) => progress.push(message),
+    },
+  );
+
+  assert.ok(Date.now() - startedAt < 2_000, "wait must be bounded");
+  assert.equal(result.status, "stopped");
+  assert.equal(result.collected, true);
+  assert.equal(result.transcript, "partial");
+  assert.match(result.error ?? "", /自动停止|无限等待/);
+  assert.match(progress.join("\n"), /仍有 1 个子 Agent/);
+  assert.equal(listSubagents("timeout-parent")[0].collected, true);
+});

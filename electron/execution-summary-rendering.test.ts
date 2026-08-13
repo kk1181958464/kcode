@@ -85,6 +85,75 @@ test("collapses process output as soon as the final response starts", () => {
   assert.doesNotMatch(markup, /execution-summary/);
 });
 
+test("collapses a corrected text-only attempt above the final answer", () => {
+  const processText = "旧结论：文件已经上传成功。\n\n";
+  const markup = renderToStaticMarkup(
+    React.createElement(ConversationHistory, {
+      messages: [
+        {
+          id: "assistant:text-correction",
+          role: "assistant",
+          content: `${processText}最终结论：手机端需要原生后台能力。`,
+          createdAt: 1_000,
+          completedAt: 4_000,
+          finalResponseOffset: processText.length,
+          finalResponseStartedAt: 3_000,
+          finalResponseProcess: "correction",
+          model: "GPT-5.6 Sol",
+        },
+      ],
+      hasOlderMessages: false,
+      hasNewerMessages: false,
+      activitiesByRequest: new Map(),
+      workspacePath: "D:/project/kcode",
+      contextByMessage: new Map(),
+      onRetry() {},
+      onActivityChange() {},
+      registerTurn() {},
+      endRef: { current: null },
+    }),
+  );
+
+  assert.match(markup, /completed-process-trigger/);
+  assert.match(markup, /已处理/);
+  assert.match(markup, /最终结论：手机端需要原生后台能力/);
+  assert.doesNotMatch(markup, /旧结论：文件已经上传成功/);
+  assert.doesNotMatch(markup, /0 个步骤/);
+});
+
+test("keeps ordinary text auto-continuation fully visible", () => {
+  const firstPart = "第一段长回答。";
+  const markup = renderToStaticMarkup(
+    React.createElement(ConversationHistory, {
+      messages: [
+        {
+          id: "assistant:auto-continue",
+          role: "assistant",
+          content: `${firstPart}第二段续写。`,
+          createdAt: 1_000,
+          completedAt: 4_000,
+          finalResponseOffset: firstPart.length,
+          finalResponseStartedAt: 3_000,
+          model: "GPT-5.6 Sol",
+        },
+      ],
+      hasOlderMessages: false,
+      hasNewerMessages: false,
+      activitiesByRequest: new Map(),
+      workspacePath: "D:/project/kcode",
+      contextByMessage: new Map(),
+      onRetry() {},
+      onActivityChange() {},
+      registerTurn() {},
+      endRef: { current: null },
+    }),
+  );
+
+  assert.match(markup, /第一段长回答/);
+  assert.match(markup, /第二段续写/);
+  assert.doesNotMatch(markup, /completed-process-trigger/);
+});
+
 test("shows the full running plan and concrete file changes while collapsed", () => {
   const planSteps = [
     "检查当前实现并确认处理范围",

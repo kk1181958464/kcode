@@ -1425,7 +1425,7 @@ const tools = [
   {
     name: "wait_agent",
     description:
-      "Wait for selected direct subagents, or all direct subagents when agentIds is omitted. Returns their final text, tool summaries, usage, and file changes.",
+      "Wait for selected direct subagents, or all direct subagents when agentIds is omitted. The wait is bounded; stalled children are stopped and returned with partial results instead of hanging indefinitely. Returns final text, tool summaries, usage, and file changes.",
     parameters: {
       type: "object",
       properties: {
@@ -3144,7 +3144,10 @@ async function execute(
     const agentIds = Array.isArray(call.input.agentIds)
       ? call.input.agentIds.map(String)
       : undefined;
-    const results = await waitForSubagents(requestId, agentIds);
+    const results = await waitForSubagents(requestId, agentIds, {
+      signal,
+      onProgress,
+    });
     const childActivities = results.flatMap((result) => result.activityRecords);
     const visible = results.map(
       ({ activityRecords: _records, usageDelta: _usageDelta, ...result }) =>
@@ -3161,6 +3164,7 @@ async function execute(
         }),
         { input: 0, output: 0, cached: 0 },
       ),
+      exitCode: results.every((result) => result.status === "completed") ? 0 : 1,
       additions: childActivities.reduce(
         (sum, activity) => sum + (activity.additions ?? 0),
         0,
@@ -3535,7 +3539,7 @@ async function parseStreamedTurn(
 
 type TurnStreamEvent =
   | { type: "text"; delta: string }
-  | { type: "text_reset" }
+  | { type: "text_reset"; replacement?: string }
   | { type: "reasoning_reset" }
   | { type: "reasoning"; delta: string }
   | { type: "progress"; message: string }
@@ -3616,14 +3620,31 @@ async function* streamModelTurn(
   const pushText = (delta: string) => {
     if (!delta) return;
     const reconciled = reconciler.push(delta);
-    if (reconciled.reset) enqueue({ type: "text_reset" });
-    if (reconciled.delta) {
+    if (reconciled.reset) {
+      // A divergent retry replaces the visible fragment atomically. Emitting a
+      // bare reset followed by a text delta produces a blank React frame and a
+      // conspicuous flash on long answers.
+      enqueue({ type: "text_reset", replacement: reconciled.delta });
+    } else if (reconciled.delta) {
       enqueue({ type: "text", delta: reconciled.delta });
     }
+  };
+  const completeTextAttempt = () => {
+    const reconciled = reconciler.completeAttempt();
+    if (reconciled.reset)
+      enqueue({ type: "text_reset", replacement: reconciled.delta });
+    else if (reconciled.delta)
+      enqueue({ type: "text", delta: reconciled.delta });
   };
   const pushReasoning = (delta: string) => {
     if (!delta) return;
     const reconciled = reasoningReconciler.push(delta);
+    if (reconciled.reset) enqueue({ type: "reasoning_reset" });
+    if (reconciled.delta)
+      enqueue({ type: "reasoning", delta: reconciled.delta });
+  };
+  const completeReasoningAttempt = () => {
+    const reconciled = reasoningReconciler.completeAttempt();
     if (reconciled.reset) enqueue({ type: "reasoning_reset" });
     if (reconciled.delta)
       enqueue({ type: "reasoning", delta: reconciled.delta });
@@ -3662,6 +3683,8 @@ async function* streamModelTurn(
           runtime,
           attemptBudget,
         );
+        completeReasoningAttempt();
+        completeTextAttempt();
         return;
       } catch (error) {
         if (
@@ -4463,25 +4486,25 @@ export async function* runAgent(
   // Tool stats tracking — reset per session
   const toolStats = resetToolStats();
   const activeConnectionFacts = new Map<string, string>();
-  const requestedGitOps = requestedGitOperations(history);
-  const requestedCodingOps = requestedCodingOperations(history);
-  const requestedCodingEvidenceOps =
+  let requestedGitOps = requestedGitOperations(history);
+  let requestedCodingOps = requestedCodingOperations(history);
+  let requestedCodingEvidenceOps =
     codingOperationsRequiringToolEvidence(requestedCodingOps);
-  const requestedBrowserOps = requestedBrowserOperations(history);
-  const executionRequired =
+  let requestedBrowserOps = requestedBrowserOperations(history);
+  let executionRequired =
     requestedBrowserOps.size > 0 ||
     requestedGitOps.size > 0 ||
     requestedCodingEvidenceOps.size > 0;
-  const toolsEnabled = !isCasualGreeting(request.messages.at(-1));
-  const latestUserRequest = relevantVerificationRequestContent(history);
-  const advisoryOnly = isAdvisoryOnlyRequest(latestUserRequest);
+  let toolsEnabled = !isCasualGreeting(request.messages.at(-1));
+  let latestUserRequest = relevantVerificationRequestContent(history);
+  let advisoryOnly = isAdvisoryOnlyRequest(latestUserRequest);
   const plannerCoordinator = isPlannerCoordinator(request);
-  const activeSkillInstructions =
+  let activeSkillInstructions =
     await loadActiveSkillInstructions(latestUserRequest);
-  const modelRuntime: ModelTurnRuntime = {
-    provider: await getProvider(request.providerId),
-    activeSkills: [
+  const runtimeSkillInstructions = () =>
+    [
       activeSkillInstructions,
+      "Always answer the latest real user request. Earlier unfinished actions are context only: do not resume them or report their blockers as the current result unless the latest request explicitly says to continue/retry them or asks for their status. A new informational question supersedes an older action goal.",
       browserIsOpen(browserSessionId)
         ? "This task already has a live browser session. Start browser work with browser_snapshot to inspect the current page and obtain fresh element references. Do not ask the user for a URL or click target until browser_snapshot reports that the session is unavailable; the current page is the target unless the user explicitly says otherwise."
         : "",
@@ -4490,7 +4513,10 @@ export async function* runAgent(
         : "",
     ]
       .filter(Boolean)
-      .join("\n\n"),
+      .join("\n\n");
+  const modelRuntime: ModelTurnRuntime = {
+    provider: await getProvider(request.providerId),
+    activeSkills: runtimeSkillInstructions(),
   };
   await agentHooks.run(
     "SessionStart",
@@ -4519,6 +4545,7 @@ export async function* runAgent(
   let round = 0,
     stalledRounds = 0,
     lastFingerprint = "";
+  let hasRetainedVerificationText = false;
   // Retry/claim budgets for this run, grouped as the first slice of an explicit
   // run-state object. Each counter caps how often the loop will re-prompt the
   // model for a specific unproven claim before giving up.
@@ -4551,6 +4578,48 @@ export async function* runAgent(
   while (!signal.aborted) {
     const pendingParentInstructions = drainSubagentMessages(requestId);
     const pendingSteering = turnSteeringQueue.drain(requestId);
+    if (pendingSteering.length) {
+      // Steering is a new user turn inside the same running request. Append it
+      // before computing completion requirements so the old goal cannot keep
+      // forcing operations (for example an earlier upload) after the user has
+      // switched to an informational question.
+      for (const message of pendingSteering)
+        history.push({
+          kind: "message",
+          role: "user",
+          content: `<user_steer>${message}</user_steer>`,
+        });
+      latestUserRequest = relevantVerificationRequestContent(history);
+      requestedGitOps = requestedGitOperations(history);
+      requestedCodingOps = requestedCodingOperations(history);
+      requestedCodingEvidenceOps =
+        codingOperationsRequiringToolEvidence(requestedCodingOps);
+      requestedBrowserOps = requestedBrowserOperations(history);
+      executionRequired =
+        requestedBrowserOps.size > 0 ||
+        requestedGitOps.size > 0 ||
+        requestedCodingEvidenceOps.size > 0;
+      toolsEnabled = !isCasualGreeting({
+        role: "user",
+        content: latestUserRequest,
+      });
+      advisoryOnly = isAdvisoryOnlyRequest(latestUserRequest);
+      activeSkillInstructions =
+        await loadActiveSkillInstructions(latestUserRequest);
+      modelRuntime.activeSkills = runtimeSkillInstructions();
+      budgets.unverifiedBrowserClaims = 0;
+      budgets.unverifiedGitClaims = 0;
+      budgets.unverifiedCodingClaims = 0;
+      budgets.staleBrowserContextReplies = 0;
+      budgets.autoContinues = 0;
+      budgets.emptyTurns = 0;
+      stalledRounds = 0;
+      lastFingerprint = "";
+      hasRetainedVerificationText = false;
+      plan.steps = defaultExecutionPlan(requestedCodingOps);
+      plan.cursor = 0;
+      plan.fallbackActive = plan.steps.length > 0;
+    }
     const codingEvidenceAtRoundStart =
       successfulCodingEvidence(evidenceHistory);
     const browserEvidenceAtRoundStart =
@@ -4671,12 +4740,6 @@ export async function* runAgent(
         role: "user",
         content: `<parent_instruction>${message}</parent_instruction>`,
       });
-    for (const message of pendingSteering)
-      history.push({
-        kind: "message",
-        role: "user",
-        content: `<user_steer>${message}</user_steer>`,
-      });
     if (finalizationMode)
       history.push({
         kind: "message",
@@ -4694,9 +4757,15 @@ export async function* runAgent(
       streamedText = "",
       streamedReasoning = "";
     const turnTextStartOffset = timelineTextLength;
-    const resetTurnTextEvent = (): AgentEvent => ({
+    const resetTurnTextEvent = (
+      replacement?: string,
+      reason: "stream_retry" | "runtime_verification" =
+        "runtime_verification",
+    ): AgentEvent => ({
       type: "text_reset",
       textOffset: turnTextStartOffset,
+      replacement,
+      reason,
     });
     const bufferModelText =
       browserIsOpen(browserSessionId) ||
@@ -4736,7 +4805,7 @@ export async function* runAgent(
                 request.modelId,
                 requestedCodingEvidenceOps,
                 successfulCodingEvidence(evidenceHistory),
-              evidenceHistory,
+                evidenceHistory,
               ),
           runtime: modelRuntime,
           attemptBudget: turnAttemptBudget,
@@ -4751,12 +4820,13 @@ export async function* runAgent(
             streamedReasoning = "";
             yield { type: "reasoning_reset" };
           } else if (event.type === "text_reset") {
-            // Upstream broke mid-answer and is being retried; drop what we streamed
-            // so the fresh attempt does not append onto a truncated fragment.
-            streamedText = "";
+            // Upstream broke mid-answer and is being retried. A divergent retry
+            // carries its replacement prefix in the reset event so the renderer
+            // never observes an empty intermediate answer.
+            streamedText = event.replacement ?? "";
             if (!bufferModelText) {
-              timelineTextLength = turnTextStartOffset;
-              yield resetTurnTextEvent();
+              timelineTextLength = turnTextStartOffset + streamedText.length;
+              yield resetTurnTextEvent(streamedText, "stream_retry");
             }
           } else {
             streamedText += event.delta;
@@ -4837,11 +4907,8 @@ export async function* runAgent(
       reportsMissingBrowserTarget(turn.text);
     if (staleBrowserContextReply && budgets.staleBrowserContextReplies < 2) {
       budgets.staleBrowserContextReplies += 1;
-      if (!bufferModelText && streamedText) {
-        timelineTextLength = turnTextStartOffset;
-        streamedText = "";
-        yield resetTurnTextEvent();
-      }
+      if (!bufferModelText && streamedText)
+        hasRetainedVerificationText = true;
       history.push({
         kind: "message",
         role: "assistant",
@@ -4889,11 +4956,8 @@ export async function* runAgent(
     ) {
       if (budgets.unverifiedBrowserClaims < 2) {
         budgets.unverifiedBrowserClaims += 1;
-        if (!bufferModelText && streamedText) {
-          timelineTextLength = turnTextStartOffset;
-          streamedText = "";
-          yield resetTurnTextEvent();
-        }
+        if (!bufferModelText && streamedText)
+          hasRetainedVerificationText = true;
         const unsupportedClaimNotice = unsupportedBrowserClaims.length
           ? `你上一段文字声称已经完成${unsupportedBrowserClaims.map((operation) => browserLabels[operation]).join("、")}，但没有对应的成功工具记录；该段未经验证的文字已撤回。`
           : "";
@@ -4968,11 +5032,8 @@ export async function* runAgent(
     if (!turn.calls.length && missingGitEvidence.length && !gitBlocked) {
       if (budgets.unverifiedGitClaims < 2) {
         budgets.unverifiedGitClaims += 1;
-        if (!bufferModelText && streamedText) {
-          timelineTextLength = turnTextStartOffset;
-          streamedText = "";
-          yield resetTurnTextEvent();
-        }
+        if (!bufferModelText && streamedText)
+          hasRetainedVerificationText = true;
         const unsupportedClaimNotice = unsupportedGitClaims.length
           ? `你上一段文字声称 Git/发布操作已经完成（${unsupportedGitClaims.join(", ")}），但没有对应的成功工具记录；该段未经验证的文字已撤回。`
           : "";
@@ -5061,11 +5122,8 @@ export async function* runAgent(
     ) {
       if (budgets.unverifiedCodingClaims < 2) {
         budgets.unverifiedCodingClaims += 1;
-        if (!bufferModelText && streamedText) {
-          timelineTextLength = turnTextStartOffset;
-          streamedText = "";
-          yield resetTurnTextEvent();
-        }
+        if (!bufferModelText && streamedText)
+          hasRetainedVerificationText = true;
         const unsupportedClaimNotice = unsupportedCodingClaims.length
           ? `你上一段文字声称已经完成${unsupportedCodingClaims.map((operation) => codingLabels[operation]).join("、")}，但没有对应的成功工具记录；该段未经验证的文字已撤回。`
           : "";
@@ -5126,11 +5184,8 @@ export async function* runAgent(
     ) {
       if (budgets.unverifiedCodingClaims < 2) {
         budgets.unverifiedCodingClaims += 1;
-        if (!bufferModelText && streamedText) {
-          timelineTextLength = turnTextStartOffset;
-          streamedText = "";
-          yield resetTurnTextEvent();
-        }
+        if (!bufferModelText && streamedText)
+          hasRetainedVerificationText = true;
         history.push({
           kind: "message",
           role: "assistant",
@@ -5198,11 +5253,6 @@ export async function* runAgent(
         unsupportedGitClaims.length ||
         unsupportedCodingClaims.length,
       );
-    if (hasPrematureCompletionClaim && !bufferModelText && streamedText) {
-      timelineTextLength = turnTextStartOffset;
-      streamedText = "";
-      yield resetTurnTextEvent();
-    }
     const roundNarrative =
       turn.calls.length && !hasPrematureCompletionClaim
         ? executionNarrativePreview(
@@ -5247,6 +5297,7 @@ export async function* runAgent(
         type: "final_response",
         textOffset: turnTextStartOffset,
         startedAt: Date.now(),
+        processKind: hasRetainedVerificationText ? "correction" : undefined,
       };
     if (turn.text) {
       history.push({

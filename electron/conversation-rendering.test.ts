@@ -133,6 +133,25 @@ test("a retried turn keeps earlier assistant text and drops only its own fragmen
   });
 });
 
+test("a divergent retry atomically replaces only the current turn", () => {
+  const message = {
+    id: "assistant:request",
+    role: "assistant" as const,
+    content: "前序过程。旧回答已经显示。",
+    createdAt: 1,
+  };
+
+  assert.equal(
+    truncateAssistantMessageForTextReset(
+      message,
+      "前序过程。".length,
+      "",
+      "新的回答",
+    ).content,
+    "前序过程。新的回答",
+  );
+});
+
 test("a text reset retains an auto-continued prefix still held in the stream store", () => {
   const message = {
     id: "assistant:request",

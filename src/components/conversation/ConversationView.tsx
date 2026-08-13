@@ -1461,7 +1461,7 @@ function CompletedProcessDisclosure({
           <time>{formatCompactDuration(durationMs)}</time>
         </span>
         <span className="completed-process-metrics">
-          <span>{activities.length} 个步骤</span>
+          {activities.length > 0 && <span>{activities.length} 个步骤</span>}
           {fileStats.files > 0 && <span>{fileStats.files} 个文件</span>}
           {fileStats.files > 0 && (
             <span className="completed-process-diff">
@@ -1526,7 +1526,41 @@ const AssistantTimeline = memo(function AssistantTimeline({
     (activity) =>
       activity.status === "running" || activity.status === "waiting",
   );
-  if (!activities.length)
+  const storedFinalResponseOffset = Number(message.finalResponseOffset);
+  const finalResponseOffset = Number.isFinite(storedFinalResponseOffset)
+    ? Math.min(
+        message.content.length,
+        Math.max(0, Math.floor(storedFinalResponseOffset)),
+      )
+    : undefined;
+  if (!activities.length) {
+    if (
+      message.finalResponseProcess === "correction" &&
+      finalResponseOffset !== undefined &&
+      finalResponseOffset > 0
+    ) {
+      const processNode = renderText(
+        message.content.slice(0, finalResponseOffset),
+      );
+      const finalNode = renderText(message.content.slice(finalResponseOffset));
+      return (
+        <div className="assistant-timeline">
+          <CompletedProcessDisclosure
+            durationMs={completedProcessDuration(
+              message.createdAt,
+              message.completedAt ?? message.finalResponseStartedAt,
+              activities,
+            )}
+            failed={Boolean(message.error)}
+            activities={activities}
+          >
+            {processNode}
+          </CompletedProcessDisclosure>
+          {finalNode}
+          {streamingTail}
+        </div>
+      );
+    }
     return (
       <>
         {renderText(message.content)}
@@ -1541,13 +1575,7 @@ const AssistantTimeline = memo(function AssistantTimeline({
         )}
       </>
     );
-  const storedFinalResponseOffset = Number(message.finalResponseOffset);
-  const finalResponseOffset = Number.isFinite(storedFinalResponseOffset)
-    ? Math.min(
-        message.content.length,
-        Math.max(0, Math.floor(storedFinalResponseOffset)),
-      )
-    : undefined;
+  }
   const processFinished = !running || finalResponseOffset !== undefined;
   const processRunning = running && !processFinished;
   const processTextLength = processFinished

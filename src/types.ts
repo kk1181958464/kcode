@@ -320,6 +320,7 @@ export type ChatMessage = {
   completedAt?: number;
   finalResponseOffset?: number;
   finalResponseStartedAt?: number;
+  finalResponseProcess?: "correction";
   model?: string;
   images?: ImageAttachment[];
   contextAttachments?: Array<{ name: string; size: number }>;
@@ -559,9 +560,17 @@ export type ModelEvent =
       type: "text_reset";
       /** Prefix to retain. Missing only on legacy protocol-v1 events. */
       textOffset?: number;
+      /** New current-turn prefix applied in the same render as the reset. */
+      replacement?: string;
+      reason?: "stream_retry" | "runtime_verification";
     }
   | { type: "reasoning_reset" }
-  | { type: "final_response"; textOffset: number; startedAt: number }
+  | {
+      type: "final_response";
+      textOffset: number;
+      startedAt: number;
+      processKind?: "correction";
+    }
   | { type: "reasoning"; delta: string }
   | { type: "progress"; message: string }
   | {

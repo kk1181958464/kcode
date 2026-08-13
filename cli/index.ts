@@ -34,6 +34,9 @@ import {
   firstUsableSelection,
   isUsableProvider,
 } from "./providers";
+import { checkForCliUpdate, type CliUpdateInfo } from "./update-check";
+
+const CLI_VERSION = process.env.KCODE_VERSION || "0.0.0-cli";
 
 const errorMessage = (e: unknown) =>
   e instanceof Error ? e.message : String(e);
@@ -568,6 +571,7 @@ interface Session {
 /** Single source of truth for slash commands: help text, router, completion. */
 const COMMANDS: { name: string; desc: string }[] = [
   { name: "/help", desc: "显示可用命令" },
+  { name: "/update", desc: "立即检查 CLI 更新" },
   { name: "/provider", desc: "添加和管理模型渠道" },
   { name: "/model", desc: "在已配置模型间切换" },
   { name: "/mode", desc: "切换审批模式（confirm ↔ full-access）" },
@@ -575,6 +579,34 @@ const COMMANDS: { name: string; desc: string }[] = [
   { name: "/exit", desc: "退出" },
   { name: "/quit", desc: "退出" },
 ];
+
+function updateNotice(info: CliUpdateInfo): string {
+  return [
+    `发现 KCode CLI 新版本 ${info.latestVersion}（当前 ${info.currentVersion}）`,
+    `更新命令：${info.installCommand}`,
+  ].join("\n");
+}
+
+async function checkUpdateNow(force = false): Promise<CliUpdateInfo | null> {
+  return checkForCliUpdate({
+    currentVersion: CLI_VERSION,
+    force,
+  });
+}
+
+function startAutomaticUpdateCheck(disabled = false): void {
+  if (
+    disabled ||
+    !interactiveInput ||
+    process.env.KCODE_NO_UPDATE_CHECK === "1" ||
+    CLI_VERSION === "0.0.0-cli"
+  ) {
+    return;
+  }
+  void checkUpdateNow().then((info) => {
+    if (info) terminalPrompt?.notify(updateNotice(info));
+  });
+}
 
 function commandListText(): string {
   const width = Math.max(...COMMANDS.map((c) => c.name.length));
@@ -940,6 +972,19 @@ async function handleSlashCommand(
     case "help":
       console.log(HELP);
       return "handled";
+    case "update": {
+      console.log(color(DIM, "正在检查 KCode CLI 更新…"));
+      const info = await checkUpdateNow(true);
+      console.log(
+        info
+          ? color(YELLOW, updateNotice(info))
+          : color(
+              DIM,
+              `当前已是最新版本（${CLI_VERSION}），或暂时无法连接 npm。`,
+            ),
+      );
+      return "handled";
+    }
     case "clear":
       session.messages = [];
       console.log(color(DIM, "已清空对话上下文。"));
@@ -964,19 +1009,29 @@ async function handleSlashCommand(
 }
 
 /** Extract flags (--x) and the first positional arg (workspace path). */
-function parseArgs(argv: string[]): { workspacePath?: string; yolo: boolean } {
+function parseArgs(argv: string[]): {
+  workspacePath?: string;
+  yolo: boolean;
+  noUpdateCheck: boolean;
+} {
   let workspacePath: string | undefined;
   let yolo = false;
+  let noUpdateCheck = false;
   for (const arg of argv) {
     if (arg === "--yolo" || arg === "--full-access") yolo = true;
+    else if (arg === "--no-update-check") noUpdateCheck = true;
     else if (!arg.startsWith("--") && workspacePath === undefined)
       workspacePath = arg;
   }
-  return { workspacePath, yolo };
+  return { workspacePath, yolo, noUpdateCheck };
 }
 
 async function main() {
-  const { workspacePath: rawPath, yolo } = parseArgs(process.argv.slice(2));
+  const {
+    workspacePath: rawPath,
+    yolo,
+    noUpdateCheck,
+  } = parseArgs(process.argv.slice(2));
   const workspacePath = path.resolve(rawPath || process.cwd());
   // Non-interactive sessions cannot answer approval prompts, so they default
   // to read-only. Full access always requires an explicit command-line flag.
@@ -989,8 +1044,9 @@ async function main() {
     saved: saved.permissionMode,
   });
 
-  console.log(color(BOLD, "KCode"));
+  console.log(color(BOLD, `KCode CLI v${CLI_VERSION}`));
   console.log(color(DIM, `工作区  ${terminalText(workspacePath)}`));
+  startAutomaticUpdateCheck(noUpdateCheck);
   const { provider, modelId } = await ensureModel();
   const session: Session = { provider, modelId, permissionMode, messages: [] };
   rememberSelection(session);
@@ -1008,7 +1064,6 @@ async function main() {
       ),
     );
   console.log(color(DIM, "输入 / 可查看命令，Ctrl+C 中断当前回合。\n"));
-
   for (;;) {
     const input = (
       terminalPrompt
