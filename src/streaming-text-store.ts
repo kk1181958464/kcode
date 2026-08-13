@@ -3,10 +3,12 @@ export type StreamingTextChange =
   | { type: "replace"; value: string }
   | { type: "reset" };
 type Listener = (change: StreamingTextChange) => void;
+type ConsumeOptions = { emitReset?: boolean };
 
 const values = new Map<string, string[]>();
 const lengths = new Map<string, number>();
 const listeners = new Map<string, Set<Listener>>();
+const revisions = new Map<string, number>();
 const STORE_CHUNK_LIMIT = 4_096;
 
 export const streamingReasoningKey = (requestId: string) =>
@@ -18,8 +20,16 @@ function emit(requestId: string, change: StreamingTextChange) {
   for (const listener of listeners.get(requestId) ?? []) listener(change);
 }
 
+function advanceRevision(requestId: string) {
+  revisions.set(requestId, (revisions.get(requestId) ?? 0) + 1);
+}
+
 export function getStreamingText(requestId: string) {
   return values.get(requestId)?.join("") ?? "";
+}
+
+export function getStreamingTextRevision(requestId: string) {
+  return revisions.get(requestId) ?? 0;
 }
 
 export function getStreamingTextTail(requestId: string, maxChars: number) {
@@ -76,14 +86,21 @@ export function resetStreamingText(requestId: string) {
   if (!values.has(requestId)) return;
   values.delete(requestId);
   lengths.delete(requestId);
+  advanceRevision(requestId);
   emit(requestId, { type: "reset" });
 }
 
-export function consumeStreamingText(requestId: string) {
+export function consumeStreamingText(
+  requestId: string,
+  options: ConsumeOptions = {},
+) {
   const value = getStreamingText(requestId);
   const consumed = values.delete(requestId);
   lengths.delete(requestId);
-  if (consumed) emit(requestId, { type: "reset" });
+  if (consumed) {
+    advanceRevision(requestId);
+    if (options.emitReset !== false) emit(requestId, { type: "reset" });
+  }
   return value;
 }
 

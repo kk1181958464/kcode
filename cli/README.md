@@ -9,7 +9,7 @@ terminal instead of a GUI window.
 ## Install
 
 ```bash
-npm install -g kcode-cli
+npm install -g @kk1181958464/kcode
 ```
 
 Requires **Node.js >= 20**.
@@ -22,10 +22,22 @@ kcode [workspacePath]
 
 - `workspacePath` — the project directory the agent operates in. Defaults to the
   current working directory.
-- On first run, `kcode` prompts once for a provider (Base URL, protocol, model
-  ID, API key) and stores it under `~/.kcode`.
-- Type a task and press Enter. `Ctrl+C` interrupts the current turn.
-  `/exit` quits.
+- Piped/non-interactive input runs in `read-only` mode by default. Pass
+  `--yolo` or `--full-access` explicitly when an automated run must modify the
+  workspace.
+- On first run, `kcode` guides you through adding the first model provider. It
+  detects the protocol and model list when possible, then stores the channel
+  under `~/.kcode`.
+- Interactive terminals use a persistent bordered prompt. Type `/` to open the
+  command menu, use `↑`/`↓` to select, `Tab` to complete, and `Enter` to run.
+- The first-run wizard hides the API key and provides an arrow-key model picker.
+- Use `/provider` to add and manage multiple channels. You can switch the
+  current channel/model, rename a channel, edit its endpoint and protocol,
+  refresh models, enable/disable it, or delete it. CLI and desktop share the
+  same `providers.json`, so channels configured in either interface are visible
+  in the other.
+- Type a task and press Enter. `Ctrl+C` exits the prompt or interrupts the
+  current turn. `/exit` quits.
 
 Example:
 
@@ -44,13 +56,20 @@ Override the location with the `KCODE_HOME` environment variable:
 KCODE_HOME=/path/to/state kcode
 ```
 
+API keys are encrypted with AES-256-GCM using a per-user local key stored under
+`KCODE_HOME`; the state directory and credential files are restricted to the
+current OS account where the platform supports POSIX file modes. This protects
+against accidental disclosure and casual file inspection; it does not protect
+secrets from an attacker who already has access to the same OS account and its
+entire KCode state directory.
+
 ### Supported provider protocols
 
-| Protocol             | Providers (examples)              |
-| -------------------- | --------------------------------- |
+| Protocol             | Providers (examples)                         |
+| -------------------- | -------------------------------------------- |
 | `openai-chat`        | DeepSeek, xAI, most OpenAI-compatible relays |
-| `openai-responses`   | OpenAI                            |
-| `anthropic-messages` | Anthropic                         |
+| `openai-responses`   | OpenAI                                       |
+| `anthropic-messages` | Anthropic                                    |
 
 ## What's included
 

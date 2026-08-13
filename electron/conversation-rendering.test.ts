@@ -8,6 +8,7 @@ import {
   shouldShowAssistantTailState,
   STREAMING_REASONING_DOM_CHAR_LIMIT,
   STREAMING_REASONING_DOM_TRIM_TARGET,
+  truncateAssistantMessageForTextReset,
   visibleAssistantContent,
 } from "../src/conversation-rendering";
 import type { AgentActivity } from "../src/types";
@@ -112,6 +113,42 @@ test("hides inline reasoning blocks from persisted assistant messages", () => {
 test("keeps live progress at the response tail while tools are active", () => {
   assert.equal(shouldShowAssistantTailState(true), true);
   assert.equal(shouldShowAssistantTailState(false), false);
+});
+
+test("a retried turn keeps earlier assistant text and drops only its own fragment", () => {
+  const message = {
+    id: "assistant:request",
+    role: "assistant" as const,
+    content: "步骤前正文。当前轮旧片段。",
+    createdAt: 1,
+    finalResponseOffset: 6,
+    finalResponseStartedAt: 2,
+  };
+
+  assert.deepEqual(truncateAssistantMessageForTextReset(message, 6), {
+    id: "assistant:request",
+    role: "assistant",
+    content: "步骤前正文。",
+    createdAt: 1,
+  });
+});
+
+test("a text reset retains an auto-continued prefix still held in the stream store", () => {
+  const message = {
+    id: "assistant:request",
+    role: "assistant" as const,
+    content: "已提交。",
+    createdAt: 1,
+  };
+
+  assert.equal(
+    truncateAssistantMessageForTextReset(
+      message,
+      "已提交。尚未提交。".length,
+      "尚未提交。当前轮旧片段。",
+    ).content,
+    "已提交。尚未提交。",
+  );
 });
 
 test("keeps streaming reasoning DOM bounded and preserves surrogate pairs", () => {

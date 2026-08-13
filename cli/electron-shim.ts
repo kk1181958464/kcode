@@ -7,17 +7,12 @@
  */
 import os from "node:os";
 import path from "node:path";
+import { decryptCliSecret, encryptCliSecret } from "./secure-storage";
 
 const APP_DIR = process.env.KCODE_HOME || path.join(os.homedir(), ".kcode");
 
 type PathName =
-  | "userData"
-  | "appData"
-  | "desktop"
-  | "home"
-  | "temp"
-  | "logs"
-  | "documents";
+  "userData" | "appData" | "desktop" | "home" | "temp" | "logs" | "documents";
 
 export const app = {
   getPath(name: PathName): string {
@@ -68,20 +63,19 @@ export const app = {
 };
 
 /**
- * safeStorage stand-in. Electron encrypts with the OS keychain; for the CLI PoC
- * we base64-encode so the on-disk shape (a base64 string) stays compatible with
- * the desktop store format. NOTE: this is obfuscation, not encryption — a
- * production CLI should swap in keytar or a passphrase-derived key.
+ * safeStorage stand-in backed by AES-256-GCM. The random key and state files
+ * are restricted to the current OS account. This keeps the desktop store
+ * format compatible while avoiding plaintext-equivalent base64 credentials.
  */
 export const safeStorage = {
   isEncryptionAvailable() {
     return true;
   },
   encryptString(plain: string): Buffer {
-    return Buffer.from(plain, "utf8");
+    return encryptCliSecret(plain, APP_DIR);
   },
   decryptString(encrypted: Buffer): string {
-    return Buffer.from(encrypted).toString("utf8");
+    return decryptCliSecret(encrypted, APP_DIR);
   },
 };
 

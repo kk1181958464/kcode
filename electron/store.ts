@@ -1,5 +1,5 @@
 import { app, safeStorage } from "electron";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   inferContextWindow,
@@ -104,8 +104,12 @@ function addXaiPreset(stored: StoredProvider[]) {
 }
 
 async function writeStored(data: StoredProvider[]) {
-  await mkdir(path.dirname(filePath()), { recursive: true });
-  await writeFile(filePath(), JSON.stringify(data, null, 2), "utf8");
+  await mkdir(path.dirname(filePath()), { recursive: true, mode: 0o700 });
+  await writeFile(filePath(), JSON.stringify(data, null, 2), {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+  await chmod(filePath(), 0o600).catch(() => undefined);
 }
 
 function publicProvider(provider: StoredProvider): ProviderConfig {

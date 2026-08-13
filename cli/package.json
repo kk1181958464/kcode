@@ -1,6 +1,6 @@
 {
   "name": "@kk1181958464/kcode",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Multi-provider coding agent, CLI edition — the KCode agent runtime in your terminal.",
   "bin": {
     "kcode": "./kcode-cli.cjs"

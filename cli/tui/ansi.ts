@@ -11,11 +11,31 @@
 // so color codes, cursor moves, and synchronized-output markers are all skipped
 // when measuring visible width.
 // eslint-disable-next-line no-control-regex
-const ANSI_PATTERN = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07|\x1b[PX^_][^\x1b]*\x1b\\/g;
+const ANSI_PATTERN =
+  /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07|\x1b[PX^_][^\x1b]*\x1b\\/g;
+
+// Terminal-originated text is allowed to contain line feeds and tabs, but not
+// control sequences. Model and tool output is untrusted: OSC 52 can modify the
+// clipboard, CSI can move the cursor, and carriage returns can overwrite prior
+// output. Strip those before the text reaches the renderer.
+const TERMINAL_ESCAPE_PATTERN =
+  /\x1b\][\s\S]*?(?:\x07|\x1b\\)|\x1b[PX^_][\s\S]*?\x1b\\|\x1b\[[0-?]*[ -/]*[@-~]|\x1b[@-_]/g;
 
 /** Strip all ANSI escape sequences, leaving only printable characters. */
 export function stripAnsi(input: string): string {
   return input.replace(ANSI_PATTERN, "");
+}
+
+/** Remove terminal control sequences from model/tool supplied text. */
+export function sanitizeTerminalText(input: string): string {
+  return (
+    input
+      .replace(/\r\n?/g, "\n")
+      .replace(TERMINAL_ESCAPE_PATTERN, "")
+      // Keep tab and LF; remove the remaining C0/C1 controls and DEL.
+      // eslint-disable-next-line no-control-regex
+      .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g, "")
+  );
 }
 
 /** True for code points rendered two columns wide in a monospace terminal. */

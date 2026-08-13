@@ -555,7 +555,11 @@ export type SkillStoreItem = {
 
 export type ModelEvent =
   | { type: "text"; delta: string }
-  | { type: "text_reset" }
+  | {
+      type: "text_reset";
+      /** Prefix to retain. Missing only on legacy protocol-v1 events. */
+      textOffset?: number;
+    }
   | { type: "reasoning_reset" }
   | { type: "final_response"; textOffset: number; startedAt: number }
   | { type: "reasoning"; delta: string }

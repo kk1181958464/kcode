@@ -6,6 +6,7 @@ import {
   ChevronDown,
   FolderOpen,
   GripVertical,
+  LoaderCircle,
   Plus,
   PanelLeftClose,
   Search,
@@ -36,9 +37,14 @@ function sidebarRowKey(_: number, row: SidebarRow) {
     : sidebarTaskRenderKey(row.task);
 }
 
+function conversationWorkspacePath(group: SidebarWorkspaceGroup) {
+  return group.conversations[0]?.workspacePath ?? group.workspacePath;
+}
+
 export interface SidebarProps {
   workspaceGroups: SidebarWorkspaceGroup[];
   taskStorageReady: boolean;
+  creatingConversationPaths: ReadonlySet<string>;
   activeTaskId?: string;
   taskQuery: string;
   setTaskQuery(value: string): void;
@@ -67,6 +73,7 @@ export interface SidebarProps {
 export const Sidebar = memo(function Sidebar({
   workspaceGroups,
   taskStorageReady,
+  creatingConversationPaths,
   activeTaskId,
   taskQuery,
   setTaskQuery,
@@ -349,16 +356,45 @@ export const Sidebar = memo(function Sidebar({
                 <span className="workspace-name">{row.group.name}</span>
                 <small>{row.group.conversations.length}</small>
                 <button
-                  title={`在 ${row.group.name} 新建对话`}
+                  type="button"
+                  className={`workspace-create ${
+                    creatingConversationPaths.has(
+                      conversationWorkspacePath(row.group),
+                    )
+                      ? "creating"
+                      : ""
+                  }`}
+                  title={
+                    creatingConversationPaths.has(
+                      conversationWorkspacePath(row.group),
+                    )
+                      ? `正在 ${row.group.name} 创建对话`
+                      : `在 ${row.group.name} 新建对话`
+                  }
+                  aria-label={`在 ${row.group.name} 新建对话`}
+                  aria-busy={creatingConversationPaths.has(
+                    conversationWorkspacePath(row.group),
+                  )}
+                  disabled={
+                    !taskStorageReady ||
+                    creatingConversationPaths.has(
+                      conversationWorkspacePath(row.group),
+                    )
+                  }
                   onClick={(event) => {
                     event.stopPropagation();
                     void createConversation(
-                      row.group.conversations[0]?.workspacePath ??
-                        row.group.workspacePath,
+                      conversationWorkspacePath(row.group),
                     );
                   }}
                 >
-                  <Plus size={14} />
+                  {creatingConversationPaths.has(
+                    conversationWorkspacePath(row.group),
+                  ) ? (
+                    <LoaderCircle className="spinning" size={14} />
+                  ) : (
+                    <Plus size={14} />
+                  )}
                 </button>
                 <button
                   className="workspace-delete"

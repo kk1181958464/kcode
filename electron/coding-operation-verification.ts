@@ -65,6 +65,9 @@ type VerificationMessage = Extract<
 const CONTINUATION_REQUEST =
   /^(?:好|好的|可以|行|继续|继续吧|开始|开始吧|开始弄吧|开始改吧|改吧|修吧|做吧|弄吧|执行吧|就这么做|按(?:你|上面|这个).{0,12}做|都弄|都改|全部(?:做|弄|改|修改)|上面(?:的)?全部(?:做|弄|改|修改))(?:了|吧|啊|呀)?[。！!，,\s]*$/i;
 
+const ASSISTANT_PROPOSAL_ACCEPTANCE_REQUEST =
+  /^(?:就这么(?:做|改|弄)|按(?:你|上面|这个).{0,12}(?:做|改|弄|修改)|照(?:你|上面|这个).{0,12}(?:做|改|弄|修改)|都(?:做|改|弄|修改)|全部(?:做|改|弄|修改)|上面(?:的)?全部(?:做|改|弄|修改))(?:了|吧|啊|呀)?[。！!，,\s]*$/i;
+
 const CORRECTIVE_CONTINUATION_REQUEST =
   /(?:^|\n)\s*(?:还是|仍然|依然|仍旧|又|现在还是|目前还是)(?:不对|不行|有问题|没好|没有好|未解决|不正常|不生效|看不到|不显示|显示错误|报错|卡住)|(?:^|\n)\s*(?:问题|故障|错误|这个问题)(?:还在|仍在|依然存在|没有解决|没解决)/i;
 
@@ -126,11 +129,25 @@ export function relevantVerificationRequestContent(
     return previousUser ? `${previousUser.content}\n${latest}` : latest;
   }
   if (!CONTINUATION_REQUEST.test(latest.trim())) return latest;
-  const previous = messages
-    .slice(Math.max(0, latestIndex - 2), latestIndex)
-    .map((message) => message.content)
-    .join("\n");
-  return previous ? `${previous}\n${latest}` : latest;
+  const priorMessages = messages.slice(0, latestIndex);
+  const previousUser = [...priorMessages]
+    .reverse()
+    .find((message) => message.role === "user");
+  if (ASSISTANT_PROPOSAL_ACCEPTANCE_REQUEST.test(latest.trim())) {
+    const adjacentAssistant = priorMessages.at(-1);
+    const acceptedProposal =
+      adjacentAssistant?.role === "assistant" ? adjacentAssistant.content : "";
+    return [previousUser?.content, acceptedProposal, latest]
+      .filter(Boolean)
+      .join("\n");
+  }
+  // A continuation inherits the user's previous request, never the previous
+  // model's prose. In particular, after switching models the preceding
+  // assistant may contain a plan such as "I will edit and run tests". Treating
+  // that prose as user intent invents extra required operations while the new
+  // request correctly starts with a fresh evidence ledger, which then produces
+  // a false `coding_tool_execution_missing` error.
+  return previousUser ? `${previousUser.content}\n${latest}` : latest;
 }
 
 /** Operations the latest user explicitly expects the coding agent to perform. */
@@ -204,7 +221,7 @@ export function requestedCodingOperations(
     );
   const operations = new Set<CodingOperation>();
   if (
-    /(?:看下|查看|检查|排查|审查|分析|定位|找出|读取|搜索|确认|过一下|为什么|怎么回事)|\b(?:inspect|check|review|analy[sz]e|read|search|investigate|why)\b/i.test(
+    /(?:看下|看一下|查看|检查|排查|审查|分析|定位|找出|读取|搜索|确认|过一下|为什么|怎么回事)|\b(?:inspect|check|review|analy[sz]e|read|search|investigate|why)\b/i.test(
       content,
     )
   )
@@ -260,21 +277,27 @@ export function requestedCodingOperations(
 }
 
 /**
- * Kimi K3 may answer coding requests with prose when OpenAI Chat leaves
- * tool_choice at its default "auto". Require its first native tool call for
- * explicit coding work; after every requested operation has successful native
- * evidence, normal auto selection is restored so the model can finish naturally.
+ * Explicit coding work must enter the native tool loop before a model can
+ * finish in prose. Once the requested side effects have verifiable evidence,
+ * normal automatic tool selection is restored so the model can summarize.
  */
 export function shouldRequireCodingTool(
-  modelId: string,
+  _modelId: string,
   requested: ReadonlySet<CodingOperation>,
   evidence: ReadonlySet<CodingOperation>,
+  history: CodingVerificationHistoryItem[] = [],
 ) {
+  if (hasRequestedUserInputEvidence(history)) return false;
+  const required = codingOperationsRequiringToolEvidence(requested);
+  if (!required.size) return false;
   return (
-    /(?:^|[\W_])kimi[.-]?k3(?:$|[\W_])/i.test(modelId) &&
-    [...requested]
-      .filter((operation) => operation !== "inspect")
-      .some((operation) => !evidence.has(operation))
+    missingVerifiedCodingOperations(
+      required,
+      new Set(),
+      evidence,
+      history,
+      requested,
+    ).length > 0
   );
 }
 

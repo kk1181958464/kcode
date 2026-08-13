@@ -264,6 +264,7 @@ import {
   recoverTaskRunStatus,
   type TaskRunStatus,
 } from "./task-status";
+import { truncateAssistantMessageForTextReset } from "./conversation-rendering";
 import type {
   AgentActivity,
   AgentCheckpoint,
@@ -359,6 +360,10 @@ export default function App() {
   const initialDrafts = useRef<TaskDrafts>(storedTaskDrafts());
   const attachmentDraftsRef = useRef(
     new Map<string, { files: ContextFile[]; images: ImageAttachment[] }>(),
+  );
+  const creatingConversationPathsRef = useRef(new Set<string>());
+  const [creatingConversationPaths, setCreatingConversationPaths] = useState(
+    () => new Set<string>(),
   );
   const [tasks, setTasks] = useState<TaskRecord[]>(() =>
     localStorage.getItem("kcode.tasks") === null
@@ -2627,7 +2632,7 @@ export default function App() {
             textFlushTimerRef.current = undefined;
           }
           flushPendingText(true);
-          const settledText = consumeStreamingText(id);
+          const settledText = consumeStreamingText(id, { emitReset: false });
           const markFinalResponse = (all: ChatMessage[]) =>
             all.map((message) => {
               if (message.id !== `assistant:${id}`) return message;
@@ -2659,7 +2664,7 @@ export default function App() {
         }
         if (event.type === "activity") {
           flushPendingText(true);
-          const settledText = consumeStreamingText(id);
+          const settledText = consumeStreamingText(id, { emitReset: false });
           const settleMessages = (all: ChatMessage[]) =>
             settledText
               ? all.map((message) =>
@@ -2672,13 +2677,25 @@ export default function App() {
           const updateActivities = (all: AgentActivity[]) =>
             upsertActivity(all, event.activity);
           adoptActivitySshWorkspace(taskId, event.activity);
+          // Commit the narration on the urgent lane before the activity card.
+          // Keeping both updates in the transition can defer the text until a
+          // fast sequence of tool lifecycle events has finished.
+          if (settledText) {
+            setTasks((all) =>
+              all.map((task) =>
+                task.id === taskId
+                  ? { ...task, messages: settleMessages(task.messages) }
+                  : task,
+              ),
+            );
+            if (isActive) setMessages(settleMessages);
+          }
           startTransition(() => {
             setTasks((all) =>
               all.map((task) =>
                 task.id === taskId
                   ? {
                       ...task,
-                      messages: settleMessages(task.messages),
                       activities: updateActivities(task.activities),
                       updatedAt: Date.now(),
                     }
@@ -2686,7 +2703,6 @@ export default function App() {
               ),
             );
             if (isActive) {
-              if (settledText) setMessages(settleMessages);
               setActivities(updateActivities);
             }
           });
@@ -2728,18 +2744,21 @@ export default function App() {
         }
         if (event.type === "text_reset") {
           // Upstream broke mid-answer and the agent is retrying: discard the
-          // partial text we streamed so far, both buffered and already
-          // committed, so the retry renders a clean, non-duplicated answer.
+          // current turn while retaining text from earlier timeline rounds.
+          // Drain first because an auto-continued prefix may still be paced in
+          // memory rather than committed to message.content.
+          flushPendingText(true);
           pendingTextRef.current.delete(id);
           pendingTextSinceRef.current.delete(id);
-          resetStreamingText(id);
-          // Text streamed before an intervening tool call is flushed into
-          // message.content (see the "activity" handler); clear that too, or
-          // the retried answer gets appended to the abandoned fragment.
+          const streamedText = consumeStreamingText(id, { emitReset: false });
           const clearCommitted = (all: ChatMessage[]) =>
             all.map((message) =>
-              message.id === `assistant:${id}` && message.content
-                ? { ...message, content: "" }
+              message.id === `assistant:${id}`
+                ? truncateAssistantMessageForTextReset(
+                    message,
+                    event.textOffset,
+                    streamedText,
+                  )
                 : message,
             );
           setTasks((all) =>
@@ -2863,7 +2882,7 @@ export default function App() {
           }
           flushPendingText(true);
           flushRemoteStreamSync(id);
-          const finalText = consumeStreamingText(id);
+          const finalText = consumeStreamingText(id, { emitReset: false });
           const completedAt = Date.now();
           const commitFinalText = (all: ChatMessage[]) =>
             all.map((message) =>
@@ -2940,7 +2959,7 @@ export default function App() {
           }
           flushPendingText(true);
           flushRemoteStreamSync(id);
-          const finalText = consumeStreamingText(id);
+          const finalText = consumeStreamingText(id, { emitReset: false });
           const completedAt = Date.now();
           const commitFinalText = (all: ChatMessage[]) =>
             all.map((message) =>
@@ -3428,74 +3447,99 @@ export default function App() {
   }
 
   async function createConversation(workspacePath: string) {
-    const sourceTask = tasksRef.current.find(
-      (task) => task.workspacePath === workspacePath,
+    if (creatingConversationPathsRef.current.has(workspacePath)) return;
+    const feedbackStartedAt = performance.now();
+    creatingConversationPathsRef.current.add(workspacePath);
+    setCreatingConversationPaths(
+      new Set(creatingConversationPathsRef.current),
     );
-    const now = Date.now();
-    const taskId = uid();
-    let targetWorkspacePath = workspacePath;
-    let remoteWorkspace = sourceTask?.remoteWorkspace;
-    if (remoteWorkspace && window.kcode?.sshRemote) {
-      try {
-        const state = await restoreSshRemoteConnection(
-          window.kcode.sshRemote,
-          taskId,
-          remoteWorkspace,
-        );
-        remoteWorkspace = state.profile ?? remoteWorkspace;
-        targetWorkspacePath = state.cachePath ?? targetWorkspacePath;
-      } catch (error) {
-        if (isSshRemoteCredentialsRequired(error) && sourceTask)
-          setSshRemoteDialogTaskId(sourceTask.id);
-        setContextError(
-          isSshRemoteCredentialsRequired(error)
-            ? "SSH Remote 凭据需要重新确认；连接信息已填入，重新连接后再创建会话。"
-            : `SSH Remote 连接失败：${errorMessage(error)}`,
-        );
-        return;
-      }
-    }
-    const task: TaskRecord = {
-      id: taskId,
-      name: "新对话",
-      workspaceName: sourceTask ? taskWorkspaceName(sourceTask) : undefined,
-      workspacePath: targetWorkspacePath,
-      remoteWorkspace,
-      createdAt: now,
-      updatedAt: now,
-      messages: [],
-      activities: [],
-      modelSelection: selected,
-      collaboration: activeTask?.collaboration,
-      reasoningEffort,
-    };
-    hydratedTaskIdsRef.current.add(task.id);
-    setTasks((all) => {
-      const workspaceIndex = all.findIndex(
-        (item) => item.workspacePath === workspacePath,
+    try {
+      const sourceTask = tasksRef.current.find(
+        (task) => task.workspacePath === workspacePath,
       );
-      if (workspaceIndex < 0) return [task, ...all];
-      const next = [...all];
-      next.splice(workspaceIndex, 0, task);
-      return next;
-    });
-    claimTaskView(task.id);
-    setActiveTaskId(task.id);
-    setWorkspaceView(remoteWorkspace ? "editor" : "chat");
-    setMessages([]);
-    setActivities([]);
-    setInput("");
-    setAttachedFiles([]);
-    setUsage({ input: 0, output: 0, cached: 0 });
-    setUsageResolved(false);
-    setDurationMs(0);
-    setAttachedImages([]);
-    currentRequest.current = undefined;
-    setRunningId(undefined);
-    contextByMessageRef.current.clear();
-    pendingScrollRestoreRef.current = undefined;
-    autoFollowRef.current = true;
-    setShowScrollToBottom(false);
+      const now = Date.now();
+      const taskId = uid();
+      let targetWorkspacePath = workspacePath;
+      let remoteWorkspace = sourceTask?.remoteWorkspace;
+      if (remoteWorkspace && window.kcode?.sshRemote) {
+        try {
+          const state = await restoreSshRemoteConnection(
+            window.kcode.sshRemote,
+            taskId,
+            remoteWorkspace,
+          );
+          remoteWorkspace = state.profile ?? remoteWorkspace;
+          targetWorkspacePath = state.cachePath ?? targetWorkspacePath;
+        } catch (error) {
+          if (isSshRemoteCredentialsRequired(error) && sourceTask)
+            setSshRemoteDialogTaskId(sourceTask.id);
+          setContextError(
+            isSshRemoteCredentialsRequired(error)
+              ? "SSH Remote 凭据需要重新确认；连接信息已填入，重新连接后再创建会话。"
+              : `SSH Remote 连接失败：${errorMessage(error)}`,
+          );
+          return;
+        }
+      }
+      const task: TaskRecord = {
+        id: taskId,
+        name: "新对话",
+        workspaceName: sourceTask ? taskWorkspaceName(sourceTask) : undefined,
+        workspacePath: targetWorkspacePath,
+        remoteWorkspace,
+        createdAt: now,
+        updatedAt: now,
+        messages: [],
+        activities: [],
+        modelSelection: selected,
+        collaboration: activeTask?.collaboration,
+        reasoningEffort,
+      };
+      hydratedTaskIdsRef.current.add(task.id);
+      setTasks((all) => {
+        const workspaceIndex = all.findIndex(
+          (item) => item.workspacePath === workspacePath,
+        );
+        if (workspaceIndex < 0) return [task, ...all];
+        const next = [...all];
+        next.splice(workspaceIndex, 0, task);
+        return next;
+      });
+      claimTaskView(task.id);
+      setActiveTaskId(task.id);
+      setWorkspaceView(remoteWorkspace ? "editor" : "chat");
+      setMessages([]);
+      setActivities([]);
+      setInput("");
+      setAttachedFiles([]);
+      setUsage({ input: 0, output: 0, cached: 0 });
+      setUsageResolved(false);
+      setDurationMs(0);
+      setAttachedImages([]);
+      currentRequest.current = undefined;
+      setRunningId(undefined);
+      contextByMessageRef.current.clear();
+      pendingScrollRestoreRef.current = undefined;
+      autoFollowRef.current = true;
+      setShowScrollToBottom(false);
+      flashAppToast("已新建对话");
+    } catch (error) {
+      setContextError(`新建对话失败：${errorMessage(error)}`);
+      flashAppToast("新建对话失败", "error");
+    } finally {
+      const feedbackDelay = Math.max(
+        0,
+        450 - (performance.now() - feedbackStartedAt),
+      );
+      if (feedbackDelay)
+        await new Promise<void>((resolve) =>
+          window.setTimeout(resolve, feedbackDelay),
+        );
+      creatingConversationPathsRef.current.delete(workspacePath);
+      setCreatingConversationPaths(
+        new Set(creatingConversationPathsRef.current),
+      );
+    }
   }
 
   async function forkActiveTask() {
@@ -5020,7 +5064,9 @@ export default function App() {
       }
       flushPendingText(true);
       flushRemoteStreamSync(requestId);
-      const partialText = consumeStreamingText(requestId);
+      const partialText = consumeStreamingText(requestId, {
+        emitReset: false,
+      });
       const completedAt = Date.now();
       const commitStoppedText = (all: ChatMessage[]) =>
         all.map((message) =>
@@ -5575,6 +5621,7 @@ export default function App() {
         <Sidebar
           workspaceGroups={workspaceGroups}
           taskStorageReady={taskStorageReady}
+          creatingConversationPaths={creatingConversationPaths}
           activeTaskId={activeTask?.id}
           taskQuery={taskQuery}
           setTaskQuery={setTaskQuery}

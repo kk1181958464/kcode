@@ -15,17 +15,30 @@ import {
   resolveApproval,
   resolveApprovalWithScope,
 } from "../electron/agent";
-import { listProviders, saveProvider } from "../electron/store";
+import { listProviders, removeProvider, saveProvider } from "../electron/store";
 import { inspectProvider } from "../electron/provider-profile";
 import type {
   ChatMessage,
   PermissionMode,
+  Protocol,
   ProviderConfig,
 } from "../src/types";
 import { LiveView } from "./tui/live-view";
 import type { WriteSink } from "./tui/renderer";
+import { resolveInitialPermissionMode } from "./runtime-policy";
+import { sanitizeTerminalText } from "./tui/ansi";
+import { TerminalPrompt } from "./tui/prompt";
+import {
+  createProviderId,
+  defaultFirst,
+  firstUsableSelection,
+  isUsableProvider,
+} from "./providers";
 
-const errorMessage = (e: unknown) => (e instanceof Error ? e.message : String(e));
+const errorMessage = (e: unknown) =>
+  e instanceof Error ? e.message : String(e);
+const terminalText = (value: unknown) =>
+  sanitizeTerminalText(String(value ?? ""));
 
 const RESET = "\x1b[0m";
 const DIM = "\x1b[2m";
@@ -49,7 +62,13 @@ const SETTINGS_PATH = path.join(
   "cli-settings.json",
 );
 
-function loadSettings(): { permissionMode?: PermissionMode } {
+interface CliSettings {
+  permissionMode?: PermissionMode;
+  providerId?: string;
+  modelId?: string;
+}
+
+function loadSettings(): CliSettings {
   try {
     return JSON.parse(fs.readFileSync(SETTINGS_PATH, "utf8"));
   } catch {
@@ -57,13 +76,26 @@ function loadSettings(): { permissionMode?: PermissionMode } {
   }
 }
 
-function saveSettings(settings: { permissionMode?: PermissionMode }): void {
+function saveSettings(settings: CliSettings): void {
   try {
-    fs.mkdirSync(path.dirname(SETTINGS_PATH), { recursive: true });
-    fs.writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2));
+    fs.mkdirSync(path.dirname(SETTINGS_PATH), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2), {
+      mode: 0o600,
+    });
+    fs.chmodSync(SETTINGS_PATH, 0o600);
   } catch {
     // Preferences are best-effort; a write failure must not break the session.
   }
+}
+
+function updateSettings(patch: Partial<CliSettings>): void {
+  saveSettings({ ...loadSettings(), ...patch });
+}
+
+function rememberSelection(
+  session: Pick<Session, "provider" | "modelId">,
+): void {
+  updateSettings({ providerId: session.provider.id, modelId: session.modelId });
 }
 
 // Line-queue input. readline.question() throws "readline was closed" on a
@@ -71,27 +103,22 @@ function saveSettings(settings: { permissionMode?: PermissionMode }): void {
 // demand. This works identically for interactive TTY and piped input (tests).
 // A completer gives Tab-completion for slash commands (typing "/" + Tab lists
 // them; "/mo" + Tab → /model).
-const rl = readline.createInterface({
-  input: process.stdin,
-  completer(line: string): [string[], string] {
-    if (!line.startsWith("/")) return [[], line];
-    const names = COMMANDS.map((c) => c.name);
-    const hits = names.filter((n) => n.startsWith(line));
-    return [hits.length ? hits : names, line];
-  },
-});
+const interactiveInput = process.stdin.isTTY === true;
+const rl = interactiveInput
+  ? null
+  : readline.createInterface({ input: process.stdin });
 const lineQueue: string[] = [];
 let lineWaiter: ((line: string | null) => void) | null = null;
 let inputClosed = false;
 
-rl.on("line", (line) => {
+rl?.on("line", (line) => {
   if (lineWaiter) {
     const resolve = lineWaiter;
     lineWaiter = null;
     resolve(line);
   } else lineQueue.push(line);
 });
-rl.on("close", () => {
+rl?.on("close", () => {
   inputClosed = true;
   if (lineWaiter) {
     const resolve = lineWaiter;
@@ -108,95 +135,300 @@ function nextLine(prompt: string): Promise<string | null> {
   return new Promise((resolve) => (lineWaiter = resolve));
 }
 
-const ask = async (prompt: string) => (await nextLine(prompt)) ?? "/exit";
+const promptSink: WriteSink = {
+  write: (data) => process.stdout.write(data),
+  get columns() {
+    return process.stdout.columns || 80;
+  },
+  get rows() {
+    return process.stdout.rows || 24;
+  },
+};
+const terminalPrompt = interactiveInput
+  ? new TerminalPrompt({ input: process.stdin, output: promptSink })
+  : null;
 
-/**
- * Ensure a usable provider+model. Reuses the desktop store format under
- * ~/.kcode/providers.json. On first run it asks only for Base URL + API key,
- * then auto-discovers the provider's model list (and protocol) so the user
- * picks from a menu instead of typing a model id by hand. Manual entry is the
- * fallback when discovery isn't supported.
- */
-async function ensureModel(): Promise<{ provider: ProviderConfig; modelId: string }> {
-  let providers = await listProviders();
-  let ready = providers.find((p) => p.enabled && p.hasApiKey && p.models.length);
-  if (ready) return { provider: ready, modelId: ready.models[0].modelId };
-
-  console.log(color(YELLOW, "尚未配置可用模型，进行一次性配置："));
-  const baseUrl =
-    (await ask("Base URL [https://api.deepseek.com]: ")).trim() ||
-    "https://api.deepseek.com";
-  const apiKey = (await ask("API Key: ")).trim();
-
-  // Probe the provider's /models endpoint. inspectProvider auto-detects the
-  // protocol family (openai/anthropic/gemini) and returns fully-formed models.
-  process.stdout.write(color(DIM, "正在获取可用模型…\n"));
-  let models: ProviderConfig["models"] = [];
-  let protocol: ProviderConfig["protocol"] = "openai-chat";
-  try {
-    const probe = await inspectProvider({
-      id: "cli-provider",
-      name: "CLI Provider",
-      protocol,
-      baseUrl,
-      enabled: true,
-      models: [],
-      apiKey,
-    });
-    models = probe.models;
-    if (probe.suggestedProtocol) protocol = probe.suggestedProtocol;
-    else if (models[0]?.protocol) protocol = models[0].protocol;
-    if (!models.length)
-      console.log(color(YELLOW, `未能自动获取模型列表：${probe.profile.message}`));
-  } catch (error) {
-    console.log(color(YELLOW, `模型探测失败：${errorMessage(error)}`));
+async function ask(
+  label: string,
+  options: {
+    placeholder?: string;
+    initialValue?: string;
+    secret?: boolean;
+  } = {},
+): Promise<string> {
+  if (terminalPrompt) {
+    return (
+      (await terminalPrompt.ask({
+        label: terminalText(label).replace(/:\s*$/, ""),
+        ...options,
+      })) ?? "/exit"
+    );
   }
+  return (await nextLine(label)) ?? "/exit";
+}
 
-  let selected: ProviderConfig["models"] = [];
-  if (models.length) {
-    console.log(color(DIM, `发现 ${models.length} 个模型：`));
-    models.forEach((m, i) => console.log(`  ${i + 1}. ${m.displayName}`));
-    const pick = (
-      await ask(color(CYAN, "选择编号(可多选,如 1 3 5;回车=全部): "))
-    ).trim();
-    if (!pick) {
-      selected = models;
-    } else {
-      // Parse comma/space-separated 1-based indices, keep order, dedupe.
-      const seen = new Set<number>();
-      for (const tok of pick.split(/[,\s]+/)) {
-        const idx = Number(tok) - 1;
-        if (Number.isInteger(idx) && idx >= 0 && idx < models.length && !seen.has(idx)) {
-          seen.add(idx);
-          selected.push(models[idx]);
-        }
-      }
-      if (!selected.length) selected = [models[0]];
-    }
+async function selectDefaultModel(
+  models: ProviderConfig["models"],
+  title: string,
+  preferredModelId?: string,
+): Promise<string> {
+  const preferredIndex = Math.max(
+    0,
+    models.findIndex((model) => model.modelId === preferredModelId),
+  );
+  if (terminalPrompt) {
+    const picked = await terminalPrompt.select(
+      title,
+      models.map((model) => ({
+        label: model.displayName,
+        description: model.modelId,
+        value: model.modelId,
+      })),
+      preferredIndex,
+    );
+    if (!picked) throw new Error("已取消渠道配置");
+    return picked;
+  }
+  models.forEach((model, index) =>
+    console.log(`  ${index + 1}. ${terminalText(model.displayName)}`),
+  );
+  const pick = (await ask(`选择模型编号 [${preferredIndex + 1}]: `)).trim();
+  const index = Number(pick || preferredIndex + 1) - 1;
+  return models[
+    Number.isInteger(index) && index >= 0 && index < models.length
+      ? index
+      : preferredIndex
+  ].modelId;
+}
+
+async function configureProvider(
+  existing?: ProviderConfig,
+): Promise<{ provider: ProviderConfig; modelId: string }> {
+  const providers = await listProviders();
+  const name = (
+    await ask("1 / 5  渠道名称", {
+      initialValue: existing?.name,
+      placeholder: "例如：公司中转 / DeepSeek / OpenAI",
+    })
+  ).trim();
+  if (!name || name === "/exit") throw new Error("未提供渠道名称");
+  const baseUrl = (
+    await ask("2 / 5  模型服务地址", {
+      initialValue: existing?.baseUrl,
+      placeholder: "https://api.deepseek.com",
+    })
+  ).trim();
+  if (!baseUrl || baseUrl === "/exit") throw new Error("未提供模型服务地址");
+  const protocolOptions: Array<{
+    label: string;
+    description: string;
+    value: Protocol | "auto";
+  }> = [
+    { label: "自动检测", description: "根据地址和模型接口识别", value: "auto" },
+    {
+      label: "OpenAI Responses",
+      description: "openai-responses",
+      value: "openai-responses",
+    },
+    {
+      label: "OpenAI Chat Completions",
+      description: "openai-chat",
+      value: "openai-chat",
+    },
+    {
+      label: "Anthropic Messages",
+      description: "anthropic-messages",
+      value: "anthropic-messages",
+    },
+    {
+      label: "Gemini Generate Content",
+      description: "gemini-generate-content",
+      value: "gemini-generate-content",
+    },
+  ];
+  let configuredProtocol: Protocol | "auto" = existing?.protocol ?? "auto";
+  if (terminalPrompt) {
+    const selected = await terminalPrompt.select(
+      "3 / 5  接口协议",
+      protocolOptions,
+      Math.max(
+        0,
+        protocolOptions.findIndex(
+          (option) => option.value === configuredProtocol,
+        ),
+      ),
+    );
+    if (!selected) throw new Error("已取消渠道配置");
+    configuredProtocol = selected;
   } else {
-    // Fallback: provider has no listable models — take a manual id.
-    const modelId = (await ask("模型 ID [deepseek-chat]: ")).trim() || "deepseek-chat";
-    selected = [{ id: modelId, modelId, displayName: modelId, protocol }];
+    console.log("接口协议：");
+    protocolOptions.forEach((option, index) =>
+      console.log(`  ${index + 1}. ${option.label} (${option.description})`),
+    );
+    const pick = (await ask("3 / 5  选择协议编号 [1]: ")).trim();
+    const index = Number(pick || "1") - 1;
+    configuredProtocol =
+      protocolOptions[
+        Number.isInteger(index) && index >= 0 && index < protocolOptions.length
+          ? index
+          : 0
+      ].value;
   }
+  const apiKey = (
+    await ask("4 / 5  API Key", {
+      placeholder: existing?.hasApiKey
+        ? "重新输入以同步模型或修改连接"
+        : "输入内容不会显示",
+      secret: true,
+    })
+  ).trim();
+  if (!apiKey || apiKey === "/exit") throw new Error("未提供 API Key");
 
-  const provider: ProviderConfig = {
-    id: "cli-provider",
-    name: "CLI Provider",
+  const id =
+    existing?.id ??
+    createProviderId(
+      name,
+      providers.map((provider) => provider.id),
+    );
+  let protocol: Protocol =
+    configuredProtocol === "auto" ? "openai-chat" : configuredProtocol;
+  process.stdout.write(color(DIM, "正在检测协议并同步模型…\n"));
+  const probe = await inspectProvider({
+    id,
+    name,
     protocol,
     baseUrl,
     enabled: true,
+    models: existing?.models ?? [],
+    apiKey,
+  });
+  if (configuredProtocol === "auto") {
+    if (probe.suggestedProtocol) protocol = probe.suggestedProtocol;
+    else if (probe.models[0]?.protocol) protocol = probe.models[0].protocol;
+  }
+
+  let models = probe.models.map((model) => ({ ...model, protocol }));
+  let modelId: string;
+  if (models.length) {
+    modelId = await selectDefaultModel(
+      models,
+      `5 / 5  选择默认模型（发现 ${models.length} 个）`,
+      existing?.models[0]?.modelId,
+    );
+    models = defaultFirst(models, modelId);
+  } else {
+    console.log(
+      color(
+        YELLOW,
+        `未能自动获取模型列表：${terminalText(probe.profile.message)}`,
+      ),
+    );
+    modelId = (
+      await ask("5 / 5  模型 ID", {
+        initialValue: existing?.models[0]?.modelId,
+        placeholder: "deepseek-chat",
+      })
+    ).trim();
+    if (!modelId || modelId === "/exit") throw new Error("未提供模型 ID");
+    models = [
+      { id: `${id}:${modelId}`, modelId, displayName: modelId, protocol },
+    ];
+  }
+
+  const next: ProviderConfig = {
+    id,
+    name,
+    protocol,
+    baseUrl,
+    enabled: existing?.enabled ?? true,
     hasApiKey: true,
-    // Only the selected models are saved; the first is the session default and
-    // the rest are switchable via /model.
-    models: selected,
+    models,
+    profile: probe.profile,
   };
-  await saveProvider(provider, apiKey);
-  providers = await listProviders();
-  ready = providers.find((p) => p.id === "cli-provider");
-  if (!ready) throw new Error("模型配置失败");
-  if (selected.length > 1)
-    console.log(color(DIM, `已保存 ${selected.length} 个模型，/model 可切换。`));
-  return { provider: ready, modelId: selected[0].modelId };
+  await saveProvider(next, apiKey);
+  const saved = (await listProviders()).find((provider) => provider.id === id);
+  if (!saved) throw new Error("渠道配置失败");
+  console.log(
+    color(
+      GREEN,
+      `已保存渠道 ${terminalText(saved.name)}，共 ${saved.models.length} 个模型。`,
+    ),
+  );
+  return { provider: saved, modelId };
+}
+
+async function syncProviderModels(
+  provider: ProviderConfig,
+): Promise<{ provider: ProviderConfig; modelId: string }> {
+  const apiKey = (
+    await ask(`同步 ${provider.name} · API Key`, {
+      placeholder: "输入内容不会显示",
+      secret: true,
+    })
+  ).trim();
+  if (!apiKey || apiKey === "/exit") throw new Error("未提供 API Key");
+  process.stdout.write(color(DIM, "正在同步模型…\n"));
+  const probe = await inspectProvider({
+    id: provider.id,
+    name: provider.name,
+    protocol: provider.protocol,
+    baseUrl: provider.baseUrl,
+    enabled: provider.enabled,
+    models: provider.models,
+    apiKey,
+  });
+  const protocol = provider.protocol;
+  let models = probe.models.map((model) => ({ ...model, protocol }));
+  if (!models.length)
+    throw new Error(probe.profile.message || "渠道没有返回可识别的模型列表");
+  const modelId = await selectDefaultModel(
+    models,
+    `选择 ${provider.name} 的默认模型`,
+    provider.models[0]?.modelId,
+  );
+  models = defaultFirst(models, modelId);
+  await saveProvider(
+    { ...provider, protocol, models, profile: probe.profile },
+    apiKey,
+  );
+  const saved = (await listProviders()).find((item) => item.id === provider.id);
+  if (!saved) throw new Error("渠道同步后未找到保存结果");
+  console.log(
+    color(
+      GREEN,
+      `已同步 ${terminalText(saved.name)} 的 ${models.length} 个模型。`,
+    ),
+  );
+  return { provider: saved, modelId };
+}
+
+/** Ensure at least one usable provider exists, creating the first one if needed. */
+async function ensureModel(): Promise<{
+  provider: ProviderConfig;
+  modelId: string;
+}> {
+  const providers = await listProviders();
+  const settings = loadSettings();
+  const preferred = providers.find(
+    (provider) =>
+      provider.id === settings.providerId && isUsableProvider(provider),
+  );
+  if (preferred) {
+    const modelId = preferred.models.some(
+      (model) => model.modelId === settings.modelId,
+    )
+      ? settings.modelId!
+      : preferred.models[0].modelId;
+    return { provider: preferred, modelId };
+  }
+  const ready = firstUsableSelection(providers);
+  if (ready) return ready;
+  console.log("");
+  console.log(color(BOLD, "首次配置"));
+  console.log(
+    color(DIM, "添加第一个模型渠道。之后可使用 /provider 管理多个渠道。\n"),
+  );
+  return configureProvider();
 }
 
 /**
@@ -228,7 +460,13 @@ function toolCategory(tool: string): string {
 async function promptApproval(
   view: LiveView,
   requestId: string,
-  activity: { id: string; tool: string; command?: string; path?: string; input?: Record<string, unknown> },
+  activity: {
+    id: string;
+    tool: string;
+    command?: string;
+    path?: string;
+    input?: Record<string, unknown>;
+  },
   workspacePath: string,
 ): Promise<void> {
   view.freeze();
@@ -237,10 +475,16 @@ async function promptApproval(
     activity.path ??
     (typeof activity.input?.path === "string" ? activity.input.path : "") ??
     "";
+  const safeTool = terminalText(activity.tool);
+  const safeDetail = terminalText(detail);
   process.stdout.write(
-    `${YELLOW}⚠ 待批准${RESET} ${BOLD}${activity.tool}${RESET}${detail ? ` ${DIM}${detail}${RESET}` : ""}\n`,
+    `${YELLOW}⚠ 待批准${RESET} ${BOLD}${safeTool}${RESET}${safeDetail ? ` ${DIM}${safeDetail}${RESET}` : ""}\n`,
   );
-  const answer = (await ask(`${CYAN}执行? [y=允许 / N=拒绝 / a=本会话都允许 / p=永久允许]: ${RESET}`))
+  const answer = (
+    await ask(
+      `${CYAN}执行? [y=允许 / N=拒绝 / a=本会话都允许 / p=永久允许]: ${RESET}`,
+    )
+  )
     .trim()
     .toLowerCase();
   if (answer === "a" || answer === "p") {
@@ -324,6 +568,7 @@ interface Session {
 /** Single source of truth for slash commands: help text, router, completion. */
 const COMMANDS: { name: string; desc: string }[] = [
   { name: "/help", desc: "显示可用命令" },
+  { name: "/provider", desc: "添加和管理模型渠道" },
   { name: "/model", desc: "在已配置模型间切换" },
   { name: "/mode", desc: "切换审批模式（confirm ↔ full-access）" },
   { name: "/clear", desc: "清空当前对话上下文" },
@@ -350,11 +595,39 @@ async function switchModel(session: Session): Promise<void> {
     console.log(color(YELLOW, "没有其它已配置的模型。"));
     return;
   }
+  const currentIndex = Math.max(
+    0,
+    options.findIndex(
+      (option) =>
+        option.provider.id === session.provider.id &&
+        option.model.modelId === session.modelId,
+    ),
+  );
+  if (terminalPrompt) {
+    const picked = await terminalPrompt.select(
+      "切换模型",
+      options.map((option) => ({
+        label: `${option.provider.name} / ${option.model.displayName}`,
+        description: option.model.modelId,
+        value: option,
+      })),
+      currentIndex,
+    );
+    if (!picked) return;
+    session.provider = picked.provider;
+    session.modelId = picked.model.modelId;
+    rememberSelection(session);
+    console.log(
+      color(DIM, `已切换到 ${session.provider.name} / ${session.modelId}`),
+    );
+    return;
+  }
   options.forEach((o, i) => {
     const current =
-      o.provider.id === session.provider.id && o.model.modelId === session.modelId;
+      o.provider.id === session.provider.id &&
+      o.model.modelId === session.modelId;
     console.log(
-      `  ${i + 1}. ${o.provider.name} / ${o.model.displayName}${current ? color(DIM, " (当前)") : ""}`,
+      `  ${i + 1}. ${terminalText(o.provider.name)} / ${terminalText(o.model.displayName)}${current ? color(DIM, " (当前)") : ""}`,
     );
   });
   const pick = (await ask(color(CYAN, "选择编号: "))).trim();
@@ -365,7 +638,288 @@ async function switchModel(session: Session): Promise<void> {
   }
   session.provider = options[idx].provider;
   session.modelId = options[idx].model.modelId;
-  console.log(color(DIM, `已切换到 ${session.provider.name} / ${session.modelId}`));
+  rememberSelection(session);
+  console.log(
+    color(DIM, `已切换到 ${session.provider.name} / ${session.modelId}`),
+  );
+}
+
+async function refreshSessionSelection(
+  session: Session,
+  preferredProviderId?: string,
+): Promise<void> {
+  const providers = await listProviders();
+  const current = providers.find(
+    (provider) => provider.id === (preferredProviderId ?? session.provider.id),
+  );
+  if (current && isUsableProvider(current)) {
+    session.provider = current;
+    if (!current.models.some((model) => model.modelId === session.modelId))
+      session.modelId = current.models[0].modelId;
+    rememberSelection(session);
+    return;
+  }
+  const fallback = firstUsableSelection(providers);
+  if (fallback) {
+    session.provider = fallback.provider;
+    session.modelId = fallback.modelId;
+    rememberSelection(session);
+    console.log(
+      color(
+        DIM,
+        `当前渠道不可用，已切换到 ${terminalText(fallback.provider.name)} / ${terminalText(fallback.modelId)}`,
+      ),
+    );
+    return;
+  }
+  const created = await configureProvider();
+  session.provider = created.provider;
+  session.modelId = created.modelId;
+  rememberSelection(session);
+}
+
+function printProviders(providers: ProviderConfig[], session: Session): void {
+  if (!providers.length) {
+    console.log(color(YELLOW, "尚未配置模型渠道。"));
+    return;
+  }
+  console.log(color(BOLD, "模型渠道"));
+  providers.forEach((provider, index) => {
+    const current = provider.id === session.provider.id ? " · 当前" : "";
+    const status = provider.enabled
+      ? provider.hasApiKey
+        ? "已启用"
+        : "缺少 Key"
+      : "已停用";
+    console.log(
+      `  ${index + 1}. ${terminalText(provider.name)} · ${status} · ${provider.models.length} 个模型${current}`,
+    );
+    console.log(
+      color(
+        DIM,
+        `     ${provider.protocol} · ${terminalText(provider.baseUrl)}`,
+      ),
+    );
+  });
+}
+
+async function chooseProviderModel(
+  provider: ProviderConfig,
+  session: Session,
+): Promise<void> {
+  if (!isUsableProvider(provider)) {
+    console.log(color(YELLOW, "该渠道尚未启用、缺少 API Key 或没有模型。"));
+    return;
+  }
+  const modelId = await selectDefaultModel(
+    provider.models,
+    `选择 ${provider.name} 的模型`,
+    provider.id === session.provider.id
+      ? session.modelId
+      : provider.models[0].modelId,
+  );
+  session.provider = provider;
+  session.modelId = modelId;
+  rememberSelection(session);
+  console.log(
+    color(
+      DIM,
+      `已切换到 ${terminalText(provider.name)} / ${terminalText(modelId)}`,
+    ),
+  );
+}
+
+async function manageOneProvider(
+  provider: ProviderConfig,
+  session: Session,
+): Promise<void> {
+  if (!terminalPrompt) return;
+  for (;;) {
+    const action = await terminalPrompt.select(
+      `${provider.name} · ${provider.models.length} 个模型`,
+      [
+        {
+          label: "设为当前渠道 / 选择模型",
+          description: provider.enabled ? "切换当前会话" : "渠道已停用",
+          value: "use" as const,
+        },
+        {
+          label: "编辑连接并同步模型",
+          description: "名称、地址、协议和 API Key",
+          value: "edit" as const,
+        },
+        {
+          label: "同步模型列表",
+          description: "保留名称、地址和协议",
+          value: "sync" as const,
+        },
+        {
+          label: "仅修改渠道名称",
+          description: provider.name,
+          value: "rename" as const,
+        },
+        {
+          label: provider.enabled ? "停用渠道" : "启用渠道",
+          description: "配置保留，可随时恢复",
+          value: "toggle" as const,
+        },
+        {
+          label: "删除渠道",
+          description: "删除配置与本地保存的 API Key",
+          value: "delete" as const,
+        },
+        { label: "返回渠道列表", value: "back" as const },
+      ],
+    );
+    if (!action || action === "back") return;
+    if (action === "use") {
+      await chooseProviderModel(provider, session);
+      return;
+    }
+    if (action === "edit") {
+      const wasCurrent = session.provider.id === provider.id;
+      const updated = await configureProvider(provider);
+      provider = updated.provider;
+      if (wasCurrent) {
+        session.provider = provider;
+        session.modelId = updated.modelId;
+        rememberSelection(session);
+      }
+      return;
+    }
+    if (action === "sync") {
+      const wasCurrent = session.provider.id === provider.id;
+      const updated = await syncProviderModels(provider);
+      provider = updated.provider;
+      if (wasCurrent) {
+        session.provider = provider;
+        session.modelId = updated.modelId;
+        rememberSelection(session);
+      }
+      continue;
+    }
+    if (action === "rename") {
+      const name = (
+        await ask("渠道名称", {
+          initialValue: provider.name,
+          placeholder: provider.name,
+        })
+      ).trim();
+      if (!name || name === "/exit") continue;
+      const providers = await saveProvider({ ...provider, name });
+      provider = providers.find((item) => item.id === provider.id) ?? {
+        ...provider,
+        name,
+      };
+      if (session.provider.id === provider.id) session.provider = provider;
+      if (session.provider.id === provider.id) rememberSelection(session);
+      console.log(color(GREEN, `已重命名为 ${terminalText(name)}`));
+      continue;
+    }
+    if (action === "toggle") {
+      if (provider.enabled && session.provider.id === provider.id) {
+        const alternatives = (await listProviders()).filter(
+          (item) => item.id !== provider.id && isUsableProvider(item),
+        );
+        if (!alternatives.length) {
+          console.log(
+            color(YELLOW, "当前是唯一可用渠道，请先添加或启用另一个渠道。"),
+          );
+          continue;
+        }
+      }
+      const providers = await saveProvider({
+        ...provider,
+        enabled: !provider.enabled,
+      });
+      provider = providers.find((item) => item.id === provider.id) ?? {
+        ...provider,
+        enabled: !provider.enabled,
+      };
+      console.log(
+        color(
+          GREEN,
+          `${terminalText(provider.name)} 已${provider.enabled ? "启用" : "停用"}`,
+        ),
+      );
+      await refreshSessionSelection(session);
+      continue;
+    }
+    if (action === "delete") {
+      if (session.provider.id === provider.id) {
+        const alternatives = (await listProviders()).filter(
+          (item) => item.id !== provider.id && isUsableProvider(item),
+        );
+        if (!alternatives.length) {
+          console.log(
+            color(YELLOW, "当前是唯一可用渠道，请先添加或启用另一个渠道。"),
+          );
+          continue;
+        }
+      }
+      const confirmation = (
+        await ask(`输入渠道名称确认删除：${provider.name}`, {
+          placeholder: provider.name,
+        })
+      ).trim();
+      if (confirmation !== provider.name) {
+        console.log(color(YELLOW, "名称不匹配，已取消删除。"));
+        continue;
+      }
+      await removeProvider(provider.id);
+      console.log(color(GREEN, `已删除渠道 ${terminalText(provider.name)}`));
+      await refreshSessionSelection(session);
+      return;
+    }
+  }
+}
+
+async function manageProviders(session: Session): Promise<void> {
+  const providers = await listProviders();
+  if (!terminalPrompt) {
+    printProviders(providers, session);
+    console.log(
+      color(DIM, "交互终端中使用 /provider 可添加、编辑和删除渠道。"),
+    );
+    return;
+  }
+  for (;;) {
+    const latest = await listProviders();
+    const selected = await terminalPrompt.select("模型渠道", [
+      {
+        label: "＋ 添加渠道",
+        description: "自动检测协议并同步模型",
+        value: "add" as const,
+      },
+      ...latest.map((provider) => ({
+        label: `${provider.enabled ? "●" : "○"} ${provider.name}${provider.id === session.provider.id ? "（当前）" : ""}`,
+        description: `${provider.protocol} · ${provider.models.length} 个模型`,
+        value: provider,
+      })),
+      { label: "返回", value: "back" as const },
+    ]);
+    if (!selected || selected === "back") return;
+    if (selected === "add") {
+      try {
+        const created = await configureProvider();
+        session.provider = created.provider;
+        session.modelId = created.modelId;
+        rememberSelection(session);
+      } catch (error) {
+        console.log(
+          color(YELLOW, `添加渠道未完成：${terminalText(errorMessage(error))}`),
+        );
+      }
+      continue;
+    }
+    try {
+      await manageOneProvider(selected, session);
+    } catch (error) {
+      console.log(
+        color(YELLOW, `渠道操作未完成：${terminalText(errorMessage(error))}`),
+      );
+    }
+  }
 }
 
 /** Handle a slash command. Returns how the caller should proceed. */
@@ -393,11 +947,15 @@ async function handleSlashCommand(
     case "mode":
       session.permissionMode =
         session.permissionMode === "confirm" ? "full-access" : "confirm";
-      saveSettings({ permissionMode: session.permissionMode });
+      updateSettings({ permissionMode: session.permissionMode });
       console.log(color(DIM, `审批模式：${session.permissionMode}（已记住）`));
       return "handled";
     case "model":
       await switchModel(session);
+      return "handled";
+    case "provider":
+    case "providers":
+      await manageProviders(session);
       return "handled";
     default:
       console.log(color(YELLOW, `未知命令 ${input}，输入 /help 查看。`));
@@ -411,7 +969,8 @@ function parseArgs(argv: string[]): { workspacePath?: string; yolo: boolean } {
   let yolo = false;
   for (const arg of argv) {
     if (arg === "--yolo" || arg === "--full-access") yolo = true;
-    else if (!arg.startsWith("--") && workspacePath === undefined) workspacePath = arg;
+    else if (!arg.startsWith("--") && workspacePath === undefined)
+      workspacePath = arg;
   }
   return { workspacePath, yolo };
 }
@@ -419,27 +978,46 @@ function parseArgs(argv: string[]): { workspacePath?: string; yolo: boolean } {
 async function main() {
   const { workspacePath: rawPath, yolo } = parseArgs(process.argv.slice(2));
   const workspacePath = path.resolve(rawPath || process.cwd());
-  // confirm by default for safety; but a non-interactive stdin cannot answer a
-  // y/N prompt, so fall back to full-access there (piped/automated runs). A
-  // remembered `/mode` preference (persisted) wins for interactive sessions.
-  const interactive = process.stdin.isTTY === true;
+  // Non-interactive sessions cannot answer approval prompts, so they default
+  // to read-only. Full access always requires an explicit command-line flag.
+  // A remembered `/mode` preference only applies to interactive sessions.
+  const interactive = interactiveInput;
   const saved = loadSettings();
-  const permissionMode: PermissionMode =
-    yolo || !interactive
-      ? "full-access"
-      : (saved.permissionMode ?? "confirm");
+  const permissionMode = resolveInitialPermissionMode({
+    interactive,
+    yolo,
+    saved: saved.permissionMode,
+  });
 
-  console.log(color(BOLD, "KCode CLI"));
-  console.log(color(DIM, `工作区: ${workspacePath}`));
+  console.log(color(BOLD, "KCode"));
+  console.log(color(DIM, `工作区  ${terminalText(workspacePath)}`));
   const { provider, modelId } = await ensureModel();
   const session: Session = { provider, modelId, permissionMode, messages: [] };
-  console.log(color(DIM, `模型: ${provider.name} / ${modelId} · 审批: ${permissionMode}`));
+  rememberSelection(session);
+  console.log(
+    color(
+      DIM,
+      `模型: ${terminalText(provider.name)} / ${terminalText(modelId)} · 审批: ${permissionMode}`,
+    ),
+  );
   if (!interactive && !yolo)
-    console.log(color(DIM, "（非交互输入，已自动使用 full-access）"));
-  console.log(color(DIM, "输入任务，Ctrl+C 中断当前回合，/help 查看命令。\n"));
+    console.log(
+      color(
+        DIM,
+        "（非交互输入默认使用 read-only；显式传入 --yolo 才允许修改）",
+      ),
+    );
+  console.log(color(DIM, "输入 / 可查看命令，Ctrl+C 中断当前回合。\n"));
 
   for (;;) {
-    const input = (await ask(color(CYAN, "› "))).trim();
+    const input = (
+      terminalPrompt
+        ? ((await terminalPrompt.ask({
+            placeholder: "描述任务，输入 / 查看命令",
+            commands: COMMANDS,
+          })) ?? "/exit")
+        : await ask(color(CYAN, "› "))
+    ).trim();
     if (!input) continue;
     const action = await handleSlashCommand(input, session);
     if (action === "exit") break;
@@ -467,10 +1045,12 @@ async function main() {
       });
     process.stdout.write("\n");
   }
-  rl.close();
+  rl?.close();
 }
 
 main().catch((error) => {
-  console.error(color(RED, `致命错误: ${error?.message ?? error}`));
+  console.error(
+    color(RED, `致命错误: ${terminalText(error?.message ?? error)}`),
+  );
   process.exit(1);
 });

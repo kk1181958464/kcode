@@ -147,6 +147,7 @@ import { AsyncQueue } from "./async-queue";
 import { readSseJson } from "./sse-stream";
 import { resolveModelCompatibility } from "./model-compatibility";
 import { ModelAttemptBudget } from "./model-attempt-budget";
+import { requiredToolChoiceForProtocol } from "./tool-choice-policy";
 import { toolRegistry } from "./tool-registry";
 import { agentHooks } from "./agent-hooks";
 import { turnSteeringQueue } from "./turn-steering";
@@ -3804,6 +3805,10 @@ async function modelTurn(
   ]
     .filter(Boolean)
     .join("\n\n");
+  const requiredToolInstruction =
+    requireToolCall && runtimeTools.length
+      ? "\n\n<runtime_tool_requirement>This response must include at least one native tool call. Do not return a plan, progress narration, or completion summary without calling a tool. Use request_user_input only when a specific undiscoverable input is genuinely required, and use report_no_change only after successful read-only inspection proves that no edit is needed.</runtime_tool_requirement>"
+      : "";
   const remoteWorkspaceInstruction = request.remoteWorkspace
     ? `\n\n<ssh_remote_workspace>\nThis task is attached to a managed SSH Remote workspace. Try the existing session first. If an SSH tool explicitly reports that the session was lost, ssh_connect is available for recovery. When the user already supplied the host, username, password, private-key content, or an absolute private-key path, reconnect yourself immediately with those values; use privateKeyPath for a user-supplied key path and do not send the user to the SSH Remote dialog. The project source of truth is on ${request.remoteWorkspace.username}@${request.remoteWorkspace.host}:${request.remoteWorkspace.port} under ${request.remoteWorkspace.rootPath}. Pass that rootPath when reconnecting. Use ssh_list_directory, ssh_read_file, ssh_write_file, ssh_run, ssh_upload_file, and ssh_download_file for work on the remote server. Relative SSH file paths are automatically resolved under the remote root. Every ssh_run command starts in the remote root. This is a hybrid task: you ALSO have the local file, git, and command tools, which act on THIS machine. When the user references local project sources by absolute path (for example D:\\\\project\\\\... on Windows), use the local tools to read, edit, build, and inspect them, then ssh_upload_file to deploy build artifacts to the server. Note ${root} itself is only KCode metadata/cache, not the user's local project — do not treat that cache directory as the source, but do freely use the local tools on the absolute paths the user points you to.\n</ssh_remote_workspace>`
     : "";
@@ -3821,7 +3826,7 @@ async function modelTurn(
   const projectInstructionsSection = projectInstructions
     ? `\n\n<project_instructions>\n${projectInstructions}\n</project_instructions>`
     : "";
-  const payloadSystem = `${system}${suppliedVerificationCodeNotice}${imageInputNotice}${projectInstructionsSection}`;
+  const payloadSystem = `${system}${suppliedVerificationCodeNotice}${imageInputNotice}${projectInstructionsSection}${requiredToolInstruction}`;
   // Track system prompt segment changes for cache optimization analytics
   worldStateTracker.recordRound(buildSegments([
     { name: "identity", content: isolation.boundary },
@@ -3843,6 +3848,13 @@ async function modelTurn(
   } else headers.Authorization = `Bearer ${activeApiKey}`;
   let url = "",
     body: Record<string, unknown> = {};
+  const requiredToolControl =
+    requireToolCall && runtimeTools.length
+      ? requiredToolChoiceForProtocol(protocol, {
+          anthropicThinkingEnabled:
+            reasoning.reasoningMode === "budget" && effort !== "auto",
+        })
+      : {};
   if (protocol === "openai-chat") {
     url = providerApiEndpoint(provider.baseUrl, protocol, "chat/completions");
     const messages: unknown[] = [{ role: "system", content: payloadSystem }];
@@ -3903,9 +3915,9 @@ async function modelTurn(
       ...(runtimeTools.length
         ? {
             tools: runtimeTools.map((t) => ({ type: "function", function: t })),
-            ...(requireToolCall ? { tool_choice: "required" } : {}),
           }
         : {}),
+      ...requiredToolControl,
       reasoning_effort:
         reasoning.reasoningMode === "effort" &&
         !["auto", "thinking"].includes(effort)
@@ -3961,6 +3973,7 @@ async function modelTurn(
       ...(runtimeTools.length
         ? { tools: runtimeTools.map((t) => ({ type: "function", ...t })) }
         : {}),
+      ...requiredToolControl,
       reasoning:
         reasoning.reasoningMode === "effort" &&
         !["auto", "thinking"].includes(effort)
@@ -4031,6 +4044,7 @@ async function modelTurn(
             })),
           }
         : {}),
+      ...requiredToolControl,
     };
   } else {
     url = `${providerApiEndpoint(provider.baseUrl, protocol, `models/${encodeURIComponent(request.modelId)}:streamGenerateContent`)}?alt=sse&key=${encodeURIComponent(activeApiKey)}`;
@@ -4103,6 +4117,7 @@ async function modelTurn(
             ],
           }
         : {}),
+      ...requiredToolControl,
     };
   }
   // Reasoning models can spend minutes thinking before the first byte arrives,
@@ -4679,6 +4694,10 @@ export async function* runAgent(
       streamedText = "",
       streamedReasoning = "";
     const turnTextStartOffset = timelineTextLength;
+    const resetTurnTextEvent = (): AgentEvent => ({
+      type: "text_reset",
+      textOffset: turnTextStartOffset,
+    });
     const bufferModelText =
       browserIsOpen(browserSessionId) ||
       requestedBrowserOps.size > 0 ||
@@ -4717,6 +4736,7 @@ export async function* runAgent(
                 request.modelId,
                 requestedCodingEvidenceOps,
                 successfulCodingEvidence(evidenceHistory),
+              evidenceHistory,
               ),
           runtime: modelRuntime,
           attemptBudget: turnAttemptBudget,
@@ -4736,7 +4756,7 @@ export async function* runAgent(
             streamedText = "";
             if (!bufferModelText) {
               timelineTextLength = turnTextStartOffset;
-              yield { type: "text_reset" };
+              yield resetTurnTextEvent();
             }
           } else {
             streamedText += event.delta;
@@ -4820,7 +4840,7 @@ export async function* runAgent(
       if (!bufferModelText && streamedText) {
         timelineTextLength = turnTextStartOffset;
         streamedText = "";
-        yield { type: "text_reset" };
+        yield resetTurnTextEvent();
       }
       history.push({
         kind: "message",
@@ -4872,7 +4892,7 @@ export async function* runAgent(
         if (!bufferModelText && streamedText) {
           timelineTextLength = turnTextStartOffset;
           streamedText = "";
-          yield { type: "text_reset" };
+          yield resetTurnTextEvent();
         }
         const unsupportedClaimNotice = unsupportedBrowserClaims.length
           ? `你上一段文字声称已经完成${unsupportedBrowserClaims.map((operation) => browserLabels[operation]).join("、")}，但没有对应的成功工具记录；该段未经验证的文字已撤回。`
@@ -4895,7 +4915,7 @@ export async function* runAgent(
       if (!bufferModelText && streamedText) {
         timelineTextLength = turnTextStartOffset;
         streamedText = "";
-        yield { type: "text_reset" };
+        yield resetTurnTextEvent();
       }
       closeSubagentMessageQueue(requestId);
       const missingBrowserLabels = missingBrowserEvidence
@@ -4951,7 +4971,7 @@ export async function* runAgent(
         if (!bufferModelText && streamedText) {
           timelineTextLength = turnTextStartOffset;
           streamedText = "";
-          yield { type: "text_reset" };
+          yield resetTurnTextEvent();
         }
         const unsupportedClaimNotice = unsupportedGitClaims.length
           ? `你上一段文字声称 Git/发布操作已经完成（${unsupportedGitClaims.join(", ")}），但没有对应的成功工具记录；该段未经验证的文字已撤回。`
@@ -4977,7 +4997,7 @@ export async function* runAgent(
       if (!bufferModelText && streamedText) {
         timelineTextLength = turnTextStartOffset;
         streamedText = "";
-        yield { type: "text_reset" };
+        yield resetTurnTextEvent();
       }
       closeSubagentMessageQueue(requestId);
       const blockedGitMessage =
@@ -5044,7 +5064,7 @@ export async function* runAgent(
         if (!bufferModelText && streamedText) {
           timelineTextLength = turnTextStartOffset;
           streamedText = "";
-          yield { type: "text_reset" };
+          yield resetTurnTextEvent();
         }
         const unsupportedClaimNotice = unsupportedCodingClaims.length
           ? `你上一段文字声称已经完成${unsupportedCodingClaims.map((operation) => codingLabels[operation]).join("、")}，但没有对应的成功工具记录；该段未经验证的文字已撤回。`
@@ -5067,26 +5087,36 @@ export async function* runAgent(
       if (!bufferModelText && streamedText) {
         timelineTextLength = turnTextStartOffset;
         streamedText = "";
-        yield { type: "text_reset" };
+        yield resetTurnTextEvent();
       }
       closeSubagentMessageQueue(requestId);
       const missingCodingLabels = missingActionCodingEvidence
         .map((operation) => codingLabels[operation])
         .join("、");
-      const blockedCodingMessage =
-        !unsupportedOverallCompletion &&
-        !unsupportedCodingClaims.length &&
-        turn.text.trim()
-          ? `${turn.text.trim()}\n\n本轮未得到${missingCodingLabels}的成功工具记录，任务已暂停；未确认实际修改、执行或验证已经发生。`
-          : unsupportedCodingClaims.length
-            ? `已撤回未经工具结果证实的“${unsupportedCodingClaims.map((operation) => codingLabels[operation]).join("、")}”声明。本轮未得到${missingCodingLabels}的成功工具记录，任务已暂停。`
-            : `本轮未得到${missingCodingLabels}的成功工具记录，任务已暂停；未确认实际修改、执行或验证已经发生。`;
-      timelineTextLength = turnTextStartOffset + blockedCodingMessage.length;
-      for (const event of blockedVerificationEvents(
-        turnTextStartOffset,
-        blockedCodingMessage,
-      ))
-        yield event;
+      // Planner runs can't touch tools directly — they must delegate. If a
+      // planner pauses here it means it never got a successful executor result,
+      // so say why (executor failed / never spawned) instead of blaming the
+      // planner for "not modifying files", which is confusing in collaboration.
+      const plannerReason = (() => {
+        if (!plannerCoordinator) return "";
+        const subs = listSubagents(requestId);
+        const failed = subs.find(
+          (a) => a.status === "failed" || a.status === "stopped",
+        );
+        if (failed)
+          return `执行 Agent 未成功完成${failed.error ? `：${failed.error}` : ""}`;
+        if (!subs.length) return "规划模型本轮未调用执行模型（spawn_agent）";
+        return "执行模型未返回成功的工具结果";
+      })();
+      yield {
+        type: "error",
+        code: "coding_tool_execution_missing",
+        retryable: true,
+        userAction: "retry",
+        message: plannerCoordinator
+          ? `执行 Agent 未返回可验证的${missingCodingLabels}结果${plannerReason ? `（${plannerReason}）` : ""}。请重试或更换支持工具调用的模型。`
+          : `模型连续未调用完成本次任务所需的工具（${missingCodingLabels}）。KCode 未确认这些操作已经发生；请重试或切换支持工具调用的模型/协议。`,
+      };
       return;
     }
     if (
@@ -5099,7 +5129,7 @@ export async function* runAgent(
         if (!bufferModelText && streamedText) {
           timelineTextLength = turnTextStartOffset;
           streamedText = "";
-          yield { type: "text_reset" };
+          yield resetTurnTextEvent();
         }
         history.push({
           kind: "message",
@@ -5118,7 +5148,7 @@ export async function* runAgent(
       if (!bufferModelText && streamedText) {
         timelineTextLength = turnTextStartOffset;
         streamedText = "";
-        yield { type: "text_reset" };
+        yield resetTurnTextEvent();
       }
       closeSubagentMessageQueue(requestId);
       const blockedCompletionMessage =
@@ -5171,7 +5201,7 @@ export async function* runAgent(
     if (hasPrematureCompletionClaim && !bufferModelText && streamedText) {
       timelineTextLength = turnTextStartOffset;
       streamedText = "";
-      yield { type: "text_reset" };
+      yield resetTurnTextEvent();
     }
     const roundNarrative =
       turn.calls.length && !hasPrematureCompletionClaim

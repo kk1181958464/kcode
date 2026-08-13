@@ -1,4 +1,4 @@
-import type { AgentActivity } from "./types";
+import type { AgentActivity, ChatMessage } from "./types";
 
 export const STREAMING_REASONING_DOM_CHAR_LIMIT = 96_000;
 export const STREAMING_REASONING_DOM_TRIM_TARGET = 80_000;
@@ -12,6 +12,29 @@ export function visibleAssistantContent(value: string) {
 
 export function shouldShowAssistantTailState(running: boolean) {
   return running;
+}
+
+export function truncateAssistantMessageForTextReset(
+  message: ChatMessage,
+  textOffset: number | undefined,
+  streamingText = "",
+) {
+  const parsedOffset = Number(textOffset);
+  const retainedOffset = Number.isFinite(parsedOffset)
+    ? Math.max(0, Math.floor(parsedOffset))
+    : 0;
+  const content = `${message.content}${streamingText}`.slice(0, retainedOffset);
+  const parsedFinalOffset = Number(message.finalResponseOffset);
+  const clearFinalBoundary =
+    Number.isFinite(parsedFinalOffset) && parsedFinalOffset >= retainedOffset;
+  if (content === message.content && !clearFinalBoundary) return message;
+  if (!clearFinalBoundary) return { ...message, content };
+  const {
+    finalResponseOffset: _finalResponseOffset,
+    finalResponseStartedAt: _finalResponseStartedAt,
+    ...rest
+  } = message;
+  return { ...rest, content };
 }
 
 export type AssistantTimelineGroup = {

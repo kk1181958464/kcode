@@ -21,14 +21,18 @@ function fakeProvider(modelId: string): RunAgentDeps["getProvider"] {
       protocol: "openai-chat",
       baseUrl: "https://example.invalid",
       enabled: true,
-      models: [{ id: modelId, modelId, displayName: modelId, protocol: "openai-chat" }],
+      models: [
+        { id: modelId, modelId, displayName: modelId, protocol: "openai-chat" },
+      ],
       apiKey: "sk-fake",
       apiKeys: ["sk-fake"],
     }) as any;
 }
 
 async function makeRequest(): Promise<ModelRequest> {
-  const workspacePath = await mkdtemp(path.join(os.tmpdir(), "kcode-runagent-"));
+  const workspacePath = await mkdtemp(
+    path.join(os.tmpdir(), "kcode-runagent-"),
+  );
   return {
     providerId: "fake",
     modelId: "fake-model",
@@ -70,8 +74,14 @@ test("runAgent emits text then a completed done for a plain-text turn", async ()
 
   // The loop must produce visible answer text, mark the final response, and
   // finish with a completed done event.
-  assert.ok(types.includes("text"), `expected a text event, got ${types.join(",")}`);
-  assert.ok(types.includes("final_response"), "expected a final_response event");
+  assert.ok(
+    types.includes("text"),
+    `expected a text event, got ${types.join(",")}`,
+  );
+  assert.ok(
+    types.includes("final_response"),
+    "expected a final_response event",
+  );
   const done = events.find((e) => e.type === "done");
   assert.ok(done, "expected a done event");
   assert.equal((done as any).outcome, "completed");
@@ -98,7 +108,11 @@ test("runAgent pauses on confirm mode and resumes on resolveApproval", async () 
           turn: {
             text: "",
             calls: [
-              { id: "call_1", name: "write_file", input: { path: "hello.txt", content: "hi\n" } },
+              {
+                id: "call_1",
+                name: "write_file",
+                input: { path: "hello.txt", content: "hi\n" },
+              },
             ],
             rawCalls: [],
             usage: { input: 12, output: 4, cached: 0 },
@@ -108,7 +122,12 @@ test("runAgent pauses on confirm mode and resumes on resolveApproval", async () 
         yield { type: "text", delta: "已创建。" };
         yield {
           type: "complete",
-          turn: { text: "已创建。", calls: [], rawCalls: [], usage: { input: 20, output: 6, cached: 0 } },
+          turn: {
+            text: "已创建。",
+            calls: [],
+            rawCalls: [],
+            usage: { input: 20, output: 6, cached: 0 },
+          },
         };
       }
     },
@@ -117,7 +136,12 @@ test("runAgent pauses on confirm mode and resumes on resolveApproval", async () 
   const reqId = "test-req-confirm";
   const events: AgentEvent[] = [];
   let approved = false;
-  for await (const event of runAgent(reqId, request, new AbortController().signal, deps)) {
+  for await (const event of runAgent(
+    reqId,
+    request,
+    new AbortController().signal,
+    deps,
+  )) {
     events.push(event);
     // The write_file tool must pause for approval. The approval key is only
     // registered once the generator resumes PAST this yield, so defer the
@@ -131,7 +155,10 @@ test("runAgent pauses on confirm mode and resumes on resolveApproval", async () 
   }
 
   assert.ok(approved, "expected a waiting activity to approve");
-  const written = await readFile(path.join(request.workspacePath, "hello.txt"), "utf8");
+  const written = await readFile(
+    path.join(request.workspacePath, "hello.txt"),
+    "utf8",
+  );
   assert.equal(written, "hi\n");
 });
 
@@ -143,9 +170,11 @@ test("runAgent runs a tool call through the real tool loop", async () => {
   // Round 1: the model asks to write a file. Round 2 (after the tool result
   // comes back): it reports completion with no further calls.
   let round = 0;
+  const requiredToolCalls: boolean[] = [];
   const deps: RunAgentDeps = {
     getProvider: fakeProvider("fake-model"),
-    async *streamTurn() {
+    async *streamTurn(args) {
+      requiredToolCalls.push(args.requireToolCall);
       round += 1;
       if (round === 1) {
         yield {
@@ -194,8 +223,12 @@ test("runAgent runs a tool call through the real tool loop", async () => {
   const done = events.find((e) => e.type === "done");
   assert.ok(done, "expected a done event");
 
-  const written = await readFile(path.join(request.workspacePath, "hello.txt"), "utf8");
+  const written = await readFile(
+    path.join(request.workspacePath, "hello.txt"),
+    "utf8",
+  );
   assert.equal(written, "hi\n");
+  assert.deepEqual(requiredToolCalls, [true, false]);
 });
 
 test("runAgent retries when the model claims a change without tool evidence", async () => {
@@ -227,13 +260,23 @@ test("runAgent retries when the model claims a change without tool evidence", as
   const events = await collect(
     runAgent("test-req-verify", request, new AbortController().signal, deps),
   );
-  // Characterize the current contract: an unproven modify claim forces at least
-  // one re-prompt, and the run still terminates with a done event.
+  // An unproven modify claim forces retries, then returns a clear execution
+  // error rather than exposing the internal verification prompt as assistant text.
   assert.ok(
     streamCalls >= 2,
     `expected a verification re-prompt, model was called ${streamCalls}x`,
   );
-  assert.ok(events.some((e) => e.type === "done"), "expected a done event");
+  const error = events.find((event) => event.type === "error");
+  assert.ok(error && error.type === "error", "expected a terminal error event");
+  assert.equal(error.code, "coding_tool_execution_missing");
+  assert.ok(
+    !events.some(
+      (event) =>
+        event.type === "text" &&
+        /已撤回未经工具结果证实|本轮未得到实际修改/.test(event.delta),
+    ),
+    "internal verification wording must not be shown as assistant text",
+  );
 });
 
 test("runAgent stops promptly when the signal is already aborted", async () => {
@@ -247,7 +290,12 @@ test("runAgent stops promptly when the signal is already aborted", async () => {
       streamCalls += 1;
       yield {
         type: "complete",
-        turn: { text: "不该发生", calls: [], rawCalls: [], usage: { input: 0, output: 0, cached: 0 } },
+        turn: {
+          text: "不该发生",
+          calls: [],
+          rawCalls: [],
+          usage: { input: 0, output: 0, cached: 0 },
+        },
       };
     },
   };
@@ -259,6 +307,64 @@ test("runAgent stops promptly when the signal is already aborted", async () => {
   );
   assert.equal(streamCalls, 0, "no model turn should start once aborted");
   assert.ok(!events.some((e) => e.type === "text"));
+});
+
+test("runAgent text resets retain the text before the current model turn", async () => {
+  const request = await makeRequest();
+  const prefix = "先检查工作区。";
+  let round = 0;
+  const deps: RunAgentDeps = {
+    getProvider: fakeProvider("fake-model"),
+    async *streamTurn() {
+      round += 1;
+      if (round === 1) {
+        yield { type: "text", delta: prefix };
+        yield {
+          type: "complete",
+          turn: {
+            text: prefix,
+            calls: [
+              {
+                id: "call_list",
+                name: "list_directory",
+                input: { path: "." },
+              },
+            ],
+            rawCalls: [],
+            usage: { input: 8, output: 4, cached: 0 },
+          },
+        };
+        return;
+      }
+      yield { type: "text", delta: "旧结论。" };
+      yield { type: "text_reset" };
+      yield { type: "text", delta: "新结论。" };
+      yield {
+        type: "complete",
+        turn: {
+          text: "新结论。",
+          calls: [],
+          rawCalls: [],
+          usage: { input: 12, output: 5, cached: 0 },
+        },
+      };
+    },
+  };
+
+  const events = await collect(
+    runAgent("test-req-reset", request, new AbortController().signal, deps),
+  );
+  const reset = events.find((event) => event.type === "text_reset");
+  assert.ok(reset, "expected a text_reset event");
+  assert.equal(reset.textOffset, prefix.length);
+  assert.ok(
+    events.some(
+      (event) =>
+        event.type === "activity" &&
+        event.activity.textOffset === prefix.length,
+    ),
+    "expected the preceding activity to use the same timeline offset",
+  );
 });
 
 test("runAgent propagates a fatal model-stream failure to the caller", async () => {
@@ -275,7 +381,9 @@ test("runAgent propagates a fatal model-stream failure to the caller", async () 
   // rejects out of the generator and main.ts turns it into an error event.
   // Characterize that contract here so a future refactor keeps it.
   await assert.rejects(
-    collect(runAgent("test-req-2", request, new AbortController().signal, deps)),
+    collect(
+      runAgent("test-req-2", request, new AbortController().signal, deps),
+    ),
     /上游连接失败/,
   );
 });

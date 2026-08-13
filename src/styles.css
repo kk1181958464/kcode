@@ -1163,6 +1163,12 @@ button:not(:disabled) {
   background: var(--surface-muted);
   color: var(--ink);
 }
+.workspace-header > .workspace-create.creating {
+  opacity: 1;
+  pointer-events: auto;
+  color: var(--accent);
+  cursor: wait;
+}
 .workspace-header > .workspace-delete:hover {
   background: var(--danger-soft);
   color: var(--danger);
@@ -4940,8 +4946,13 @@ button:not(:disabled) {
   width: min(460px, calc(100vw - 40px));
 }
 .task-modal input {
+  width: 100%;
+  height: 40px;
+  min-height: 40px;
+  box-sizing: border-box;
   font-size: 13px;
-  padding: 6px 9px;
+  line-height: 1.4;
+  padding: 0 12px;
 }
 /* Single, subtle focus ring — avoid the doubled box-shadow + outline
    stack that makes the field look elevated. */
@@ -12673,8 +12684,15 @@ select:focus-visible {
 
 .composer textarea,
 :root[data-theme="dark"] .composer textarea {
-  height: 82px;
-  padding: 14px 15px 8px;
+  width: 100%;
+  height: auto;
+  min-height: 54px;
+  max-height: 180px;
+  field-sizing: content;
+  resize: none;
+  overflow-y: auto;
+  box-sizing: border-box;
+  padding: 13px 15px 9px;
   background: transparent;
   color: var(--ui-text);
   font-size: 12.5px;

@@ -63,6 +63,7 @@ import {
 import { LinkifiedText } from "../common/LinkifiedText";
 import {
   getStreamingText,
+  getStreamingTextRevision,
   getStreamingTextTail,
   streamingProgressKey,
   streamingReasoningKey,
@@ -1646,9 +1647,11 @@ const AssistantTimeline = memo(function AssistantTimeline({
 const StreamingTextLeaf = memo(function StreamingTextLeaf({
   requestId,
   offset,
+  revision,
 }: {
   requestId: string;
   offset: number;
+  revision: number;
 }) {
   const nodeRef = React.useRef<HTMLDivElement>(null);
   const tailNodeRef = React.useRef<Text | null>(null);
@@ -1717,7 +1720,7 @@ const StreamingTextLeaf = memo(function StreamingTextLeaf({
       else if (change.type === "replace") replaceText(change.value);
       else appendText(change.delta);
     });
-  }, [offset, requestId]);
+  }, [offset, requestId, revision]);
   return <div ref={nodeRef} className="streaming-message-text" />;
 });
 
@@ -1869,6 +1872,9 @@ const StreamingAssistantTimeline = memo(function StreamingAssistantTimeline({
   const streamedSnapshot = running
     ? getStreamingTextTail(requestId, STREAMING_DOM_CHAR_LIMIT)
     : { text: "", totalLength: 0 };
+  const streamingRevision = running
+    ? getStreamingTextRevision(requestId)
+    : 0;
   const fullStreamingLength =
     message.content.length + streamedSnapshot.totalLength;
   const omittedStreamingChars = Math.max(
@@ -1947,6 +1953,7 @@ const StreamingAssistantTimeline = memo(function StreamingAssistantTimeline({
           <StreamingTextLeaf
             requestId={requestId}
             offset={streamedSnapshot.totalLength}
+            revision={streamingRevision}
           />
         ) : undefined
       }

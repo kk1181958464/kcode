@@ -4,6 +4,7 @@ import {
   appendStreamingText,
   consumeStreamingText,
   getStreamingText,
+  getStreamingTextRevision,
   getStreamingTextTail,
   replaceStreamingText,
   resetStreamingText,
@@ -71,6 +72,27 @@ test("consuming settled text clears the mounted streaming tail", () => {
   assert.equal(consumeStreamingText("settled"), "已经显示在步骤上方的正文");
   assert.deepEqual(changes.at(-1), { type: "reset" });
   assert.equal(getStreamingText("settled"), "");
+
+  unsubscribe();
+});
+
+test("settled text can be handed to React without clearing the live DOM first", () => {
+  const changes: unknown[] = [];
+  const unsubscribe = subscribeStreamingText("handoff", (change) =>
+    changes.push(change),
+  );
+
+  const previousRevision = getStreamingTextRevision("handoff");
+  appendStreamingText("handoff", "先保留到下一次 React 提交");
+  assert.equal(
+    consumeStreamingText("handoff", { emitReset: false }),
+    "先保留到下一次 React 提交",
+  );
+  assert.deepEqual(changes, [
+    { type: "append", delta: "先保留到下一次 React 提交" },
+  ]);
+  assert.equal(getStreamingText("handoff"), "");
+  assert.equal(getStreamingTextRevision("handoff"), previousRevision + 1);
 
   unsubscribe();
 });

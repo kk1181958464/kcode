@@ -1,5 +1,5 @@
 import type { AgentEvent } from "../../src/types";
-import { truncateToWidth, wrapText } from "./ansi";
+import { sanitizeTerminalText, truncateToWidth, wrapText } from "./ansi";
 import { DifferentialRenderer, type WriteSink } from "./renderer";
 
 const RESET = "\x1b[0m";
@@ -15,7 +15,13 @@ type Row =
   | { kind: "answer"; text: string }
   | { kind: "reasoning"; text: string }
   | { kind: "progress"; text: string }
-  | { kind: "activity"; id: string; tool: string; title: string; status: string };
+  | {
+      kind: "activity";
+      id: string;
+      tool: string;
+      title: string;
+      status: string;
+    };
 
 /**
  * Turns the AgentEvent stream into a live, diff-rendered terminal view.
@@ -32,6 +38,7 @@ export class LiveView {
   private spinnerFrame = 0;
   private spinnerTimer: ReturnType<typeof setInterval> | undefined;
   private hasActiveWork = false;
+  private answerTranscript = "";
 
   constructor(private readonly sink: WriteSink) {
     this.renderer = new DifferentialRenderer(sink);
@@ -51,6 +58,7 @@ export class LiveView {
       case "text_reset":
         // Upstream retried; drop the answer rows streamed so far.
         this.rows = this.rows.filter((r) => r.kind !== "answer");
+        this.answerTranscript = "";
         break;
       case "progress":
         this.setEphemeral("progress", event.message);
@@ -75,7 +83,9 @@ export class LiveView {
       case "error":
         this.stopSpinner();
         this.commitAll();
-        this.sink.write(`${RED}[错误] ${(event as any).message}${RESET}\r\n`);
+        this.sink.write(
+          `${RED}[错误] ${sanitizeTerminalText((event as any).message)}${RESET}\r\n`,
+        );
         return true;
       default:
         return false;
@@ -86,10 +96,7 @@ export class LiveView {
 
   /** Final visible answer text, for multi-turn context carry-over. */
   answerText(): string {
-    return this.rows
-      .filter((r): r is Extract<Row, { kind: "answer" }> => r.kind === "answer")
-      .map((r) => r.text)
-      .join("");
+    return this.answerTranscript;
   }
 
   dispose(): void {
@@ -109,14 +116,16 @@ export class LiveView {
   // --- row mutation -------------------------------------------------------
 
   private appendText(kind: "answer" | "reasoning", delta: string): void {
+    const safeDelta = sanitizeTerminalText(delta);
+    if (kind === "answer") this.answerTranscript += safeDelta;
     const last = this.rows.at(-1);
-    if (last && last.kind === kind) last.text += delta;
-    else this.rows.push({ kind, text: delta } as Row);
+    if (last && last.kind === kind) last.text += safeDelta;
+    else this.rows.push({ kind, text: safeDelta } as Row);
   }
 
   private setEphemeral(kind: "progress", text: string): void {
     this.rows = this.rows.filter((r) => r.kind !== kind);
-    if (text) this.rows.push({ kind, text });
+    if (text) this.rows.push({ kind, text: sanitizeTerminalText(text) });
   }
 
   private activityIds = new Map<string, number>();
@@ -130,13 +139,19 @@ export class LiveView {
     const existing = this.activityIds.get(id);
     if (existing !== undefined && this.rows[existing]?.kind === "activity") {
       const row = this.rows[existing] as Extract<Row, { kind: "activity" }>;
-      row.title = title;
+      row.title = sanitizeTerminalText(title);
       row.status = status;
       return;
     }
     // A new activity supersedes any transient progress line.
     this.rows = this.rows.filter((r) => r.kind !== "progress");
-    this.rows.push({ kind: "activity", id, tool, title, status });
+    this.rows.push({
+      kind: "activity",
+      id,
+      tool: sanitizeTerminalText(tool),
+      title: sanitizeTerminalText(title),
+      status,
+    });
     this.activityIds.set(id, this.rows.length - 1);
   }
 
@@ -164,7 +179,10 @@ export class LiveView {
               ? `${GREEN}✓${RESET}`
               : `${CYAN}▸${RESET}`;
         return [
-          truncateToWidth(`${mark} ${BOLD}${row.tool}${RESET} ${row.title}`, width),
+          truncateToWidth(
+            `${mark} ${BOLD}${row.tool}${RESET} ${row.title}`,
+            width,
+          ),
         ];
       }
     }

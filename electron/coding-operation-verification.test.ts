@@ -324,6 +324,28 @@ test("detects execution requests and inherits the previous request for continuat
   );
 });
 
+test("continuation after a model switch never promotes old assistant plans to user requirements", () => {
+  const history = [
+    {
+      kind: "message" as const,
+      role: "user" as const,
+      content: "看一下当前项目结构",
+    },
+    {
+      kind: "message" as const,
+      role: "assistant" as const,
+      content: "我会修改界面、运行测试并执行生产构建；切换到另一个模型后继续。",
+    },
+    { kind: "message" as const, role: "user" as const, content: "继续" },
+  ];
+
+  assert.equal(
+    relevantVerificationRequestContent(history),
+    "看一下当前项目结构\n继续",
+  );
+  assert.deepEqual([...requestedCodingOperations(history)], ["inspect"]);
+});
+
 test("continuation can accept the concrete edits proposed by the assistant", () => {
   assert.deepEqual(
     [
@@ -482,6 +504,15 @@ test("accepts an explicit no-change report only after successful inspection", ()
       history,
     ),
     [],
+  );
+  assert.equal(
+    shouldRequireCodingTool(
+      "kimi-k3",
+      new Set(["inspect", "modify", "validate"]),
+      evidence,
+      history,
+    ),
+    false,
   );
 });
 
@@ -1084,9 +1115,10 @@ test("inherits SSH details for a direct reconnect without requiring a file edit"
   ]);
   assert.equal(requested.has("connect"), true);
   assert.equal(requested.has("modify"), false);
-  assert.deepEqual([...codingOperationsRequiringToolEvidence(requested)], [
-    "connect",
-  ]);
+  assert.deepEqual(
+    [...codingOperationsRequiringToolEvidence(requested)],
+    ["connect"],
+  );
 });
 
 test("treats missing SSH details as a blocked remote deployment", () => {
@@ -1246,7 +1278,7 @@ test("assistant prose and legacy outputs are not execution evidence", () => {
   );
 });
 
-test("requires Kimi K3 to make the first tool call for explicit coding work", () => {
+test("requires every model to enter the tool loop for explicit coding work", () => {
   const requested = new Set(["inspect", "modify"] as const);
   assert.equal(shouldRequireCodingTool("kimi-k3", requested, new Set()), true);
   assert.equal(
@@ -1263,7 +1295,11 @@ test("requires Kimi K3 to make the first tool call for explicit coding work", ()
   );
   assert.equal(
     shouldRequireCodingTool("gpt-5.6-sol", requested, new Set()),
-    false,
+    true,
+  );
+  assert.equal(
+    shouldRequireCodingTool("claude-opus-5", requested, new Set()),
+    true,
   );
   assert.equal(shouldRequireCodingTool("kimi-k3", new Set(), new Set()), false);
 });
