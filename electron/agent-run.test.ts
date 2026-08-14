@@ -198,7 +198,10 @@ test("inspection questions retain corrected prose as collapsible process text", 
   assert.equal(round, 2);
   assert.match(streamedText, /上传成功/);
   assert.match(streamedText, /后台保活/);
-  assert.equal(finalResponse?.textOffset, "文件已经上传成功，任务已完成。".length);
+  assert.equal(
+    finalResponse?.textOffset,
+    "文件已经上传成功，任务已完成。".length,
+  );
   assert.equal(finalResponse?.processKind, "correction");
   assert.ok(!events.some((event) => event.type === "text_reset"));
 });
@@ -339,6 +342,79 @@ test("runAgent runs a tool call through the real tool loop", async () => {
   );
   assert.equal(written, "hi\n");
   assert.deepEqual(requiredToolCalls, [true, false]);
+});
+
+test("runAgent accepts backend query conclusions without Git or browser correction loops", async () => {
+  const request = await makeRequest();
+  request.messages = [
+    {
+      role: "user",
+      content: "看一下生图记录id为9067 为什么没有返回id",
+    },
+  ];
+  const conclusion =
+    "查清楚了：记录 9067 未返回 ID。因为这条记录已经超过提交有效时间。已输入记录 ID 9067，提交数据库查询并确认返回结果为空。";
+  let round = 0;
+  const deps: RunAgentDeps = {
+    getProvider: fakeProvider("fake-model"),
+    async *streamTurn() {
+      round += 1;
+      if (round === 1) {
+        yield {
+          type: "complete",
+          turn: {
+            text: "",
+            calls: [
+              {
+                id: "call_inspect",
+                name: "list_directory",
+                input: { path: "." },
+              },
+            ],
+            rawCalls: [],
+            usage: { input: 12, output: 4, cached: 0 },
+          },
+        };
+        return;
+      }
+      if (round > 2)
+        throw new Error(
+          "business wording incorrectly entered a verification loop",
+        );
+      yield { type: "text", delta: conclusion };
+      yield {
+        type: "complete",
+        turn: {
+          text: conclusion,
+          calls: [],
+          rawCalls: [],
+          usage: { input: 20, output: 16, cached: 0 },
+        },
+      };
+    },
+  };
+
+  const events = await collect(
+    runAgent(
+      "test-backend-query-conclusion",
+      request,
+      new AbortController().signal,
+      deps,
+    ),
+  );
+  assert.equal(round, 2);
+  assert.equal(
+    events
+      .filter((event) => event.type === "text")
+      .map((event) => (event as Extract<AgentEvent, { type: "text" }>).delta)
+      .join(""),
+    conclusion,
+  );
+  const done = events.find(
+    (event): event is Extract<AgentEvent, { type: "done" }> =>
+      event.type === "done",
+  );
+  assert.equal(done?.outcome, "completed");
 });
 
 test("runAgent retries when the model claims a change without tool evidence", async () => {

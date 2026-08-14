@@ -64,10 +64,7 @@ test("does not mistake planned/future Git work for a completed claim", () => {
     [...claimedGitOperations("已成功提交并推送，Release 工作流已触发")],
     ["commit", "push", "release"],
   );
-  assert.deepEqual(
-    [...claimedGitOperations("我已经提交了修改")],
-    ["commit"],
-  );
+  assert.deepEqual([...claimedGitOperations("我已经提交了修改")], ["commit"]);
   // A description of the plan is not a request for the agent to run Git either.
   assert.deepEqual(
     requestedGitOperations([
@@ -95,6 +92,21 @@ test("does not mistake application submission language for Git work", () => {
       content,
     );
   }
+});
+
+test("does not mistake business submission state for a completed commit", () => {
+  for (const businessSummary of [
+    "因为这条记录已经超过提交有效时间，不能继续使用原记录生成。",
+    "已提交数据库查询并确认返回结果为空。",
+    "订单已提交，消息已推送到队列。",
+    "任务超过提交窗口后已退款，没有重复提交。",
+    "版本已提交审核，等待业务人员确认。",
+  ])
+    assert.deepEqual(
+      [...claimedGitOperations(businessSummary)],
+      [],
+      businessSummary,
+    );
 });
 
 test("keeps explicit code and repository Git requests actionable", () => {

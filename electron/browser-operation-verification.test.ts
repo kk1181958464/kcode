@@ -40,10 +40,11 @@ test("requires tool evidence for browser actions claimed in final text", () => {
   ])
     assert.deepEqual([...claimedBrowserOperations(design)], [], design);
   // Genuine first-person login claims are still detected.
-  assert.deepEqual(
-    [...claimedBrowserOperations("我已经登录进去了")].sort(),
-    ["click", "type", "verify"],
-  );
+  assert.deepEqual([...claimedBrowserOperations("我已经登录进去了")].sort(), [
+    "click",
+    "type",
+    "verify",
+  ]);
   assert.deepEqual(
     [...claimedBrowserOperations("已成功登录网站并进入后台")].sort(),
     ["click", "type", "verify"],
@@ -187,6 +188,41 @@ test("treats a user's own login self-report and UI bug reports as non-browser", 
       ]),
     ],
     ["open", "type", "click", "verify"],
+  );
+});
+
+test("does not treat backend record queries as browser interaction", () => {
+  assert.deepEqual(
+    [
+      ...requestedBrowserOperations([
+        {
+          kind: "message",
+          role: "user",
+          content: "看一下生图记录id为9067 为什么没有返回id",
+        },
+      ]),
+    ],
+    [],
+  );
+  for (const backendSummary of [
+    "已输入记录 ID 9067，提交数据库查询并确认返回结果为空。",
+    "已提交 SQL 查询，确认记录状态正常。",
+    "我已经提交数据库查询并确认返回结果。",
+    "已在 SSH 中输入 MySQL 账号密码并执行查询。",
+    "已向 https://api.example.com/v1 提交请求并确认响应正常。",
+  ])
+    assert.deepEqual(
+      [...claimedBrowserOperations(backendSummary)],
+      [],
+      backendSummary,
+    );
+  assert.deepEqual(
+    [
+      ...claimedBrowserOperations(
+        "已打开 https://example.com，点击按钮并确认页面正常。",
+      ),
+    ],
+    ["open", "click", "verify"],
   );
 });
 

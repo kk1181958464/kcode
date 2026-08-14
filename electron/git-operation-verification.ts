@@ -100,24 +100,48 @@ export function claimedGitOperations(text: string) {
     "",
   );
   const operations = new Set<GitOperation>();
-  if (
-    /(?:已|成功).{0,4}(?:提交|commit)|(?:我|我们)(?:已经|已)?(?:提交|commit)(?:了|完成)|提交\s*[:：]\s*`?[0-9a-f]{7,40}/i.test(
-      assertedText,
-    )
-  )
-    operations.add("commit");
-  if (
-    /(?:已|成功).{0,4}(?:推送|push)|(?:我|我们|并|随后|然后|同时)(?:已经|已)?(?:推送|push)(?:了|完成)|(?:推送|push)(?:了|完成)|(?:分支|标签).{0,10}已推送/i.test(
-      assertedText,
-    )
-  )
-    operations.add("push");
-  if (
-    /(?:已|成功).{0,4}(?:触发|启动).{0,12}(?:打包|发布|Actions|工作流)|(?:我|我们|并|随后|然后|同时)(?:已经|已)?(?:触发|启动)(?:了)?.{0,12}(?:打包|发布|Actions|工作流)|(?:Release|Actions).{0,12}(?:运行中|已创建|已触发)/i.test(
-      assertedText,
-    )
-  )
-    operations.add("release");
+  for (const assertion of assertedText
+    .split(/[。！？!?；;\n]+/)
+    .map((value) => value.trim())
+    .filter(Boolean)) {
+    const commitHashClaim =
+      /提交\s*[:：]\s*`?[0-9a-f]{7,40}|\bcommit\s+`?[0-9a-f]{7,40}/i.test(
+        assertion,
+      );
+    const commitContext =
+      /(?:GitHub|GitLab|Gitee|Git\s*仓库|代码仓库|远端仓库|仓库|代码|改动|修改|变更|源码|分支|标签|origin|main|master|Release|Actions|工作流)|\b(?:git|github|gitlab|gitee|commit(?:ted)?|push(?:ed)?|repo(?:sitory)?|branch|tag|release|actions|workflow)\b/i.test(
+        assertion,
+      );
+    const commitClaim =
+      /(?:已|已经)(?:成功|完成)?\s*(?:提交|commit)|(?:成功|完成)(?:了)?\s*(?:提交|commit)|(?:我|我们)(?:已经|已)?\s*(?:提交|commit)(?:了|完成)|(?:代码|改动|修改|变更|源码).{0,8}(?:已|已经)(?:成功)?提交|\b(?:i|we)(?:'ve| have)?\s+committed\b/i.test(
+        assertion,
+      );
+    if (commitHashClaim || (commitContext && commitClaim))
+      operations.add("commit");
+
+    const pushContext =
+      commitContext ||
+      /(?:远端|分支|标签|origin|main|master)|\b(?:remote|branch|tag)\b/i.test(
+        assertion,
+      );
+    const pushClaim =
+      /(?:已|已经)(?:成功|完成)?\s*(?:推送|push)|(?:成功|完成)(?:了)?\s*(?:推送|push)|(?:我|我们|随后|然后|同时)(?:已经|已)?(?:成功)?(?:推送|push)(?:了|完成)|(?:推送|push)(?:了|完成)|(?:分支|标签).{0,10}已推送|\b(?:i|we)(?:'ve| have)?\s+pushed\b/i.test(
+        assertion,
+      ) ||
+      (commitClaim &&
+        /(?:并|后|随后|然后|同时).{0,8}(?:推送|push)/i.test(assertion));
+    if (pushContext && pushClaim) operations.add("push");
+
+    const releaseContext =
+      /(?:打包|发布|GitHub\s*Actions|Actions|工作流|Release|版本)|\b(?:build|package|publish|release|actions|workflow)\b/i.test(
+        assertion,
+      );
+    const releaseClaim =
+      /(?:已|已经|成功)(?:完成)?\s*(?:触发|启动).{0,12}(?:打包|发布|Actions|工作流)|(?:我|我们|并|随后|然后|同时)(?:已经|已)?(?:触发|启动)(?:了)?.{0,12}(?:打包|发布|Actions|工作流)|(?:Release|Actions|工作流).{0,12}(?:运行中|已创建|已触发)|\b(?:i|we)(?:'ve| have)?\s+(?:triggered|started).{0,20}(?:build|release|actions|workflow)\b/i.test(
+        assertion,
+      );
+    if (releaseContext && releaseClaim) operations.add("release");
+  }
   return operations;
 }
 

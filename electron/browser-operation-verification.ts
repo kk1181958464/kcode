@@ -105,61 +105,88 @@ export function claimedBrowserOperations(text: string) {
     "",
   );
   const operations = new Set<BrowserOperation>();
-  // A bare "登录成功" is NOT a browser claim: login-FLOW design prose
-  // ("门店账号登录成功后进入小程序，管理账号登录进管理页面") uses it constantly
-  // to describe DESIGNED behavior, not an action the agent performed. Require
-  // either a first-person subject (我/我们…登录) or a concrete web target
-  // (网站/网页/浏览器/http) so architecture descriptions no longer trip it.
-  const loginCompleted =
-    /(?:我|我们)(?:现在|已经|已|刚|刚才)?.{0,6}(?:成功)?登录(?!页|页面|界面)/i.test(
-      assertedText,
-    ) ||
-    /(?:已|已经)成功登录(?!页|页面|界面)/i.test(assertedText) ||
-    /登录成功[^。！!？?\n]{0,12}(?:网站|网页|浏览器|https?:\/\/)|(?:网站|网页|浏览器|https?:\/\/)[^。！!？?\n]{0,12}(?:登录成功|已登录)/i.test(
-      assertedText,
-    ) ||
-    /\blogged in\b/i.test(assertedText);
-  const directActionLead =
-    /(?:我|我们)?(?:已|已经)(?:成功)?(?:打开|访问|进入|导航到|填写|输入|键入|点击|选择|提交|发送|登录)|(?:我|我们)(?:已经|已)?(?:打开|访问|进入|导航到|填写|输入|键入|点击|选择|提交|发送|登录)(?:了|过)|\b(?:i|we)(?:'ve| have)?\s+(?:opened|visited|navigated|filled|entered|typed|clicked|selected|submitted|sent|logged in)\b/i.test(
-      assertedText,
-    );
-  if (
-    /(?:我|我们)?(?:已|已经)(?:成功)?(?:打开|访问|进入|导航到).{0,28}(?:网页|网站|页面|浏览器|https?:\/\/)|(?:我|我们)(?:已经|已)?(?:打开|访问|进入|导航到)(?:了|过).{0,28}(?:网页|网站|页面|浏览器|https?:\/\/)|(?:网页|网站|页面).{0,14}(?:已打开|打开成功|已进入)|\b(?:opened|visited|navigated to)\s+(?:the\s+)?(?:web(?:site|page)?|browser|https?:\/\/)/i.test(
-      assertedText,
+  // Classify each assertion independently. Generic backend prose such as
+  // "已输入记录 ID，提交数据库查询并确认返回结果" must never inherit browser
+  // meaning from another sentence or from the verbs alone.
+  const assertions = assertedText
+    .split(/[。！？!?；;\n]+/)
+    .map((value) => value.trim())
+    .filter(Boolean);
+  for (const assertion of assertions) {
+    const browserUiContext =
+      /(?:网页|网站|页面|浏览器|表单|按钮|链接|网址|地址栏|输入框|搜索框|菜单|下拉|选项|复选框|单选框|下一步|购物车|结算页)|\b(?:web(?:site|page)?|browser|form|button|link|url|input (?:field|box)|menu|dropdown|checkbox|radio|next step)\b/i.test(
+        assertion,
+      );
+    const browserAddressAction =
+      /(?:我|我们)?(?:已|已经)(?:成功)?(?:打开|访问|进入|导航到).{0,28}(?:https?:\/\/|www\.|[A-Za-z0-9.-]+\.(?:com|cn|net|org))|(?:我|我们)(?:已经|已)?(?:打开|访问|进入|导航到)(?:了|过).{0,28}(?:https?:\/\/|www\.|[A-Za-z0-9.-]+\.(?:com|cn|net|org))|\b(?:i|we)(?:'ve| have)?\s+(?:opened|visited|navigated to)\s+(?:https?:\/\/|www\.|[A-Za-z0-9.-]+\.(?:com|cn|net|org))/i.test(
+        assertion,
+      );
+    const strongBrowserContext = browserUiContext || browserAddressAction;
+    const authenticationContext =
+      /(?:账号|密码|验证码|登录)|\b(?:account|password|captcha|log(?:ged)? in)\b/i.test(
+        assertion,
+      );
+    const nonBrowserTechnicalContext =
+      /(?:SSH|MySQL|SQL\s*Server|MongoDB|数据库|数据表|SQL|接口|API|请求|响应|返回值|记录\s*ID|配置文件|环境变量|命令|脚本|队列|服务端)|\b(?:database|query|request|response|record id|config(?:uration)?|environment variable|command|script|queue|server)\b/i.test(
+        assertion,
+      );
+    // A bare "登录成功" is only accepted for a first-person performed action.
+    // SSH/database login statements are explicitly excluded unless the same
+    // assertion also names a browser or page.
+    const loginCompleted =
+      (!nonBrowserTechnicalContext || strongBrowserContext) &&
+      (/(?:我|我们)(?:现在|已经|已|刚|刚才)?.{0,6}(?:成功)?登录(?!页|页面|界面)/i.test(
+        assertion,
+      ) ||
+        /(?:已|已经)成功登录(?!页|页面|界面)/i.test(assertion) ||
+        /登录成功.{0,12}(?:网站|网页|浏览器|https?:\/\/)|(?:网站|网页|浏览器|https?:\/\/).{0,12}(?:登录成功|已登录)/i.test(
+          assertion,
+        ) ||
+        /\b(?:i|we)(?:'ve| have)?\s+logged in\b/i.test(assertion));
+    const browserContext =
+      strongBrowserContext ||
+      (authenticationContext && !nonBrowserTechnicalContext) ||
+      loginCompleted;
+    if (!browserContext) continue;
+
+    const opened =
+      /(?:我|我们)?(?:已|已经)(?:成功)?(?:打开|访问|进入|导航到).{0,28}(?:网页|网站|页面|浏览器|https?:\/\/)|(?:我|我们)(?:已经|已)?(?:打开|访问|进入|导航到)(?:了|过).{0,28}(?:网页|网站|页面|浏览器|https?:\/\/)|(?:网页|网站|页面).{0,14}(?:已打开|打开成功|已进入)|\b(?:opened|visited|navigated to)\s+(?:the\s+)?(?:web(?:site|page)?|browser|https?:\/\/)/i.test(
+        assertion,
+      );
+    if (opened) operations.add("open");
+
+    const typed =
+      /(?:我|我们)?(?:已|已经)(?:成功)?(?:填写|输入|键入)|(?:我|我们)(?:已经|已)?(?:填写|输入|键入)(?:了|过)|(?:表单|账号|密码|验证码|输入框|搜索框).{0,14}(?:已填写|已输入|填写完成|输入完成)|\b(?:i|we)(?:'ve| have)?\s+(?:filled|entered|typed)\b|\b(?:form|account|password|input)\b.{0,20}\b(?:was|has been)\s+(?:filled|entered|typed)\b/i.test(
+        assertion,
+      ) ||
+      (opened &&
+        /(?:填写|输入|键入)|\b(?:fill|enter|type)\b/i.test(assertion)) ||
+      loginCompleted;
+    if (typed) operations.add("type");
+
+    const clicked =
+      /(?:我|我们)?(?:已|已经)(?:成功)?(?:点击|选择|提交|发送)|(?:我|我们)(?:已经|已)?(?:点击|选择|提交|发送)(?:了|过)|(?:按钮|菜单|选项|表单).{0,14}(?:已点击|已选择|已提交)|\b(?:i|we)(?:'ve| have)?\s+(?:clicked|selected|submitted|sent)\b/i.test(
+        assertion,
+      ) ||
+      (opened &&
+        /(?:点击|选择|提交|发送)|\b(?:click|select|submit|send)\b/i.test(
+          assertion,
+        )) ||
+      loginCompleted;
+    if (clicked) operations.add("click");
+
+    if (
+      /(?:我|我们)?(?:已|已经)(?:成功)?(?:验证|确认|检查|刷新|截图).{0,20}(?:网页|网站|页面|页面结果|页面状态)|(?:网页|网站|页面).{0,16}(?:验证通过|确认正常|截图完成|显示正常)|\b(?:verified|confirmed|captured)\s+(?:the\s+)?(?:page|screenshot)\b/i.test(
+        assertion,
+      ) ||
+      ((typed || clicked) &&
+        /(?:最后|随后|然后|并)?(?:验证|确认|检查|刷新|截图).{0,20}(?:网页|网站|页面|结果|状态)|(?:页面|结果|状态).{0,12}(?:正常|成功|通过)/i.test(
+          assertion,
+        )) ||
+      loginCompleted
     )
-  )
-    operations.add("open");
-  if (
-    /(?:我|我们)?(?:已|已经)(?:成功)?(?:填写|输入|键入)|(?:我|我们)(?:已经|已)?(?:填写|输入|键入)(?:了|过)|(?:表单|账号|密码|输入框).{0,14}(?:已填写|已输入|填写完成)|\b(?:filled|entered|typed)\b/i.test(
-      assertedText,
-    ) ||
-    (directActionLead &&
-      /(?:填写|输入|键入)|\b(?:fill|enter|type)\b/i.test(assertedText)) ||
-    loginCompleted
-  )
-    operations.add("type");
-  if (
-    /(?:我|我们)?(?:已|已经)(?:成功)?(?:点击|选择|提交|发送)|(?:我|我们)(?:已经|已)?(?:点击|选择|提交|发送)(?:了|过)|(?:按钮|菜单|选项|表单).{0,14}(?:已点击|已选择|已提交)|\b(?:clicked|selected|submitted|sent)\b/i.test(
-      assertedText,
-    ) ||
-    (directActionLead &&
-      /(?:点击|选择|提交|发送)|\b(?:click|select|submit|send)\b/i.test(
-        assertedText,
-      )) ||
-    loginCompleted
-  )
-    operations.add("click");
-  if (
-    /(?:我|我们)?(?:已|已经)(?:成功)?(?:验证|确认|检查|刷新|截图).{0,20}(?:网页|网站|页面|结果|状态)|(?:网页|网站|页面).{0,16}(?:验证通过|确认正常|截图完成|显示正常)|\b(?:verified|confirmed|captured)\s+(?:the\s+)?(?:page|result|state|screenshot)\b/i.test(
-      assertedText,
-    ) ||
-    (directActionLead &&
-      /(?:最后|随后|然后|并)?(?:验证|确认|检查|刷新|截图).{0,20}(?:网页|网站|页面|结果|状态)|(?:页面|结果|状态).{0,12}(?:正常|成功|通过)/i.test(
-        assertedText,
-      ))
-  )
-    operations.add("verify");
-  if (loginCompleted) operations.add("verify");
+      operations.add("verify");
+  }
   return operations;
 }
 
