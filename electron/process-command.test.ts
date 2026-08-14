@@ -1,6 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  DEFAULT_COMMAND_TIMEOUT_MS,
+  LONG_COMMAND_TIMEOUT_MS,
+  LONG_NETWORK_IDLE_TIMEOUT_MS,
+  NETWORK_IDLE_TIMEOUT_MS,
+  defaultCommandIdleTimeoutMs,
+  defaultCommandTimeoutMs,
+  isLikelyLongRunningCommand,
   isLikelyNetworkCommand,
   runSpawnedCommand,
   terminateChildProcess,
@@ -90,6 +97,31 @@ test("kills silent commands after idle timeout", async () => {
 test("detects network commands", () => {
   assert.equal(isLikelyNetworkCommand("ssh-keyscan -T 15 host"), true);
   assert.equal(isLikelyNetworkCommand("Get-ChildItem"), false);
+});
+
+test("gives builds, tests and installs a longer default timeout", () => {
+  assert.equal(isLikelyLongRunningCommand("nvm use 22.14.0; npm run build"), true);
+  assert.equal(isLikelyLongRunningCommand("pnpm test"), true);
+  assert.equal(defaultCommandTimeoutMs("npm run build"), LONG_COMMAND_TIMEOUT_MS);
+  assert.equal(
+    defaultCommandTimeoutMs("Get-ChildItem"),
+    DEFAULT_COMMAND_TIMEOUT_MS,
+  );
+});
+
+test("allows quiet package installation more time without disabling idle protection", () => {
+  assert.equal(
+    defaultCommandIdleTimeoutMs("npm install", LONG_COMMAND_TIMEOUT_MS),
+    LONG_NETWORK_IDLE_TIMEOUT_MS,
+  );
+  assert.equal(
+    defaultCommandIdleTimeoutMs("git pull", LONG_COMMAND_TIMEOUT_MS),
+    NETWORK_IDLE_TIMEOUT_MS,
+  );
+  assert.equal(
+    defaultCommandIdleTimeoutMs("npm run build", LONG_COMMAND_TIMEOUT_MS),
+    undefined,
+  );
 });
 
 test("terminates a child process handle safely when pid is missing", () => {

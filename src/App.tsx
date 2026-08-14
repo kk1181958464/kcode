@@ -228,6 +228,7 @@ import { StatusPanel } from "./components/status/StatusPanel";
 import {
   COMPOSER_STREAM_PAUSE_MS,
   STREAM_PACING_INTERVAL_MS,
+  STREAM_SINGLETON_MAX_HOLD_MS,
   StreamPacingBuffer,
 } from "./stream-pacing";
 import {
@@ -732,8 +733,6 @@ export default function App() {
   const previewTimerRef = useRef<number | undefined>(undefined);
   const followFrameRef = useRef<number | undefined>(undefined);
   const bottomLayoutFrameRef = useRef<number | undefined>(undefined);
-  const bottomFollowTimerRef = useRef<number | undefined>(undefined);
-  const lastBottomFollowAtRef = useRef(0);
   const bottomSettleTimerRef = useRef<number | undefined>(undefined);
   const bottomSettleDeadlineRef = useRef(0);
   const bottomIndicatorUntilRef = useRef(0);
@@ -1240,41 +1239,33 @@ export default function App() {
     const messageList = conversation?.querySelector(".message-list");
     if (!messageList || typeof ResizeObserver === "undefined") return;
     const queueBottomFollow = () => {
-      if (bottomFollowTimerRef.current !== undefined) return;
-      const elapsed = performance.now() - lastBottomFollowAtRef.current;
-      const delay = Math.max(0, 50 - elapsed);
-      bottomFollowTimerRef.current = window.setTimeout(() => {
-        bottomFollowTimerRef.current = undefined;
-        lastBottomFollowAtRef.current = performance.now();
+      if (bottomLayoutFrameRef.current) return;
+      bottomLayoutFrameRef.current = requestAnimationFrame(() => {
+        bottomLayoutFrameRef.current = undefined;
         if (
           !autoFollowRef.current &&
           !pendingScrollRestoreRef.current?.state.atBottom
         )
           return;
-        if (bottomLayoutFrameRef.current) return;
-        bottomLayoutFrameRef.current = requestAnimationFrame(() => {
-          bottomLayoutFrameRef.current = undefined;
-          const current = conversationRef.current;
-          if (
-            !current ||
-            current !== conversation ||
-            (!autoFollowRef.current &&
-              !pendingScrollRestoreRef.current?.state.atBottom)
-          )
-            return;
-          // Keep bottom following while the user is at the bottom, but do not
-          // update React state or mark the scroll as programmatic here. This
-          // path runs during streaming and must stay out of the input hot path.
-          conversationScrollControllerRef.current.markProgrammatic();
-          current.scrollTop = current.scrollHeight;
-          const taskId = displayedTaskIdRef.current;
-          if (taskId)
-            scrollStateByTaskRef.current.set(taskId, {
-              top: current.scrollHeight,
-              atBottom: true,
-            });
-        });
-      }, delay);
+        const current = conversationRef.current;
+        if (
+          !current ||
+          current !== conversation ||
+          (!autoFollowRef.current &&
+            !pendingScrollRestoreRef.current?.state.atBottom)
+        )
+          return;
+        // Align in the same paint cycle as the content resize. Delaying this
+        // independently made the viewport catch up in visible 50 ms jumps.
+        conversationScrollControllerRef.current.markProgrammatic();
+        current.scrollTop = current.scrollHeight;
+        const taskId = displayedTaskIdRef.current;
+        if (taskId)
+          scrollStateByTaskRef.current.set(taskId, {
+            top: current.scrollHeight,
+            atBottom: true,
+          });
+      });
     };
     const observer = new ResizeObserver(() => {
       const pending = pendingScrollRestoreRef.current;
@@ -1284,10 +1275,6 @@ export default function App() {
     observer.observe(messageList);
     return () => {
       observer.disconnect();
-      if (bottomFollowTimerRef.current !== undefined) {
-        window.clearTimeout(bottomFollowTimerRef.current);
-        bottomFollowTimerRef.current = undefined;
-      }
       if (bottomLayoutFrameRef.current) {
         cancelAnimationFrame(bottomLayoutFrameRef.current);
         bottomLayoutFrameRef.current = undefined;
@@ -2452,7 +2439,7 @@ export default function App() {
       const bufferedSince = pendingTextSinceRef.current.get(requestId) ?? now;
       const slice = buffered.take(
         drainAll,
-        now - bufferedSince >= STREAM_PACING_INTERVAL_MS * 2,
+        now - bufferedSince >= STREAM_SINGLETON_MAX_HOLD_MS,
       );
       if (slice) slices.push([requestId, slice]);
       if (!buffered.length) {

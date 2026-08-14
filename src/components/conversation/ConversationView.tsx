@@ -95,9 +95,6 @@ const ACTIVITY_DETAIL_RENDER_LIMIT = 24_000;
 const ACTIVITY_DETAIL_HEAD_CHARS = 4_000;
 const STREAMING_DOM_CHAR_LIMIT = 96_000;
 const STREAMING_DOM_TRIM_TARGET = 80_000;
-// Cadence for re-rendering the streamed prefix as Markdown during a run. Small
-// enough to feel live, large enough to keep the main thread free.
-const STREAMING_MARKDOWN_THROTTLE_MS = 200;
 const ACTIVITY_LIVE_OUTPUT_LIMIT = 24_000;
 
 function renderedActivityDetail(detail: string) {
@@ -1511,9 +1508,9 @@ const AssistantTimeline = memo(function AssistantTimeline({
     if (!visible) return null;
     const display = intermediate ? executionNarrativePreview(visible) : visible;
     if (!display) return null;
-    // The transient execution-narrative preview stays plain; the answer body is
-    // rendered as Markdown even while running so streaming output is formatted
-    // live (MarkdownMessage memoizes blocks, so only the last block re-parses).
+    // Persisted segments are stable and can be Markdown. The currently growing
+    // tail stays append-only until it settles, avoiding repeated DOM replacement
+    // and line-height changes while the viewport follows the bottom.
     if (running && intermediate)
       return (
         <div className="streaming-message-text execution-narration-preview">
@@ -1872,98 +1869,14 @@ const StreamingAssistantTimeline = memo(function StreamingAssistantTimeline({
   onActivityChange(activity: AgentActivity): void;
   reasoning?: string;
 }) {
-  // Throttled re-snapshot: while running, force a re-render at most every
-  // ~200ms so the streamed prefix (rendered as Markdown) grows and formats
-  // live. Between ticks, StreamingTextLeaf absorbs high-frequency tokens as a
-  // short plain-text tail — far cheaper than a React render per token.
-  const [, forceTick] = useState(0);
-  useEffect(() => {
-    if (!running) return;
-    let pending = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const unsubscribe = subscribeStreamingText(requestId, () => {
-      if (pending) return;
-      pending = true;
-      timer = setTimeout(() => {
-        pending = false;
-        forceTick((n) => n + 1);
-      }, STREAMING_MARKDOWN_THROTTLE_MS);
-    });
-    return () => {
-      unsubscribe();
-      if (timer) clearTimeout(timer);
-    };
-  }, [requestId, running]);
-  // Capture the already-streamed prefix only when React has another structural
-  // reason to render (tool activity, request state). New text is written into a
-  // dedicated leaf node so streaming never schedules React work for the timeline.
-  const streamedSnapshot = running
-    ? getStreamingTextTail(requestId, STREAMING_DOM_CHAR_LIMIT)
-    : { text: "", totalLength: 0 };
-  const streamingRevision = running
-    ? getStreamingTextRevision(requestId)
-    : 0;
-  const fullStreamingLength =
-    message.content.length + streamedSnapshot.totalLength;
-  const omittedStreamingChars = Math.max(
-    0,
-    fullStreamingLength - STREAMING_DOM_CHAR_LIMIT,
-  );
-  const streamingFoldMarker = omittedStreamingChars
-    ? `[较早的 ${omittedStreamingChars.toLocaleString()} 个流式字符已暂时折叠，任务完成后会恢复完整内容]\n\n`
-    : "";
-  const visibleStreamingContent = (
-    message.content + streamedSnapshot.text
-  ).slice(-STREAMING_DOM_CHAR_LIMIT);
-  const foldedStreamingContent = omittedStreamingChars
-    ? streamingFoldMarker + visibleStreamingContent
-    : visibleStreamingContent;
-  const storedFinalResponseOffset = Number(message.finalResponseOffset);
-  const finalResponseOffset = Number.isFinite(storedFinalResponseOffset)
-    ? Math.min(
-        message.content.length,
-        Math.max(0, Math.floor(storedFinalResponseOffset)),
-      )
-    : undefined;
-  const finalResponseContent =
-    running && finalResponseOffset !== undefined
-      ? (() => {
-          const processContent = message.content.slice(0, finalResponseOffset);
-          const persistedFinal = message.content.slice(finalResponseOffset);
-          const fullFinalLength =
-            persistedFinal.length + streamedSnapshot.totalLength;
-          const omittedFinalChars = Math.max(
-            0,
-            fullFinalLength - STREAMING_DOM_CHAR_LIMIT,
-          );
-          const visibleFinal = (persistedFinal + streamedSnapshot.text).slice(
-            -STREAMING_DOM_CHAR_LIMIT,
-          );
-          const marker = omittedFinalChars
-            ? `[较早的 ${omittedFinalChars.toLocaleString()} 个流式字符已暂时折叠，任务完成后会恢复完整内容]\n\n`
-            : "";
-          return processContent + marker + visibleFinal;
-        })()
-      : undefined;
-  const displayMessage = useMemo(
-    () =>
-      running && streamedSnapshot.totalLength
-        ? {
-            ...message,
-            content: finalResponseContent ?? foldedStreamingContent,
-          }
-        : message,
-    [
-      finalResponseContent,
-      foldedStreamingContent,
-      message,
-      running,
-      streamedSnapshot.totalLength,
-    ],
-  );
+  // StreamingTextLeaf mutates one bounded text node. Do not periodically move
+  // that text into React/Markdown: doing so replaces the live DOM, changes its
+  // measured height, and makes bottom-follow visibly bounce. Tool boundaries
+  // and completion already persist the segment and render Markdown once.
+  const streamingRevision = running ? getStreamingTextRevision(requestId) : 0;
   return (
     <AssistantTimeline
-      message={displayMessage}
+      message={message}
       activities={activities}
       running={running}
       requestId={running ? requestId : undefined}
@@ -1980,7 +1893,7 @@ const StreamingAssistantTimeline = memo(function StreamingAssistantTimeline({
         running ? (
           <StreamingTextLeaf
             requestId={requestId}
-            offset={streamedSnapshot.totalLength}
+            offset={0}
             revision={streamingRevision}
           />
         ) : undefined

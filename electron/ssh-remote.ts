@@ -1,6 +1,13 @@
 import { app, safeStorage } from "electron";
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  readFile,
+  rename,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import path from "node:path";
 import type {
   SshRemoteConnectInput,
@@ -60,14 +67,15 @@ async function ensureLoaded() {
 async function persistProfiles() {
   const target = profilesPath();
   const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
-  await mkdir(path.dirname(target), { recursive: true });
+  await mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
   try {
     await writeFile(
       temporary,
       JSON.stringify([...profiles.values()], null, 2),
-      "utf8",
+      { encoding: "utf8", mode: 0o600 },
     );
     await rename(temporary, target);
+    await chmod(target, 0o600).catch(() => undefined);
   } catch (error) {
     await unlink(temporary).catch(() => undefined);
     throw error;
@@ -287,6 +295,7 @@ export async function disconnectSshRemote(taskId: string) {
 export async function adoptActiveSshRemote(
   taskId: string,
   requestedRootPath = "~",
+  preferredName?: string,
 ) {
   await ensureLoaded();
   const session = sshSessionInfo(taskId);
@@ -298,19 +307,58 @@ export async function adoptActiveSshRemote(
     requestedRootPath,
     new AbortController().signal,
   );
-  const profileId = bindings.get(taskId) || randomUUID();
+  const recovery = sshSessionRecovery(taskId);
+  const boundProfileId = bindings.get(taskId);
+  const boundRuntime = boundProfileId
+    ? runtimeProfiles.get(boundProfileId)
+    : undefined;
+  const boundStored = boundProfileId ? profiles.get(boundProfileId) : undefined;
+  const boundProfile =
+    boundRuntime?.profile ?? (boundStored ? publicProfile(boundStored) : undefined);
+  const sameEndpoint =
+    boundProfile?.host === session.host &&
+    boundProfile.port === session.port &&
+    boundProfile.username === session.username;
+  const preferred = preferredName?.trim().toLocaleLowerCase();
+  const namedProfiles = preferred
+    ? [...profiles.values()].filter(
+        (profile) => profile.name.trim().toLocaleLowerCase() === preferred,
+      )
+    : [];
+  const endpointProfiles = [...profiles.values()].filter(
+    (profile) =>
+      profile.host.trim().toLocaleLowerCase() ===
+        session.host.trim().toLocaleLowerCase() &&
+      profile.port === session.port &&
+      profile.username === session.username,
+  );
+  const reusableProfileId =
+    namedProfiles.length === 1
+      ? namedProfiles[0].id
+      : endpointProfiles.length === 1
+        ? endpointProfiles[0].id
+        : undefined;
+  const mayReplaceRememberedProfile = Boolean(
+    recovery?.rememberForRemoteWorkspace && recovery.secret,
+  );
+  const mayReuseBoundProfile = Boolean(
+    sameEndpoint &&
+      boundProfileId &&
+      (!boundStored || mayReplaceRememberedProfile),
+  );
+  const profileId =
+    mayReuseBoundProfile && boundProfileId
+      ? boundProfileId
+      : mayReplaceRememberedProfile && reusableProfileId
+        ? reusableProfileId
+        : randomUUID();
   const runtime = runtimeProfiles.get(profileId);
   const stored = profiles.get(profileId);
-  const recovery = sshSessionRecovery(taskId);
-  const secret = runtime?.secret ?? recovery?.secret;
+  const secret = recovery?.secret ?? runtime?.secret;
   const previousProfile =
     runtime?.profile ?? (stored ? publicProfile(stored) : undefined);
-  let encryptedSecret = stored?.encryptedSecret;
-  if (
-    !encryptedSecret &&
-    recovery?.rememberForRemoteWorkspace &&
-    secret
-  ) {
+  let encryptedSecret: string | undefined;
+  if (recovery?.rememberForRemoteWorkspace && secret) {
     try {
       encryptedSecret = encryptSecret(secret);
     } catch {
@@ -319,7 +367,10 @@ export async function adoptActiveSshRemote(
   }
   let profile: SshRemoteProfile = {
     id: profileId,
-    name: previousProfile?.name || `${session.username}@${session.host}`,
+    name:
+      preferredName?.trim().slice(0, 160) ||
+      previousProfile?.name ||
+      `${session.username}@${session.host}`,
     host: session.host,
     port: session.port,
     username: session.username,

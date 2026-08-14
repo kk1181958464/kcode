@@ -1515,6 +1515,7 @@ button:not(:disabled) {
   flex: 1 1 0;
   overflow-y: auto;
   overflow-x: hidden;
+  overflow-anchor: none;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
 }
@@ -2580,6 +2581,12 @@ button:not(:disabled) {
   overflow-wrap: anywhere;
   font: inherit;
   line-height: 1.65;
+}
+
+/* Direct text-node appends do not schedule React. Hide the initial planning
+   state as soon as the first visible answer character lands. */
+.streaming-message-text:not(:empty) + .agent-working {
+  display: none;
 }
 
 .execution-narration-preview {
@@ -12687,9 +12694,9 @@ select:focus-visible {
   width: 100%;
   height: auto;
   min-height: 54px;
-  max-height: 180px;
+  max-height: min(260px, 36vh);
   field-sizing: content;
-  resize: none;
+  resize: vertical;
   overflow-y: auto;
   box-sizing: border-box;
   padding: 13px 15px 9px;

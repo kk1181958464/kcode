@@ -111,7 +111,11 @@ export function takeStreamPacedSlice(
   return { slice, remaining };
 }
 
-export const STREAM_PACING_INTERVAL_MS = 50;
+// A 32 ms cadence stays visually fluid without forcing the renderer to paint
+// every display frame. The live view only appends text nodes at this cadence;
+// Markdown is rendered once the current segment settles.
+export const STREAM_PACING_INTERVAL_MS = 32;
+export const STREAM_SINGLETON_MAX_HOLD_MS = STREAM_PACING_INTERVAL_MS;
 // Streaming paint/layout yields briefly after a composer input event. This is
 // long enough to protect an IME key burst while remaining visually immediate.
 export const COMPOSER_STREAM_PAUSE_MS = 120;

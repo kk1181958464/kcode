@@ -3,16 +3,18 @@ import test from "node:test";
 import {
   COMPOSER_STREAM_PAUSE_MS,
   STREAM_PACING_INTERVAL_MS,
+  STREAM_SINGLETON_MAX_HOLD_MS,
   StreamPacingBuffer,
   takeStreamPacedSlice,
 } from "../src/stream-pacing";
 
-test("stream pacing releases a stable two-character slice normally", () => {
+test("stream pacing releases a stable two-character slice at a fluid cadence", () => {
   assert.deepEqual(takeStreamPacedSlice("模型正在输出"), {
     slice: "模型",
     remaining: "正在输出",
   });
-  assert.equal(STREAM_PACING_INTERVAL_MS, 50);
+  assert.equal(STREAM_PACING_INTERVAL_MS, 32);
+  assert.equal(STREAM_SINGLETON_MAX_HOLD_MS, STREAM_PACING_INTERVAL_MS);
   assert.equal(COMPOSER_STREAM_PAUSE_MS, 120);
 });
 

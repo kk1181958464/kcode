@@ -617,6 +617,9 @@ export function browserIsOpen(sessionId: string) {
   const session = sessions.get(sessionId);
   return Boolean(session && !session.view.webContents.isDestroyed());
 }
+export function browserSessionUrl(sessionId: string) {
+  return page(sessionId).webContents.getURL();
+}
 export function bindBrowserRequest(sessionId: string, requestId: string) {
   const session = sessions.get(sessionId);
   if (session) {

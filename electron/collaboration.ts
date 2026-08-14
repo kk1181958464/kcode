@@ -16,6 +16,7 @@ const PLANNER_DISABLED_TOOLS = new Set<AgentToolName>([
   "diagnostics",
   "browser_click",
   "browser_type",
+  "browser_fill_credential",
   "browser_record_start",
   "browser_record_stop",
   "ssh_connect",
@@ -39,6 +40,8 @@ const PLANNER_DISABLED_TOOLS = new Set<AgentToolName>([
   "mongodb_connect_via_ssh",
   "mongodb_execute",
   "mongodb_disconnect",
+  "credential_save",
+  "credential_forget",
   "run_command",
   "mcp_call_tool",
 ]);

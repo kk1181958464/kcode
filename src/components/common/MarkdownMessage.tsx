@@ -90,9 +90,9 @@ const baseMarkdownComponents: Components = {
 };
 
 // Split markdown into top-level blocks at blank lines, keeping fenced code
-// blocks (``` / ~~~) intact. Block-level memoization means a streaming answer
-// only re-parses its last growing block each flush instead of the whole
-// message — keeping the main thread free so the composer never janks.
+// blocks (``` / ~~~) intact. Live output stays in an append-only text node;
+// once a segment settles, block memoization keeps later structural updates
+// from re-parsing the complete message.
 function splitMarkdownBlocks(src: string): string[] {
   const lines = src.split("\n");
   const blocks: string[] = [];

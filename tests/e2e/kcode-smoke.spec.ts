@@ -25,9 +25,24 @@ test.describe("KCode workbench smoke flow", () => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto("/");
     const composer = page.locator(".composer");
+    const textarea = page.getByRole("textbox", { name: "任务输入" });
     await expect(composer).toBeVisible();
     await expect(composer).toHaveCSS("max-width", /.+/);
-    await expect(page.getByPlaceholder(/描述一个任务/)).toBeVisible();
+    await expect(textarea).toBeVisible();
+    await expect(textarea).toHaveCSS("resize", "vertical");
+
+    const size = await textarea.evaluate((element) => {
+      const node = element as HTMLTextAreaElement;
+      node.style.height = "1000px";
+      const computed = getComputedStyle(node);
+      return {
+        renderedHeight: node.getBoundingClientRect().height,
+        maxHeight: Number.parseFloat(computed.maxHeight),
+      };
+    });
+    expect(size.renderedHeight).toBeLessThanOrEqual(size.maxHeight + 1);
+    expect(size.maxHeight).toBeLessThanOrEqual(260);
+    expect(size.maxHeight).toBeLessThanOrEqual(844 * 0.36 + 1);
   });
 
   test("forks and exports the current task", async ({ page }) => {

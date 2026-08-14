@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import {
-  isLikelyNetworkCommand,
+  defaultCommandIdleTimeoutMs,
+  defaultCommandTimeoutMs,
   runSpawnedCommand,
   terminateChildProcess,
 } from "./process-command";
@@ -12,6 +13,10 @@ import {
   unregisterManagedProcess,
 } from "./process-registry";
 import { apiKeyCooldownPool } from "./api-key-cooldown";
+import {
+  STALL_PAUSE_ROUNDS,
+  stallAction,
+} from "./agent-stall-policy";
 import { approvalCache } from "./approval-cache";
 import { TurnDiffTracker } from "./turn-diff-tracker";
 import { buildTurnSummary, type ToolCallRecord } from "./tool-call-recorder";
@@ -160,6 +165,7 @@ import { callMcpTool, listMcpServerConfigs, listMcpTools } from "./mcp";
 import {
   bindBrowserRequest,
   browserIsOpen,
+  browserSessionUrl,
   cleanupBrowsers,
   clickBrowser,
   openBrowser,
@@ -169,6 +175,15 @@ import {
   stopBrowserRecording,
   typeBrowser,
 } from "./browser";
+import {
+  forgetCredentialProfile,
+  listCredentialProfiles,
+  resolveCredentialProfile,
+  saveCredentialProfile,
+  selectCredential,
+  type CredentialKind,
+  type CredentialDescriptor,
+} from "./credential-vault";
 import {
   adoptSshSession,
   cleanupSshSessions,
@@ -188,6 +203,13 @@ import {
   sshWorkspaceCommand,
 } from "./ssh-remote-path";
 import { privateKeyForSshTool } from "./ssh-tool-input";
+import {
+  adoptActiveSshRemote,
+  connectSavedSshRemote,
+  forgetSshRemoteProfile,
+  listSshRemoteProfiles,
+  sshRemoteState,
+} from "./ssh-remote";
 import {
   adoptMysqlSession,
   cleanupMysqlSessions,
@@ -253,6 +275,32 @@ type ToolCall = {
   name: AgentToolName;
   input: Record<string, unknown>;
 };
+
+const SECRET_INPUT_KEY =
+  /(?:password|passphrase|privateKey|sslKey|secret|token)$/i;
+
+export function redactedToolInput(call: ToolCall) {
+  const input: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(call.input)) {
+    if (call.name === "browser_type" && key === "text") {
+      input[key] = value ? "[已安全隐藏]" : value;
+      continue;
+    }
+    if (SECRET_INPUT_KEY.test(key)) {
+      input[key] = value ? "[已安全隐藏]" : value;
+      continue;
+    }
+    if (key === "uri" && typeof value === "string") {
+      input[key] = value.replace(
+        /^(mongodb(?:\+srv)?:\/\/)([^/@]+)@/i,
+        "$1[已隐藏]@",
+      );
+      continue;
+    }
+    input[key] = value;
+  }
+  return input;
+}
 type ToolResult = Partial<
   Pick<
     AgentActivity,
@@ -516,7 +564,7 @@ function updateActiveConnectionFacts(
     return;
   }
   if (call.name.includes("connect"))
-    active.set(family, `${call.name} ${JSON.stringify(call.input)}`);
+    active.set(family, `${call.name} ${JSON.stringify(redactedToolInput(call))}`);
 }
 
 const base64Data = (dataUrl: string) => dataUrl.slice(dataUrl.indexOf(",") + 1);
@@ -967,6 +1015,64 @@ const tools = [
     },
   },
   {
+    name: "credential_list",
+    description:
+      "List locally saved credential aliases and non-sensitive connection metadata. Call this before asking the user to repeat an SSH, database, or website login that may already be saved. Credential categories are isolated and secrets are never returned.",
+    parameters: {
+      type: "object",
+      properties: {
+        kind: {
+          type: "string",
+          enum: ["ssh", "mysql", "sqlserver", "mongodb", "website"],
+        },
+        query: {
+          type: "string",
+          description: "Optional alias, host, database, or website filter.",
+        },
+      },
+      required: ["kind"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "credential_save",
+    description:
+      "Securely save a website account explicitly supplied by the user. Database and SSH credentials are saved by their successful connect tools instead. The password is encrypted by the operating system and is never returned. Omit name to generate a stable site/account alias.",
+    parameters: {
+      type: "object",
+      properties: {
+        kind: { type: "string", enum: ["website"] },
+        name: { type: "string" },
+        url: {
+          type: "string",
+          description:
+            "HTTP/HTTPS website address. May be omitted when that site is already open in the task browser.",
+        },
+        username: { type: "string" },
+        password: { type: "string" },
+      },
+      required: ["kind", "username", "password"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "credential_forget",
+    description:
+      "Delete one locally saved credential from exactly one credential category. Use only when the user explicitly asks to forget it.",
+    parameters: {
+      type: "object",
+      properties: {
+        kind: {
+          type: "string",
+          enum: ["ssh", "mysql", "sqlserver", "mongodb", "website"],
+        },
+        name: { type: "string" },
+      },
+      required: ["kind", "name"],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "browser_open",
     description:
       "Open a visible isolated browser window at an HTTP/HTTPS URL for interactive or authenticated tasks.",
@@ -1006,6 +1112,21 @@ const tools = [
     },
   },
   {
+    name: "browser_fill_credential",
+    description:
+      "Fill username/password controls from a saved website credential without revealing the decrypted secret to the model. The currently open page origin must match the saved website origin. Use refs from the latest browser_snapshot.",
+    parameters: {
+      type: "object",
+      properties: {
+        credentialName: { type: "string" },
+        usernameRef: { type: "string" },
+        passwordRef: { type: "string" },
+      },
+      required: ["credentialName", "passwordRef"],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "browser_screenshot",
     description:
       "Capture the current browser page to a local PNG. For responsive validation, provide width and height together (for example 1280x720 desktop or 390x844 mobile). Use fullPage to capture beyond the visible viewport.",
@@ -1039,10 +1160,18 @@ const tools = [
   {
     name: "ssh_connect",
     description:
-      "Connect this task to an SSH server using credentials explicitly supplied by the user and attach an editable remote workspace. Use privateKey for key content, or privateKeyPath only for an absolute local path explicitly written by the user in the conversation. Set rootPath to the remote project directory when it is known; otherwise the server home directory is used. Host keys are not verified. By default credentials are stored with the operating system's secure encryption so the remote workspace can reconnect after restart; set remember to false only when the user requests a temporary connection.",
+      "Connect this task to SSH. To reuse a local credential, pass credentialName alone after credential_list. For a new connection, pass host/username plus password or private key and optionally name; after a successful connection it is stored with operating-system encryption by default. Never invent a credential alias. Set remember=false only when the user requests a temporary connection.",
     parameters: {
       type: "object",
       properties: {
+        credentialName: {
+          type: "string",
+          description: "Existing saved SSH alias, id, host, or user@host.",
+        },
+        name: {
+          type: "string",
+          description: "Alias used when saving a new successful connection.",
+        },
         host: { type: "string" },
         port: { type: "number", minimum: 1, maximum: 65535 },
         username: { type: "string" },
@@ -1064,7 +1193,6 @@ const tools = [
           description: "Remote project directory to open in the editor.",
         },
       },
-      required: ["host", "username"],
       additionalProperties: false,
     },
   },
@@ -1093,7 +1221,8 @@ const tools = [
           type: "number",
           minimum: 1_000,
           maximum: 600_000,
-          description: "Optional timeout in milliseconds. Defaults to 180000.",
+          description:
+            "Optional timeout in milliseconds. Defaults to 300000 for build/test/install commands and 180000 otherwise.",
         },
       },
       required: ["command"],
@@ -1172,10 +1301,13 @@ const tools = [
   {
     name: "mysql_connect",
     description:
-      "Connect this task directly to a MySQL server using credentials explicitly supplied by the user. Public direct hosts use verified TLS by default; private and localhost addresses do not. Never disable TLS after a failure unless the user explicitly approves the downgrade. The connection remains available while switching tasks.",
+      "Connect directly to MySQL. Pass credentialName to reuse an encrypted local MySQL profile, or pass new host/username/password fields and optional name; a successful new connection is remembered by default. MySQL profiles never resolve as SSH or other credential types.",
     parameters: {
       type: "object",
       properties: {
+        credentialName: { type: "string" },
+        name: { type: "string" },
+        remember: { type: "boolean" },
         host: { type: "string" },
         port: { type: "number", minimum: 1, maximum: 65535 },
         username: { type: "string" },
@@ -1188,17 +1320,20 @@ const tools = [
         sslPassphrase: { type: "string" },
         sslRejectUnauthorized: { type: "boolean" },
       },
-      required: ["host", "username", "password"],
       additionalProperties: false,
     },
   },
   {
     name: "mysql_connect_via_ssh",
     description:
-      "Connect to MySQL through this task's SSH tunnel. If SSH credentials are supplied, establish SSH first; otherwise reuse the task's active SSH connection. The MySQL host is resolved from the SSH server and commonly defaults to 127.0.0.1.",
+      "Connect to MySQL through SSH. credentialName selects only a saved MySQL profile; sshCredentialName independently selects a saved SSH profile. New database details are remembered after success unless remember=false. If no SSH fields/alias are supplied, reuse this task's active SSH session.",
     parameters: {
       type: "object",
       properties: {
+        credentialName: { type: "string" },
+        sshCredentialName: { type: "string" },
+        name: { type: "string" },
+        remember: { type: "boolean" },
         sshHost: { type: "string" },
         sshPort: { type: "number", minimum: 1, maximum: 65535 },
         sshUsername: { type: "string" },
@@ -1217,7 +1352,6 @@ const tools = [
         sslPassphrase: { type: "string" },
         sslRejectUnauthorized: { type: "boolean" },
       },
-      required: ["host", "username", "password"],
       additionalProperties: false,
     },
   },
@@ -1243,10 +1377,13 @@ const tools = [
   {
     name: "sqlserver_connect",
     description:
-      "Connect this task directly to Microsoft SQL Server. Public hosts use encryption with certificate verification by default; only trust a self-signed certificate when the user explicitly approves it.",
+      "Connect directly to Microsoft SQL Server using either an encrypted local credentialName or new connection fields. A successful new connection is remembered by default under name or a generated endpoint alias.",
     parameters: {
       type: "object",
       properties: {
+        credentialName: { type: "string" },
+        name: { type: "string" },
+        remember: { type: "boolean" },
         host: { type: "string" },
         port: { type: "number", minimum: 1, maximum: 65535 },
         username: { type: "string" },
@@ -1255,17 +1392,20 @@ const tools = [
         encrypt: { type: "boolean" },
         trustServerCertificate: { type: "boolean" },
       },
-      required: ["host", "username", "password"],
       additionalProperties: false,
     },
   },
   {
     name: "sqlserver_connect_via_ssh",
     description:
-      "Connect to Microsoft SQL Server through this task's SSH tunnel, establishing SSH from supplied credentials or reusing the active SSH connection.",
+      "Connect to SQL Server through SSH. credentialName and sshCredentialName resolve from separate SQL Server and SSH categories. New database details are remembered after success unless remember=false.",
     parameters: {
       type: "object",
       properties: {
+        credentialName: { type: "string" },
+        sshCredentialName: { type: "string" },
+        name: { type: "string" },
+        remember: { type: "boolean" },
         sshHost: { type: "string" },
         sshPort: { type: "number" },
         sshUsername: { type: "string" },
@@ -1280,7 +1420,6 @@ const tools = [
         encrypt: { type: "boolean" },
         trustServerCertificate: { type: "boolean" },
       },
-      required: ["host", "username", "password"],
       additionalProperties: false,
     },
   },
@@ -1303,10 +1442,13 @@ const tools = [
   {
     name: "mongodb_connect",
     description:
-      "Connect this task directly to MongoDB using a URI or host credentials. Public direct hosts use TLS by default. Credentials are shown in activity details.",
+      "Connect directly to MongoDB using an encrypted local credentialName or new URI/host credentials. A successful new connection is remembered by default. Saved URI secrets are never shown in activity details.",
     parameters: {
       type: "object",
       properties: {
+        credentialName: { type: "string" },
+        name: { type: "string" },
+        remember: { type: "boolean" },
         uri: { type: "string" },
         host: { type: "string" },
         port: { type: "number", minimum: 1, maximum: 65535 },
@@ -1318,17 +1460,20 @@ const tools = [
         tlsCA: { type: "string" },
         tlsCertificateKeyFile: { type: "string" },
       },
-      required: ["database"],
       additionalProperties: false,
     },
   },
   {
     name: "mongodb_connect_via_ssh",
     description:
-      "Connect to MongoDB through this task's SSH tunnel, establishing SSH from supplied credentials or reusing the active SSH connection.",
+      "Connect to MongoDB through SSH. credentialName and sshCredentialName resolve from separate MongoDB and SSH categories. New database details are remembered after success unless remember=false.",
     parameters: {
       type: "object",
       properties: {
+        credentialName: { type: "string" },
+        sshCredentialName: { type: "string" },
+        name: { type: "string" },
+        remember: { type: "boolean" },
         sshHost: { type: "string" },
         sshPort: { type: "number" },
         sshUsername: { type: "string" },
@@ -1343,7 +1488,6 @@ const tools = [
         authSource: { type: "string" },
         tls: { type: "boolean" },
       },
-      required: ["host", "database"],
       additionalProperties: false,
     },
   },
@@ -1483,7 +1627,8 @@ const tools = [
           type: "number",
           minimum: 1_000,
           maximum: 600_000,
-          description: "Optional timeout in milliseconds. Defaults to 120000.",
+          description:
+            "Optional timeout in milliseconds. Defaults to 300000 for build/test/install commands and 120000 otherwise.",
         },
       },
       required: ["command"],
@@ -1841,6 +1986,264 @@ function mongoConnectInput(
         ? input.tlsCertificateKeyFile
         : undefined,
   };
+}
+
+type ToolCredentialKind = CredentialKind | "ssh";
+type PublicToolCredential = Omit<CredentialDescriptor, "kind"> & {
+  kind: ToolCredentialKind;
+};
+
+const credentialKindLabels: Record<ToolCredentialKind, string> = {
+  ssh: "SSH",
+  mysql: "MySQL",
+  sqlserver: "SQL Server",
+  mongodb: "MongoDB",
+  website: "网站",
+};
+
+function parsedCredentialKind(value: unknown): ToolCredentialKind | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  const kind = String(value) as ToolCredentialKind;
+  if (!(kind in credentialKindLabels)) throw new Error("不支持的凭据类型。");
+  return kind;
+}
+
+function publicSshCredential(
+  profile: Awaited<ReturnType<typeof listSshRemoteProfiles>>[number],
+): PublicToolCredential {
+  return {
+    id: profile.id,
+    kind: "ssh",
+    name: profile.name,
+    host: profile.host,
+    port: profile.port,
+    username: profile.username,
+    database: profile.rootPath,
+    createdAt: 0,
+    updatedAt: 0,
+  };
+}
+
+function credentialMatchesQuery(item: PublicToolCredential, query: string) {
+  const needle = query.trim().toLocaleLowerCase();
+  if (!needle) return true;
+  return [
+    item.name,
+    item.host,
+    item.username,
+    item.database,
+    item.url,
+    item.sshCredentialName,
+  ].some((value) => String(value || "").toLocaleLowerCase().includes(needle));
+}
+
+async function listedCredentials(
+  kind?: ToolCredentialKind,
+  query = "",
+): Promise<PublicToolCredential[]> {
+  const databaseCredentials =
+    kind === "ssh"
+      ? []
+      : await listCredentialProfiles(kind as CredentialKind | undefined, query);
+  const sshCredentials =
+    kind && kind !== "ssh"
+      ? []
+      : (await listSshRemoteProfiles())
+          .map(publicSshCredential)
+          .filter((item) => credentialMatchesQuery(item, query));
+  return [...sshCredentials, ...databaseCredentials].sort((left, right) => {
+    if (left.kind !== right.kind) return left.kind.localeCompare(right.kind);
+    return left.name.localeCompare(right.name, undefined, {
+      sensitivity: "base",
+    });
+  });
+}
+
+async function savedSshCredential(selector: string) {
+  const profiles = await listSshRemoteProfiles();
+  return selectCredential(profiles, selector, "SSH ");
+}
+
+async function databaseCredentialInput(
+  kind: Exclude<CredentialKind, "website">,
+  rawInput: Record<string, unknown>,
+) {
+  const selector = String(rawInput.credentialName || "").trim();
+  if (!selector)
+    return {
+      source: undefined,
+      input: rawInput,
+    };
+  const source = await resolveCredentialProfile(kind, selector);
+  return {
+    source: source.descriptor,
+    input: source.payload,
+  };
+}
+
+function publicCredentialReference(descriptor?: CredentialDescriptor) {
+  return descriptor
+    ? {
+        kind: descriptor.kind,
+        name: descriptor.name,
+        stored: true,
+      }
+    : undefined;
+}
+
+function publicSshCredentialReference(
+  profile?: Awaited<ReturnType<typeof sshRemoteState>>["profile"],
+) {
+  return profile
+    ? {
+        kind: "ssh" as const,
+        name: profile.name,
+        stored: profile.remembered,
+      }
+    : undefined;
+}
+
+type PreparedDatabaseSsh = {
+  sessionId: string;
+  temporary: boolean;
+  credentialName?: string;
+};
+
+async function prepareDatabaseSsh(
+  taskId: string,
+  requestId: string,
+  activityId: string,
+  input: Record<string, unknown>,
+  linkedCredentialName: string | undefined,
+  signal: AbortSignal,
+): Promise<PreparedDatabaseSsh> {
+  const explicitCredentialName = String(
+    input.sshCredentialName || "",
+  ).trim();
+  if (explicitCredentialName && input.sshHost)
+    throw new Error("SSH 凭据别名与新的 SSH 连接信息不能同时提供。");
+  const requestedCredentialName =
+    explicitCredentialName ||
+    (input.sshHost ? "" : String(linkedCredentialName || "").trim());
+  if (requestedCredentialName) {
+    const profile = await savedSshCredential(requestedCredentialName);
+    await connectSavedSshRemote(taskId, profile.id);
+    return {
+      sessionId: taskId,
+      temporary: false,
+      credentialName: profile.name,
+    };
+  }
+  if (!input.sshHost) {
+    const state = await sshRemoteState(taskId);
+    return {
+      sessionId: taskId,
+      temporary: false,
+      credentialName: state.connected ? state.profile?.name : undefined,
+    };
+  }
+  const sessionId = `${taskId}:pending:${activityId}`;
+  await connectSsh(
+    sessionId,
+    requestId,
+    {
+      host: String(input.sshHost),
+      port: Number(input.sshPort) || 22,
+      username: String(input.sshUsername || ""),
+      password:
+        typeof input.sshPassword === "string"
+          ? input.sshPassword
+          : undefined,
+      privateKey:
+        typeof input.sshPrivateKey === "string"
+          ? input.sshPrivateKey
+          : undefined,
+      passphrase:
+        typeof input.sshPassphrase === "string"
+          ? input.sshPassphrase
+          : undefined,
+      rememberForRemoteWorkspace: input.remember !== false,
+    },
+    signal,
+  );
+  return { sessionId, temporary: true };
+}
+
+async function rememberedSshNameForDatabase(
+  taskId: string,
+  preferredName: string | undefined,
+  remember: boolean,
+) {
+  const state = await sshRemoteState(taskId);
+  if (state.profile) return state.profile.name;
+  if (!remember) return preferredName;
+  const adopted = await adoptActiveSshRemote(taskId, "~", preferredName);
+  return adopted.profile?.remembered ? adopted.profile.name : undefined;
+}
+
+async function rememberDatabaseCredential(
+  kind: Exclude<CredentialKind, "website">,
+  callInput: Record<string, unknown>,
+  connectionInput: MysqlConnectInput | SqlServerConnectInput | MongoConnectInput,
+  result: Record<string, unknown>,
+  viaSsh: boolean,
+  source?: CredentialDescriptor,
+  sshCredentialName?: string,
+) {
+  if (source || callInput.remember === false)
+    return { credential: source };
+  try {
+    return {
+      credential: await saveCredentialProfile({
+        kind,
+        name:
+          typeof callInput.name === "string"
+            ? callInput.name.trim()
+            : undefined,
+        host: String(result.host || connectionInput.host || ""),
+        port: Number(result.port || connectionInput.port || 0) || undefined,
+        username: String(connectionInput.username || ""),
+        database: String(result.database || connectionInput.database || ""),
+        viaSsh,
+        sshCredentialName: sshCredentialName || undefined,
+        payload: Object.fromEntries(
+          Object.entries(connectionInput).filter(
+            ([, value]) => value !== undefined,
+          ),
+        ),
+      }),
+    };
+  } catch (error) {
+    return {
+      warning: `连接已成功，但凭据未能保存：${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+}
+
+function connectionResultOutput(
+  result: Record<string, unknown>,
+  persistence?: {
+    credential?: CredentialDescriptor;
+    warning?: string;
+  },
+) {
+  return JSON.stringify(
+    {
+      ...result,
+      credential: publicCredentialReference(persistence?.credential),
+      credentialWarning: persistence?.warning,
+    },
+    null,
+    2,
+  );
+}
+
+function sameWebsiteOrigin(currentUrl: string, storedUrl: string) {
+  try {
+    return new URL(currentUrl).origin === new URL(storedUrl).origin;
+  } catch {
+    return false;
+  }
 }
 
 function diffFor(file: string, before: string, after: string) {
@@ -2538,6 +2941,77 @@ async function execute(
       ),
     };
   }
+  if (call.name === "credential_list") {
+    const kind = parsedCredentialKind(call.input.kind);
+    if (!kind) throw new Error("缺少凭据类型。");
+    const query = String(call.input.query || "").trim();
+    const credentials = await listedCredentials(kind, query);
+    return {
+      output: JSON.stringify(
+        {
+          credentials: credentials.map(
+            ({ createdAt: _createdAt, updatedAt: _updatedAt, ...item }) => item,
+          ),
+          count: credentials.length,
+          secretsReturned: false,
+        },
+        null,
+        2,
+      ),
+    };
+  }
+  if (call.name === "credential_save") {
+    if (call.input.kind !== "website")
+      throw new Error("数据库和 SSH 凭据必须在连接成功后由连接工具保存。");
+    const url =
+      String(call.input.url || "").trim() || browserSessionUrl(browserSessionId);
+    const username = String(call.input.username || "").trim();
+    const password = String(call.input.password || "");
+    if (!username || !password) throw new Error("缺少网站账号或密码。");
+    const credential = await saveCredentialProfile({
+      kind: "website",
+      name: String(call.input.name || "").trim(),
+      url,
+      username,
+      payload: { username, password },
+    });
+    return {
+      output: JSON.stringify(
+        {
+          saved: true,
+          credential: publicCredentialReference(credential),
+          url: credential.url,
+          username: credential.username,
+        },
+        null,
+        2,
+      ),
+    };
+  }
+  if (call.name === "credential_forget") {
+    const kind = parsedCredentialKind(call.input.kind);
+    if (!kind) throw new Error("缺少凭据类型。");
+    const selector = String(call.input.name || "").trim();
+    if (kind === "ssh") {
+      const profile = await savedSshCredential(selector);
+      await forgetSshRemoteProfile(profile.id);
+      return {
+        output: JSON.stringify(
+          { deleted: true, kind, name: profile.name },
+          null,
+          2,
+        ),
+      };
+    }
+    const profile = await forgetCredentialProfile(kind, selector);
+    return {
+      output: JSON.stringify(
+        { deleted: true, kind, name: profile.name },
+        null,
+        2,
+      ),
+    };
+  }
   if (call.name === "browser_open") {
     const result = await openBrowser(
       browserSessionId,
@@ -2580,6 +3054,45 @@ async function execute(
         2,
       ),
     };
+  if (call.name === "browser_fill_credential") {
+    const saved = await resolveCredentialProfile(
+      "website",
+      String(call.input.credentialName || ""),
+    );
+    const currentUrl = browserSessionUrl(browserSessionId);
+    if (!saved.descriptor.url || !sameWebsiteOrigin(currentUrl, saved.descriptor.url))
+      throw new Error(
+        `当前网页与凭据“${saved.descriptor.name}”保存的网站不一致，已拒绝填充。`,
+      );
+    const username = String(saved.payload.username || "");
+    const password = String(saved.payload.password || "");
+    if (!username || !password)
+      throw new Error(`网站凭据“${saved.descriptor.name}”缺少账号或密码。`);
+    const filled: string[] = [];
+    const usernameRef = String(call.input.usernameRef || "").trim();
+    const passwordRef = String(call.input.passwordRef || "").trim();
+    if (usernameRef) {
+      await typeBrowser(browserSessionId, usernameRef, username);
+      filled.push("username");
+    }
+    if (!passwordRef) throw new Error("缺少密码输入框引用。");
+    await typeBrowser(browserSessionId, passwordRef, password);
+    filled.push("password");
+    return {
+      output: JSON.stringify(
+        {
+          filled,
+          credentialName: saved.descriptor.name,
+          origin: saved.descriptor.url,
+          secretsReturned: false,
+        },
+        null,
+        2,
+      ),
+      executed: true,
+      browserOperationEvidence: ["type"],
+    };
+  }
   if (call.name === "browser_screenshot") {
     const result = await screenshotBrowser(browserSessionId, {
       width:
@@ -2612,6 +3125,35 @@ async function execute(
       ),
     };
   if (call.name === "ssh_connect") {
+    const credentialName = String(call.input.credentialName || "").trim();
+    if (credentialName) {
+      const saved = await savedSshCredential(credentialName);
+      let state = await connectSavedSshRemote(browserSessionId, saved.id);
+      const requestedRootPath = String(call.input.rootPath || "").trim();
+      if (requestedRootPath && requestedRootPath !== state.profile?.rootPath)
+        state = await adoptActiveSshRemote(
+          browserSessionId,
+          requestedRootPath,
+          saved.name,
+        );
+      const profile = state.profile;
+      if (!profile) throw new Error(`SSH 凭据“${saved.name}”连接后状态丢失。`);
+      return {
+        output: JSON.stringify(
+          {
+            connected: state.connected,
+            host: profile.host,
+            port: profile.port,
+            username: profile.username,
+            rootPath: profile.rootPath,
+            credential: publicSshCredentialReference(profile),
+          },
+          null,
+          2,
+        ),
+        path: profile.rootPath,
+      };
+    }
     const privateKey = await privateKeyForSshTool(call.input, request.messages);
     const result = await connectSsh(
       browserSessionId,
@@ -2648,8 +3190,22 @@ async function execute(
       rootPathWarning = `无法打开指定目录 ${requestedRootPath}：${error instanceof Error ? error.message : String(error)}`;
       rootPath = await resolveSshRoot(browserSessionId, requestId, "~", signal);
     }
+    const state = await adoptActiveSshRemote(
+      browserSessionId,
+      rootPath,
+      String(call.input.name || "").trim() || undefined,
+    );
     return {
-      output: JSON.stringify({ ...result, rootPath, rootPathWarning }, null, 2),
+      output: JSON.stringify(
+        {
+          ...result,
+          rootPath,
+          rootPathWarning,
+          credential: publicSshCredentialReference(state.profile),
+        },
+        null,
+        2,
+      ),
       path: rootPath,
     };
   }
@@ -2681,7 +3237,11 @@ async function execute(
         pty: Boolean(call.input.pty),
         timeoutMs: Math.min(
           600_000,
-          Math.max(1_000, Number(call.input.timeoutMs) || 180_000),
+          Math.max(
+            1_000,
+            Number(call.input.timeoutMs) ||
+              Math.max(180_000, defaultCommandTimeoutMs(remoteCommand)),
+          ),
         ),
         onOutput: onProgress,
       },
@@ -2774,63 +3334,78 @@ async function execute(
         : "当前任务没有活动的 SSH 连接",
     };
   if (call.name === "mysql_connect") {
+    const credential = await databaseCredentialInput("mysql", call.input);
+    if (credential.source?.viaSsh)
+      throw new Error(
+        `MySQL 凭据“${credential.source.name}”需要通过 SSH 连接，请使用 MySQL SSH 连接工具。`,
+      );
+    const connectionInput = mysqlConnectInput(credential.input);
     const result = await connectMysql(
       browserSessionId,
       requestId,
-      mysqlConnectInput(call.input),
+      connectionInput,
       false,
       signal,
     );
-    return { output: JSON.stringify(result, null, 2) };
+    const remembered = await rememberDatabaseCredential(
+      "mysql",
+      call.input,
+      connectionInput,
+      result,
+      false,
+      credential.source,
+    );
+    return { output: connectionResultOutput(result, remembered) };
   }
   if (call.name === "mysql_connect_via_ssh") {
-    let mysqlSessionId = browserSessionId;
-    if (call.input.sshHost) {
-      mysqlSessionId = `${browserSessionId}:pending:${activityId}`;
-      await connectSsh(
-        mysqlSessionId,
-        requestId,
-        {
-          host: String(call.input.sshHost),
-          port: Number(call.input.sshPort) || 22,
-          username: String(call.input.sshUsername || ""),
-          password:
-            typeof call.input.sshPassword === "string"
-              ? call.input.sshPassword
-              : undefined,
-          privateKey:
-            typeof call.input.sshPrivateKey === "string"
-              ? call.input.sshPrivateKey
-              : undefined,
-          passphrase:
-            typeof call.input.sshPassphrase === "string"
-              ? call.input.sshPassphrase
-              : undefined,
-        },
-        signal,
-      );
-    }
+    const credential = await databaseCredentialInput("mysql", call.input);
+    const preparedSsh = await prepareDatabaseSsh(
+      browserSessionId,
+      requestId,
+      activityId,
+      call.input,
+      credential.source?.sshCredentialName,
+      signal,
+    );
+    const connectionInput = mysqlConnectInput(
+      credential.input,
+      "127.0.0.1",
+    );
     let result;
     try {
       result = await connectMysql(
-        mysqlSessionId,
+        preparedSsh.sessionId,
         requestId,
-        mysqlConnectInput(call.input, "127.0.0.1"),
+        connectionInput,
         true,
         signal,
       );
-      if (mysqlSessionId !== browserSessionId) {
-        adoptMysqlSession(mysqlSessionId, browserSessionId);
-        adoptSshSession(mysqlSessionId, browserSessionId);
+      if (preparedSsh.temporary) {
+        adoptMysqlSession(preparedSsh.sessionId, browserSessionId);
+        adoptSshSession(preparedSsh.sessionId, browserSessionId);
       }
     } catch (error) {
-      if (mysqlSessionId !== browserSessionId) {
-        await disconnectMysql(mysqlSessionId);
-        disconnectSsh(mysqlSessionId);
+      if (preparedSsh.temporary) {
+        await disconnectMysql(preparedSsh.sessionId);
+        disconnectSsh(preparedSsh.sessionId);
       }
       throw error;
     }
-    return { output: JSON.stringify(result, null, 2) };
+    const sshCredentialName = await rememberedSshNameForDatabase(
+      browserSessionId,
+      preparedSsh.credentialName,
+      call.input.remember !== false,
+    );
+    const remembered = await rememberDatabaseCredential(
+      "mysql",
+      call.input,
+      connectionInput,
+      result,
+      true,
+      credential.source,
+      sshCredentialName,
+    );
+    return { output: connectionResultOutput(result, remembered) };
   }
   if (call.name === "mysql_query") {
     const sql = String(call.input.sql || "");
@@ -2861,62 +3436,78 @@ async function execute(
         : "当前任务没有活动的 MySQL 连接",
     };
   if (call.name === "sqlserver_connect") {
+    const credential = await databaseCredentialInput("sqlserver", call.input);
+    if (credential.source?.viaSsh)
+      throw new Error(
+        `SQL Server 凭据“${credential.source.name}”需要通过 SSH 连接，请使用 SQL Server SSH 连接工具。`,
+      );
+    const connectionInput = sqlServerConnectInput(credential.input);
     const result = await connectSqlServer(
       browserSessionId,
       requestId,
-      sqlServerConnectInput(call.input),
+      connectionInput,
       false,
       signal,
     );
-    return { output: JSON.stringify(result, null, 2) };
+    const remembered = await rememberDatabaseCredential(
+      "sqlserver",
+      call.input,
+      connectionInput,
+      result,
+      false,
+      credential.source,
+    );
+    return { output: connectionResultOutput(result, remembered) };
   }
   if (call.name === "sqlserver_connect_via_ssh") {
-    let sessionId = browserSessionId;
-    if (call.input.sshHost) {
-      sessionId = `${browserSessionId}:pending:${activityId}`;
-      await connectSsh(
-        sessionId,
-        requestId,
-        {
-          host: String(call.input.sshHost),
-          port: Number(call.input.sshPort) || 22,
-          username: String(call.input.sshUsername || ""),
-          password:
-            typeof call.input.sshPassword === "string"
-              ? call.input.sshPassword
-              : undefined,
-          privateKey:
-            typeof call.input.sshPrivateKey === "string"
-              ? call.input.sshPrivateKey
-              : undefined,
-          passphrase:
-            typeof call.input.sshPassphrase === "string"
-              ? call.input.sshPassphrase
-              : undefined,
-        },
-        signal,
-      );
-    }
+    const credential = await databaseCredentialInput("sqlserver", call.input);
+    const preparedSsh = await prepareDatabaseSsh(
+      browserSessionId,
+      requestId,
+      activityId,
+      call.input,
+      credential.source?.sshCredentialName,
+      signal,
+    );
+    const connectionInput = sqlServerConnectInput(
+      credential.input,
+      "127.0.0.1",
+    );
+    let result;
     try {
-      const result = await connectSqlServer(
-        sessionId,
+      result = await connectSqlServer(
+        preparedSsh.sessionId,
         requestId,
-        sqlServerConnectInput(call.input, "127.0.0.1"),
+        connectionInput,
         true,
         signal,
       );
-      if (sessionId !== browserSessionId) {
-        adoptSqlServerSession(sessionId, browserSessionId);
-        adoptSshSession(sessionId, browserSessionId);
+      if (preparedSsh.temporary) {
+        adoptSqlServerSession(preparedSsh.sessionId, browserSessionId);
+        adoptSshSession(preparedSsh.sessionId, browserSessionId);
       }
-      return { output: JSON.stringify(result, null, 2) };
     } catch (error) {
-      if (sessionId !== browserSessionId) {
-        await disconnectSqlServer(sessionId);
-        disconnectSsh(sessionId);
+      if (preparedSsh.temporary) {
+        await disconnectSqlServer(preparedSsh.sessionId);
+        disconnectSsh(preparedSsh.sessionId);
       }
       throw error;
     }
+    const sshCredentialName = await rememberedSshNameForDatabase(
+      browserSessionId,
+      preparedSsh.credentialName,
+      call.input.remember !== false,
+    );
+    const remembered = await rememberDatabaseCredential(
+      "sqlserver",
+      call.input,
+      connectionInput,
+      result,
+      true,
+      credential.source,
+      sshCredentialName,
+    );
+    return { output: connectionResultOutput(result, remembered) };
   }
   if (call.name === "sqlserver_query") {
     const sql = String(call.input.sql || "");
@@ -2947,62 +3538,78 @@ async function execute(
         : "当前任务没有活动的 SQL Server 连接",
     };
   if (call.name === "mongodb_connect") {
+    const credential = await databaseCredentialInput("mongodb", call.input);
+    if (credential.source?.viaSsh)
+      throw new Error(
+        `MongoDB 凭据“${credential.source.name}”需要通过 SSH 连接，请使用 MongoDB SSH 连接工具。`,
+      );
+    const connectionInput = mongoConnectInput(credential.input);
     const result = await connectMongo(
       browserSessionId,
       requestId,
-      mongoConnectInput(call.input),
+      connectionInput,
       false,
       signal,
     );
-    return { output: JSON.stringify(result, null, 2) };
+    const remembered = await rememberDatabaseCredential(
+      "mongodb",
+      call.input,
+      connectionInput,
+      result,
+      false,
+      credential.source,
+    );
+    return { output: connectionResultOutput(result, remembered) };
   }
   if (call.name === "mongodb_connect_via_ssh") {
-    let sessionId = browserSessionId;
-    if (call.input.sshHost) {
-      sessionId = `${browserSessionId}:pending:${activityId}`;
-      await connectSsh(
-        sessionId,
-        requestId,
-        {
-          host: String(call.input.sshHost),
-          port: Number(call.input.sshPort) || 22,
-          username: String(call.input.sshUsername || ""),
-          password:
-            typeof call.input.sshPassword === "string"
-              ? call.input.sshPassword
-              : undefined,
-          privateKey:
-            typeof call.input.sshPrivateKey === "string"
-              ? call.input.sshPrivateKey
-              : undefined,
-          passphrase:
-            typeof call.input.sshPassphrase === "string"
-              ? call.input.sshPassphrase
-              : undefined,
-        },
-        signal,
-      );
-    }
+    const credential = await databaseCredentialInput("mongodb", call.input);
+    const preparedSsh = await prepareDatabaseSsh(
+      browserSessionId,
+      requestId,
+      activityId,
+      call.input,
+      credential.source?.sshCredentialName,
+      signal,
+    );
+    const connectionInput = mongoConnectInput(
+      credential.input,
+      "127.0.0.1",
+    );
+    let result;
     try {
-      const result = await connectMongo(
-        sessionId,
+      result = await connectMongo(
+        preparedSsh.sessionId,
         requestId,
-        mongoConnectInput(call.input, "127.0.0.1"),
+        connectionInput,
         true,
         signal,
       );
-      if (sessionId !== browserSessionId) {
-        adoptMongoSession(sessionId, browserSessionId);
-        adoptSshSession(sessionId, browserSessionId);
+      if (preparedSsh.temporary) {
+        adoptMongoSession(preparedSsh.sessionId, browserSessionId);
+        adoptSshSession(preparedSsh.sessionId, browserSessionId);
       }
-      return { output: JSON.stringify(result, null, 2) };
     } catch (error) {
-      if (sessionId !== browserSessionId) {
-        await disconnectMongo(sessionId);
-        disconnectSsh(sessionId);
+      if (preparedSsh.temporary) {
+        await disconnectMongo(preparedSsh.sessionId);
+        disconnectSsh(preparedSsh.sessionId);
       }
       throw error;
     }
+    const sshCredentialName = await rememberedSshNameForDatabase(
+      browserSessionId,
+      preparedSsh.credentialName,
+      call.input.remember !== false,
+    );
+    const remembered = await rememberDatabaseCredential(
+      "mongodb",
+      call.input,
+      connectionInput,
+      result,
+      true,
+      credential.source,
+      sshCredentialName,
+    );
+    return { output: connectionResultOutput(result, remembered) };
   }
   if (call.name === "mongodb_execute") {
     const operation = String(call.input.operation || "");
@@ -3290,7 +3897,7 @@ async function execute(
         powershellCommand(diagnostic.command!),
       ],
       signal,
-      120_000,
+      defaultCommandTimeoutMs(diagnostic.command!),
     );
     return {
       command: diagnostic.command,
@@ -3312,13 +3919,15 @@ async function execute(
   }
   const timeoutMs = Math.min(
     600_000,
-    Math.max(1_000, Number(call.input.timeoutMs) || 120_000),
+    Math.max(
+      1_000,
+      Number(call.input.timeoutMs) || defaultCommandTimeoutMs(script),
+    ),
   );
-  // Network CLIs like plink/ssh-keyscan often print nothing until they finish
-  // or hang. Cap silence so the UI is not stuck for the full timeout.
-  const idleTimeoutMs = isLikelyNetworkCommand(script)
-    ? Math.min(90_000, timeoutMs)
-    : undefined;
+  // Network CLIs often print nothing until they finish or hang. Package
+  // installation gets a wider silence window; other network commands retain
+  // the tighter guard so the UI cannot remain stuck for the full timeout.
+  const idleTimeoutMs = defaultCommandIdleTimeoutMs(script, timeoutMs);
   const result = await command(
     root,
     "powershell.exe",
@@ -3817,6 +4426,7 @@ async function modelTurn(
       ? `KCode 已启用这些 MCP 服务：${enabledMcpServers.map((server) => `${server.name}（server=${server.id}）`).join("、")}。需要使用外部扩展能力时，先用对应 server ID 调用 mcp_list_tools 获取真实 schema，再调用 mcp_call_tool；不要凭空捏造 MCP 工具结果。MCP 工具活动和错误必须如实展示给用户。`
       : "当前没有启用 MCP 扩展；不要声称调用了 MCP 工具。",
     "Past-tense claims about real workspace or external actions are checked against successful structured tool results. Do not say that a file was changed, a command ran, a test passed, a remote connection or transfer completed, a browser action happened, or a Git action completed unless the corresponding tool evidence exists in this run. Informational answers, explanations, planning, and content generation that require no real action may finish without calling a tool; do not invent an action claim merely to create evidence. If an earlier statement was wrong, retract it explicitly instead of inventing evidence.",
+    "Saved credentials are local to this KCode installation and isolated by category: SSH, MySQL, SQL Server, MongoDB, and website credentials must never be substituted across categories. Before asking the user to repeat a credential, call credential_list with the exact category and the alias, host, database, or site they named. If no saved match exists, say that the local category has no such credential and request the missing connection fields once. For a saved match, pass credentialName to the matching connect tool; for SSH-tunneled databases, resolve the database credentialName and sshCredentialName independently. A successful new SSH or database connection is remembered by default unless the user explicitly requests a temporary connection. Use a user-provided name for a new credential when available; otherwise let the tool generate an endpoint alias. Use credential_save for website accounts and browser_fill_credential to fill them without exposing the password. Never invent an existing alias, put a decrypted secret in chat, send a secret to a subagent, or place one in a command when a native credential-aware tool can perform the action.",
     request.remoteWorkspace
       ? "This is a managed SSH Remote task with hybrid file access: the ssh_* tools act on the remote server, while the local file, git, and command tools act on THIS local machine. Use ssh_run for remote shell work (its shell and OS come from the remote server); run_command runs local Windows PowerShell 5.1, not Bash, and must never use <<EOF heredocs or &&/|| chains. When the user points to local files by absolute path (for example D:\\project\\... on Windows), read, edit, build, and inspect them with the local file and command tools, then use ssh_upload_file to deploy the results to the server and ssh_download_file to pull remote files down. Reuse the managed session while it is connected. If an SSH tool explicitly reports that the session was lost, call ssh_connect with credentials already supplied by the user; never ask the user to create another SSH Remote manually. Do not disconnect the managed session unless the user explicitly requests it."
       : "run_command uses Windows PowerShell 5.1, not Bash. Never use <<EOF heredocs or &&/|| chains; use a PowerShell here-string for multiline stdin and check $LASTEXITCODE explicitly when chaining native commands. Use browser_open, browser_snapshot, browser_click, browser_type, and browser_screenshot for browser work. For responsive validation, pass explicit width and height to browser_screenshot. Never launch Chrome or Edge through run_command for browsing, DOM inspection, version checks, or screenshots.",
@@ -5430,10 +6040,14 @@ export async function* runAgent(
         get_context_remaining: "查询上下文余量",
         web_search: "搜索互联网",
         fetch_url: "读取网页",
+        credential_list: "查找本地凭据",
+        credential_save: "保存网站凭据",
+        credential_forget: "删除本地凭据",
         browser_open: "打开浏览器",
         browser_snapshot: "查看网页",
         browser_click: "点击网页",
         browser_type: "填写网页",
+        browser_fill_credential: "填写已保存账号",
         browser_screenshot: "网页截图",
         browser_record_start: "开始网页录制",
         browser_record_stop: "停止网页录制",
@@ -5492,7 +6106,7 @@ export async function* runAgent(
                   agentId: String(call.input.agentId || ""),
                   message: String(call.input.message || ""),
                 }
-              : call.input,
+              : redactedToolInput(call),
         agentRole: request.agentRole,
         providerId: request.providerId,
         modelId: request.modelId,
@@ -5575,7 +6189,11 @@ export async function* runAgent(
           call.name.includes("connect_via_ssh") ||
           call.name.endsWith("disconnect"));
       const category =
-        call.name === "web_search" ||
+        call.name === "credential_save"
+          ? "workspaceWrite"
+          : call.name === "credential_forget"
+            ? "deletePaths"
+            : call.name === "web_search" ||
         call.name === "fetch_url" ||
         call.name === "mcp_list_tools" ||
         call.name === "mcp_call_tool" ||
@@ -5588,34 +6206,34 @@ export async function* runAgent(
         call.name === "ssh_disconnect" ||
         databaseConnectionTool ||
         databaseRead
-          ? "network"
-          : databaseDelete
-            ? "deletePaths"
-            : databaseTool
-              ? "workspaceWrite"
-              : call.name === "ssh_run"
-                ? "runCommands"
-                : call.name === "ssh_write_file" ||
-                    call.name === "ssh_upload_file" ||
-                    call.name === "ssh_download_file"
+              ? "network"
+              : databaseDelete
+                ? "deletePaths"
+                : databaseTool
                   ? "workspaceWrite"
-                  : call.name === "delete_path"
-                    ? "deletePaths"
-                    : call.name === "start_process" ||
-                        call.name === "stop_process"
-                      ? "longRunningProcesses"
-                      : call.name === "run_command"
-                        ? permissionCategoryForCommand(
-                            String(call.input.command ?? ""),
-                          )
-                        : new Set<AgentToolName>([
-                              "apply_patch",
-                              "write_file",
-                              "make_directory",
-                              "move_path",
-                            ]).has(call.name)
-                          ? "workspaceWrite"
-                          : undefined;
+                  : call.name === "ssh_run"
+                    ? "runCommands"
+                    : call.name === "ssh_write_file" ||
+                        call.name === "ssh_upload_file" ||
+                        call.name === "ssh_download_file"
+                      ? "workspaceWrite"
+                      : call.name === "delete_path"
+                        ? "deletePaths"
+                        : call.name === "start_process" ||
+                            call.name === "stop_process"
+                          ? "longRunningProcesses"
+                          : call.name === "run_command"
+                            ? permissionCategoryForCommand(
+                                String(call.input.command ?? ""),
+                              )
+                            : new Set<AgentToolName>([
+                                  "apply_patch",
+                                  "write_file",
+                                  "make_directory",
+                                  "move_path",
+                                ]).has(call.name)
+                              ? "workspaceWrite"
+                              : undefined;
       const decision = resolvePermissionDecision(
         request.permissionMode,
         request.permissionPolicy,
@@ -6111,7 +6729,11 @@ export async function* runAgent(
     }
     // Persist round events to JSONL
     for (const call of turn.calls) {
-      conversationWriter.toolCall(call.id, call.name, call.input);
+      conversationWriter.toolCall(
+        call.id,
+        call.name,
+        redactedToolInput(call),
+      );
     }
     for (const rec of turnRecords) {
       conversationWriter.toolResult(rec.callId, rec.toolName, rec.success, rec.exitCode != null ? `exit ${rec.exitCode}` : undefined);
@@ -6138,11 +6760,27 @@ export async function* runAgent(
       };
       return;
     }
-    if (stalledRounds >= 3) {
+    const currentStallAction = stallAction(stalledRounds);
+    if (currentStallAction === "recover") {
       yield {
-        type: "error",
-        message: "Agent 连续 3 轮没有取得新进展，已安全暂停以避免重复执行",
+        type: "progress",
+        message:
+          "检测到连续重复操作，正在要求 Agent 保留现有结果并更换执行策略…",
       };
+      history.push({
+        kind: "message",
+        role: "user",
+        content:
+          "<runtime_stall_recovery>你已经连续多轮使用相同工具输入并得到相同结果。不要再次原样重试。请保留已有成果，检查最近一次失败或阻塞点，然后选择不同的命令或验证方式；已有后台进程时只读取其状态，不要重复启动；确实缺少外部信息时调用 request_user_input；任务已经完成时直接给出最终结论。</runtime_stall_recovery>",
+      });
+      continue;
+    }
+    if (currentStallAction === "pause") {
+      for (const event of blockedVerificationEvents(
+        timelineTextLength,
+        `Agent 已暂停：连续 ${STALL_PAUSE_ROUNDS} 轮重复了相同操作且没有取得新进展。已有结果均已保留，可以继续任务并从当前状态更换策略。`,
+      ))
+        yield event;
       return;
     }
   }

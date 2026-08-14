@@ -17,6 +17,10 @@ const DEFAULT_MAX_TOTAL_BYTES = 10 * 1024 * 1024; // 10 MB
  * because we only need the final flush, not a graceful shutdown.
  */
 const IO_DRAIN_TIMEOUT_MS = 500;
+export const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
+export const LONG_COMMAND_TIMEOUT_MS = 300_000;
+export const NETWORK_IDLE_TIMEOUT_MS = 90_000;
+export const LONG_NETWORK_IDLE_TIMEOUT_MS = 180_000;
 
 export function terminateChildProcess(
   child: ChildProcessWithoutNullStreams | { pid?: number; kill: (signal?: NodeJS.Signals) => boolean },
@@ -325,5 +329,30 @@ export function runSpawnedCommand(options: {
 export function isLikelyNetworkCommand(command: string) {
   return /\b(ssh|scp|sftp|plink|pscp|putty|ssh-keyscan|curl|wget|Invoke-WebRequest|Invoke-RestMethod|git\s+(clone|fetch|pull|push)|npm\s+(install|ci|publish)|pnpm\s+install|yarn\s+install|docker\s+pull)\b/i.test(
     command,
+  );
+}
+
+export function isLikelyLongRunningCommand(command: string) {
+  return /(?:\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:build|test|install|ci|publish)\b|\b(?:npm|pnpm|yarn|bun)\s+install\b|\b(?:npx\s+)?(?:tsc|vite\s+build|vitest|jest|playwright\s+test|electron-builder)\b|\b(?:pytest|pip\s+install|composer\s+(?:install|update)|cargo\s+(?:build|test)|dotnet\s+(?:build|test|publish)|mvn(?:\.cmd)?\s|gradle(?:w|\.bat)?\s|flutter\s+(?:build|test)|xcodebuild)\b)/i.test(
+    command,
+  );
+}
+
+export function defaultCommandTimeoutMs(command: string) {
+  return isLikelyLongRunningCommand(command)
+    ? LONG_COMMAND_TIMEOUT_MS
+    : DEFAULT_COMMAND_TIMEOUT_MS;
+}
+
+export function defaultCommandIdleTimeoutMs(
+  command: string,
+  timeoutMs: number,
+) {
+  if (!isLikelyNetworkCommand(command)) return undefined;
+  return Math.min(
+    isLikelyLongRunningCommand(command)
+      ? LONG_NETWORK_IDLE_TIMEOUT_MS
+      : NETWORK_IDLE_TIMEOUT_MS,
+    timeoutMs,
   );
 }
