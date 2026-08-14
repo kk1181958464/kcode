@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { inferContextWindow, inferReasoningConfig } from "../src/types";
+import {
+  DEFAULT_MODEL_CONTEXT_WINDOW,
+  inferContextWindow,
+  inferReasoningConfig,
+  resolveModelContextWindow,
+} from "../src/types";
 
 test("uses current OpenAI context windows for exact GPT model IDs", () => {
   assert.equal(inferContextWindow("gpt-5.5"), 258_400);
@@ -20,6 +25,15 @@ test("keeps provider context windows separate from Codex task budgets", () => {
   assert.equal(inferContextWindow("glm-5.2"), 1_000_000);
   assert.equal(inferContextWindow("deepseek-v4-flash"), 1_000_000);
   assert.equal(inferContextWindow("deepseek-v4-pro"), 1_000_000);
+});
+
+test("preserves custom context windows and defaults unknown models", () => {
+  assert.equal(resolveModelContextWindow("custom-model", 512), 512);
+  assert.equal(
+    resolveModelContextWindow("custom-model"),
+    DEFAULT_MODEL_CONTEXT_WINDOW,
+  );
+  assert.equal(resolveModelContextWindow("gpt-5.6-sol"), 353_400);
 });
 
 test("offers max reasoning for the GPT-5.6 family", () => {

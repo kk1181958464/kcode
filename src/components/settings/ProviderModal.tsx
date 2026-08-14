@@ -9,7 +9,10 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { inferContextWindow, inferReasoningConfig } from "../../types";
+import {
+  inferReasoningConfig,
+  resolveModelContextWindow,
+} from "../../types";
 import type { ModelConfig, ProviderConfig } from "../../types";
 import { uid } from "../../models";
 import { errorMessage } from "../../lib/format";
@@ -80,7 +83,7 @@ export function ProviderModal({
       displayName: modelId.trim(),
       protocol: provider.protocol,
       ...inferReasoningConfig(modelId.trim(), provider.protocol),
-      contextWindow: inferContextWindow(modelId.trim()),
+      contextWindow: resolveModelContextWindow(modelId.trim()),
     };
     patch({
       models: [
@@ -103,15 +106,19 @@ export function ProviderModal({
             const existing = provider.models.find(
               (item) => item.modelId === model.modelId,
             );
+            const contextWindow = resolveModelContextWindow(
+              model.modelId,
+              existing?.contextWindow ?? model.contextWindow,
+            );
             return existing
               ? {
                   ...model,
-                  contextWindow: existing.contextWindow ?? model.contextWindow,
+                  contextWindow,
                   reasoningMode: existing.reasoningMode ?? model.reasoningMode,
                   reasoningEfforts:
                     existing.reasoningEfforts ?? model.reasoningEfforts,
                 }
-              : model;
+              : { ...model, contextWindow };
           })
         : provider.models;
       patch({ models, profile: result.profile });
@@ -311,14 +318,12 @@ export function ProviderModal({
                     <span>上下文</span>
                     <input
                       type="number"
-                      min="1024"
-                      step="1024"
-                      value={
-                        model.contextWindow ??
-                        inferContextWindow(model.modelId) ??
-                        ""
-                      }
-                      placeholder="未配置"
+                      min="1"
+                      step="1"
+                      value={resolveModelContextWindow(
+                        model.modelId,
+                        model.contextWindow,
+                      )}
                       onChange={(event) => {
                         const value = event.target.value;
                         patch({
@@ -326,9 +331,10 @@ export function ProviderModal({
                             item.id === model.id
                               ? {
                                   ...item,
-                                  contextWindow: value
-                                    ? Math.max(1024, Math.round(Number(value)))
-                                    : undefined,
+                                  contextWindow: resolveModelContextWindow(
+                                    item.modelId,
+                                    value ? Number(value) : undefined,
+                                  ),
                                 }
                               : item,
                           ),

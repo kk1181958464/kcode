@@ -343,12 +343,27 @@
   gap: 5px;
   flex: 1;
 }
-.queued-message-row > span:nth-child(2) {
+.queued-message-content {
   overflow: hidden;
   flex: 1;
   color: var(--text);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.queued-message-edit {
+  min-width: 0;
+  height: 28px;
+  flex: 1;
+  padding: 0 8px;
+  border: 1px solid var(--accent);
+  border-radius: 5px;
+  outline: none;
+  color: var(--text);
+  background: var(--surface);
+  font: inherit;
+}
+.queued-message-edit:focus {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 16%, transparent);
 }
 .queued-message-index {
   display: grid;
@@ -11973,6 +11988,19 @@ select:focus-visible {
 .task-filter input {
   color: var(--ui-text);
   font-size: 10.5px;
+}
+
+.task-filter input,
+.task-filter input:focus,
+.task-filter input:focus-visible {
+  height: 100%;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  outline: 0;
+  box-shadow: none;
 }
 
 .workspace-tree {

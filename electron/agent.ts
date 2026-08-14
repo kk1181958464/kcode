@@ -66,7 +66,9 @@ import {
   dedupeExecutionNarrative,
   executionNarrativePreview,
   isExecutionContinuationNarrative,
+  nextClosingVerificationRounds,
   nextExecutionNarrative,
+  shouldFinalizeClosingVerification,
 } from "../src/execution-narrative";
 import {
   defaultExecutionPlan,
@@ -4445,7 +4447,7 @@ async function modelTurn(
   const remoteWorkspaceInstruction = request.remoteWorkspace
     ? `\n\n<ssh_remote_workspace>\nThis task is attached to a managed SSH Remote workspace. Try the existing session first. If an SSH tool explicitly reports that the session was lost, ssh_connect is available for recovery. When the user already supplied the host, username, password, private-key content, or an absolute private-key path, reconnect yourself immediately with those values; use privateKeyPath for a user-supplied key path and do not send the user to the SSH Remote dialog. The project source of truth is on ${request.remoteWorkspace.username}@${request.remoteWorkspace.host}:${request.remoteWorkspace.port} under ${request.remoteWorkspace.rootPath}. Pass that rootPath when reconnecting. Use ssh_list_directory, ssh_read_file, ssh_write_file, ssh_run, ssh_upload_file, and ssh_download_file for work on the remote server. Relative SSH file paths are automatically resolved under the remote root. Every ssh_run command starts in the remote root. This is a hybrid task: you ALSO have the local file, git, and command tools, which act on THIS machine. When the user references local project sources by absolute path (for example D:\\\\project\\\\... on Windows), use the local tools to read, edit, build, and inspect them, then ssh_upload_file to deploy build artifacts to the server. Note ${root} itself is only KCode metadata/cache, not the user's local project — do not treat that cache directory as the source, but do freely use the local tools on the absolute paths the user points you to.\n</ssh_remote_workspace>`
     : "";
-  const system = `${isolation.boundary}\nYou are a coding agent working in ${root}. Use the provided native tools to inspect and modify the project. Each run_command invocation uses a fresh PowerShell process, so environment variable changes do not persist to later commands; combine dependent setup and execution in one command. Prefer apply_patch for precise edits and write_file for new or complete files. Never invoke apply_patch, file deletion, file moves, or directory operations through run_command when a native tool exists. File tool paths accept absolute paths, including other drives (for example D:\\B on Windows); use them to read or write files the user explicitly points to outside ${root}, and resolve relative paths against ${root}. When you mention a file in your reply, always write its full workspace-relative path (for example src/views/Gooddetail.vue, not just Gooddetail.vue) so the user can tell exactly which file it is. Use web_search for current or externally verifiable information and fetch_url to inspect primary sources; preserve source URLs in the final answer. For interactive or authenticated sites use browser_open, browser_snapshot, browser_click, and browser_type. Credentials explicitly supplied by the user may be entered directly with browser_type. Browser recording is opt-in: call browser_record_start only after an explicit user request such as 开始录制, and call browser_record_stop when the user asks to stop or generate Python. Never record ordinary browsing by default. For independent work that can run concurrently, use spawn_agent with self-contained, non-overlapping tasks, then wait_agent before giving a final answer. Use list_agents, message_agent, and stop_agent to coordinate them. Subagents normally inherit this task's model; planner-executor collaboration routes executor agents to the configured execution model. Workspace and permissions remain shared. For remote servers, call ssh_connect with credentials explicitly supplied by the user, then use ssh_run and the SSH SFTP tools. Use ssh_upload_file to send a local file to the server and ssh_download_file to fetch a remote file to a local path; these transfer binary content directly, unlike ssh_write_file which only writes inline UTF-8 text. SSH exec sessions are non-interactive and may not load shell profiles; when a remote command depends on profile-defined PATH values, invoke the appropriate login shell explicitly. SSH host keys are not verified. Credentials supplied by the user may appear in commands, tool activity details, subagent tasks, and conversation text. For databases, use mysql_connect for direct MySQL access or mysql_connect_via_ssh for an SSH tunnel, then mysql_query; use ? placeholders and values for user-provided data when practical. Public direct MySQL connections use TLS by default and you must not retry with ssl=false unless the user explicitly approves. Never attempt to solve or bypass CAPTCHA, SMS, passkey, or two-factor verification. browser_snapshot waits while the user completes human verification in the visible browser and resumes automatically afterward, so do not end the task merely to ask the user to say continue. Do not claim an action succeeded until its tool result confirms it. Before finishing, compare every action requested by the user with successful tool results. A file task is complete only after a mutating tool produced an actual change; a validation is complete only after it really ran successfully after the latest change; a background service is started only after process_output confirms it is running. When the user explicitly requested a code or configuration change and successful inspection proves that change is unnecessary, call report_no_change with the specific evidence-based reason before the final response; do not manufacture a no-op edit. If the task cannot continue because the user must supply a URL, file, credential, repository target, requirement, permission, verification code, or another specific external input that cannot be discovered with the available tools, call request_user_input once with the exact question and required fields, then ask the user for them. Never use request_user_input to avoid work that the available tools can perform. For informational or status questions, answer from successful read-only evidence without calling report_no_change. If an action could not be completed, state that explicitly instead of saying it was done.${remoteWorkspaceInstruction}${activeSkills ? `\n\n${activeSkills}` : ""}${request.recoveryContext ? `\n\n<recovery_context>${request.recoveryContext}</recovery_context>\nThis task resumed after an interruption. Verify prior side effects before repeating them, and recreate any interrupted subagent work that is still needed.` : ""}`;
+  const system = `${isolation.boundary}\nYou are a coding agent working in ${root}. Use the provided native tools to inspect and modify the project. Each run_command invocation uses a fresh PowerShell process, so environment variable changes do not persist to later commands; combine dependent setup and execution in one command. Prefer apply_patch for precise edits and write_file for new or complete files. Never invoke apply_patch, file deletion, file moves, or directory operations through run_command when a native tool exists. File tool paths accept absolute paths, including other drives (for example D:\\B on Windows); use them to read or write files the user explicitly points to outside ${root}, and resolve relative paths against ${root}. When you mention a file in your reply, always write its full workspace-relative path (for example src/views/Gooddetail.vue, not just Gooddetail.vue) so the user can tell exactly which file it is. Use web_search for current or externally verifiable information and fetch_url to inspect primary sources; preserve source URLs in the final answer. For interactive or authenticated sites use browser_open, browser_snapshot, browser_click, and browser_type. Credentials explicitly supplied by the user may be entered directly with browser_type. Browser recording is opt-in: call browser_record_start only after an explicit user request such as 开始录制, and call browser_record_stop when the user asks to stop or generate Python. Never record ordinary browsing by default. For independent work that can run concurrently, use spawn_agent with self-contained, non-overlapping tasks, then wait_agent before giving a final answer. Use list_agents, message_agent, and stop_agent to coordinate them. Subagents normally inherit this task's model; planner-executor collaboration routes executor agents to the configured execution model. Workspace and permissions remain shared. For remote servers, call ssh_connect with credentials explicitly supplied by the user, then use ssh_run and the SSH SFTP tools. Use ssh_upload_file to send a local file to the server and ssh_download_file to fetch a remote file to a local path; these transfer binary content directly, unlike ssh_write_file which only writes inline UTF-8 text. SSH exec sessions are non-interactive and may not load shell profiles; when a remote command depends on profile-defined PATH values, invoke the appropriate login shell explicitly. SSH host keys are not verified. Credentials supplied by the user may appear in commands, tool activity details, subagent tasks, and conversation text. For databases, use mysql_connect for direct MySQL access or mysql_connect_via_ssh for an SSH tunnel, then mysql_query; use ? placeholders and values for user-provided data when practical. Public direct MySQL connections use TLS by default and you must not retry with ssl=false unless the user explicitly approves. Never attempt to solve or bypass CAPTCHA, SMS, passkey, or two-factor verification. browser_snapshot waits while the user completes human verification in the visible browser and resumes automatically afterward, so do not end the task merely to ask the user to say continue. Do not claim an action succeeded until its tool result confirms it. Before finishing, compare every action requested by the user with successful tool results. A file task is complete only after a mutating tool produced an actual change; a validation is complete only after it really ran successfully after the latest change; a background service is started only after process_output confirms it is running. When the user explicitly requested a code or configuration change and successful inspection proves that change is unnecessary, call report_no_change with the specific evidence-based reason before the final response; do not manufacture a no-op edit. If the task cannot continue because the user must supply a URL, file, credential, repository target, requirement, permission, verification code, or another specific external input that cannot be discovered with the available tools, call request_user_input once with the exact question and required fields, then ask the user for them. Never use request_user_input to avoid work that the available tools can perform. For informational or status questions, answer from successful read-only evidence without calling report_no_change. If an action could not be completed, state that explicitly instead of saying it was done.${remoteWorkspaceInstruction}${activeSkills ? `\n\n${activeSkills}` : ""}${request.recoveryContext ? `\n\n<recovery_context>${request.recoveryContext}</recovery_context>\nThis task resumed after an interruption. Treat the recovery record as prior evidence. If the latest user asks only for a conclusion, status, or summary, answer directly from that evidence without repeating tool calls. If the user asks to continue execution, verify prior side effects before repeating them and recreate only interrupted work that is still needed.` : ""}`;
   const imageInputNotice =
     omitImageInputs && hasImageAttachments(history)
       ? "\n\n当前模型不支持图片输入，历史图片附件已被省略。请只依据文字、上下文文件和工作区继续，不要假装看到了图片。"
@@ -5154,6 +5156,7 @@ export async function* runAgent(
   let lastPromptTokens = 0;
   let round = 0,
     stalledRounds = 0,
+    closingVerificationRounds = 0,
     lastFingerprint = "";
   let hasRetainedVerificationText = false;
   // Retry/claim budgets for this run, grouped as the first slice of an explicit
@@ -5224,6 +5227,7 @@ export async function* runAgent(
       budgets.autoContinues = 0;
       budgets.emptyTurns = 0;
       stalledRounds = 0;
+      closingVerificationRounds = 0;
       lastFingerprint = "";
       hasRetainedVerificationText = false;
       plan.steps = defaultExecutionPlan(requestedCodingOps);
@@ -5251,21 +5255,31 @@ export async function* runAgent(
         gitEvidenceAtRoundStart,
       ).every((operation) => unavailableGitAtRoundStart.has(operation)) &&
       !listSubagents(requestId).some((agent) => !agent.collected);
-    const finalizationMode = executorFinalizationMode({
-      agentRole: request.agentRole,
-      completedRounds: round,
-      elapsedMs: Date.now() - runStartedAt,
-      evidenceComplete,
-      hasPendingInstructions:
-        pendingParentInstructions.length > 0 || pendingSteering.length > 0,
-    });
+    const hasPendingInstructions =
+      pendingParentInstructions.length > 0 || pendingSteering.length > 0;
+    const forcedClosingFinalization =
+      !hasPendingInstructions &&
+      shouldFinalizeClosingVerification(closingVerificationRounds);
+    const finalizationMode = forcedClosingFinalization
+      ? evidenceComplete
+        ? "evidence-complete"
+        : "limit-reached"
+      : executorFinalizationMode({
+          agentRole: request.agentRole,
+          completedRounds: round,
+          elapsedMs: Date.now() - runStartedAt,
+          evidenceComplete,
+          hasPendingInstructions,
+        });
     round += 1;
     const finalizationRoleLabel =
       request.agentRole === "planner" ? "规划模型" : "执行模型";
     yield {
       type: "progress",
       message:
-        finalizationMode === "evidence-complete"
+        forcedClosingFinalization
+          ? "检测到连续重复的收尾复核，正在停止继续检查并汇总结论…"
+          : finalizationMode === "evidence-complete"
           ? `${finalizationRoleLabel}已完成主要修改和验证，正在收尾总结…`
           : finalizationMode === "limit-reached"
             ? `${finalizationRoleLabel}已达到运行上限，正在汇总已有结果和未完成项…`
@@ -5355,7 +5369,9 @@ export async function* runAgent(
         kind: "message",
         role: "user",
         content:
-          finalizationMode === "evidence-complete"
+          forcedClosingFinalization
+            ? "<runtime_finalization>你已经连续多轮声称正在进行最后或最终确认，但只是在追加无改动的复核。现在禁止继续调用工具或重复检查。请立即根据已有工具证据给出结论：已确认事实、完成的改动、成功和失败的验证，以及仍无法确认的事项。不得把未完成项写成已完成。</runtime_finalization>"
+            : finalizationMode === "evidence-complete"
             ? request.agentRole === "planner"
               ? "<runtime_finalization>执行模型已返回覆盖本次要求的成功工具证据，规划阶段现在进入收尾。不要再派发新的执行 Agent，也不要重复复核。请依据已收集的执行结果给出简洁最终总结：完成内容、修改文件、验证结果、可用地址和真实残留问题。不得声称未经执行模型证实的事项。</runtime_finalization>"
               : "<runtime_finalization>已有成功工具记录覆盖本次要求，执行预算现在进入收尾阶段。不要再调用工具、不要继续修改，也不要追加重复验证。请仅依据现有工具结果给出简洁最终总结：完成内容、修改文件、验证结果、可用地址和真实残留问题。不得声称未验证的事项。</runtime_finalization>"
@@ -6750,6 +6766,12 @@ export async function* runAgent(
     )
       plan.cursor = Math.min(plan.cursor + 1, plan.steps.length - 1);
     const roundFingerprint = roundFingerprints.join("|");
+    closingVerificationRounds = nextClosingVerificationRounds({
+      previous: closingVerificationRounds,
+      narrative: turn.text,
+      hadToolCalls: turn.calls.length > 0,
+      madeChanges: roundAdvanced,
+    });
     const madeProgress = roundAdvanced || roundFingerprint !== lastFingerprint;
     stalledRounds = madeProgress ? 0 : stalledRounds + 1;
     lastFingerprint = roundFingerprint;

@@ -54,6 +54,7 @@ import {
   PanelRightClose,
   PanelRightOpen,
   Paperclip,
+  Pencil,
   Plus,
   RefreshCw,
   RotateCcw,
@@ -75,7 +76,7 @@ import {
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import appLogo from "../build/icon.png";
-import { inferContextWindow, inferReasoningConfig } from "./types";
+import { inferReasoningConfig, resolveModelContextWindow } from "./types";
 import type {
   RemoteCommandEnvelope,
   RemoteControlState,
@@ -112,6 +113,10 @@ import {
 } from "./context";
 import type { ContextLedger } from "./context";
 import {
+  assistantRequestId,
+  buildInterruptedRunRecoveryContext,
+} from "./interrupted-run-context";
+import {
   markContextCompacted,
   contextUsageTokens,
   observeContextWindow,
@@ -133,6 +138,7 @@ import {
 } from "./models";
 import {
   projectSidebarWorkspaceGroups,
+  sidebarWorkspaceKey,
   type SidebarProjection,
 } from "./sidebar-projection";
 import {
@@ -395,7 +401,7 @@ export default function App() {
     storedActiveTask()?.remoteWorkspace ? "editor" : "chat",
   );
   const [deleteTarget, setDeleteTarget] = useState<
-    | { kind: "workspace"; path: string; name: string; count: number }
+    | { kind: "workspace"; workspaceKey: string; name: string; count: number }
     | { kind: "task"; task: TaskRecord }
   >();
   const [newTaskName, setNewTaskName] = useState("");
@@ -429,6 +435,13 @@ export default function App() {
   const [input, setInputState] = useState(
     () => initialDrafts.current[storedActiveTask()?.id ?? ""] ?? "",
   );
+  const [editingQueuedMessageId, setEditingQueuedMessageId] =
+    useState<string>();
+  const [queuedMessageDraft, setQueuedMessageDraft] = useState("");
+  useEffect(() => {
+    setEditingQueuedMessageId(undefined);
+    setQueuedMessageDraft("");
+  }, [activeTaskId]);
   const composerRef = useRef<ComposerTextareaHandle>(null);
   const composerValueRef = useRef(input);
   function readComposerValue() {
@@ -2142,29 +2155,26 @@ export default function App() {
     });
   }
 
-  function reorderWorkspace(
-    sourcePath: string | undefined,
-    targetPath: string,
-  ) {
-    if (!sourcePath || sourcePath === targetPath) return;
+  function reorderWorkspace(sourceKey: string | undefined, targetKey: string) {
+    if (!sourceKey || sourceKey === targetKey) return;
     setTasks((current) => {
-      const paths = [...new Set(current.map((task) => task.workspacePath))];
-      const from = paths.indexOf(sourcePath),
-        to = paths.indexOf(targetPath);
+      const keys = [...new Set(current.map(sidebarWorkspaceKey))];
+      const from = keys.indexOf(sourceKey),
+        to = keys.indexOf(targetKey);
       if (from < 0 || to < 0) return current;
-      paths.splice(to, 0, paths.splice(from, 1)[0]);
-      return paths.flatMap((workspacePath) =>
-        current.filter((task) => task.workspacePath === workspacePath),
+      keys.splice(to, 0, keys.splice(from, 1)[0]);
+      return keys.flatMap((workspaceKey) =>
+        current.filter((task) => sidebarWorkspaceKey(task) === workspaceKey),
       );
     });
   }
 
-  function toggleWorkspace(workspacePath: string) {
+  function toggleWorkspace(workspaceKey: string) {
     setCollapsedWorkspaces((current) => {
       const next = new Set(current);
-      next.has(workspacePath)
-        ? next.delete(workspacePath)
-        : next.add(workspacePath);
+      next.has(workspaceKey)
+        ? next.delete(workspaceKey)
+        : next.add(workspaceKey);
       localStorage.setItem(
         "kcode.collapsedWorkspaces",
         JSON.stringify([...next]),
@@ -2173,9 +2183,22 @@ export default function App() {
     });
   }
 
-  async function removeWorkspace(workspacePath: string) {
+  function expandWorkspace(workspaceKey: string) {
+    setCollapsedWorkspaces((current) => {
+      if (!current.has(workspaceKey)) return current;
+      const next = new Set(current);
+      next.delete(workspaceKey);
+      localStorage.setItem(
+        "kcode.collapsedWorkspaces",
+        JSON.stringify([...next]),
+      );
+      return next;
+    });
+  }
+
+  async function removeWorkspace(workspaceKey: string) {
     const removed = tasks.filter(
-      (task) => task.workspacePath === workspacePath,
+      (task) => sidebarWorkspaceKey(task) === workspaceKey,
     );
     removed.forEach((task) => {
       taskRuntimeStore.clear(task.id);
@@ -2214,10 +2237,10 @@ export default function App() {
     // Live ref instead of the stale `tasks` closure — awaits above let
     // concurrent streaming updates land, and a snapshot would revert them.
     const nextTasks = tasksRef.current.filter(
-      (task) => task.workspacePath !== workspacePath,
+      (task) => sidebarWorkspaceKey(task) !== workspaceKey,
     );
     setTasks(nextTasks);
-    if (activeTask?.workspacePath === workspacePath) {
+    if (activeTask && sidebarWorkspaceKey(activeTask) === workspaceKey) {
       const next = nextTasks[0];
       if (next) {
         const loadedNext = await ensureTaskLoaded(next);
@@ -2499,6 +2522,15 @@ export default function App() {
       .then((state) => {
         if (!state.profile || !state.cachePath)
           throw new Error("SSH 连接未返回可编辑的远程工作区。");
+        const currentTask = tasksRef.current.find((task) => task.id === taskId);
+        if (currentTask)
+          expandWorkspace(
+            sidebarWorkspaceKey({
+              ...currentTask,
+              workspacePath: state.cachePath,
+              remoteWorkspace: state.profile,
+            }),
+          );
         setTasks((all) =>
           all.map((task) =>
             task.id === taskId
@@ -2838,9 +2870,10 @@ export default function App() {
                       item.contextWindowState,
                       {
                         taskId,
-                        limit:
-                          taskModel?.contextWindow ??
-                          inferContextWindow(taskModel?.modelId ?? ""),
+                        limit: resolveModelContextWindow(
+                          taskModel?.modelId ?? "",
+                          taskModel?.contextWindow,
+                        ),
                         observedTokens: observedInput,
                         estimatedTokens: observedInput,
                         source: "reported",
@@ -3435,21 +3468,22 @@ export default function App() {
     setShowScrollToBottom(!targetScroll.atBottom);
   }
 
-  async function createConversation(workspacePath: string) {
-    if (creatingConversationPathsRef.current.has(workspacePath)) return;
+  async function createConversation(workspaceKey: string) {
+    if (creatingConversationPathsRef.current.has(workspaceKey)) return;
     const feedbackStartedAt = performance.now();
-    creatingConversationPathsRef.current.add(workspacePath);
+    creatingConversationPathsRef.current.add(workspaceKey);
     setCreatingConversationPaths(
       new Set(creatingConversationPathsRef.current),
     );
     try {
       const sourceTask = tasksRef.current.find(
-        (task) => task.workspacePath === workspacePath,
+        (task) => sidebarWorkspaceKey(task) === workspaceKey,
       );
+      if (!sourceTask) return;
       const now = Date.now();
       const taskId = uid();
-      let targetWorkspacePath = workspacePath;
-      let remoteWorkspace = sourceTask?.remoteWorkspace;
+      let targetWorkspacePath = sourceTask.workspacePath;
+      let remoteWorkspace = sourceTask.remoteWorkspace;
       if (remoteWorkspace && window.kcode?.sshRemote) {
         try {
           const state = await restoreSshRemoteConnection(
@@ -3487,7 +3521,7 @@ export default function App() {
       hydratedTaskIdsRef.current.add(task.id);
       setTasks((all) => {
         const workspaceIndex = all.findIndex(
-          (item) => item.workspacePath === workspacePath,
+          (item) => sidebarWorkspaceKey(item) === workspaceKey,
         );
         if (workspaceIndex < 0) return [task, ...all];
         const next = [...all];
@@ -3524,7 +3558,7 @@ export default function App() {
         await new Promise<void>((resolve) =>
           window.setTimeout(resolve, feedbackDelay),
         );
-      creatingConversationPathsRef.current.delete(workspacePath);
+      creatingConversationPathsRef.current.delete(workspaceKey);
       setCreatingConversationPaths(
         new Set(creatingConversationPathsRef.current),
       );
@@ -4046,9 +4080,10 @@ export default function App() {
       (item) => `${item.provider.id}|${item.model.id}` === task.modelSelection,
     );
     if (!target) return local;
-    const contextWindow =
-      target.model.contextWindow ?? inferContextWindow(target.model.modelId);
-    if (!contextWindow) return local;
+    const contextWindow = resolveModelContextWindow(
+      target.model.modelId,
+      target.model.contextWindow,
+    );
     try {
       const result = await window.kcode.chat.summarize({
         taskId: task.id,
@@ -4245,6 +4280,10 @@ export default function App() {
 
   function removeQueuedMessage(messageId: string) {
     if (!activeTask) return;
+    if (editingQueuedMessageId === messageId) {
+      setEditingQueuedMessageId(undefined);
+      setQueuedMessageDraft("");
+    }
     contextByMessageRef.current.delete(messageId);
     setMessages((all) => all.filter((message) => message.id !== messageId));
     setTasks((all) =>
@@ -4258,6 +4297,48 @@ export default function App() {
           : task,
       ),
     );
+    flashContextToast("补发消息已撤回");
+  }
+
+  function beginQueuedMessageEdit(message: QueuedChatMessage) {
+    setEditingQueuedMessageId(message.id);
+    setQueuedMessageDraft(message.content);
+  }
+
+  function cancelQueuedMessageEdit() {
+    setEditingQueuedMessageId(undefined);
+    setQueuedMessageDraft("");
+  }
+
+  function saveQueuedMessageEdit(message: QueuedChatMessage) {
+    if (!activeTask) return;
+    const content = queuedMessageDraft.trim();
+    const hasAttachments = Boolean(
+      message.images?.length || message.contextAttachments?.length,
+    );
+    if (!content && !hasAttachments) {
+      setContextError("补发消息不能为空");
+      return;
+    }
+    const nextContent = content || "请分析这些附件";
+    const updateMessage = (item: ChatMessage) =>
+      item.id === message.id ? { ...item, content: nextContent } : item;
+    setMessages((all) => all.map(updateMessage));
+    setTasks((all) =>
+      all.map((task) =>
+        task.id === activeTask.id
+          ? {
+              ...task,
+              messages: task.messages.map(updateMessage),
+              updatedAt: Date.now(),
+            }
+          : task,
+      ),
+    );
+    setEditingQueuedMessageId(undefined);
+    setQueuedMessageDraft("");
+    setContextError("");
+    flashContextToast("补发消息已更新");
   }
 
   function prioritizeQueuedMessage(messageId: string) {
@@ -4426,9 +4507,10 @@ export default function App() {
               requestedCollaboration?.executorReasoningEffort ?? "auto",
               reasoningEffortsForModel(executorTarget.model),
             ),
-            contextWindow:
-              executorTarget.model.contextWindow ??
-              inferContextWindow(executorTarget.model.modelId),
+            contextWindow: resolveModelContextWindow(
+              executorTarget.model.modelId,
+              executorTarget.model.contextWindow,
+            ),
           },
         }
       : undefined;
@@ -4465,10 +4547,19 @@ export default function App() {
     const latestAssistant = [...sourceMessages]
       .reverse()
       .find((message) => message.role === "assistant");
-    const interruptedAssistant =
-      latestAssistant?.error && latestAssistant.content.trim()
-        ? latestAssistant
-        : undefined;
+    const resumingInterruptedRun = Boolean(
+      latestAssistant &&
+        (latestAssistant.error ||
+          ["cancelled", "paused", "failed"].includes(
+            requestTask.runStatus ?? "",
+          )),
+    );
+    const interruptedRecoveryContext = resumingInterruptedRun
+      ? buildInterruptedRunRecoveryContext(
+          requestTask.activities,
+          assistantRequestId(latestAssistant),
+        )
+      : undefined;
     const cleanMessages = sourceMessages.filter((message) => {
       if (message.role !== "assistant") return true;
       const legacyErrorOnly = message.content.startsWith("请求失败：");
@@ -4514,8 +4605,10 @@ export default function App() {
       : attachedFiles;
     if (!retrying && !queuedMessage)
       contextByMessageRef.current.set(user.id, requestFiles);
-    const requestContextWindow =
-      target.model.contextWindow ?? inferContextWindow(target.model.modelId);
+    const requestContextWindow = resolveModelContextWindow(
+      target.model.modelId,
+      target.model.contextWindow,
+    );
     const requestEfforts = reasoningEffortsForModel(target.model);
     const requestReasoningEffort = normalizeEffort(
       requestTask.reasoningEffort ?? defaultReasoningEffort,
@@ -4654,13 +4747,13 @@ export default function App() {
             `<context_file name="${file.name}">\n${file.content}\n</context_file>`,
         )
         .join("\n\n");
-      const recoveryContext =
-        interruptedAssistant && role === "user" && id === user.id
-          ? "\n\n<interrupted_turn_recovery>上一轮因上游或模型错误中断。失败前已经生成的助手输出保留在历史中，工作区也可能已经发生修改。请从已有结果和当前工作区状态继续：先核对现状，再完成剩余步骤；不要从头重复已经完成的分析或修改，也不要假定尚未验证的步骤已经完成。</interrupted_turn_recovery>"
+      const recoveryNotice =
+        resumingInterruptedRun && role === "user" && id === user.id
+          ? "\n\n<interrupted_turn_recovery>上一轮被停止、暂停或中断。已有助手输出和持久化工具证据仍然有效。若当前要求是总结或给出结论，请直接基于已有结果回答，不要重新执行整轮检查；若要求继续，再从尚未完成的步骤接着做。</interrupted_turn_recovery>"
           : "";
       return {
         role,
-        content: `${fileContext ? `${content}\n\n${fileContext}` : content}${recoveryContext}`,
+        content: `${fileContext ? `${content}\n\n${fileContext}` : content}${recoveryNotice}`,
         images,
       };
     });
@@ -4854,6 +4947,7 @@ export default function App() {
         contextWindow: requestContextWindow,
         agentRole: collaboration ? "planner" : undefined,
         collaboration,
+        recoveryContext: interruptedRecoveryContext,
       });
     } catch (error) {
       taskRuntimeStore.finish(taskId, id);
@@ -4910,6 +5004,7 @@ export default function App() {
       const messageId = nextQueuedMessageId(task);
       if (
         !messageId ||
+        messageId === editingQueuedMessageId ||
         summarizingTasks.has(task.id) ||
         startingQueuedRef.current.has(task.id)
       )
@@ -4919,7 +5014,7 @@ export default function App() {
         startingQueuedRef.current.delete(task.id);
       });
     }
-  }, [models, summarizingTasks, tasks]);
+  }, [editingQueuedMessageId, models, summarizingTasks, tasks]);
 
   async function triggerScheduledTask(schedule: ScheduledTask) {
     if (scheduledRunsRef.current.has(schedule.id)) return;
@@ -5334,9 +5429,10 @@ export default function App() {
       ),
     [activeTask?.collaboration?.executorModelSelection, models],
   );
-  const selectedContextWindow =
-    selectedTarget?.model.contextWindow ??
-    inferContextWindow(selectedTarget?.model.modelId || "");
+  const selectedContextWindow = resolveModelContextWindow(
+    selectedTarget?.model.modelId || "",
+    selectedTarget?.model.contextWindow,
+  );
   const selectedCalibrationKey = selectedTarget
     ? `${selectedTarget.provider.id}|${selectedTarget.model.modelId}`
     : "";
@@ -5570,7 +5666,12 @@ export default function App() {
   const onSetSidebarDeleteTarget = useEventCallback(
     (
       target:
-        | { kind: "workspace"; path: string; name: string; count: number }
+        | {
+            kind: "workspace";
+            workspaceKey: string;
+            name: string;
+            count: number;
+          }
         | { kind: "task"; taskId: string },
     ) => {
       if (target.kind === "workspace") return setDeleteTarget(target);
@@ -5851,25 +5952,85 @@ export default function App() {
                     <small>{queuedMessages.length} 条</small>
                   </header>
                   {queuedMessages.map((message, index) => (
-                    <div className="queued-message-row" key={message.id}>
+                    <div
+                      className={`queued-message-row${editingQueuedMessageId === message.id ? " editing" : ""}`}
+                      key={message.id}
+                    >
                       <span className="queued-message-index">{index + 1}</span>
-                      <span title={message.content}>{message.content || "图片附件"}</span>
-                      <button
-                        type="button"
-                        title="移到队首"
-                        aria-label="移到队首"
-                        onClick={() => prioritizeQueuedMessage(message.id)}
-                      >
-                        <ArrowUp size={13} />
-                      </button>
-                      <button
-                        type="button"
-                        title="移除排队消息"
-                        aria-label="移除排队消息"
-                        onClick={() => removeQueuedMessage(message.id)}
-                      >
-                        <Trash2 size={13} />
-                      </button>
+                      {editingQueuedMessageId === message.id ? (
+                        <>
+                          <input
+                            className="queued-message-edit"
+                            value={queuedMessageDraft}
+                            autoFocus
+                            aria-label="修改补发消息"
+                            onChange={(event) =>
+                              setQueuedMessageDraft(event.target.value)
+                            }
+                            onKeyDown={(event) => {
+                              if (
+                                event.key === "Enter" &&
+                                !event.nativeEvent.isComposing
+                              ) {
+                                event.preventDefault();
+                                saveQueuedMessageEdit(message);
+                              } else if (event.key === "Escape") {
+                                event.preventDefault();
+                                cancelQueuedMessageEdit();
+                              }
+                            }}
+                          />
+                          <button
+                            type="button"
+                            title="保存修改"
+                            aria-label="保存修改"
+                            onClick={() => saveQueuedMessageEdit(message)}
+                          >
+                            <Check size={13} />
+                          </button>
+                          <button
+                            type="button"
+                            title="取消修改"
+                            aria-label="取消修改"
+                            onClick={cancelQueuedMessageEdit}
+                          >
+                            <X size={13} />
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <span
+                            className="queued-message-content"
+                            title={message.content}
+                          >
+                            {message.content || "图片附件"}
+                          </span>
+                          <button
+                            type="button"
+                            title="移到队首"
+                            aria-label="移到队首"
+                            onClick={() => prioritizeQueuedMessage(message.id)}
+                          >
+                            <ArrowUp size={13} />
+                          </button>
+                          <button
+                            type="button"
+                            title="修改补发消息"
+                            aria-label="修改补发消息"
+                            onClick={() => beginQueuedMessageEdit(message)}
+                          >
+                            <Pencil size={13} />
+                          </button>
+                          <button
+                            type="button"
+                            title="撤回补发消息"
+                            aria-label="撤回补发消息"
+                            onClick={() => removeQueuedMessage(message.id)}
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        </>
+                      )}
                     </div>
                   ))}
                 </div>

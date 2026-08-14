@@ -1,6 +1,6 @@
 import {
-  inferContextWindow,
   inferReasoningConfig,
+  resolveModelContextWindow,
   type ModelConfig,
   type Protocol,
   type ProviderConfig,
@@ -128,7 +128,7 @@ function mapModels(
       contextWindow:
         Number.isFinite(inputLimit) && inputLimit > 0
           ? inputLimit
-          : inferContextWindow(modelId),
+          : resolveModelContextWindow(modelId),
       ...inferred,
     });
   }

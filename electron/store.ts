@@ -3,6 +3,7 @@ import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   inferContextWindow,
+  resolveModelContextWindow,
   type ModelConfig,
   type ProviderConfig,
   type ProviderProfile,
@@ -129,12 +130,20 @@ export async function listProviders() {
     ...provider,
     models: provider.models.map((model) => {
       const inferred = inferContextWindow(model.modelId);
-      return model.contextWindow === 128_000 &&
+      const configured =
+        model.contextWindow === 128_000 &&
         inferred &&
         inferred !== 128_000 &&
         /^(glm-5\.1|glm-5\.2|deepseek-v4-(?:pro|flash))$/i.test(model.modelId)
-        ? { ...model, contextWindow: inferred }
-        : model;
+          ? inferred
+          : model.contextWindow;
+      const contextWindow = resolveModelContextWindow(
+        model.modelId,
+        configured,
+      );
+      return contextWindow === model.contextWindow
+        ? model
+        : { ...model, contextWindow };
     }),
   }));
   if (JSON.stringify(migrated) !== JSON.stringify(stored))
@@ -159,7 +168,17 @@ export async function saveProvider(provider: ProviderConfig, apiKey?: string) {
     : endpointChanged
       ? undefined
       : previous?.encryptedApiKey;
-  const stored: StoredProvider = { ...provider, encryptedApiKey };
+  const stored: StoredProvider = {
+    ...provider,
+    models: provider.models.map((model) => ({
+      ...model,
+      contextWindow: resolveModelContextWindow(
+        model.modelId,
+        model.contextWindow,
+      ),
+    })),
+    encryptedApiKey,
+  };
   delete (stored as Partial<ProviderConfig>).hasApiKey;
   const next = [...all];
   if (previousIndex >= 0) next[previousIndex] = stored;

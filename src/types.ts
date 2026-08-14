@@ -273,6 +273,8 @@ export function inferReasoningConfig(
   return { reasoningMode: "none", reasoningEfforts: ["auto"] };
 }
 
+export const DEFAULT_MODEL_CONTEXT_WINDOW = 2_000_000;
+
 export function inferContextWindow(modelId: string): number | undefined {
   const id = modelId.toLowerCase();
   // Keep this list model-specific. Custom provider IDs often resemble an
@@ -302,6 +304,19 @@ export function inferContextWindow(modelId: string): number | undefined {
   if (/^minimax-m3(?:-|$)/.test(id)) return 1_000_000;
   if (/^minimax-m2(?:$|\.(?:1|5|7)(?:-highspeed)?$)/.test(id)) return 204_800;
   return undefined;
+}
+
+export function resolveModelContextWindow(
+  modelId: string,
+  configured?: number,
+) {
+  if (
+    typeof configured === "number" &&
+    Number.isSafeInteger(configured) &&
+    configured > 0
+  )
+    return configured;
+  return inferContextWindow(modelId) ?? DEFAULT_MODEL_CONTEXT_WINDOW;
 }
 
 export type ProviderConfig = {

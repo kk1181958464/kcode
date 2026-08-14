@@ -4,6 +4,7 @@ import { initialTask } from "../src/models";
 import {
   projectSidebarWorkspaceGroups,
   sidebarTaskRenderKey,
+  sidebarWorkspaceKey,
 } from "../src/sidebar-projection";
 
 function task(id: string, name: string, workspacePath: string) {
@@ -57,7 +58,7 @@ test("publishes a new projection for sidebar-visible status changes", () => {
   assert.equal(next.workspaceGroups[0].conversations[0].runStatus, "running");
 });
 
-test("changes the virtual row key when a queued request replaces the prior run", () => {
+test("keeps the virtual row key stable across runtime status changes", () => {
   const base = task("task-a", "对话 A", "D:\\project\\alpha");
   const firstRun = {
     ...base,
@@ -75,14 +76,8 @@ test("changes the virtual row key when a queued request replaces the prior run",
     runStatus: "running" as const,
   };
 
-  assert.notEqual(
-    sidebarTaskRenderKey(firstRun),
-    sidebarTaskRenderKey(finished),
-  );
-  assert.notEqual(
-    sidebarTaskRenderKey(finished),
-    sidebarTaskRenderKey(secondRun),
-  );
+  assert.equal(sidebarTaskRenderKey(firstRun), sidebarTaskRenderKey(finished));
+  assert.equal(sidebarTaskRenderKey(finished), sidebarTaskRenderKey(secondRun));
 });
 
 test("filters cached sidebar metadata without rebuilding task records", () => {
@@ -131,6 +126,77 @@ test("groups SSH Remote tasks by profile without replacing the project name", ()
   assert.equal(projection.workspaceGroups[0].conversations.length, 2);
 });
 
+test("keeps different project roots on one SSH profile in separate groups", () => {
+  const remoteWorkspace = {
+    id: "profile-a",
+    name: "生产服务器",
+    host: "203.0.113.8",
+    port: 22,
+    username: "deploy",
+    rootPath: "/srv/app-a",
+    authType: "private-key" as const,
+    remembered: true,
+  };
+  const tasks = [
+    {
+      ...task("task-a", "项目 A", "C:\\cache\\profile-a"),
+      workspaceName: "项目 A",
+      remoteWorkspace,
+    },
+    {
+      ...task("task-b", "项目 B", "C:\\cache\\profile-a"),
+      workspaceName: "项目 B",
+      remoteWorkspace: { ...remoteWorkspace, rootPath: "/srv/app-b" },
+    },
+  ];
+  const projection = projectSidebarWorkspaceGroups(tasks, "", false);
+
+  assert.equal(projection.workspaceGroups.length, 2);
+  assert.notEqual(
+    projection.workspaceGroups[0].key,
+    projection.workspaceGroups[1].key,
+  );
+  assert.deepEqual(
+    projection.workspaceGroups.map((group) => group.name),
+    ["项目 A", "项目 B"],
+  );
+});
+
+test("does not absorb a newly adopted task into another named SSH project", () => {
+  const remoteWorkspace = {
+    id: "profile-a",
+    name: "root@203.0.113.8",
+    host: "203.0.113.8",
+    port: 22,
+    username: "root",
+    rootPath: "/srv/shared",
+    authType: "private-key" as const,
+    remembered: true,
+  };
+  const projection = projectSidebarWorkspaceGroups(
+    [
+      {
+        ...task("task-a", "旧任务", "C:\\cache\\profile-a"),
+        workspaceName: "已有项目",
+        remoteWorkspace,
+      },
+      {
+        ...task("task-b", "快乐森林", "C:\\cache\\profile-a"),
+        workspaceName: "快乐森林",
+        remoteWorkspace,
+      },
+    ],
+    "",
+    false,
+  );
+
+  assert.equal(projection.workspaceGroups.length, 2);
+  assert.deepEqual(
+    projection.workspaceGroups.map((group) => group.name),
+    ["已有项目", "快乐森林"],
+  );
+});
+
 test("recovers a legacy SSH workspace label from its task name", () => {
   const remoteWorkspace = {
     id: "profile-a",
@@ -154,4 +220,12 @@ test("recovers a legacy SSH workspace label from its task name", () => {
   );
 
   assert.equal(projection.workspaceGroups[0].name, "注册机");
+  assert.equal(
+    sidebarWorkspaceKey(projection.workspaceGroups[0].conversations[0]),
+    sidebarWorkspaceKey({
+      ...task("task-b", "新对话", "C:\\cache\\profile-a"),
+      workspaceName: "注册机",
+      remoteWorkspace,
+    }),
+  );
 });

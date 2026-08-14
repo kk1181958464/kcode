@@ -7,7 +7,7 @@ interface PendingFolder {
 }
 
 type DeleteTarget =
-  | { kind: "workspace"; path: string; name: string; count: number }
+  | { kind: "workspace"; workspaceKey: string; name: string; count: number }
   | { kind: "task"; task: TaskRecord };
 
 export interface NewTaskDialogProps {
@@ -139,7 +139,7 @@ export function AssignFolderDialog({
 export interface DeleteDialogProps {
   deleteTarget: DeleteTarget;
   onClose(): void;
-  removeWorkspace(path: string): Promise<void>;
+  removeWorkspace(workspaceKey: string): Promise<void>;
   removeTask(task: TaskRecord): Promise<void>;
 }
 
@@ -198,7 +198,7 @@ export function DeleteDialog({
             onClick={() => {
               onClose();
               if (deleteTarget.kind === "workspace")
-                void removeWorkspace(deleteTarget.path);
+                void removeWorkspace(deleteTarget.workspaceKey);
               else void removeTask(deleteTarget.task);
             }}
           >

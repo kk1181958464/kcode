@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  CLOSING_VERIFICATION_ROUND_LIMIT,
   activityExecutionNarrative,
   dedupeExecutionNarrative,
   executionNarrativePreview,
+  isClosingVerificationNarrative,
   isExecutionContinuationNarrative,
+  nextClosingVerificationRounds,
   nextExecutionNarrative,
   normalizeExecutionNarrative,
+  shouldFinalizeClosingVerification,
 } from "../src/execution-narrative";
 import type { AgentActivity } from "../src/types";
 
@@ -140,5 +144,55 @@ test("does not auto-continue completed or user-facing suggestions", () => {
   assert.equal(
     isExecutionContinuationNarrative("本次处理完成，测试与构建均已通过。"),
     false,
+  );
+});
+
+test("forces a conclusion after repeated no-change closing checks", () => {
+  assert.equal(
+    isClosingVerificationNarrative(
+      "我再做最后一次线上核对，随后直接给出最终结论。",
+    ),
+    true,
+  );
+  assert.equal(
+    isClosingVerificationNarrative(
+      "盘点结果已经明确，我再取一次当前线上模块快照。",
+    ),
+    true,
+  );
+  let rounds = nextClosingVerificationRounds({
+    previous: 0,
+    narrative: "最后一次确认模块状态。",
+    hadToolCalls: true,
+    madeChanges: false,
+  });
+  rounds = nextClosingVerificationRounds({
+    previous: rounds,
+    narrative: "最终复核数据库状态，结论以本次为准。",
+    hadToolCalls: true,
+    madeChanges: false,
+  });
+  assert.equal(rounds, CLOSING_VERIFICATION_ROUND_LIMIT);
+  assert.equal(shouldFinalizeClosingVerification(rounds), true);
+});
+
+test("resets closing-check detection after a real change or ordinary work", () => {
+  assert.equal(
+    nextClosingVerificationRounds({
+      previous: 1,
+      narrative: "最后确认修改结果。",
+      hadToolCalls: true,
+      madeChanges: true,
+    }),
+    0,
+  );
+  assert.equal(
+    nextClosingVerificationRounds({
+      previous: 1,
+      narrative: "继续读取另一个独立模块。",
+      hadToolCalls: true,
+      madeChanges: false,
+    }),
+    0,
   );
 });

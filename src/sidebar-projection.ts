@@ -9,7 +9,31 @@ export type SidebarProjection = {
 };
 
 export function sidebarTaskRenderKey(task: SidebarTask) {
-  return `task:${task.id}:${task.runningId ?? task.runStatus ?? "idle"}`;
+  return `task:${task.id}`;
+}
+
+type SidebarWorkspaceIdentity = Pick<
+  SidebarTask,
+  "name" | "workspaceName" | "workspacePath" | "remoteWorkspace"
+>;
+
+function normalizedRemoteRoot(value: string) {
+  const normalized = value.trim().replace(/\\/g, "/").replace(/\/+$/, "");
+  return normalized || ".";
+}
+
+/** Keep reused SSH connections separated by project root and workspace. */
+export function sidebarWorkspaceKey(task: SidebarWorkspaceIdentity) {
+  if (!task.remoteWorkspace) return task.workspacePath;
+  const workspaceLabel = task.workspaceName?.trim() || taskWorkspaceName(task);
+  return [
+    "ssh",
+    task.remoteWorkspace.id,
+    normalizedRemoteRoot(task.remoteWorkspace.rootPath),
+    workspaceLabel,
+  ]
+    .map(encodeURIComponent)
+    .join(":");
 }
 
 function sidebarFieldsMatch(task: TaskRecord, snapshot: SidebarTask) {
@@ -18,7 +42,7 @@ function sidebarFieldsMatch(task: TaskRecord, snapshot: SidebarTask) {
     task.name === snapshot.name &&
     task.workspaceName === snapshot.workspaceName &&
     task.workspacePath === snapshot.workspacePath &&
-    task.remoteWorkspace?.id === snapshot.remoteWorkspace?.id &&
+    sidebarWorkspaceKey(task) === sidebarWorkspaceKey(snapshot) &&
     Boolean(task.archived) === Boolean(snapshot.archived) &&
     task.runningId === snapshot.runningId &&
     task.runStatus === snapshot.runStatus
@@ -69,9 +93,7 @@ export function projectSidebarWorkspaceGroups(
       !`${task.name} ${task.workspacePath}`.toLocaleLowerCase().includes(query)
     )
       continue;
-    const workspaceKey = task.remoteWorkspace
-      ? `ssh://${task.remoteWorkspace.id}`
-      : task.workspacePath;
+    const workspaceKey = sidebarWorkspaceKey(task);
     const conversations = groups.get(workspaceKey);
     if (conversations) conversations.push(task);
     else groups.set(workspaceKey, [task]);
@@ -86,6 +108,7 @@ export function projectSidebarWorkspaceGroups(
         const remote = conversations[0]?.remoteWorkspace;
         const unassigned = workspaceKey === "" && !remote;
         return {
+          key: workspaceKey,
           workspacePath: conversations[0]?.workspacePath ?? "",
           name: unassigned
             ? "未分配工作区"

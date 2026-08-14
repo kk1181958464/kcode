@@ -111,6 +111,7 @@ export type SidebarTask = Pick<
 >;
 
 export type SidebarWorkspaceGroup = {
+  key: string;
   workspacePath: string;
   name: string;
   conversations: SidebarTask[];

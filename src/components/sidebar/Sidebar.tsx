@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Virtuoso } from "react-virtuoso";
+import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import {
   Archive,
   ArchiveRestore,
@@ -33,12 +33,12 @@ const virtuosoComponents = {
 
 function sidebarRowKey(_: number, row: SidebarRow) {
   return row.kind === "workspace"
-    ? `workspace:${row.group.workspacePath}`
+    ? `workspace:${row.group.key}`
     : sidebarTaskRenderKey(row.task);
 }
 
-function conversationWorkspacePath(group: SidebarWorkspaceGroup) {
-  return group.conversations[0]?.workspacePath ?? group.workspacePath;
+function conversationWorkspaceKey(group: SidebarWorkspaceGroup) {
+  return group.key;
 }
 
 export interface SidebarProps {
@@ -61,7 +61,12 @@ export interface SidebarProps {
   toggleTaskArchived(taskId: string): void;
   setDeleteTarget(
     target:
-      | { kind: "workspace"; path: string; name: string; count: number }
+      | {
+          kind: "workspace";
+          workspaceKey: string;
+          name: string;
+          count: number;
+        }
       | { kind: "task"; taskId: string },
   ): void;
   setContextError(message: string): void;
@@ -99,6 +104,7 @@ export const Sidebar = memo(function Sidebar({
   const [draggedWorkspace, setDraggedWorkspace] = useState<string>();
   const [workspaceDropTarget, setWorkspaceDropTarget] = useState<string>();
   const workspaceTreeRef = useRef<HTMLElement | null>(null);
+  const virtuosoRef = useRef<VirtuosoHandle>(null);
   const draggedTaskIdRef = useRef<string | undefined>(undefined);
   const draggedWorkspaceRef = useRef<string | undefined>(undefined);
   const pendingTaskDropTargetRef = useRef<string | undefined>(undefined);
@@ -109,12 +115,30 @@ export const Sidebar = memo(function Sidebar({
     const next: SidebarRow[] = [];
     for (const group of workspaceGroups) {
       next.push({ kind: "workspace", group });
-      if (!collapsedWorkspaces.has(group.workspacePath))
+      if (!collapsedWorkspaces.has(group.key))
         for (const task of group.conversations)
           next.push({ kind: "task", task });
     }
     return next;
   }, [collapsedWorkspaces, workspaceGroups]);
+  const activeWorkspaceKey = useMemo(
+    () =>
+      workspaceGroups.find((group) =>
+        group.conversations.some((task) => task.id === activeTaskId),
+      )?.key,
+    [activeTaskId, workspaceGroups],
+  );
+  useEffect(() => {
+    if (!activeTaskId) return;
+    const index = rows.findIndex(
+      (row) => row.kind === "task" && row.task.id === activeTaskId,
+    );
+    if (index < 0) return;
+    const frame = requestAnimationFrame(() =>
+      virtuosoRef.current?.scrollIntoView({ index, behavior: "auto" }),
+    );
+    return () => cancelAnimationFrame(frame);
+  }, [activeTaskId, activeWorkspaceKey]);
   const setWorkspaceTreeRef = useCallback(
     (element: HTMLElement | Window | null) => {
       workspaceTreeRef.current =
@@ -250,6 +274,7 @@ export const Sidebar = memo(function Sidebar({
         </button>
       </div>
       <Virtuoso
+        ref={virtuosoRef}
         className="workspace-tree"
         data={rows}
         fixedItemHeight={34}
@@ -265,17 +290,17 @@ export const Sidebar = memo(function Sidebar({
               <div className="workspace-flat-row workspace-unassigned">
                 <header
                   className="workspace-header"
-                  onClick={() => toggleWorkspace(row.group.workspacePath)}
+                  onClick={() => toggleWorkspace(row.group.key)}
                 >
                   <span
-                    className={`workspace-collapse ${collapsedWorkspaces.has(row.group.workspacePath) ? "collapsed" : ""}`}
+                    className={`workspace-collapse ${collapsedWorkspaces.has(row.group.key) ? "collapsed" : ""}`}
                     title={
-                      collapsedWorkspaces.has(row.group.workspacePath)
+                      collapsedWorkspaces.has(row.group.key)
                         ? "展开对话"
                         : "折叠对话"
                     }
                     aria-expanded={
-                      !collapsedWorkspaces.has(row.group.workspacePath)
+                      !collapsedWorkspaces.has(row.group.key)
                     }
                   >
                     <ChevronDown size={13} />
@@ -288,27 +313,27 @@ export const Sidebar = memo(function Sidebar({
               </div>
             ) : (
             <div
-              className={`workspace-flat-row ${draggedWorkspace === row.group.workspacePath ? "dragging" : ""} ${workspaceDropTarget === row.group.workspacePath && draggedWorkspace !== row.group.workspacePath ? "drop-target" : ""}`}
+              className={`workspace-flat-row ${draggedWorkspace === row.group.key ? "dragging" : ""} ${workspaceDropTarget === row.group.key && draggedWorkspace !== row.group.key ? "drop-target" : ""}`}
               draggable
               onDragStart={(event) => {
-                draggedWorkspaceRef.current = row.group.workspacePath;
-                setDraggedWorkspace(row.group.workspacePath);
+                draggedWorkspaceRef.current = row.group.key;
+                setDraggedWorkspace(row.group.key);
                 event.dataTransfer.effectAllowed = "move";
                 event.dataTransfer.setData(
                   "text/plain",
-                  row.group.workspacePath,
+                  row.group.key,
                 );
               }}
               onDragOver={(event) => {
                 if (!draggedWorkspaceRef.current) return;
                 event.preventDefault();
-                scheduleWorkspaceDropTarget(row.group.workspacePath);
+                scheduleWorkspaceDropTarget(row.group.key);
               }}
               onDrop={(event) => {
                 const sourcePath = draggedWorkspaceRef.current;
                 if (!sourcePath) return;
                 event.preventDefault();
-                reorderWorkspace(sourcePath, row.group.workspacePath);
+                reorderWorkspace(sourcePath, row.group.key);
                 finishWorkspaceDrag();
               }}
               onDragEnd={finishWorkspaceDrag}
@@ -316,7 +341,7 @@ export const Sidebar = memo(function Sidebar({
               <header
                 title={row.group.workspacePath}
                 className="workspace-header"
-                onClick={() => toggleWorkspace(row.group.workspacePath)}
+                onClick={() => toggleWorkspace(row.group.key)}
                 onContextMenu={(event) => {
                   event.preventDefault();
                   void window.kcode?.workspace
@@ -336,14 +361,14 @@ export const Sidebar = memo(function Sidebar({
                   <GripVertical size={13} />
                 </span>
                 <span
-                  className={`workspace-collapse ${collapsedWorkspaces.has(row.group.workspacePath) ? "collapsed" : ""}`}
+                  className={`workspace-collapse ${collapsedWorkspaces.has(row.group.key) ? "collapsed" : ""}`}
                   title={
-                    collapsedWorkspaces.has(row.group.workspacePath)
+                    collapsedWorkspaces.has(row.group.key)
                       ? "展开对话"
                       : "折叠对话"
                   }
                   aria-expanded={
-                    !collapsedWorkspaces.has(row.group.workspacePath)
+                    !collapsedWorkspaces.has(row.group.key)
                   }
                 >
                   <ChevronDown size={13} />
@@ -359,37 +384,37 @@ export const Sidebar = memo(function Sidebar({
                   type="button"
                   className={`workspace-create ${
                     creatingConversationPaths.has(
-                      conversationWorkspacePath(row.group),
+                      conversationWorkspaceKey(row.group),
                     )
                       ? "creating"
                       : ""
                   }`}
                   title={
                     creatingConversationPaths.has(
-                      conversationWorkspacePath(row.group),
+                      conversationWorkspaceKey(row.group),
                     )
                       ? `正在 ${row.group.name} 创建对话`
                       : `在 ${row.group.name} 新建对话`
                   }
                   aria-label={`在 ${row.group.name} 新建对话`}
                   aria-busy={creatingConversationPaths.has(
-                    conversationWorkspacePath(row.group),
+                    conversationWorkspaceKey(row.group),
                   )}
                   disabled={
                     !taskStorageReady ||
                     creatingConversationPaths.has(
-                      conversationWorkspacePath(row.group),
+                      conversationWorkspaceKey(row.group),
                     )
                   }
                   onClick={(event) => {
                     event.stopPropagation();
                     void createConversation(
-                      conversationWorkspacePath(row.group),
+                      conversationWorkspaceKey(row.group),
                     );
                   }}
                 >
                   {creatingConversationPaths.has(
-                    conversationWorkspacePath(row.group),
+                    conversationWorkspaceKey(row.group),
                   ) ? (
                     <LoaderCircle className="spinning" size={14} />
                   ) : (
@@ -403,7 +428,7 @@ export const Sidebar = memo(function Sidebar({
                     event.stopPropagation();
                     setDeleteTarget({
                       kind: "workspace",
-                      path: row.group.workspacePath,
+                      workspaceKey: row.group.key,
                       name: row.group.name,
                       count: row.group.conversations.length,
                     });

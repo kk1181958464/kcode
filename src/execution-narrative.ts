@@ -1,6 +1,7 @@
 import type { AgentActivity } from "./types";
 
 export const EXECUTION_NARRATIVE_VISIBLE_LIMIT = 320;
+export const CLOSING_VERIFICATION_ROUND_LIMIT = 2;
 const EXECUTION_NARRATIVE_DEDUP_MIN = 24;
 
 const NUMBERED_PLAN_LINE =
@@ -11,6 +12,9 @@ const EXPLICIT_EXECUTION_CONTINUATION =
 
 const DECLARED_TOOL_EXECUTION =
   /(?:^|[。！？!?\n])\s*我(?:现在|接着|随后|先)?(?:直接)?(?:用|通过|改用|准备使用|运行|执行|调用)\s*[^。！？!?\n]{0,56}(?:检查|查看|修改|实现|编辑|运行|执行|创建|添加|修复|验证|测试|读取|搜索|分析|解析|汇总|提取|转换|对比|处理|核对|生成|调用|打开|连接|上传|下载)(?!了|过)[^。！？!?\n]{0,100}[。！？!?]?\s*$/i;
+
+const CLOSING_VERIFICATION_NARRATIVE =
+  /(?:最后(?:再|一)?次|最终|收尾)(?:[^。！？!?\n]{0,18})(?:确认|核对|检查|复核|验证|快照|盘点)|(?:再|只)(?:做|进行|取|跑|查|核对|确认)(?:[^。！？!?\n]{0,10})(?:一|最后一)次|不再(?:重复|继续)(?:[^。！？!?\n]{0,12})(?:检查|核对|确认|复核|验证)?|(?:盘点|核对|检查|确认)(?:结果)?(?:已经|已)(?:完成|明确|结束)|(?:现在|随后|接着)?直接(?:给出|输出|整理|收口)(?:[^。！？!?\n]{0,20})(?:最终|结论|盘点|终稿)?|结论(?:以|按)[^。！？!?\n]{0,28}(?:为准|给出)|\b(?:one\s+)?(?:final|last)\s+(?:check|verification|review|pass|snapshot)\b|\b(?:check|verify|review)\s+(?:one\s+)?last\s+time\b/i;
 
 const INSPECTION_TOOLS = new Set<AgentActivity["tool"]>([
   "list_directory",
@@ -95,6 +99,31 @@ export function isExecutionContinuationNarrative(value: string) {
     EXPLICIT_EXECUTION_CONTINUATION.test(tail) ||
     DECLARED_TOOL_EXECUTION.test(tail)
   );
+}
+
+export function isClosingVerificationNarrative(value: string) {
+  return CLOSING_VERIFICATION_NARRATIVE.test(
+    executionNarrativeSource(value).value,
+  );
+}
+
+export function nextClosingVerificationRounds({
+  previous,
+  narrative,
+  hadToolCalls,
+  madeChanges,
+}: {
+  previous: number;
+  narrative: string;
+  hadToolCalls: boolean;
+  madeChanges: boolean;
+}) {
+  if (!hadToolCalls || madeChanges) return 0;
+  return isClosingVerificationNarrative(narrative) ? previous + 1 : 0;
+}
+
+export function shouldFinalizeClosingVerification(rounds: number) {
+  return rounds >= CLOSING_VERIFICATION_ROUND_LIMIT;
 }
 
 function trimNarrativeContinuation(value: string) {

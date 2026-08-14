@@ -29,7 +29,10 @@ import {
   Wifi,
   X,
 } from "lucide-react";
-import { inferContextWindow, inferReasoningConfig } from "../../types";
+import {
+  inferReasoningConfig,
+  resolveModelContextWindow,
+} from "../../types";
 import type {
   BrowserRecordingFile,
   PermissionMode,
@@ -344,10 +347,10 @@ export function SettingsPanel({
         item.id === modelId
           ? {
               ...item,
-              contextWindow:
-                contextWindow && contextWindow > 0
-                  ? Math.max(1024, Math.round(contextWindow))
-                  : undefined,
+              contextWindow: resolveModelContextWindow(
+                item.modelId,
+                contextWindow,
+              ),
             }
           : item,
       ),
@@ -1083,15 +1086,13 @@ export function SettingsPanel({
                                   <span className="model-context-control">
                                     <input
                                       type="number"
-                                      min="1024"
-                                      step="1024"
-                                      placeholder="未配置"
+                                      min="1"
+                                      step="1"
                                       aria-label={`${model.displayName} 上下文窗口`}
-                                      defaultValue={
-                                        model.contextWindow ??
-                                        inferContextWindow(model.modelId) ??
-                                        ""
-                                      }
+                                      defaultValue={resolveModelContextWindow(
+                                        model.modelId,
+                                        model.contextWindow,
+                                      )}
                                       onBlur={(event) =>
                                         void updateModelContext(
                                           p,
