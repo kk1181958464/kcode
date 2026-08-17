@@ -12717,6 +12717,68 @@ select:focus-visible {
   background: color-mix(in srgb, var(--accent) 7%, var(--ui-elevated));
 }
 
+.composer-resize-handle {
+  position: absolute;
+  top: -7px;
+  right: 12px;
+  left: 12px;
+  z-index: 3;
+  height: 14px;
+  color: var(--ui-text-tertiary);
+  cursor: ns-resize;
+  touch-action: none;
+  outline: 0;
+}
+
+.composer-resize-handle::before {
+  position: absolute;
+  top: 6px;
+  right: 0;
+  left: 0;
+  height: 2px;
+  border-radius: 2px;
+  background: transparent;
+  content: "";
+  transition: background var(--ui-motion) ease;
+}
+
+.composer-resize-handle svg {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  box-sizing: content-box;
+  padding: 0 5px;
+  transform: translateX(-50%);
+  background: var(--ui-elevated);
+  color: currentColor;
+  transition:
+    color var(--ui-motion) ease,
+    transform var(--ui-motion) var(--ui-ease);
+}
+
+.composer-resize-handle:hover,
+.composer-resize-handle:focus-visible {
+  color: var(--accent);
+}
+
+.composer-resize-handle:hover::before,
+.composer-resize-handle:focus-visible::before,
+body.resizing-composer .composer-resize-handle::before {
+  background: color-mix(in srgb, var(--accent) 62%, transparent);
+}
+
+.composer-resize-handle:hover svg,
+.composer-resize-handle:focus-visible svg,
+body.resizing-composer .composer-resize-handle svg {
+  transform: translateX(-50%) scale(1.08);
+}
+
+body.resizing-composer,
+body.resizing-composer * {
+  cursor: ns-resize !important;
+  user-select: none !important;
+}
+
 .composer textarea,
 :root[data-theme="dark"] .composer textarea {
   width: 100%;
@@ -12724,7 +12786,7 @@ select:focus-visible {
   min-height: 54px;
   max-height: min(260px, 36vh);
   field-sizing: content;
-  resize: vertical;
+  resize: none;
   overflow-y: auto;
   box-sizing: border-box;
   padding: 13px 15px 9px;

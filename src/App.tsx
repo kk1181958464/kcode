@@ -42,6 +42,7 @@ import {
   FolderOpen,
   GitBranch,
   GitCompareArrows,
+  GripHorizontal,
   GripVertical,
   LockOpen,
   ListOrdered,
@@ -443,6 +444,7 @@ export default function App() {
     setQueuedMessageDraft("");
   }, [activeTaskId]);
   const composerRef = useRef<ComposerTextareaHandle>(null);
+  const composerSurfaceRef = useRef<HTMLDivElement>(null);
   const composerValueRef = useRef(input);
   function readComposerValue() {
     const value = composerRef.current?.getValue() ?? composerValueRef.current;
@@ -454,6 +456,31 @@ export default function App() {
     composerRef.current?.replaceValue(value);
     setInputState(value);
   }
+  function composerHeightBounds(textarea: HTMLTextAreaElement) {
+    const styles = getComputedStyle(textarea);
+    const parsedMin = Number.parseFloat(styles.minHeight);
+    const parsedMax = Number.parseFloat(styles.maxHeight);
+    const min = Number.isFinite(parsedMin) ? parsedMin : 54;
+    const max = Number.isFinite(parsedMax)
+      ? parsedMax
+      : Math.min(260, window.innerHeight * 0.36);
+    return { min, max: Math.max(min, max) };
+  }
+  function applyComposerHeight(height: number, persist = false) {
+    const textarea = composerSurfaceRef.current?.querySelector("textarea");
+    if (!textarea) return;
+    const { min, max } = composerHeightBounds(textarea);
+    const next = Math.min(max, Math.max(min, height));
+    textarea.style.height = `${next}px`;
+    if (persist)
+      localStorage.setItem("kcode.composerHeight", String(Math.round(next)));
+  }
+  useLayoutEffect(() => {
+    const saved = Number.parseFloat(
+      localStorage.getItem("kcode.composerHeight") || "",
+    );
+    if (Number.isFinite(saved)) applyComposerHeight(saved);
+  }, []);
   const [settings, setSettings] = useState(false);
   const [conversationSearchOpen, setConversationSearchOpen] = useState(false);
   const searchPreviousTurnWindowRef = useRef<ConversationWindow | undefined>(
@@ -2103,6 +2130,64 @@ export default function App() {
     window.addEventListener("pointerup", stop);
     window.addEventListener("pointercancel", cancel);
     window.addEventListener("blur", cancel);
+  }
+
+  function startComposerResize(event: React.PointerEvent<HTMLDivElement>) {
+    if (event.button !== 0 || !event.isPrimary) return;
+    const textarea = composerSurfaceRef.current?.querySelector("textarea");
+    if (!textarea) return;
+    event.preventDefault();
+    const startY = event.clientY;
+    const startHeight = textarea.getBoundingClientRect().height;
+    const { min, max } = composerHeightBounds(textarea);
+    const heightAt = (clientY: number) =>
+      Math.min(max, Math.max(min, startHeight + startY - clientY));
+    let frame: number | undefined;
+    let pendingHeight = startHeight;
+    document.body.classList.add("resizing-composer");
+    const applyPendingHeight = () => {
+      frame = undefined;
+      textarea.style.height = `${pendingHeight}px`;
+    };
+    const move = (moveEvent: PointerEvent) => {
+      pendingHeight = heightAt(moveEvent.clientY);
+      if (frame === undefined)
+        frame = requestAnimationFrame(applyPendingHeight);
+    };
+    const cleanup = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", stop);
+      window.removeEventListener("pointercancel", cancel);
+      window.removeEventListener("blur", cancel);
+      document.body.classList.remove("resizing-composer");
+    };
+    const finish = (height: number) => {
+      if (frame !== undefined) cancelAnimationFrame(frame);
+      frame = undefined;
+      applyComposerHeight(height, true);
+      cleanup();
+    };
+    const stop = (upEvent: PointerEvent) =>
+      finish(heightAt(upEvent.clientY));
+    const cancel = () => finish(pendingHeight);
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", stop);
+    window.addEventListener("pointercancel", cancel);
+    window.addEventListener("blur", cancel);
+  }
+
+  function handleComposerResizeKeyDown(
+    event: React.KeyboardEvent<HTMLDivElement>,
+  ) {
+    if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+    const textarea = composerSurfaceRef.current?.querySelector("textarea");
+    if (!textarea) return;
+    event.preventDefault();
+    const direction = event.key === "ArrowUp" ? 1 : -1;
+    applyComposerHeight(
+      textarea.getBoundingClientRect().height + direction * 16,
+      true,
+    );
   }
 
   function startBrowserResize(event: React.PointerEvent) {
@@ -5857,12 +5942,25 @@ export default function App() {
               </button>
             )}
             <div
+              ref={composerSurfaceRef}
               className={`composer ${composerDragActive ? "drag-active" : ""}`}
               onDragEnter={handleComposerDragEnter}
               onDragOver={handleComposerDragOver}
               onDragLeave={handleComposerDragLeave}
               onDrop={(event) => void handleComposerDrop(event)}
             >
+              <div
+                className="composer-resize-handle"
+                role="separator"
+                aria-label="调整输入框高度"
+                aria-orientation="horizontal"
+                tabIndex={0}
+                title="上下拖动调整输入框高度"
+                onPointerDown={startComposerResize}
+                onKeyDown={handleComposerResizeKeyDown}
+              >
+                <GripHorizontal size={16} aria-hidden="true" />
+              </div>
               {composerDragActive && (
                 <div className="composer-drop-zone" role="status">
                   <Upload size={18} />

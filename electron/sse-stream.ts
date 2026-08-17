@@ -3,6 +3,13 @@ import { readStreamChunk } from "./request-guard";
 type SseOptions = {
   signal: AbortSignal;
   idleTimeoutMs?: number;
+  /**
+   * Marks an SSE event as useful user-facing progress, such as answer text or
+   * a tool call. Reasoning-only events still keep the transport alive but do
+   * not reset this separate watchdog.
+   */
+  meaningfulEvent?: (event: any) => boolean;
+  meaningfulIdleTimeoutMs?: number;
   onProgress?: (message: string) => void;
   terminalGraceMs?: number;
 };
@@ -61,29 +68,39 @@ export async function* readSseJson(
   let buffer = "";
   let terminal = false;
   let lastEventAt = Date.now();
+  let lastMeaningfulEventAt = lastEventAt;
   let lastProgressAt = lastEventAt;
   let softTerminalRemainingMs: number | undefined;
   const terminalGraceMs = options.terminalGraceMs ?? DEFAULT_TERMINAL_GRACE_MS;
   const idleTimeoutMs =
     options.idleTimeoutMs ?? DEFAULT_SEMANTIC_IDLE_TIMEOUT_MS;
+  const meaningfulIdleTimeoutMs = options.meaningfulEvent
+    ? (options.meaningfulIdleTimeoutMs ?? idleTimeoutMs)
+    : undefined;
   try {
     while (!terminal) {
       const now = Date.now();
-      if (
-        softTerminalRemainingMs !== undefined &&
-        softTerminalRemainingMs <= 0
-      )
+      if (softTerminalRemainingMs !== undefined && softTerminalRemainingMs <= 0)
         break;
       const semanticRemaining = idleTimeoutMs - (now - lastEventAt);
       if (semanticRemaining <= 0)
         throw new Error(
           `模型响应流长时间没有有效事件（${Math.round(idleTimeoutMs / 1_000)} 秒）`,
         );
+      const meaningfulRemaining =
+        meaningfulIdleTimeoutMs === undefined
+          ? Number.POSITIVE_INFINITY
+          : meaningfulIdleTimeoutMs - (now - lastMeaningfulEventAt);
+      if (meaningfulRemaining <= 0)
+        throw new Error(
+          `模型响应流持续没有正文或工具调用（${Math.round(meaningfulIdleTimeoutMs! / 1_000)} 秒）`,
+        );
       const terminalRemaining = softTerminalRemainingMs;
       const readTimeout = Math.max(
         1,
         Math.min(
           semanticRemaining ?? Number.POSITIVE_INFINITY,
+          meaningfulRemaining,
           terminalRemaining ?? Number.POSITIVE_INFINITY,
           idleTimeoutMs,
         ),
@@ -111,8 +128,10 @@ export async function* readSseJson(
         const events = parseBlock(block);
         if (events.length) lastEventAt = Date.now();
         for (const event of events) {
-          yield event;
           const kind = terminalKind(event);
+          if (kind || options.meaningfulEvent?.(event))
+            lastMeaningfulEventAt = Date.now();
+          yield event;
           if (kind === "hard") {
             terminal = true;
             break;
@@ -123,7 +142,18 @@ export async function* readSseJson(
         if (terminal) break;
       }
       const waitedMs = Date.now() - lastEventAt;
+      const meaningfulWaitedMs = Date.now() - lastMeaningfulEventAt;
       if (
+        !terminal &&
+        meaningfulIdleTimeoutMs !== undefined &&
+        meaningfulWaitedMs >= PROGRESS_INTERVAL_MS &&
+        Date.now() - lastProgressAt >= PROGRESS_INTERVAL_MS
+      ) {
+        lastProgressAt = Date.now();
+        options.onProgress?.(
+          `模型正在推理，尚未输出正文或工具调用，已等待 ${Math.round(meaningfulWaitedMs / 1_000)} 秒…`,
+        );
+      } else if (
         !terminal &&
         waitedMs >= PROGRESS_INTERVAL_MS &&
         Date.now() - lastProgressAt >= PROGRESS_INTERVAL_MS
@@ -138,6 +168,8 @@ export async function* readSseJson(
           const events = parseBlock(buffer);
           if (events.length) lastEventAt = Date.now();
           for (const event of events) {
+            if (terminalKind(event) || options.meaningfulEvent?.(event))
+              lastMeaningfulEventAt = Date.now();
             yield event;
             if (terminalKind(event)) {
               terminal = true;

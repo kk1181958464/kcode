@@ -3952,8 +3952,62 @@ async function* sseJson(
   signal: AbortSignal,
   idleTimeoutMs?: number,
   onProgress?: (message: string) => void,
+  meaningfulEvent?: (event: any) => boolean,
 ): AsyncGenerator<any> {
-  yield* readSseJson(response, { signal, idleTimeoutMs, onProgress });
+  yield* readSseJson(response, {
+    signal,
+    idleTimeoutMs,
+    // A reasoning model may need longer than a regular stream before it emits
+    // its first token. Once it has started streaming, though, endless internal
+    // reasoning without answer text or a tool call is a broken turn, not work.
+    meaningfulEvent,
+    meaningfulIdleTimeoutMs: meaningfulEvent
+      ? Math.min(idleTimeoutMs ?? 120_000, 120_000)
+      : undefined,
+    onProgress,
+  });
+}
+
+function isProductiveSseEvent(protocol: string, event: any) {
+  if (
+    event?.type === "__sse_done" ||
+    event?.type === "response.completed" ||
+    event?.type === "response.incomplete" ||
+    event?.type === "response.failed" ||
+    event?.type === "message_stop" ||
+    event?.type === "error" ||
+    event?.delta?.stop_reason ||
+    event?.candidates?.some((candidate: any) => candidate?.finishReason) ||
+    event?.choices?.some((choice: any) => choice?.finish_reason)
+  )
+    return true;
+  if (protocol === "openai-chat") {
+    const delta = event?.choices?.[0]?.delta;
+    return Boolean(delta?.content || delta?.tool_calls?.length);
+  }
+  if (protocol === "openai-responses")
+    return Boolean(
+      (event?.type === "response.output_text.delta" && event?.delta) ||
+      (event?.type === "response.output_item.added" &&
+        event?.item?.type === "function_call") ||
+      (event?.type === "response.function_call_arguments.delta" &&
+        event?.delta) ||
+      (event?.type === "response.output_item.done" &&
+        event?.item?.type === "function_call"),
+    );
+  if (protocol === "anthropic-messages")
+    return Boolean(
+      (event?.type === "content_block_delta" &&
+        (event?.delta?.type === "text_delta" ||
+          event?.delta?.type === "input_json_delta")) ||
+      (event?.type === "content_block_start" &&
+        event?.content_block?.type === "tool_use"),
+    );
+  return Boolean(
+    event?.candidates?.[0]?.content?.parts?.some(
+      (part: any) => part?.text || part?.functionCall,
+    ),
+  );
 }
 
 async function parseStreamedTurn(
@@ -3978,6 +4032,7 @@ async function parseStreamedTurn(
       signal,
       idleTimeoutMs,
       onProgress,
+      (event) => isProductiveSseEvent(protocol, event),
     ))
       assembler.consume(event);
     assembler.assertStreamComplete();
@@ -4223,6 +4278,7 @@ async function* streamModelTurn(
 ): AsyncGenerator<TurnStreamEvent> {
   const queue = new AsyncQueue<TurnStreamEvent>();
   let turn: Turn | undefined;
+  let reasoningOnlyRecoveryAttempted = false;
   const reconciler = new RetryTextReconciler();
   const reasoningReconciler = new RetryTextReconciler();
   const enqueue = (event: TurnStreamEvent) => {
@@ -4298,6 +4354,34 @@ async function* streamModelTurn(
         completeTextAttempt();
         return;
       } catch (error) {
+        const reasoningOnlyStream =
+          error instanceof Error &&
+          /持续没有正文或工具调用|only reasoning|no output text or tool/i.test(
+            error.message,
+          );
+        if (reasoningOnlyStream) {
+          if (
+            signal.aborted ||
+            reasoningOnlyRecoveryAttempted ||
+            !attemptBudget.canAttempt()
+          )
+            throw new Error(
+              "模型连续只输出思考内容，未返回正文或工具调用。已自动停止，请重试或切换模型。",
+            );
+          reasoningOnlyRecoveryAttempted = true;
+          history.push({
+            kind: "message",
+            role: "user",
+            content:
+              "<runtime_verification>上一轮上游持续输出内部推理，但超过时限没有正文或工具调用。不要继续讨论 channel、final 或输出方式。请立即基于已有工具结果用普通正文给出结论；若任务未完成，直接调用下一项具体工具。</runtime_verification>",
+          });
+          pushProgress(
+            "模型持续只有思考内容，正在要求它直接收尾（仅自动重试一次）…",
+          );
+          await sleep(1_500);
+          if (signal.aborted) throw error;
+          continue;
+        }
         if (
           signal.aborted ||
           attempt >= 3 ||

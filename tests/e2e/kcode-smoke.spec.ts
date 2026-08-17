@@ -26,10 +26,35 @@ test.describe("KCode workbench smoke flow", () => {
     await page.goto("/");
     const composer = page.locator(".composer");
     const textarea = page.getByRole("textbox", { name: "任务输入" });
+    const resizeHandle = page.getByRole("separator", {
+      name: "调整输入框高度",
+    });
     await expect(composer).toBeVisible();
     await expect(composer).toHaveCSS("max-width", /.+/);
     await expect(textarea).toBeVisible();
-    await expect(textarea).toHaveCSS("resize", "vertical");
+    await expect(textarea).toHaveCSS("resize", "none");
+    await expect(resizeHandle).toHaveAttribute(
+      "title",
+      "上下拖动调整输入框高度",
+    );
+
+    const beforeDrag = await textarea.boundingBox();
+    const handleBox = await resizeHandle.boundingBox();
+    expect(beforeDrag).not.toBeNull();
+    expect(handleBox).not.toBeNull();
+    await page.mouse.move(
+      handleBox!.x + handleBox!.width / 2,
+      handleBox!.y + handleBox!.height / 2,
+    );
+    await page.mouse.down();
+    await page.mouse.move(
+      handleBox!.x + handleBox!.width / 2,
+      handleBox!.y - 72,
+    );
+    await page.mouse.up();
+    const afterDrag = await textarea.boundingBox();
+    expect(afterDrag).not.toBeNull();
+    expect(afterDrag!.height).toBeGreaterThan(beforeDrag!.height + 40);
 
     const size = await textarea.evaluate((element) => {
       const node = element as HTMLTextAreaElement;

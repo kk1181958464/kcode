@@ -130,6 +130,69 @@ test("semantic idle timeout is not kept alive by SSE comments", async () => {
   await assert.rejects(collect(new Response(body)), /没有有效事件|没有新数据/);
 });
 
+test("reasoning-only events cannot keep a model turn alive indefinitely", async () => {
+  let timer: ReturnType<typeof setInterval> | undefined;
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      timer = setInterval(() => {
+        controller.enqueue(
+          encode(
+            'data: {"type":"response.reasoning_text.delta","delta":"still thinking"}\n\n',
+          ),
+        );
+      }, 5);
+    },
+    cancel() {
+      if (timer) clearInterval(timer);
+    },
+  });
+  const consume = async () => {
+    for await (const _event of readSseJson(new Response(body), {
+      signal: new AbortController().signal,
+      idleTimeoutMs: 200,
+      meaningfulIdleTimeoutMs: 45,
+      meaningfulEvent: (event) =>
+        event.type === "response.output_text.delta" ||
+        event.type === "response.function_call_arguments.delta",
+    })) {
+      // The stream deliberately has no meaningful events.
+    }
+  };
+  await assert.rejects(consume(), /持续没有正文或工具调用/);
+});
+
+test("answer text resets the reasoning-only watchdog", async () => {
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(
+        encode(
+          'data: {"type":"response.reasoning_text.delta","delta":"thinking"}\n\n',
+        ),
+      );
+      setTimeout(() => {
+        controller.enqueue(
+          encode(
+            'data: {"type":"response.output_text.delta","delta":"answer"}\n\n' +
+              'data: {"type":"response.completed"}\n\n',
+          ),
+        );
+      }, 20);
+    },
+  });
+  const events: any[] = [];
+  for await (const event of readSseJson(new Response(body), {
+    signal: new AbortController().signal,
+    idleTimeoutMs: 200,
+    meaningfulIdleTimeoutMs: 45,
+    meaningfulEvent: (event) =>
+      event.type === "response.output_text.delta" ||
+      event.type === "response.function_call_arguments.delta",
+  }))
+    events.push(event);
+  assert.equal(events[1].type, "response.output_text.delta");
+  assert.equal(events[2].type, "response.completed");
+});
+
 test("parses a final event without a trailing SSE blank line", async () => {
   const body = new ReadableStream<Uint8Array>({
     start(controller) {
