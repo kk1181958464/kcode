@@ -3074,6 +3074,7 @@ export default function App() {
                 ? {
                     ...message,
                     content: message.content + finalText,
+                    completionResult: event.result,
                     completedAt,
                   }
                 : message,
@@ -4647,10 +4648,9 @@ export default function App() {
       : undefined;
     const cleanMessages = sourceMessages.filter((message) => {
       if (message.role !== "assistant") return true;
-      const legacyErrorOnly = message.content.startsWith("请求失败：");
       // Keep useful partial output from interrupted rounds in the next request.
       // Only discard assistant placeholders that contain no model output.
-      return !(legacyErrorOnly || (message.error && !message.content.trim()));
+      return !(message.error && !message.content.trim());
     });
     const user: ChatMessage = queuedMessage
       ? {

@@ -1632,14 +1632,21 @@ app.whenReady().then(async () => {
       _e,
       requestId: string,
       activityId: string,
-      scope: "session" | "permanent",
-      command: string,
-      category: string,
-      workspace: string,
-    ) => {
-      approvalCache.approve(command, scope, category, workspace);
-      resolveApproval(requestId, activityId, true);
-    },
+      allowed: boolean,
+      scope: "once" | "session" | "permanent",
+      command?: string,
+      category?: string,
+      workspace?: string,
+    ) =>
+      resolveApprovalWithScope(
+        requestId,
+        activityId,
+        allowed,
+        scope,
+        command,
+        category,
+        workspace,
+      ),
   );
   createWindow();
   await initializeRemoteControl({

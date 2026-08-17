@@ -3,8 +3,10 @@ import assert from "node:assert/strict";
 import {
   evaluateCommandPolicy,
   isPermissionPolicyCustomized,
+  permissionCategoriesForCommand,
   permissionCategoryForCommand,
   resolvePermissionDecision,
+  resolvePermissionDecisionForCategories,
   tokenizeShellCommand,
 } from "../src/permissions";
 import type { PermissionPolicy } from "../src/types";
@@ -70,6 +72,51 @@ test("detects Git publish commands with global options and executable paths", ()
   );
   assert.equal(permissionCategoryForCommand("git status"), "runCommands");
   assert.equal(permissionCategoryForCommand("git -C repo pull"), "network");
+});
+
+test("classifies nested and remote command payloads from executable structure", () => {
+  assert.deepEqual(
+    permissionCategoriesForCommand(
+      'powershell.exe -NoProfile -Command "git -C repo commit -m test; git push origin main"',
+    ),
+    ["gitPublish", "workspaceWrite", "runCommands"],
+  );
+  assert.deepEqual(permissionCategoriesForCommand("Remove-Item -Recurse out"), [
+    "deletePaths",
+    "runCommands",
+  ]);
+  assert.deepEqual(permissionCategoriesForCommand("Write-Output 'git push'"), [
+    "runCommands",
+  ]);
+  assert.deepEqual(
+    permissionCategoriesForCommand("gh workflow run package.yml"),
+    ["gitPublish", "network", "runCommands"],
+  );
+});
+
+test("combines command categories using the strictest configured policy", () => {
+  const policy: PermissionPolicy = {
+    ...confirmPolicy,
+    runCommands: "allow",
+    workspaceWrite: "allow",
+    gitPublish: "confirm",
+  };
+  assert.deepEqual(
+    resolvePermissionDecisionForCategories(
+      "full-access",
+      policy,
+      permissionCategoriesForCommand("git commit -m test"),
+    ),
+    { decision: "confirm", category: "gitPublish" },
+  );
+  assert.deepEqual(
+    resolvePermissionDecisionForCategories(
+      "full-access",
+      { ...policy, deletePaths: "deny" },
+      permissionCategoriesForCommand("git reset --hard"),
+    ),
+    { decision: "deny", category: "deletePaths" },
+  );
 });
 
 test("reports policy overrides as a custom permission setup", () => {

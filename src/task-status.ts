@@ -61,11 +61,9 @@ export function recoverTaskRunStatus(task: {
         message.role === "assistant" &&
         Boolean(message.content || message.error),
     );
-  if (
-    latestAssistant?.error ||
-    latestAssistant?.content.startsWith("请求失败：")
-  )
-    return "failed";
+  if (latestAssistant?.error) return "failed";
+  if (latestAssistant?.completionResult?.kind === "blocked") return "blocked";
+  if (latestAssistant?.completionResult?.kind === "incomplete") return "paused";
   if (latestAssistant) return "completed";
   return "idle";
 }

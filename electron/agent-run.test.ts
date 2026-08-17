@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { runAgent, resolveApproval, type RunAgentDeps } from "./agent";
@@ -85,12 +85,88 @@ test("runAgent emits text then a completed done for a plain-text turn", async ()
   const done = events.find((e) => e.type === "done");
   assert.ok(done, "expected a done event");
   assert.equal((done as any).outcome, "completed");
+  assert.equal(
+    (done as Extract<AgentEvent, { type: "done" }>).result?.kind,
+    "answer",
+  );
 
   const answer = events
     .filter((e) => e.type === "text")
     .map((e) => (e as any).delta)
     .join("");
   assert.match(answer, /编码 Agent/);
+});
+
+test("runAgent publishes update_plan as structured activity state", async () => {
+  const request = await makeRequest();
+  await writeFile(
+    path.join(request.workspacePath, "notes.txt"),
+    "structured plans\n",
+    "utf8",
+  );
+  request.messages = [
+    { role: "user", content: "检查 notes.txt，并按计划给出结论" },
+  ];
+  let round = 0;
+  const deps: RunAgentDeps = {
+    getProvider: fakeProvider("fake-model"),
+    async *streamTurn() {
+      round += 1;
+      if (round === 1) {
+        yield {
+          type: "complete",
+          turn: {
+            text: "开始按结构化计划检查。",
+            calls: [
+              {
+                id: "plan",
+                name: "update_plan",
+                input: {
+                  explanation: "先读取，再总结",
+                  plan: [
+                    { step: "读取目标文件", status: "in_progress" },
+                    { step: "汇总检查结论", status: "pending" },
+                  ],
+                },
+              },
+              {
+                id: "read",
+                name: "read_file",
+                input: { path: "notes.txt" },
+              },
+            ],
+            rawCalls: [],
+            usage: { input: 12, output: 5, cached: 0 },
+          },
+        };
+        return;
+      }
+      yield { type: "text", delta: "检查完成，文件内容正常。" };
+      yield {
+        type: "complete",
+        turn: {
+          text: "检查完成，文件内容正常。",
+          calls: [],
+          rawCalls: [],
+          usage: { input: 18, output: 8, cached: 0 },
+        },
+      };
+    },
+  };
+
+  const events = await collect(
+    runAgent("test-structured-plan", request, new AbortController().signal, deps),
+  );
+  const planActivity = events.find(
+    (event): event is Extract<AgentEvent, { type: "activity" }> =>
+      event.type === "activity" && event.activity.tool === "update_plan",
+  )?.activity;
+  assert.deepEqual(planActivity?.planSteps, ["读取目标文件", "汇总检查结论"]);
+  assert.deepEqual(planActivity?.planStatuses, ["in_progress", "pending"]);
+  assert.equal(
+    events.find((event) => event.type === "done")?.type,
+    "done",
+  );
 });
 
 test("runAgent answers the latest explanation instead of an older upload goal", async () => {
@@ -149,7 +225,7 @@ test("runAgent answers the latest explanation instead of an older upload goal", 
   );
 });
 
-test("inspection questions retain corrected prose as collapsible process text", async () => {
+test("assistant action wording cannot force an informational turn into verification", async () => {
   const request = await makeRequest();
   request.messages = [
     {
@@ -162,10 +238,7 @@ test("inspection questions retain corrected prose as collapsible process text", 
     getProvider: fakeProvider("fake-model"),
     async *streamTurn() {
       round += 1;
-      const text =
-        round === 1
-          ? "文件已经上传成功，任务已完成。"
-          : "手机端依赖后台保活和系统权限，桌面网页则可借助常驻浏览器环境。";
+      const text = "文件已经上传成功，任务已完成。";
       yield { type: "text", delta: text };
       yield {
         type: "complete",
@@ -195,15 +268,17 @@ test("inspection questions retain corrected prose as collapsible process text", 
     (event): event is Extract<AgentEvent, { type: "final_response" }> =>
       event.type === "final_response",
   );
-  assert.equal(round, 2);
+  assert.equal(round, 1);
   assert.match(streamedText, /上传成功/);
-  assert.match(streamedText, /后台保活/);
-  assert.equal(
-    finalResponse?.textOffset,
-    "文件已经上传成功，任务已完成。".length,
-  );
-  assert.equal(finalResponse?.processKind, "correction");
+  assert.equal(finalResponse?.textOffset, 0);
+  assert.equal(finalResponse?.processKind, undefined);
   assert.ok(!events.some((event) => event.type === "text_reset"));
+  const done = events.find(
+    (event): event is Extract<AgentEvent, { type: "done" }> =>
+      event.type === "done",
+  );
+  assert.equal(done?.result?.kind, "answer");
+  assert.deepEqual(done?.result?.operations, []);
 });
 
 test("runAgent pauses on confirm mode and resumes on resolveApproval", async () => {
@@ -335,13 +410,21 @@ test("runAgent runs a tool call through the real tool loop", async () => {
 
   const done = events.find((e) => e.type === "done");
   assert.ok(done, "expected a done event");
+  assert.equal(
+    (done as Extract<AgentEvent, { type: "done" }>).result?.kind,
+    "changed",
+  );
+  assert.deepEqual(
+    (done as Extract<AgentEvent, { type: "done" }>).result?.changedFiles,
+    ["hello.txt"],
+  );
 
   const written = await readFile(
     path.join(request.workspacePath, "hello.txt"),
     "utf8",
   );
   assert.equal(written, "hi\n");
-  assert.deepEqual(requiredToolCalls, [true, false]);
+  assert.deepEqual(requiredToolCalls, [false, false]);
 });
 
 test("runAgent accepts backend query conclusions without Git or browser correction loops", async () => {
@@ -471,14 +554,11 @@ test("runAgent keeps an existing capability inventory as the final answer", asyn
   assert.equal(events.some((event) => event.type === "error"), false);
 });
 
-test("runAgent retries when the model claims a change without tool evidence", async () => {
+test("runAgent never infers missing runtime evidence from user or model prose", async () => {
   const request = await makeRequest();
   request.messages = [
     { role: "user", content: "把 README.md 里的标题改成 Hello" },
   ];
-  // The model keeps claiming success in prose but never calls a tool. The
-  // verification loop must not accept that: it should re-prompt (call the model
-  // again) at least once before finally settling.
   let streamCalls = 0;
   const deps: RunAgentDeps = {
     getProvider: fakeProvider("fake-model"),
@@ -500,23 +580,75 @@ test("runAgent retries when the model claims a change without tool evidence", as
   const events = await collect(
     runAgent("test-req-verify", request, new AbortController().signal, deps),
   );
-  // An unproven modify claim forces retries, then returns a clear execution
-  // error rather than exposing the internal verification prompt as assistant text.
-  assert.ok(
-    streamCalls >= 2,
-    `expected a verification re-prompt, model was called ${streamCalls}x`,
+  assert.equal(streamCalls, 1);
+  assert.equal(events.some((event) => event.type === "error"), false);
+  assert.equal(events.some((event) => event.type === "text_reset"), false);
+  assert.equal(
+    events
+      .filter((event) => event.type === "text")
+      .map((event) => (event as Extract<AgentEvent, { type: "text" }>).delta)
+      .join(""),
+    "已完成修改。",
   );
-  const error = events.find((event) => event.type === "error");
-  assert.ok(error && error.type === "error", "expected a terminal error event");
-  assert.equal(error.code, "coding_tool_execution_missing");
-  assert.ok(
-    !events.some(
-      (event) =>
-        event.type === "text" &&
-        /已撤回未经工具结果证实|本轮未得到实际修改/.test(event.delta),
-    ),
-    "internal verification wording must not be shown as assistant text",
+  const done = events.find(
+    (event): event is Extract<AgentEvent, { type: "done" }> =>
+      event.type === "done",
   );
+  assert.equal(done?.outcome, "completed");
+  assert.equal(done?.result?.kind, "answer");
+  assert.deepEqual(done?.result?.missingOperations, []);
+});
+
+test("runAgent retries a side effect after its actual tool call fails", async () => {
+  const request = await makeRequest();
+  request.messages = [{ role: "user", content: "处理这个任务" }];
+  let streamCalls = 0;
+  const deps: RunAgentDeps = {
+    getProvider: fakeProvider("fake-model"),
+    async *streamTurn() {
+      streamCalls += 1;
+      if (streamCalls === 1) {
+        yield {
+          type: "complete",
+          turn: {
+            text: "开始处理。",
+            calls: [
+              {
+                id: "bad-patch",
+                name: "apply_patch",
+                input: { patch: "not a patch" },
+              },
+            ],
+            rawCalls: [],
+            usage: { input: 5, output: 3, cached: 0 },
+          },
+        };
+        return;
+      }
+      yield { type: "text", delta: "无法完成修改。" };
+      yield {
+        type: "complete",
+        turn: {
+          text: "无法完成修改。",
+          calls: [],
+          rawCalls: [],
+          usage: { input: 5, output: 3, cached: 0 },
+        },
+      };
+    },
+  };
+
+  const events = await collect(
+    runAgent("test-tool-evidence-retry", request, new AbortController().signal, deps),
+  );
+  assert.equal(streamCalls, 3);
+  const done = events.find(
+    (event): event is Extract<AgentEvent, { type: "done" }> =>
+      event.type === "done",
+  );
+  assert.equal(done?.outcome, "paused");
+  assert.equal(done?.result?.kind, "incomplete");
+  assert.ok(done?.result?.missingOperations.includes("coding:modify"));
 });
 
 test("runAgent stops promptly when the signal is already aborted", async () => {

@@ -1,9 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import type {
-  SshRemoteProfile,
-  SshRemoteState,
-} from "../src/ssh-remote-types";
+import type { SshRemoteProfile, SshRemoteState } from "../src/ssh-remote-types";
 import {
   isSshRemoteCredentialsRequired,
   matchingSavedSshRemoteProfile,
@@ -82,6 +79,27 @@ test("restores a missing SSH profile id through a unique saved endpoint", async 
   );
   assert.equal(state.connected, true);
   assert.deepEqual(connectedIds, ["saved-profile"]);
+});
+
+test("uses structured reconnect availability instead of matching error text", async () => {
+  const current = {
+    ...disconnected(workspace),
+    reconnectAvailable: true,
+  };
+  const connectedIds: string[] = [];
+  await restoreSshRemoteConnection(
+    {
+      state: async () => current,
+      profiles: async () => [],
+      connectSaved: async (_taskId, profileId) => {
+        connectedIds.push(profileId);
+        return { ...current, connected: true };
+      },
+    },
+    "task-1",
+    workspace,
+  );
+  assert.deepEqual(connectedIds, [workspace.id]);
 });
 
 test("requests credentials when neither runtime nor saved SSH data exists", async () => {

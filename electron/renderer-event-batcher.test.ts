@@ -19,6 +19,19 @@ test("coalesces adjacent text and reasoning deltas", () => {
   batcher.close();
 });
 
+test("does not merge text from different message phases", () => {
+  const sent: AgentEvent[] = [];
+  const batcher = new RendererEventBatcher((event) => sent.push(event));
+  batcher.push({ type: "text", delta: "处理中", phase: "commentary" });
+  batcher.push({ type: "text", delta: "最终结果", phase: "final_answer" });
+  batcher.flush();
+  assert.deepEqual(sent, [
+    { type: "text", delta: "处理中", phase: "commentary" },
+    { type: "text", delta: "最终结果", phase: "final_answer" },
+  ]);
+  batcher.close();
+});
+
 test("flushes streamed text before a structural event", () => {
   const sent: AgentEvent[] = [];
   const batcher = new RendererEventBatcher((event) => sent.push(event));

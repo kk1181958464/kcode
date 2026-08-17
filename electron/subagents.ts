@@ -16,11 +16,13 @@ const MAX_RETAINED_TRANSCRIPT_CHARS = 2_000;
 const MAX_RESULT_ACTIVITIES = 25;
 const STOP_GRACE_MS = 10_000;
 export const DEFAULT_SUBAGENT_WAIT_TIMEOUT_MS = 5 * 60_000;
+export const MAX_SUBAGENT_WAIT_TIMEOUT_MS = 60 * 60_000;
 
 export type WaitForSubagentsOptions = {
   timeoutMs?: number;
   signal?: AbortSignal;
   onProgress?: (message: string) => void;
+  subscribeToSteering?: (listener: () => void) => () => void;
 };
 
 export type SubagentExecutionTarget = {
@@ -344,11 +346,38 @@ function releaseSubagentMutationClaims(agent: SubagentRecord) {
   if (!owners.size) mutationOwners.delete(agent.rootRequestId);
 }
 
+function activeSubagent(agent: SubagentRecord) {
+  return agent.status === "running" || agent.status === "stopping";
+}
+
+function collectSubagentResult(agent: SubagentRecord) {
+  const usageDelta = agent.usageReported
+    ? { input: 0, output: 0, cached: 0 }
+    : { ...agent.usage };
+  agent.usageReported = true;
+  const result = { ...resultState(agent), usageDelta };
+  compactCollectedRecord(agent);
+  releaseSubagentMutationClaims(agent);
+  return result;
+}
+
+export type WaitForSubagentsResult = {
+  message: string;
+  timedOut: boolean;
+  interrupted: boolean;
+  completed: Array<ReturnType<typeof collectSubagentResult>>;
+  pending: Array<ReturnType<typeof publicState>>;
+};
+
+/**
+ * Wait for the first selected child update. A wait timeout only releases the
+ * parent tool call; it never aborts, collects, or otherwise mutates a child.
+ */
 export async function waitForSubagents(
   parentRequestId: string,
   agentIds?: string[],
   options: WaitForSubagentsOptions = {},
-) {
+): Promise<WaitForSubagentsResult> {
   const selected = agentIds?.length
     ? agentIds.map((id) => {
         const agent = agents.get(id);
@@ -358,17 +387,23 @@ export async function waitForSubagents(
       })
     : directChildren(parentRequestId);
   if (!selected.length) throw new Error("当前任务没有可等待的子 Agent。");
-  const timeoutMs = Math.max(
-    1,
-    Math.floor(options.timeoutMs ?? DEFAULT_SUBAGENT_WAIT_TIMEOUT_MS),
+
+  const timeoutMs = Math.min(
+    MAX_SUBAGENT_WAIT_TIMEOUT_MS,
+    Math.max(
+      1,
+      Math.floor(options.timeoutMs ?? DEFAULT_SUBAGENT_WAIT_TIMEOUT_MS),
+    ),
   );
   const startedAt = Date.now();
-  const describePending = () =>
-    selected.filter(
-      (agent) => agent.status === "running" || agent.status === "stopping",
-    );
+  const pendingAgents = () => selected.filter(activeSubagent);
+  const readyAgents = () => selected.filter((agent) => !activeSubagent(agent));
+  const pendingAtStart = pendingAgents();
+  const freshReadyAtStart = readyAgents().filter(
+    (agent) => !agent.usageReported,
+  );
   const reportProgress = () => {
-    const pending = describePending();
+    const pending = pendingAgents();
     if (!pending.length) return;
     const elapsedSeconds = Math.max(
       1,
@@ -380,74 +415,71 @@ export async function waitForSubagents(
         .join("、")}`,
     );
   };
-  reportProgress();
-  const progressTimer = options.onProgress
-    ? setInterval(reportProgress, 15_000)
-    : undefined;
-  let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
-  let removeAbortListener: () => void = () => undefined;
-  const waitOutcome = await Promise.race([
-    Promise.allSettled(selected.map((agent) => agent.promise)).then(
-      () => "completed" as const,
-    ),
-    new Promise<"timeout">(
-      (resolve) =>
-        (timeoutTimer = setTimeout(() => resolve("timeout"), timeoutMs)),
-    ),
-    new Promise<"aborted">((resolve) => {
-      const signal = options.signal;
-      if (!signal) return;
-      if (signal.aborted) {
-        resolve("aborted");
-        return;
-      }
-      const onAbort = () => resolve("aborted");
-      signal.addEventListener("abort", onAbort, { once: true });
-      removeAbortListener = () =>
-        signal.removeEventListener("abort", onAbort);
-    }),
-  ]);
-  if (progressTimer) clearInterval(progressTimer);
-  if (timeoutTimer) clearTimeout(timeoutTimer);
-  removeAbortListener();
 
-  if (waitOutcome !== "completed") {
-    const pending = describePending();
-    const reason =
-      waitOutcome === "timeout"
-        ? `等待超过 ${Math.ceil(timeoutMs / 1_000)} 秒，已自动停止以避免无限等待。`
-        : "父任务已取消等待，已向子 Agent 发送停止信号。";
-    for (const agent of pending) {
-      agent.acceptingInstructions = false;
-      if (agent.status === "running") agent.status = "stopping";
-      agent.error = agent.error ? `${agent.error}\n${reason}` : reason;
-      agent.controller.abort();
-    }
-    let graceTimer: ReturnType<typeof setTimeout> | undefined;
-    await Promise.race([
-      Promise.allSettled(pending.map((agent) => agent.promise)),
-      new Promise<void>(
-        (resolve) =>
-          (graceTimer = setTimeout(resolve, STOP_GRACE_MS)),
-      ),
-    ]);
-    if (graceTimer) clearTimeout(graceTimer);
-    for (const agent of pending)
-      if (agent.status === "stopping")
-        agent.error = `${reason}停止信号已发送，但底层工具仍在退出；后台清理会继续。`;
-  }
+  let outcome: "completed" | "timeout" | "aborted" | "steered" =
+    freshReadyAtStart.length || !pendingAtStart.length
+      ? "completed"
+      : await (async () => {
+          reportProgress();
+          const progressTimer = options.onProgress
+            ? setInterval(reportProgress, 15_000)
+            : undefined;
+          let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
+          let removeAbortListener: () => void = () => undefined;
+          let removeSteeringListener: () => void = () => undefined;
+          const result = await Promise.race([
+            ...pendingAgents().map((agent) =>
+              agent.promise.then(() => "completed" as const),
+            ),
+            new Promise<"timeout">(
+              (resolve) =>
+                (timeoutTimer = setTimeout(
+                  () => resolve("timeout"),
+                  timeoutMs,
+                )),
+            ),
+            new Promise<"aborted">((resolve) => {
+              const signal = options.signal;
+              if (!signal) return;
+              if (signal.aborted) {
+                resolve("aborted");
+                return;
+              }
+              const onAbort = () => resolve("aborted");
+              signal.addEventListener("abort", onAbort, { once: true });
+              removeAbortListener = () =>
+                signal.removeEventListener("abort", onAbort);
+            }),
+            new Promise<"steered">((resolve) => {
+              removeSteeringListener =
+                options.subscribeToSteering?.(() => resolve("steered")) ??
+                (() => undefined);
+            }),
+          ]);
+          if (progressTimer) clearInterval(progressTimer);
+          if (timeoutTimer) clearTimeout(timeoutTimer);
+          removeAbortListener();
+          removeSteeringListener();
+          return result;
+        })();
 
-  return selected.map((agent) => {
-    const usageDelta = agent.usageReported
-      ? { input: 0, output: 0, cached: 0 }
-      : { ...agent.usage };
-    agent.usageReported = true;
-    const result = { ...resultState(agent), usageDelta };
-    compactCollectedRecord(agent);
-    if (agent.status !== "running" && agent.status !== "stopping")
-      releaseSubagentMutationClaims(agent);
-    return result;
-  });
+  const ready = readyAgents();
+  const completed = (
+    pendingAtStart.length
+      ? ready.filter((agent) => !agent.usageReported)
+      : ready
+  ).map(collectSubagentResult);
+  const pending = pendingAgents().map(publicState);
+  const timedOut = outcome === "timeout";
+  const interrupted = outcome === "aborted" || outcome === "steered";
+  const message = completed.length
+    ? `已有 ${completed.length} 个子 Agent 返回结果。`
+    : timedOut
+      ? `等待 ${Math.ceil(timeoutMs / 1_000)} 秒后暂无新结果；${pending.length} 个子 Agent 仍在后台运行。`
+      : interrupted
+        ? `等待已被新指令或父任务状态变化打断；${pending.length} 个子 Agent 仍在后台运行。`
+        : "所选子 Agent 的结果已收集。";
+  return { message, timedOut, interrupted, completed, pending };
 }
 
 export async function stopSubagent(parentRequestId: string, agentId: string) {

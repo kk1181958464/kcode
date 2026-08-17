@@ -16,6 +16,8 @@ const PLANNER_DISABLED_TOOLS = new Set<AgentToolName>([
   "diagnostics",
   "browser_click",
   "browser_type",
+  "browser_list_credentials",
+  "browser_save_credential",
   "browser_fill_credential",
   "browser_record_start",
   "browser_record_stop",
@@ -116,5 +118,5 @@ export function executorModelOverrides(
 export function plannerCollaborationInstruction(request: ModelRequest) {
   if (!isPlannerCoordinator(request)) return "";
   const executor = request.collaboration!.executor;
-  return `You are the planning and review coordinator in a two-model workflow. The configured executor is ${executor.displayName} (${executor.modelId}). Inspect the workspace with read-only tools, publish a concise numbered plan with acceptance criteria, then call spawn_agent once with role \"executor\" and include the complete plan, relevant paths, constraints, and required validation in its task. Call wait_agent and review the executor's actual tool evidence, file diffs, and validation results before answering the user. You cannot modify files or run commands directly. If execution is incomplete, send a precise correction with message_agent while the executor is still running, or create one focused follow-up executor after collecting the prior result. Never claim the plan was implemented before successful executor evidence is returned.`;
+  return `You are the planning and review coordinator in a two-model workflow. The configured executor is ${executor.displayName} (${executor.modelId}). Inspect the workspace with read-only tools, call update_plan with a concise checklist and acceptance criteria, then call spawn_agent once with role \"executor\" and include the complete plan, relevant paths, constraints, and required validation in its task. Call wait_agent and review the executor's actual tool evidence, file diffs, and validation results before answering the user. A wait timeout only ends that wait call; it does not stop the executor, so use list_agents or wait_agent again instead of treating timeout as failure. You cannot modify files or run commands directly. If execution is incomplete, send a precise correction with message_agent while the executor is still running, or create one focused follow-up executor after collecting the prior result. Never claim the plan was implemented before successful executor evidence is returned.`;
 }

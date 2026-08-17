@@ -306,10 +306,74 @@ test("rejects repeated or excessively bloated model summaries", () => {
     local,
     {
       summary: "清晰的新摘要",
-      ledger: { ...ledger, changedFiles: ["src/app.ts"] },
+      ledger: {
+        ...ledger,
+        decisions: ["采用事件驱动状态"],
+        changedFiles: ["src/hallucinated.ts"],
+        validations: ["模型声称测试通过"],
+        failures: ["模型声称失败"],
+        connections: ["模型声称已连接"],
+      },
     },
     8_000,
   );
   assert.ok(accepted);
-  assert.deepEqual(accepted.ledger.changedFiles, ["src/app.ts"]);
+  assert.deepEqual(accepted.ledger.decisions, ["采用事件驱动状态"]);
+  assert.deepEqual(accepted.ledger.changedFiles, []);
+  assert.deepEqual(accepted.ledger.validations, []);
+  assert.deepEqual(accepted.ledger.failures, []);
+  assert.deepEqual(accepted.ledger.connections, []);
+  assert.doesNotMatch(accepted.summary, /hallucinated|模型声称/);
+});
+
+test("keeps prose claims unverified and builds facts from activities", () => {
+  const messages = [
+    message("user", "检查并修复问题", 1),
+    message("assistant", "已经修改 src/fake.ts，测试也通过了", 2),
+    message("user", "继续", 3),
+    message("assistant", "稍后汇总", 4),
+  ];
+  const activities: AgentActivity[] = [
+    {
+      id: "write",
+      requestId: "r",
+      tool: "write_file",
+      status: "success",
+      title: "写入文件",
+      startedAt: 1,
+      completedAt: 2,
+      input: {},
+      path: "src/real.ts",
+      changed: true,
+      operationEvidence: ["modify"],
+    },
+    {
+      id: "test",
+      requestId: "r",
+      tool: "run_command",
+      status: "success",
+      title: "运行命令",
+      startedAt: 3,
+      completedAt: 4,
+      input: {},
+      command: "npm test",
+      executed: true,
+      operationEvidence: ["execute", "validate"],
+    },
+  ];
+  const result = compactConversation(
+    { messages, activities },
+    8_000,
+    true,
+  );
+  assert.ok(result);
+  assert.deepEqual(result.contextLedger.changedFiles, ["src/real.ts"]);
+  assert.deepEqual(result.contextLedger.validations, ["运行命令: success"]);
+  assert.ok(
+    result.contextLedger.pending.some((item) => item.includes("src/fake.ts")),
+  );
+  const verifiedSection = result.contextSummary
+    .split("## 未验证对话记录与待办")[0];
+  assert.doesNotMatch(verifiedSection, /src\/fake\.ts/);
+  assert.match(result.contextSummary, /未验证对话记录与待办[\s\S]*src\/fake\.ts/);
 });

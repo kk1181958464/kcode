@@ -72,3 +72,33 @@ test("keeps activity output on the same runtime item", () => {
   assert.equal(activity.itemId, "activity-1");
   assert.equal(output.itemId, "activity-1");
 });
+
+test("preserves structured completion results in the terminal event", () => {
+  const persisted: AgentEvent[] = [];
+  const journal = new RuntimeEventJournal("task-1", "request-1", (events) =>
+    persisted.push(...events),
+  );
+  journal.append({
+    type: "done",
+    outcome: "paused",
+    result: {
+      kind: "incomplete",
+      operations: [],
+      missingOperations: ["coding:modify"],
+      toolCalls: 0,
+      successfulTools: 0,
+      failedTools: 0,
+      changedFiles: [],
+      additions: 0,
+      deletions: 0,
+      notice: "未检测到实际修改的成功运行记录。",
+    },
+  });
+  journal.close();
+
+  const done = persisted[0];
+  assert.equal(done.type, "done");
+  if (done.type !== "done") assert.fail("expected done event");
+  assert.equal(done.result?.kind, "incomplete");
+  assert.deepEqual(done.result?.missingOperations, ["coding:modify"]);
+});

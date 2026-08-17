@@ -91,6 +91,8 @@ const descriptors: ToolDescriptor[] = [
   descriptor("mongodb_execute", "write", true),
   descriptor("mongodb_disconnect", "network"),
   descriptor("credential_list", "read"),
+  descriptor("browser_list_credentials", "browser"),
+  descriptor("browser_save_credential", "browser"),
   descriptor("credential_save", "write"),
   descriptor("credential_forget", "write"),
   descriptor("spawn_agent", "agent", true),
@@ -98,6 +100,7 @@ const descriptors: ToolDescriptor[] = [
   descriptor("message_agent", "agent", true),
   descriptor("wait_agent", "agent", true),
   descriptor("stop_agent", "agent", true),
+  descriptor("update_plan", "other"),
   descriptor("report_no_change", "other"),
   descriptor("request_user_input", "other"),
 ];

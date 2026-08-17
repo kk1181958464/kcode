@@ -5,8 +5,6 @@ import {
   activityExecutionNarrative,
   dedupeExecutionNarrative,
   executionNarrativePreview,
-  isClosingVerificationNarrative,
-  isExecutionContinuationNarrative,
   nextClosingVerificationRounds,
   nextExecutionNarrative,
   normalizeExecutionNarrative,
@@ -68,12 +66,12 @@ test("bounds streamed narrative text without losing its beginning", () => {
   assert.equal(value, "aaaaaaaaaaa…");
 });
 
-test("keeps intermediate execution narration concise and removes duplicate plans", () => {
+test("keeps intermediate execution narration concise without parsing plans", () => {
   assert.equal(
     executionNarrativePreview(
       "我会先确认当前实现，再开始修改。\n1. 检查代码\n2. 修改文件\n3. 运行测试",
     ),
-    "我会先确认当前实现，再开始修改。",
+    "我会先确认当前实现，再开始修改。\n1. 检查代码\n2. 修改文件\n3. 运行测试",
   );
   assert.equal(
     executionNarrativePreview(`准备执行：${"细节".repeat(240)}`).length <= 320,
@@ -83,7 +81,7 @@ test("keeps intermediate execution narration concise and removes duplicate plans
     executionNarrativePreview(
       "<thinking>private chain</thinking>\n1. 检查代码\n2. 修改文件",
     ),
-    "已整理执行计划，开始落实具体步骤。",
+    "1. 检查代码\n2. 修改文件",
   );
 });
 
@@ -111,66 +109,20 @@ test("deduplicates before preview clipping so later narration stays visible", ()
   );
 });
 
-test("detects tool execution declarations that otherwise end the task early", () => {
-  assert.equal(
-    isExecutionContinuationNarrative(
-      "HAR 文件约 1.8MB，是 keelcode.ai 的抓包。我用 PowerShell 解析 JSON，汇总里面的请求列表。",
-    ),
-    true,
-  );
-  assert.equal(
-    isExecutionContinuationNarrative(
-      "我通过脚本继续检查请求头，再生成汇总报告。",
-    ),
-    true,
-  );
-  assert.equal(
-    isExecutionContinuationNarrative("接下来我会运行测试并核对输出。"),
-    true,
-  );
-});
-
-test("does not auto-continue completed or user-facing suggestions", () => {
-  assert.equal(
-    isExecutionContinuationNarrative(
-      "我用 PowerShell 解析了 JSON，最终确认共有 12 条请求。",
-    ),
-    false,
-  );
-  assert.equal(
-    isExecutionContinuationNarrative("你可以用 PowerShell 解析 JSON。"),
-    false,
-  );
-  assert.equal(
-    isExecutionContinuationNarrative("本次处理完成，测试与构建均已通过。"),
-    false,
-  );
-});
-
-test("forces a conclusion after repeated no-change closing checks", () => {
-  assert.equal(
-    isClosingVerificationNarrative(
-      "我再做最后一次线上核对，随后直接给出最终结论。",
-    ),
-    true,
-  );
-  assert.equal(
-    isClosingVerificationNarrative(
-      "盘点结果已经明确，我再取一次当前线上模块快照。",
-    ),
-    true,
-  );
+test("forces a conclusion after structured evidence is complete", () => {
   let rounds = nextClosingVerificationRounds({
     previous: 0,
-    narrative: "最后一次确认模块状态。",
     hadToolCalls: true,
     madeChanges: false,
+    evidenceComplete: true,
+    hasMutationEvidence: true,
   });
   rounds = nextClosingVerificationRounds({
     previous: rounds,
-    narrative: "最终复核数据库状态，结论以本次为准。",
     hadToolCalls: true,
     madeChanges: false,
+    evidenceComplete: true,
+    hasMutationEvidence: true,
   });
   assert.equal(rounds, CLOSING_VERIFICATION_ROUND_LIMIT);
   assert.equal(shouldFinalizeClosingVerification(rounds), true);
@@ -180,18 +132,30 @@ test("resets closing-check detection after a real change or ordinary work", () =
   assert.equal(
     nextClosingVerificationRounds({
       previous: 1,
-      narrative: "最后确认修改结果。",
       hadToolCalls: true,
       madeChanges: true,
+      evidenceComplete: true,
+      hasMutationEvidence: true,
     }),
     0,
   );
   assert.equal(
     nextClosingVerificationRounds({
       previous: 1,
-      narrative: "继续读取另一个独立模块。",
       hadToolCalls: true,
       madeChanges: false,
+      evidenceComplete: false,
+      hasMutationEvidence: true,
+    }),
+    0,
+  );
+  assert.equal(
+    nextClosingVerificationRounds({
+      previous: 1,
+      hadToolCalls: true,
+      madeChanges: false,
+      evidenceComplete: true,
+      hasMutationEvidence: false,
     }),
     0,
   );

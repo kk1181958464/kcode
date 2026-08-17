@@ -27,7 +27,11 @@ export class RendererEventBatcher {
     }
 
     const previous = this.pending.at(-1);
-    if (event.type === "text" && previous?.type === "text")
+    if (
+      event.type === "text" &&
+      previous?.type === "text" &&
+      previous.phase === event.phase
+    )
       previous.delta += event.delta;
     else if (event.type === "reasoning" && previous?.type === "reasoning")
       previous.delta += event.delta;

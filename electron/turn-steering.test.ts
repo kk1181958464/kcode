@@ -11,3 +11,16 @@ test("drains steering input once and keeps requests isolated", () => {
   assert.deepEqual(queue.drain("a"), []);
   assert.equal(queue.size("b"), 1);
 });
+
+test("notifies a runtime wait when new steering input arrives", () => {
+  const queue = new TurnSteeringQueue();
+  let notifications = 0;
+  const unsubscribe = queue.subscribe("a", () => {
+    notifications += 1;
+  });
+  queue.push("b", "other");
+  queue.push("a", "continue differently");
+  unsubscribe();
+  queue.push("a", "after unsubscribe");
+  assert.equal(notifications, 1);
+});

@@ -41,6 +41,7 @@ const queryTools = new Set<AgentToolName>([
   "mongodb_execute",
 ]);
 const agentTools = new Set<AgentToolName>([
+  "update_plan",
   "spawn_agent",
   "list_agents",
   "message_agent",

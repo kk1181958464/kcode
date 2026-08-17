@@ -88,14 +88,34 @@ test("runs multiple subagents in parallel and aggregates results", async () => {
   while (releases.size < 2)
     await new Promise<void>((resolve) => setImmediate(resolve));
   releases.get(first.id)?.();
+  const firstWait = await waitForSubagents("parent", [first.id, second.id]);
+  assert.equal(firstWait.completed.length, 1);
+  assert.equal(firstWait.pending.length, 1);
+  assert.equal(firstWait.completed[0].status, "completed");
+  assert.equal(firstWait.completed[0].usage.input, 10);
+  assert.match(firstWait.completed[0].activityRecords[0].title, /^代码 · /);
+  let secondWaitSettled = false;
+  const secondWaitPromise = waitForSubagents(
+    "parent",
+    [first.id, second.id],
+    { timeoutMs: 1_000 },
+  ).then((result) => {
+    secondWaitSettled = true;
+    return result;
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(
+    secondWaitSettled,
+    false,
+    "an already collected result must not wake the next wait",
+  );
   releases.get(second.id)?.();
-  const results = await waitForSubagents("parent", [first.id, second.id]);
-  assert.equal(results.length, 2);
-  assert.ok(results.every((result) => result.status === "completed"));
-  assert.ok(results.every((result) => result.usage.input === 10));
-  assert.match(results[0].activityRecords[0].title, /^代码 · /);
+  const secondWait = await secondWaitPromise;
+  assert.equal(secondWait.completed.length, 1);
+  assert.equal(secondWait.completed[0].id, second.id);
+  assert.equal(secondWait.completed[0].status, "completed");
   const repeated = await waitForSubagents("parent", [first.id]);
-  assert.deepEqual(repeated[0].usageDelta, {
+  assert.deepEqual(repeated.completed[0].usageDelta, {
     input: 0,
     output: 0,
     cached: 0,
@@ -340,7 +360,7 @@ test("parent cancellation stops a child and stop returns partial output", async 
     runner,
   );
   parent.abort();
-  const [result] = await waitForSubagents("parent", [child.id]);
+  const result = (await waitForSubagents("parent", [child.id])).completed[0];
   assert.equal(result.status, "stopped");
   assert.equal(result.transcript, "partial");
 
@@ -356,7 +376,7 @@ test("parent cancellation stops a child and stop returns partial output", async 
   assert.equal(stopped.status, "stopped");
 });
 
-test("wait timeout stops and collects a stuck subagent", async () => {
+test("wait timeout leaves a stuck subagent running and uncollected", async () => {
   const child = spawnSubagent(
     "timeout-parent",
     "卡住的审查",
@@ -371,7 +391,7 @@ test("wait timeout stops and collects a stuck subagent", async () => {
   );
   const progress: string[] = [];
   const startedAt = Date.now();
-  const [result] = await waitForSubagents(
+  const result = await waitForSubagents(
     "timeout-parent",
     [child.id],
     {
@@ -381,10 +401,46 @@ test("wait timeout stops and collects a stuck subagent", async () => {
   );
 
   assert.ok(Date.now() - startedAt < 2_000, "wait must be bounded");
-  assert.equal(result.status, "stopped");
-  assert.equal(result.collected, true);
-  assert.equal(result.transcript, "partial");
-  assert.match(result.error ?? "", /自动停止|无限等待/);
+  assert.equal(result.timedOut, true);
+  assert.equal(result.completed.length, 0);
+  assert.equal(result.pending[0].status, "running");
+  assert.equal(result.pending[0].collected, false);
   assert.match(progress.join("\n"), /仍有 1 个子 Agent/);
-  assert.equal(listSubagents("timeout-parent")[0].collected, true);
+  assert.equal(listSubagents("timeout-parent")[0].collected, false);
+  const stopped = await stopSubagent("timeout-parent", child.id);
+  assert.equal(stopped.status, "stopped");
+  assert.equal(stopped.transcript, "partial");
+});
+
+test("new steering input interrupts only the wait, not the subagent", async () => {
+  const child = spawnSubagent(
+    "steering-parent",
+    "后台任务",
+    "继续运行",
+    new AbortController().signal,
+    async function* (_requestId, _agentId, signal) {
+      await new Promise<void>((resolve) =>
+        signal.addEventListener("abort", () => resolve(), { once: true }),
+      );
+    },
+  );
+  let steer = () => undefined;
+  let steeringSubscribed = false;
+  const wait = waitForSubagents("steering-parent", [child.id], {
+    timeoutMs: 5_000,
+    subscribeToSteering(listener) {
+      steer = listener;
+      steeringSubscribed = true;
+      return () => undefined;
+    },
+  });
+  while (!steeringSubscribed)
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  steer();
+  const result = await wait;
+  assert.equal(result.interrupted, true);
+  assert.equal(result.timedOut, false);
+  assert.equal(result.pending[0].status, "running");
+  assert.equal(listSubagents("steering-parent")[0].status, "running");
+  await stopSubagent("steering-parent", child.id);
 });

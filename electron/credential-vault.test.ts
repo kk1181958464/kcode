@@ -160,86 +160,22 @@ test("requires an unambiguous alias within one category", () => {
   );
 });
 
-test("makes a credential saved in one task available to a later task", async () => {
+test("makes a locally saved website credential available to a later task", async () => {
   await resetCredentialVaultForTests();
-  const savedConversation = path.join(
-    app.getPath("userData"),
-    "conversations",
-    "credential-task-a.jsonl",
-  );
   const listedConversation = path.join(
     app.getPath("userData"),
     "conversations",
     "credential-task-b.jsonl",
   );
-  await unlink(savedConversation).catch(() => undefined);
   await unlink(listedConversation).catch(() => undefined);
   try {
-    let saveRound = 0;
-    const saveEvents = await collectEvents(
-      runAgent(
-        "credential-task-a",
-        await credentialRequest("记住后台账号"),
-        new AbortController().signal,
-        {
-          getProvider: fakeProvider(),
-          async *streamTurn() {
-            saveRound += 1;
-            if (saveRound === 1) {
-              yield {
-                type: "complete",
-                turn: {
-                  text: "",
-                  calls: [
-                    {
-                      id: "save-credential",
-                      name: "credential_save",
-                      input: {
-                        kind: "website",
-                        name: "运营后台",
-                        url: "https://admin.example.com/login",
-                        username: "operator",
-                        password: "cross-task-password",
-                      },
-                    },
-                  ],
-                  rawCalls: [],
-                  usage: { input: 10, output: 5, cached: 0 },
-                },
-              };
-              return;
-            }
-            yield {
-              type: "complete",
-              turn: {
-                text: "账号已保存。",
-                calls: [],
-                rawCalls: [],
-                usage: { input: 12, output: 6, cached: 0 },
-              },
-            };
-          },
-        },
-      ),
-    );
-    const saveActivity = saveEvents.find(
-      (event) =>
-        event.type === "activity" &&
-        event.activity.tool === "credential_save" &&
-        event.activity.status === "success",
-    );
-    assert.ok(saveActivity && saveActivity.type === "activity");
-    assert.equal(saveActivity.activity.input.password, "[已安全隐藏]");
-    assert.equal(
-      JSON.stringify(saveActivity.activity).includes("cross-task-password"),
-      false,
-    );
-    assert.equal(
-      (await readFile(savedConversation, "utf8")).includes(
-        "cross-task-password",
-      ),
-      false,
-    );
+    await saveCredentialProfile({
+      kind: "website",
+      name: "运营后台",
+      url: "https://admin.example.com/login",
+      username: "operator",
+      payload: { username: "operator", password: "cross-task-password" },
+    });
 
     let listRound = 0;
     const listEvents = await collectEvents(
@@ -296,7 +232,73 @@ test("makes a credential saved in one task available to a later task", async () 
     );
   } finally {
     await resetCredentialVaultForTests();
-    await unlink(savedConversation).catch(() => undefined);
     await unlink(listedConversation).catch(() => undefined);
+  }
+});
+
+test("refuses to classify an account as website credentials without a browser origin", async () => {
+  await resetCredentialVaultForTests();
+  const conversation = path.join(
+    app.getPath("userData"),
+    "conversations",
+    "credential-unscoped.jsonl",
+  );
+  await unlink(conversation).catch(() => undefined);
+  try {
+    let round = 0;
+    const events = await collectEvents(
+      runAgent(
+        "credential-unscoped",
+        await credentialRequest("记住这个未分类账号"),
+        new AbortController().signal,
+        {
+          getProvider: fakeProvider(),
+          async *streamTurn() {
+            round += 1;
+            yield {
+              type: "complete",
+              turn:
+                round === 1
+                  ? {
+                      text: "",
+                      calls: [
+                        {
+                          id: "save-unscoped",
+                          name: "browser_save_credential",
+                          input: {
+                            name: "未分类账号",
+                            username: "operator",
+                            password: "secret",
+                          },
+                        },
+                      ],
+                      rawCalls: [],
+                      usage: { input: 10, output: 5, cached: 0 },
+                    }
+                  : {
+                      text: "需要先确认账号所属目标。",
+                      calls: [],
+                      rawCalls: [],
+                      usage: { input: 12, output: 6, cached: 0 },
+                    },
+            };
+          },
+        },
+      ),
+    );
+    const activity = events.find(
+      (event) =>
+        event.type === "activity" &&
+        event.activity.tool === "browser_save_credential",
+    );
+    assert.ok(activity && activity.type === "activity");
+    assert.equal(activity.activity.status, "failed");
+    assert.match(activity.activity.output || "", /没有打开网页/);
+    assert.equal(activity.activity.input.password, "[已安全隐藏]");
+    assert.deepEqual(await listCredentialProfiles("website"), []);
+    assert.equal((await readFile(conversation, "utf8")).includes("secret"), false);
+  } finally {
+    await resetCredentialVaultForTests();
+    await unlink(conversation).catch(() => undefined);
   }
 });

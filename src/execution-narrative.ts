@@ -4,18 +4,6 @@ export const EXECUTION_NARRATIVE_VISIBLE_LIMIT = 320;
 export const CLOSING_VERIFICATION_ROUND_LIMIT = 2;
 const EXECUTION_NARRATIVE_DEDUP_MIN = 24;
 
-const NUMBERED_PLAN_LINE =
-  /^\s*(?:(?:\d{1,2})\s*[.)、:]|第\s*[一二三四五六七八九十\d]{1,3}\s*步)\s*.+$/;
-
-const EXPLICIT_EXECUTION_CONTINUATION =
-  /(?:接下来|下一步|现在(?:就)?(?:开始|来)|我(?:会|将|来|先|需要|准备|打算)[^。！？!?\n]{0,20}(?:检查|查看|修改|实现|继续|编辑|运行|执行|创建|添加|修复|验证|测试|读取|搜索|分析|解析|汇总|提取|处理|核对|补充|连接|上传|下载)|继续(?:执行|处理|检查|实现|完成)|让我(?:先|来|继续)|马上|正在[^。！？!?\n]{0,14}(?:检查|实现|修改|处理|解析|汇总)|then i['’]?ll|i['’]?ll (?:now|proceed|continue|check|start|go ahead|next|implement|fix|add|verify|run)|next,? i(?:['’]?ll| will| am)|let me (?:now|check|start|look|continue|implement))/i;
-
-const DECLARED_TOOL_EXECUTION =
-  /(?:^|[。！？!?\n])\s*我(?:现在|接着|随后|先)?(?:直接)?(?:用|通过|改用|准备使用|运行|执行|调用)\s*[^。！？!?\n]{0,56}(?:检查|查看|修改|实现|编辑|运行|执行|创建|添加|修复|验证|测试|读取|搜索|分析|解析|汇总|提取|转换|对比|处理|核对|生成|调用|打开|连接|上传|下载)(?!了|过)[^。！？!?\n]{0,100}[。！？!?]?\s*$/i;
-
-const CLOSING_VERIFICATION_NARRATIVE =
-  /(?:最后(?:再|一)?次|最终|收尾)(?:[^。！？!?\n]{0,18})(?:确认|核对|检查|复核|验证|快照|盘点)|(?:再|只)(?:做|进行|取|跑|查|核对|确认)(?:[^。！？!?\n]{0,10})(?:一|最后一)次|不再(?:重复|继续)(?:[^。！？!?\n]{0,12})(?:检查|核对|确认|复核|验证)?|(?:盘点|核对|检查|确认)(?:结果)?(?:已经|已)(?:完成|明确|结束)|(?:现在|随后|接着)?直接(?:给出|输出|整理|收口)(?:[^。！？!?\n]{0,20})(?:最终|结论|盘点|终稿)?|结论(?:以|按)[^。！？!?\n]{0,28}(?:为准|给出)|\b(?:one\s+)?(?:final|last)\s+(?:check|verification|review|pass|snapshot)\b|\b(?:check|verify|review)\s+(?:one\s+)?last\s+time\b/i;
-
 const INSPECTION_TOOLS = new Set<AgentActivity["tool"]>([
   "list_directory",
   "glob_files",
@@ -76,50 +64,32 @@ function executionNarrativeSource(value: string) {
     .replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, "")
     .replace(/<think(?:ing)?>[\s\S]*$/gi, "")
     .replace(/<\/?think(?:ing)?>/gi, "");
-  const lines = visible.split(/\r?\n/);
-  const planLineCount = lines.filter((line) =>
-    NUMBERED_PLAN_LINE.test(line),
-  ).length;
   return {
-    planLineCount,
-    value: normalizeExecutionNarrative(
-      planLineCount >= 2
-        ? lines.filter((line) => !NUMBERED_PLAN_LINE.test(line)).join("\n")
-        : visible,
-      16_000,
-    ),
+    value: normalizeExecutionNarrative(visible, 16_000),
   };
-}
-
-/** Detects a model turn that promises another executable step but calls no tool. */
-export function isExecutionContinuationNarrative(value: string) {
-  const tail = executionNarrativeSource(value).value.slice(-320).trim();
-  if (!tail) return false;
-  return (
-    EXPLICIT_EXECUTION_CONTINUATION.test(tail) ||
-    DECLARED_TOOL_EXECUTION.test(tail)
-  );
-}
-
-export function isClosingVerificationNarrative(value: string) {
-  return CLOSING_VERIFICATION_NARRATIVE.test(
-    executionNarrativeSource(value).value,
-  );
 }
 
 export function nextClosingVerificationRounds({
   previous,
-  narrative,
   hadToolCalls,
   madeChanges,
+  evidenceComplete,
+  hasMutationEvidence,
 }: {
   previous: number;
-  narrative: string;
   hadToolCalls: boolean;
   madeChanges: boolean;
+  evidenceComplete: boolean;
+  hasMutationEvidence: boolean;
 }) {
-  if (!hadToolCalls || madeChanges) return 0;
-  return isClosingVerificationNarrative(narrative) ? previous + 1 : 0;
+  if (
+    !hadToolCalls ||
+    madeChanges ||
+    !evidenceComplete ||
+    !hasMutationEvidence
+  )
+    return 0;
+  return previous + 1;
 }
 
 export function shouldFinalizeClosingVerification(rounds: number) {
@@ -165,9 +135,7 @@ export function executionNarrativePreview(
   max = EXECUTION_NARRATIVE_VISIBLE_LIMIT,
 ) {
   const source = executionNarrativeSource(value);
-  const preview = normalizeExecutionNarrative(source.value, max);
-  if (preview) return preview;
-  return source.planLineCount >= 2 ? "已整理执行计划，开始落实具体步骤。" : "";
+  return normalizeExecutionNarrative(source.value, max);
 }
 
 export function activityExecutionNarrative(activity: AgentActivity) {
@@ -194,13 +162,16 @@ export function activityExecutionNarrative(activity: AgentActivity) {
   )
     return `执行${target}，用实际查询结果确认数据状态后再继续。`;
   if (
+    activity.tool === "update_plan" ||
     activity.tool === "spawn_agent" ||
     activity.tool === "wait_agent" ||
     activity.tool === "list_agents" ||
     activity.tool === "message_agent" ||
     activity.tool === "stop_agent"
   )
-    return `执行${target}，推进并收集并行任务的实际结果。`;
+    return activity.tool === "update_plan"
+      ? `执行${target}，用结构化步骤同步当前进度和下一步。`
+      : `执行${target}，推进并收集并行任务的实际结果。`;
   return `执行${target}，取得继续处理当前任务所需的信息。`;
 }
 

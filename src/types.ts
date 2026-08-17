@@ -91,6 +91,8 @@ export type AgentToolName =
   | "mongodb_execute"
   | "mongodb_disconnect"
   | "credential_list"
+  | "browser_list_credentials"
+  | "browser_save_credential"
   | "credential_save"
   | "credential_forget"
   | "spawn_agent"
@@ -98,6 +100,7 @@ export type AgentToolName =
   | "message_agent"
   | "wait_agent"
   | "stop_agent"
+  | "update_plan"
   | "mcp_list_tools"
   | "mcp_call_tool"
   | "get_context_remaining"
@@ -340,9 +343,35 @@ export type ChatMessage = {
   finalResponseOffset?: number;
   finalResponseStartedAt?: number;
   finalResponseProcess?: "correction";
+  completionResult?: AgentCompletionResult;
   model?: string;
   images?: ImageAttachment[];
   contextAttachments?: Array<{ name: string; size: number }>;
+};
+
+export type AgentMessagePhase = "unknown" | "commentary" | "final_answer";
+
+export type AgentCompletionKind =
+  | "answer"
+  | "changed"
+  | "executed"
+  | "no_change"
+  | "incomplete"
+  | "blocked";
+
+export type AgentCompletionResult = {
+  kind: AgentCompletionKind;
+  /** Runtime-observed operations, never inferred from assistant prose. */
+  operations: string[];
+  /** Requested side effects that have no matching successful runtime event. */
+  missingOperations: string[];
+  toolCalls: number;
+  successfulTools: number;
+  failedTools: number;
+  changedFiles: string[];
+  additions: number;
+  deletions: number;
+  notice?: string;
 };
 
 export type TaskItemPageOptions = {
@@ -446,6 +475,8 @@ export type AgentFileChange = {
   deletions: number;
 };
 
+export type AgentPlanStepStatus = "pending" | "in_progress" | "completed";
+
 export type AgentActivity = {
   id: string;
   requestId: string;
@@ -461,8 +492,9 @@ export type AgentActivity = {
   recoverable?: boolean;
   /** Concise user-facing explanation for why this step is being executed. */
   narrative?: string;
-  /** Numbered plan captured from the model's pre-tool narration. */
+  /** Structured plan emitted through the native update_plan tool. */
   planSteps?: string[];
+  planStatuses?: AgentPlanStepStatus[];
   planStep?: number;
   output?: string;
   /** Full output/diff is stored separately and loaded only when expanded. */
@@ -494,6 +526,19 @@ export type AgentActivity = {
   modelDisplayName?: string;
   reasoningEffort?: ReasoningEffort;
   progress?: "advanced" | "unchanged" | "stalled";
+  /** Permission bucket selected from the concrete native tool call. */
+  permissionCategory?: keyof PermissionPolicy;
+  /** Structured execution facts produced by the tool runtime. */
+  operationEvidence?: (
+    | "inspect"
+    | "modify"
+    | "execute"
+    | "validate"
+    | "connect"
+    | "upload"
+    | "download"
+  )[];
+  browserOperationEvidence?: ("open" | "type" | "click" | "verify")[];
 };
 
 export type UndoResult = {
@@ -574,7 +619,7 @@ export type SkillStoreItem = {
 };
 
 export type ModelEvent =
-  | { type: "text"; delta: string }
+  | { type: "text"; delta: string; phase?: AgentMessagePhase }
   | {
       type: "text_reset";
       /** Prefix to retain. Missing only on legacy protocol-v1 events. */
@@ -588,6 +633,7 @@ export type ModelEvent =
       type: "final_response";
       textOffset: number;
       startedAt: number;
+      phase?: "final_answer";
       processKind?: "correction";
     }
   | { type: "reasoning"; delta: string }
@@ -615,7 +661,11 @@ export type ModelEvent =
       retryable?: boolean;
       userAction?: "retry" | "change_provider" | "provide_input" | "none";
     }
-  | { type: "done"; outcome?: "completed" | "blocked" | "paused" };
+  | {
+      type: "done";
+      outcome?: "completed" | "blocked" | "paused";
+      result?: AgentCompletionResult;
+    };
 
 type AgentEventPayload =
   | ModelEvent

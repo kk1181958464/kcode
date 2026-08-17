@@ -327,16 +327,52 @@ export function acceptModelContextSummary<
     repeatedLineRatio(summary) > 0.3
   )
     return undefined;
+  const semanticKeys = new Set<keyof ContextLedger>([
+    "goals",
+    "decisions",
+    "pending",
+  ]);
   const ledger = Object.fromEntries(
     (Object.keys(emptyLedger()) as (keyof ContextLedger)[]).map((key) => [
       key,
       uniqueRecent(
-        [...(local.contextLedger[key] ?? []), ...(model.ledger[key] ?? [])],
+        semanticKeys.has(key)
+          ? [...(local.contextLedger[key] ?? []), ...(model.ledger[key] ?? [])]
+          : [...(local.contextLedger[key] ?? [])],
         key === "changedFiles" ? 64 : key === "connections" ? 16 : 32,
       ),
     ]),
   ) as ContextLedger;
-  return { ...model, summary, ledger };
+  const authoritativeSummary = [
+    ledger.goals.length
+      ? `## 当前目标\n${ledger.goals.map((item) => `- ${item}`).join("\n")}`
+      : "",
+    ledger.decisions.length
+      ? `## 关键决定\n${ledger.decisions.map((item) => `- ${item}`).join("\n")}`
+      : "",
+    ledger.changedFiles.length
+      ? `## 已验证文件改动\n${ledger.changedFiles.map((item) => `- ${item}`).join("\n")}`
+      : "",
+    ledger.validations.length
+      ? `## 已执行验证\n${ledger.validations.map((item) => `- ${item}`).join("\n")}`
+      : "",
+    ledger.failures.length
+      ? `## 已记录失败\n${ledger.failures.map((item) => `- ${item}`).join("\n")}`
+      : "",
+    ledger.connections.length
+      ? `## 已建立连接\n${ledger.connections.map((item) => `- ${item}`).join("\n")}`
+      : "",
+    ledger.pending.length
+      ? `## 待办与未验证上下文\n${ledger.pending.map((item) => `- ${item}`).join("\n")}`
+      : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+  return {
+    ...model,
+    summary: trimSummary(authoritativeSummary || local.contextSummary, contextWindow),
+    ledger,
+  };
 }
 
 export function compactConversation(
@@ -378,10 +414,7 @@ export function compactConversation(
     ? `## 既有压缩摘要\n${trimSummary(task.contextSummary.trim(), contextWindow)}`
     : "";
   const goals: string[] = [],
-    decisions: string[] = [],
-    results: string[] = [],
-    errors: string[] = [],
-    pending: string[] = [];
+    conversationNotes: string[] = [];
   for (const message of older) {
     const role =
       message.role === "user"
@@ -398,12 +431,8 @@ export function compactConversation(
       ? ` [图片语义：${semantics || `${message.images.length} 张图片，尚无描述`}]`
       : "";
     const line = `- ${role}: ${text.slice(0, 520)}${text.length > 520 ? "…" : ""}${imageNote}`;
-    if (/失败|错误|报错|异常|error|failed/i.test(text)) errors.push(line);
-    else if (/完成|通过|已修改|已添加|已修复|构建|测试/i.test(text))
-      results.push(line);
-    else if (message.role === "user") goals.push(line);
-    else if (/建议|决定|采用|应该|需要|方案/i.test(text)) decisions.push(line);
-    else pending.push(line);
+    if (message.role === "user") goals.push(line);
+    else conversationNotes.push(line);
   }
   const latestActivities = new Map<string, AgentActivity>();
   for (const activity of task.activities.filter((item) => item.completedAt))
@@ -412,10 +441,23 @@ export function compactConversation(
       activity,
     );
   const dedupedActivities = [...latestActivities.values()].slice(-24);
-  const activityLines = dedupedActivities.map(
-    (activity) =>
-      `- ${activity.title}${activity.path ? ` ${activity.path}` : ""}: ${activity.status}${activity.errorSummary ? `，${activity.errorSummary}` : ""}`,
-  );
+  const activityLine = (activity: AgentActivity) =>
+    `- ${activity.title}${activity.path ? ` ${activity.path}` : ""}: ${activity.status}${activity.errorSummary ? `，${activity.errorSummary}` : ""}`;
+  const successfulActivityLines = dedupedActivities
+    .filter(
+      (activity) =>
+        activity.status === "success" || activity.status === "completed",
+    )
+    .map(activityLine);
+  const failedActivityLines = dedupedActivities
+    .filter(
+      (activity) =>
+        activity.status === "failed" || activity.status === "denied",
+    )
+    .map(
+      (activity) =>
+        `- ${activity.title}${activity.path ? ` ${activity.path}` : ""}: ${activity.errorSummary || activity.status}`,
+    );
   const ledger = task.contextLedger ?? emptyLedger();
   const changedFiles = dedupedActivities
     .filter(
@@ -430,8 +472,9 @@ export function compactConversation(
   const validations = dedupedActivities
     .filter(
       (activity) =>
-        activity.tool === "diagnostics" ||
-        /测试|构建|检查/.test(activity.title),
+        activity.status === "success" &&
+        (activity.tool === "diagnostics" ||
+          activity.operationEvidence?.includes("validate")),
     )
     .map((activity) => `${activity.title}: ${activity.status}`);
   // Connection coordinates are durable, but activity inputs can originate from
@@ -457,21 +500,21 @@ export function compactConversation(
     });
   const nextLedger: ContextLedger = {
     goals: uniqueRecent([...ledger.goals, ...goals]),
-    decisions: uniqueRecent([...ledger.decisions, ...decisions]),
+    decisions: uniqueRecent([...ledger.decisions]),
     changedFiles: uniqueRecent([...ledger.changedFiles, ...changedFiles], 64),
     validations: uniqueRecent([...ledger.validations, ...validations]),
-    failures: uniqueRecent([...ledger.failures, ...errors]),
-    pending: uniqueRecent([...ledger.pending, ...pending]),
+    failures: uniqueRecent([...ledger.failures, ...failedActivityLines]),
+    pending: uniqueRecent([...ledger.pending, ...conversationNotes]),
     connections: uniqueRecent(
       [...(ledger.connections ?? []), ...connections].map(redactSensitiveText),
       16,
     ),
   };
   const sectionGoals = uniqueRecent(goals, 24);
-  const sectionDecisions = uniqueRecent(decisions, 20);
-  const sectionResults = uniqueRecent([...results, ...activityLines], 36);
-  const sectionErrors = uniqueRecent(errors, 20);
-  const sectionPending = uniqueRecent(pending, 18);
+  const sectionDecisions = uniqueRecent(nextLedger.decisions, 20);
+  const sectionResults = uniqueRecent(successfulActivityLines, 36);
+  const sectionErrors = uniqueRecent(failedActivityLines, 20);
+  const sectionPending = uniqueRecent(conversationNotes, 18);
   const sections = [
     previous,
     nextLedger.connections.length
@@ -486,7 +529,7 @@ export function compactConversation(
       : "",
     sectionErrors.length ? `## 错误与限制\n${sectionErrors.join("\n")}` : "",
     sectionPending.length
-      ? `## 其他上下文与待办\n${sectionPending.join("\n")}`
+      ? `## 未验证对话记录与待办\n${sectionPending.join("\n")}`
       : "",
   ]
     .filter(Boolean)

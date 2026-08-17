@@ -1,4 +1,4 @@
-import { relevantVerificationRequestContent } from "./coding-operation-verification";
+import { parseCommandInvocations } from "./command-canonicalize";
 
 export type GitOperation = "commit" | "push" | "release";
 
@@ -16,62 +16,113 @@ type VerificationHistoryItem =
 
 const COMMAND_TOOLS = new Set(["run_command", "ssh_run"]);
 
+type CommandSemantics = {
+  git: boolean;
+  commit: boolean;
+  push: boolean;
+  releaseTrigger: boolean;
+  releaseVerification: boolean;
+  repositoryList: boolean;
+};
+
+function gitSubcommand(args: string[]) {
+  const optionsWithValue = new Set([
+    "-c",
+    "-C",
+    "--git-dir",
+    "--work-tree",
+    "--namespace",
+  ]);
+  for (let index = 0; index < args.length; index += 1) {
+    const token = args[index];
+    if (optionsWithValue.has(token)) {
+      index += 1;
+      continue;
+    }
+    if (
+      token.startsWith("--git-dir=") ||
+      token.startsWith("--work-tree=") ||
+      token.startsWith("--namespace=") ||
+      token.startsWith("-")
+    )
+      continue;
+    return token.toLowerCase();
+  }
+  return "";
+}
+
+function ghPositionals(args: string[]) {
+  const optionsWithValue = new Set(["-R", "--repo", "--hostname"]);
+  const values: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const token = args[index];
+    if (optionsWithValue.has(token)) {
+      index += 1;
+      continue;
+    }
+    if (token.startsWith("--repo=") || token.startsWith("--hostname="))
+      continue;
+    if (!token.startsWith("-")) values.push(token.toLowerCase());
+  }
+  return values;
+}
+
+function commandSemantics(command: string): CommandSemantics {
+  const semantics: CommandSemantics = {
+    git: false,
+    commit: false,
+    push: false,
+    releaseTrigger: false,
+    releaseVerification: false,
+    repositoryList: false,
+  };
+  for (const invocation of parseCommandInvocations(command)) {
+    if (invocation.executable === "git") {
+      semantics.git = true;
+      const subcommand = gitSubcommand(invocation.args);
+      if (subcommand === "commit") semantics.commit = true;
+      if (subcommand === "push") semantics.push = true;
+      continue;
+    }
+    if (invocation.executable !== "gh") continue;
+    semantics.git = true;
+    const [first = "", second = ""] = ghPositionals(invocation.args);
+    if (
+      (first === "workflow" && second === "run") ||
+      (first === "run" && second === "rerun") ||
+      (first === "release" && second === "create")
+    )
+      semantics.releaseTrigger = true;
+    if (
+      (first === "run" && ["view", "watch"].includes(second)) ||
+      (first === "release" && second === "view")
+    )
+      semantics.releaseVerification = true;
+    if (first === "repo" && second === "list") semantics.repositoryList = true;
+  }
+  return semantics;
+}
+
+/** Git requirements come from executable tool calls, never conversation text. */
+export function gitOperationsRequiredByCalls(
+  calls: ReadonlyArray<{ name: string; input: Record<string, unknown> }>,
+) {
+  const operations = new Set<GitOperation>();
+  for (const call of calls) {
+    if (!COMMAND_TOOLS.has(call.name)) continue;
+    const command = String(call.input.command ?? "");
+    const semantics = commandSemantics(command);
+    if (semantics.commit) operations.add("commit");
+    if (semantics.push) operations.add("push");
+    if (semantics.releaseTrigger) operations.add("release");
+  }
+  return operations;
+}
+
 export function isNotGitRepositoryOutput(value: string) {
   return /not a git repository|outside (?:a )?git repository|不是\s*(?:一个\s*)?git\s*(?:仓库|存储库)|(?:当前|该|这个|工作区|目录).{0,20}(?:未初始化|没有).{0,8}git|no git repository/i.test(
     value,
   );
-}
-
-export function requestedGitOperations(history: VerificationHistoryItem[]) {
-  const content = relevantVerificationRequestContent(history);
-  const operations = new Set<GitOperation>();
-  const asksForInformation =
-    /(?:为什么|为何|怎么会|怎么就|怎么回事|哪个|哪些|什么原因|是否|有没有|是不是|成功了吗|完成了吗|提交了吗|推送了吗|发布了吗|触发了吗|了没|了吗)[？?]?|\?$/i.test(
-      content.trim(),
-    );
-  const explicitRequest =
-    /(?:帮我|请(?!问)|麻烦|要你|开始|继续|把).{0,30}(?:提交|推送|发布|触发|commit|push|release)/i.test(
-      content,
-    );
-  if (asksForInformation && !explicitRequest) return operations;
-
-  const commitRequested =
-    /\bgit\s+commit\b|\bcommit\b/i.test(content) ||
-    /(?:提交|commit).{0,10}(?:(?:到|至)\s*)?(?:GitHub|GitLab|Gitee|远端(?:仓库)?|Git\s*仓库|代码仓库)/i.test(
-      content,
-    ) ||
-    /(?:提交|commit)(?:一下|这些)?\s*(?:代码|改动|修改|变更|源码|项目)/i.test(
-      content,
-    ) ||
-    /(?:代码|改动|修改|变更|源码|项目).{0,12}(?:提交|commit)/i.test(content);
-  const pushRequested =
-    /\bgit\s+push\b/i.test(content) ||
-    /(?:提交|推送|push).{0,12}(?:(?:到|至)\s*)?(?:GitHub|GitLab|Gitee|远端(?:仓库)?|Git\s*仓库|代码仓库)/i.test(
-      content,
-    ) ||
-    /(?:代码|改动|修改|变更|源码|项目|分支|标签).{0,12}(?:推送|push)/i.test(
-      content,
-    ) ||
-    /(?:推送|push).{0,12}(?:代码|改动|修改|变更|源码|项目|分支|标签|origin|main|master)/i.test(
-      content,
-    ) ||
-    /\bcommit\b.{0,16}\bpush\b/i.test(content);
-  const releaseRequested =
-    /(?:触发|启动|重跑|重新运行).{0,16}(?:(?:GitHub\s*)?(?:Actions|工作流)|(?:发布|打包)(?:流程|任务|工作流)?)/i.test(
-      content,
-    ) ||
-    /(?:(?:GitHub\s*)?(?:Actions|工作流)).{0,16}(?:触发|启动|重跑|重新运行)/i.test(
-      content,
-    ) ||
-    /(?:创建|发布).{0,10}(?:GitHub\s*)?(?:Release|版本)|(?:版本).{0,10}发布|\brelease\b/i.test(
-      content,
-    ) ||
-    /\bgh\s+(?:workflow\s+run|run\s+rerun|release\s+create)\b/i.test(content);
-
-  if (commitRequested) operations.add("commit");
-  if (pushRequested) operations.add("push");
-  if (releaseRequested) operations.add("release");
-  return operations;
 }
 
 export function missingRequestedGitOperations(
@@ -79,98 +130,6 @@ export function missingRequestedGitOperations(
   evidence: ReadonlySet<GitOperation>,
 ) {
   return [...requested].filter((operation) => !evidence.has(operation));
-}
-
-export function claimedGitOperations(text: string) {
-  const proseText = text
-    .replace(/```[\s\S]*?```/g, "")
-    .replace(
-      /(?:如果|若|假如|一旦|\bif\b|\bwhen\b)[^。！？!?\n]{0,160}[。！？!?]?/gi,
-      "",
-    );
-  const negatedText = proseText.replace(
-    /(?:未|没有|尚未|无法|不能|并未).{0,10}(?:提交|推送|发布|触发|启动|commit|push|release)|\b(?:not|never|did not|could not|unable to)\b[^.!?\n]{0,40}\b(?:commit|push|release|trigger)\b/gi,
-    "",
-  );
-  // Strip future/planning intent so a plan ("稍后提交到两个私有仓库") is not
-  // mistaken for a completed claim. Only unambiguous planning markers are used
-  // (bare 会/之后 are excluded — they also appear in "提交后会显示"/"提交之后").
-  const assertedText = negatedText.replace(
-    /(?:将要?|打算|计划|准备|稍后|待会儿?|等会儿?|过会儿?|接下来|马上|即将|回头|下一步|随后要|然后要).{0,10}(?:提交|推送|发布|触发|启动|commit|push|release)/gi,
-    "",
-  );
-  const operations = new Set<GitOperation>();
-  for (const assertion of assertedText
-    .split(/[。！？!?；;\n]+/)
-    .map((value) => value.trim())
-    .filter(Boolean)) {
-    const commitHashClaim =
-      /提交\s*[:：]\s*`?[0-9a-f]{7,40}|\bcommit\s+`?[0-9a-f]{7,40}/i.test(
-        assertion,
-      );
-    const commitContext =
-      /(?:GitHub|GitLab|Gitee|Git\s*仓库|代码仓库|远端仓库|仓库|代码|改动|修改|变更|源码|分支|标签|origin|main|master|Release|Actions|工作流)|\b(?:git|github|gitlab|gitee|commit(?:ted)?|push(?:ed)?|repo(?:sitory)?|branch|tag|release|actions|workflow)\b/i.test(
-        assertion,
-      );
-    const commitClaim =
-      /(?:已|已经)(?:成功|完成)?\s*(?:提交|commit)|(?:成功|完成)(?:了)?\s*(?:提交|commit)|(?:我|我们)(?:已经|已)?\s*(?:提交|commit)(?:了|完成)|(?:代码|改动|修改|变更|源码).{0,8}(?:已|已经)(?:成功)?提交|\b(?:i|we)(?:'ve| have)?\s+committed\b/i.test(
-        assertion,
-      );
-    if (commitHashClaim || (commitContext && commitClaim))
-      operations.add("commit");
-
-    const pushContext =
-      commitContext ||
-      /(?:远端|分支|标签|origin|main|master)|\b(?:remote|branch|tag)\b/i.test(
-        assertion,
-      );
-    const pushClaim =
-      /(?:已|已经)(?:成功|完成)?\s*(?:推送|push)|(?:成功|完成)(?:了)?\s*(?:推送|push)|(?:我|我们|随后|然后|同时)(?:已经|已)?(?:成功)?(?:推送|push)(?:了|完成)|(?:推送|push)(?:了|完成)|(?:分支|标签).{0,10}已推送|\b(?:i|we)(?:'ve| have)?\s+pushed\b/i.test(
-        assertion,
-      ) ||
-      (commitClaim &&
-        /(?:并|后|随后|然后|同时).{0,8}(?:推送|push)/i.test(assertion));
-    if (pushContext && pushClaim) operations.add("push");
-
-    const releaseContext =
-      /(?:打包|发布|GitHub\s*Actions|Actions|工作流|Release|版本)|\b(?:build|package|publish|release|actions|workflow)\b/i.test(
-        assertion,
-      );
-    const releaseClaim =
-      /(?:已|已经|成功)(?:完成)?\s*(?:触发|启动).{0,12}(?:打包|发布|Actions|工作流)|(?:我|我们|并|随后|然后|同时)(?:已经|已)?(?:触发|启动)(?:了)?.{0,12}(?:打包|发布|Actions|工作流)|(?:Release|Actions|工作流).{0,12}(?:运行中|已创建|已触发)|\b(?:i|we)(?:'ve| have)?\s+(?:triggered|started).{0,20}(?:build|release|actions|workflow)\b/i.test(
-        assertion,
-      );
-    if (releaseContext && releaseClaim) operations.add("release");
-  }
-  return operations;
-}
-
-export function claimedUnavailableGitOperations(text: string) {
-  const operations = new Set<GitOperation>();
-  if (
-    /not a git repository|(?:不是|并非).{0,12}git\s*(?:仓库|项目)|(?:没有|未初始化).{0,10}git\s*(?:仓库|项目)|(?:目录|工作区).{0,16}(?:不能|无法).{0,8}(?:提交|commit)/i.test(
-      text,
-    )
-  ) {
-    operations.add("commit");
-    operations.add("push");
-    operations.add("release");
-  }
-  if (
-    /(?:未配置|没有|找不到|未找到|无法确定).{0,24}(?:github\s*仓库|远端仓库|remote|发布目标)|无法.{0,12}(?:推送|push)/i.test(
-      text,
-    )
-  ) {
-    operations.add("push");
-    operations.add("release");
-  }
-  if (
-    /(?:没有|未配置|找不到|未找到).{0,20}(?:actions|工作流|workflow)|无法.{0,12}(?:发布|触发|打包)/i.test(
-      text,
-    )
-  )
-    operations.add("release");
-  return operations;
 }
 
 export function unavailableGitOperations(history: VerificationHistoryItem[]) {
@@ -190,8 +149,8 @@ export function unavailableGitOperations(history: VerificationHistoryItem[]) {
     const command = COMMAND_TOOLS.has(call.name)
       ? String(call.input.command ?? "")
       : "";
-    if (!call.name.startsWith("git_") && !/\b(?:git|gh)\b/i.test(command))
-      continue;
+    const semantics = commandSemantics(command);
+    if (!call.name.startsWith("git_") && !semantics.git) continue;
     let output = "";
     try {
       const result = JSON.parse(item.content) as {
@@ -219,7 +178,7 @@ export function unavailableGitOperations(history: VerificationHistoryItem[]) {
       /could not determine.{0,20}repository|no repositories found|未找到.{0,20}(?:github|仓库)|无法确定.{0,20}(?:仓库|发布目标)/i.test(
         output,
       ) ||
-      (/\bgh\s+repo\s+list\b/i.test(command) && output.trim() === "[]")
+      (semantics.repositoryList && output.trim() === "[]")
     ) {
       operations.add("push");
       operations.add("release");
@@ -266,17 +225,14 @@ export function successfulGitEvidence(history: VerificationHistoryItem[]) {
       call && COMMAND_TOOLS.has(call.name)
         ? String(call.input.command ?? "")
         : "";
-    if (/\bgit\s+commit\b/i.test(command)) operations.add("commit");
-    if (/\bgit\s+push\b/i.test(command)) {
+    const semantics = commandSemantics(command);
+    if (semantics.commit) operations.add("commit");
+    if (semantics.push) {
       operations.add("push");
       lastReleaseTrigger = sequence;
     }
-    if (
-      /\bgh\s+(?:workflow\s+run|run\s+rerun|release\s+create)\b/i.test(command)
-    )
-      lastReleaseTrigger = sequence;
-    if (/\bgh\s+(?:run\s+(?:view|watch)|release\s+view)\b/i.test(command))
-      lastReleaseVerification = sequence;
+    if (semantics.releaseTrigger) lastReleaseTrigger = sequence;
+    if (semantics.releaseVerification) lastReleaseVerification = sequence;
   }
   if (lastReleaseTrigger >= 0 && lastReleaseVerification > lastReleaseTrigger)
     operations.add("release");

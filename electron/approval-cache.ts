@@ -2,12 +2,16 @@ import { app } from "electron";
 import * as path from "node:path";
 import * as fs from "node:fs";
 import {
+  commandSegmentsForPolicy,
   evaluateCommandPolicy,
-  tokenizeShellCommand,
   type CommandPolicyAction,
   type CommandPolicyRule,
 } from "../src/permissions";
-import { canonicalizeCommand, extractCommandSignature } from "./command-canonicalize";
+import {
+  canonicalizeCommand,
+  extractCommandSignature,
+  extractCommandSignatureFromTokens,
+} from "./command-canonicalize";
 
 export type ApprovalScope = "once" | "session" | "permanent";
 
@@ -42,12 +46,37 @@ const DENYLIST_PATTERNS: string[][] = [
 ];
 
 function isDenylisted(command: string): boolean {
-  const segments = tokenizeShellCommand(command);
+  const segments = commandSegmentsForPolicy(command);
+  const structurallyDangerous = segments.some((segment) => {
+    const signature = extractCommandSignatureFromTokens(segment);
+    const executable = signature[0]?.toLowerCase();
+    const subcommand = signature[1]?.toLowerCase();
+    const flags = new Set(segment.map((token) => token.toLowerCase()));
+    if (
+      ["rm", "rmdir", "rd", "del", "erase", "unlink", "remove-item"].includes(
+        executable,
+      )
+    )
+      return true;
+    if (executable !== "git") return false;
+    if (subcommand === "push")
+      return [...flags].some(
+        (flag) =>
+          flag === "-f" ||
+          flag === "--force" ||
+          flag.startsWith("--force-with-lease"),
+      );
+    if (subcommand === "reset" && flags.has("--hard")) return true;
+    return (
+      subcommand === "clean" &&
+      [...flags].some((flag) => /^-[a-z]*f/i.test(flag))
+    );
+  });
+  if (structurallyDangerous) return true;
   return DENYLIST_PATTERNS.some((pattern) =>
     segments.some((segment) =>
       pattern.every(
-        (token, index) =>
-          segment[index]?.toLowerCase() === token.toLowerCase(),
+        (token, index) => segment[index]?.toLowerCase() === token.toLowerCase(),
       ),
     ),
   );
@@ -62,12 +91,7 @@ function isDenylisted(command: string): boolean {
  *      "tsc --noEmit" → ["tsc"]
  */
 function generalize(command: string): string[] {
-  const canonical = canonicalizeCommand(command);
-  const segments = tokenizeShellCommand(canonical);
-  if (!segments.length || !segments[0].length) return [];
-  const first = segments[0];
-  // Keep up to 2 tokens (executable + subcommand)
-  return first.slice(0, Math.min(2, first.length));
+  return extractCommandSignature(command);
 }
 
 function storagePath(): string {

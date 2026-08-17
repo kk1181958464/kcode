@@ -1,3 +1,5 @@
+import { commandSegmentsForPolicy } from "../src/permissions";
+
 /**
  * Command Canonicalization — normalize shell commands before comparison so that
  * insignificant differences (extra whitespace, quote style, path separators,
@@ -142,6 +144,58 @@ function normalizeExecutable(exe: string): string {
   return normalized.toLowerCase();
 }
 
+export type CommandInvocation = {
+  tokens: string[];
+  executable: string;
+  args: string[];
+};
+
+function invocationTokens(segment: string[]) {
+  let tokens = segment.filter(Boolean);
+  const assignmentIndex = tokens.findIndex((token) => token === "=");
+  if (
+    assignmentIndex >= 1 &&
+    tokens
+      .slice(0, assignmentIndex)
+      .every((token) => /^\$?[\w.:-]+$/.test(token))
+  )
+    tokens = tokens.slice(assignmentIndex + 1);
+
+  while (tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0]))
+    tokens = tokens.slice(1);
+
+  let executable = normalizeExecutable(tokens[0] ?? "");
+  if (executable === "env") {
+    let index = 1;
+    while (
+      index < tokens.length &&
+      (tokens[index].startsWith("-") ||
+        /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[index]))
+    )
+      index += 1;
+    tokens = tokens.slice(index);
+    executable = normalizeExecutable(tokens[0] ?? "");
+  }
+  if (["sudo", "command", "call"].includes(executable)) {
+    let index = 1;
+    while (index < tokens.length && tokens[index].startsWith("-")) index += 1;
+    tokens = tokens.slice(index);
+  }
+  return tokens;
+}
+
+/** Executable command invocations after shell wrappers and simple prefixes are removed. */
+export function parseCommandInvocations(command: string): CommandInvocation[] {
+  return commandSegmentsForPolicy(command)
+    .map(invocationTokens)
+    .filter((tokens) => tokens.length > 0)
+    .map((tokens) => ({
+      tokens,
+      executable: normalizeExecutable(tokens[0]).split("/").at(-1) ?? "",
+      args: tokens.slice(1),
+    }));
+}
+
 /**
  * Normalize a single argument token:
  * - Normalize path separators
@@ -170,16 +224,31 @@ export function commandsMatch(a: string, b: string): boolean {
 export function extractCommandSignature(command: string): string[] {
   const canonical = canonicalizeCommand(command);
   if (!canonical) return [];
+  const invocation = parseCommandInvocations(canonical)[0];
+  return invocation ? extractCommandSignatureFromTokens(invocation.tokens) : [];
+}
 
-  // Remove env var prefix for signature
-  const { rest } = splitEnvPrefix(canonical);
-  const tokens = rest.split(" ").filter(Boolean);
+export function extractCommandSignatureFromTokens(tokens: string[]): string[] {
   if (!tokens.length) return [];
 
-  // Return executable + first non-flag argument (subcommand)
-  const sig: string[] = [tokens[0]];
+  const executable = normalizeExecutable(tokens[0]).split("/").at(-1) ?? "";
+  const sig: string[] = [executable];
+  if (executable === "git") {
+    for (let index = 1; index < tokens.length; index += 1) {
+      const token = tokens[index];
+      if (["-C", "-c", "--git-dir", "--work-tree"].includes(token)) {
+        index += 1;
+        continue;
+      }
+      if (token.startsWith("--git-dir=") || token.startsWith("--work-tree="))
+        continue;
+      if (token.startsWith("-")) continue;
+      sig.push(token.toLowerCase());
+      break;
+    }
+    return sig;
+  }
   for (let i = 1; i < tokens.length && sig.length < 2; i++) {
-    // Skip flags (--, -x, --flag)
     if (!tokens[i].startsWith("-")) {
       sig.push(tokens[i]);
       break;

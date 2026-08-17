@@ -28,6 +28,7 @@ function snapshotActivity(
     planSteps: activity.planSteps
       ?.slice(0, 12)
       .map((step) => step.slice(0, 300)),
+    planStatuses: activity.planStatuses?.slice(0, 12),
     planStep: activity.planStep,
     startedAt: activity.startedAt,
     completedAt: activity.completedAt,
@@ -79,6 +80,7 @@ function snapshotMessage(message: TaskRecord["messages"][number]) {
           ),
     finalResponseStartedAt: message.finalResponseStartedAt,
     finalResponseProcess: message.finalResponseProcess,
+    completionResult: message.completionResult,
     model: message.model,
     imageCount: message.images?.length || undefined,
     files: message.contextAttachments?.length

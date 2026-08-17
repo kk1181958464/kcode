@@ -9,9 +9,13 @@ test("extracts the last stderr line for an activity failure", () => {
   );
 });
 
-test("preserves credentials in concise failure output", () => {
+test("redacts credentials in concise failure output", () => {
   const detail = conciseFailureOutput(
     "stderr:\nAuthorization: Bearer abc123\npassword=secret-value",
   );
-  assert.equal(detail, "password=secret-value");
+  assert.equal(detail, "password=[已安全隐藏]");
+  assert.equal(
+    conciseFailureOutput("request failed for https://root:hunter2@example.com"),
+    "request failed for https://root:[已安全隐藏]@example.com",
+  );
 });

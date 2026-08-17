@@ -95,14 +95,18 @@ test("asks the model to change strategy before pausing repeated tool rounds", as
   );
 });
 
-test("finalizes after repeated closing checks even when each read-only command differs", async () => {
+test("finalizes repeated post-change checks from structured evidence", async () => {
   const workspacePath = await mkdtemp(path.join(os.tmpdir(), "kcode-closing-"));
-  await writeFile(path.join(workspacePath, "first.txt"), "first\n", "utf8");
+  await writeFile(
+    path.join(workspacePath, "first.js"),
+    'const value = "first";\n',
+    "utf8",
+  );
   await writeFile(path.join(workspacePath, "second.txt"), "second\n", "utf8");
   const request: ModelRequest = {
     providerId: "fake",
     modelId: "fake-model",
-    messages: [{ role: "user", content: "检查这两个文件并给出结论" }],
+    messages: [{ role: "user", content: "把 first.js 改成 changed 并验证" }],
     permissionMode: "full-access",
     workspacePath,
   };
@@ -121,14 +125,14 @@ test("finalizes after repeated closing checks even when each read-only command d
         finalizationInstructionSeen ||= args.history.some(
           (item) =>
             item.kind === "message" &&
-            item.content.includes("连续多轮声称正在进行最后或最终确认"),
+            item.content.includes("操作证据已经完整"),
         );
-        if (rounds === 3) {
+        if (rounds === 4) {
           finalizationDisabledTools = !args.toolsEnabled;
           yield {
             type: "complete",
             turn: {
-              text: "结论：两个文件均存在，检查已经结束。",
+              text: "结论：文件已经修改并完成验证。",
               calls: [],
               rawCalls: [],
               usage: { input: 20, output: 8, cached: 0 },
@@ -136,20 +140,40 @@ test("finalizes after repeated closing checks even when each read-only command d
           };
           return;
         }
+        const calls =
+          rounds === 1
+            ? [
+                {
+                  id: "inspect",
+                  name: "read_file" as const,
+                  input: { path: "first.js" },
+                },
+                {
+                  id: "modify",
+                  name: "write_file" as const,
+                  input: {
+                    path: "first.js",
+                    content: 'const value = "changed";\n',
+                  },
+                },
+                {
+                  id: "validate",
+                  name: "run_command" as const,
+                  input: { command: "node --check first.js" },
+                },
+              ]
+            : [
+                {
+                  id: `closing-call-${rounds}`,
+                  name: "path_info" as const,
+                  input: { path: rounds === 2 ? "first.js" : "second.txt" },
+                },
+              ];
         yield {
           type: "complete",
           turn: {
-            text:
-              rounds === 1
-                ? "我再做最后一次文件核对，然后直接给出结论。"
-                : "最终复核另一个文件，结论以这次检查为准。",
-            calls: [
-              {
-                id: `closing-call-${rounds}`,
-                name: "path_info",
-                input: { path: rounds === 1 ? "first.txt" : "second.txt" },
-              },
-            ],
+            text: "继续核对结构化工具结果。",
+            calls,
             rawCalls: [],
             usage: { input: 10, output: 5, cached: 0 },
           },
@@ -159,7 +183,7 @@ test("finalizes after repeated closing checks even when each read-only command d
   ))
     events.push(event);
 
-  assert.equal(rounds, 3);
+  assert.equal(rounds, 4);
   assert.equal(finalizationInstructionSeen, true);
   assert.equal(finalizationDisabledTools, true);
   assert.ok(

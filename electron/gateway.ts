@@ -62,16 +62,16 @@ const parseSummary = (
       : [];
     return [...new Set([...(fallback[key] ?? []), ...generated])].slice(-64);
   };
-  // connections are exact local facts, not something the model should rewrite:
-  // always carry the fallback (locally derived) list through verbatim.
+  // Execution facts are owned by the runtime event ledger. A summarizer may
+  // condense semantic conversation state, but cannot invent tool outcomes.
   return {
     summary: value.summary.slice(0, 40_000),
     ledger: {
       goals: list("goals"),
       decisions: list("decisions"),
-      changedFiles: list("changedFiles"),
-      validations: list("validations"),
-      failures: list("failures"),
+      changedFiles: fallback.changedFiles ?? [],
+      validations: fallback.validations ?? [],
+      failures: fallback.failures ?? [],
       pending: list("pending"),
       connections: fallback.connections ?? [],
     },

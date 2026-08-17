@@ -45,6 +45,17 @@ test("builds a bounded remote task snapshot without absolute workspace paths", (
         finalResponseOffset,
         finalResponseStartedAt: 8,
         finalResponseProcess: "correction",
+        completionResult: {
+          kind: "changed",
+          operations: ["coding:modify", "coding:validate"],
+          missingOperations: [],
+          toolCalls: 2,
+          successfulTools: 2,
+          failedTools: 0,
+          changedFiles: ["src/App.tsx"],
+          additions: 4,
+          deletions: 1,
+        },
       },
     ],
     activities: [
@@ -61,6 +72,9 @@ test("builds a bounded remote task snapshot without absolute workspace paths", (
         startedAt: 1,
         textOffset: 6,
         subagentId: "agent-1",
+        planSteps: ["读取文件", "验证结果"],
+        planStatuses: ["completed", "in_progress"],
+        planStep: 1,
       },
     ],
   };
@@ -78,9 +92,24 @@ test("builds a bounded remote task snapshot without absolute workspace paths", (
   assert.equal(snapshot.messages[1].finalResponseOffset, "已检查。".length);
   assert.equal(snapshot.messages[1].finalResponseStartedAt, 8);
   assert.equal(snapshot.messages[1].finalResponseProcess, "correction");
+  assert.deepEqual(snapshot.messages[1].completionResult, {
+    kind: "changed",
+    operations: ["coding:modify", "coding:validate"],
+    missingOperations: [],
+    toolCalls: 2,
+    successfulTools: 2,
+    failedTools: 0,
+    changedFiles: ["src/App.tsx"],
+    additions: 4,
+    deletions: 1,
+  });
   assert.equal(snapshot.activities[0].path, "kcode/src/App.tsx");
   assert.equal(snapshot.activities[0].textOffset, 6);
   assert.equal(snapshot.activities[0].subagentId, "agent-1");
+  assert.deepEqual(snapshot.activities[0].planStatuses, [
+    "completed",
+    "in_progress",
+  ]);
   assert.equal(
     snapshot.activities[0].liveStatus,
     "等待人工验证：请完成人机验证",

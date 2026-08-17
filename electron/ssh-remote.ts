@@ -239,9 +239,7 @@ export async function connectSavedSshRemote(taskId: string, profileId: string) {
     const stored = profiles.get(profileId);
     if (!stored) {
       if (runtime)
-        throw new Error(
-          "此 SSH Remote 来自临时连接，断开后需要重新输入凭据。",
-        );
+        throw new Error("此 SSH Remote 来自临时连接，断开后需要重新输入凭据。");
       throw new Error("找不到已保存的 SSH Remote 连接。");
     }
     const resolved = await connectWithProfile(
@@ -280,6 +278,7 @@ export async function sshRemoteState(taskId: string, profileId?: string) {
     taskId,
     connected: sessionConnected && bindingMatches,
     connecting: connectingTasks.has(taskId),
+    reconnectAvailable: Boolean(runtime?.secret || stored),
     profile,
     cachePath: id ? cachePath(id) : undefined,
     error: connectionErrors.get(taskId),
@@ -299,8 +298,7 @@ export async function adoptActiveSshRemote(
 ) {
   await ensureLoaded();
   const session = sshSessionInfo(taskId);
-  if (!session.connected)
-    throw new Error("当前任务没有可接管的 SSH 连接。");
+  if (!session.connected) throw new Error("当前任务没有可接管的 SSH 连接。");
   const rootPath = await resolveSshRoot(
     taskId,
     `ssh-remote:adopt:${taskId}`,
@@ -314,7 +312,8 @@ export async function adoptActiveSshRemote(
     : undefined;
   const boundStored = boundProfileId ? profiles.get(boundProfileId) : undefined;
   const boundProfile =
-    boundRuntime?.profile ?? (boundStored ? publicProfile(boundStored) : undefined);
+    boundRuntime?.profile ??
+    (boundStored ? publicProfile(boundStored) : undefined);
   const sameEndpoint =
     boundProfile?.host === session.host &&
     boundProfile.port === session.port &&
@@ -343,8 +342,8 @@ export async function adoptActiveSshRemote(
   );
   const mayReuseBoundProfile = Boolean(
     sameEndpoint &&
-      boundProfileId &&
-      (!boundStored || mayReplaceRememberedProfile),
+    boundProfileId &&
+    (!boundStored || mayReplaceRememberedProfile),
   );
   const profileId =
     mayReuseBoundProfile && boundProfileId

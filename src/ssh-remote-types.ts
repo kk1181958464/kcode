@@ -34,6 +34,7 @@ export type SshRemoteState = {
   taskId: string;
   connected: boolean;
   connecting: boolean;
+  reconnectAvailable?: boolean;
   profile?: SshRemoteProfile;
   cachePath?: string;
   error?: string;

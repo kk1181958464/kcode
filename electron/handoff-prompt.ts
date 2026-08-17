@@ -45,13 +45,9 @@ Output JSON with this exact shape:
 {
   "summary": "<markdown string>",
   "ledger": {
-    "goals": ["<user goals, most recent first>"],
+    "goals": ["<concise user goals>"],
     "decisions": ["<architectural decisions with rationale>"],
-    "changedFiles": ["<file paths that were modified>"],
-    "validations": ["<test/build results>"],
-    "failures": ["<errors encountered and their resolution status>"],
-    "pending": ["<work not yet completed>"],
-    "connections": ["<active connection coordinates, no secrets>"]
+    "pending": ["<work not yet completed>"]
   }
 }
 
@@ -66,6 +62,7 @@ Rules for the summary markdown:
 Rules for accuracy:
 - Only report tool results as facts (changed files, test outcomes, command outputs)
 - Mark model-only claims (no tool evidence) as "[unverified]"
+- Do not create or rewrite changedFiles, validations, failures, or connections; those fields are maintained by the runtime event ledger
 - Later facts override earlier contradictions
 - Never include passwords, tokens, private keys, or auth headers
 - Preserve connection coordinates (host, port, user, database) without secrets

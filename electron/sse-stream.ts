@@ -1,5 +1,19 @@
 import { readStreamChunk } from "./request-guard";
 
+export class SseStreamTimeoutError extends Error {
+  constructor(
+    public readonly timeoutKind: "idle" | "meaningful",
+    public readonly timeoutMs: number,
+  ) {
+    super(
+      timeoutKind === "meaningful"
+        ? `模型响应流持续没有正文或工具调用（${Math.round(timeoutMs / 1_000)} 秒）`
+        : `模型响应流长时间没有有效事件（${Math.round(timeoutMs / 1_000)} 秒）`,
+    );
+    this.name = "SseStreamTimeoutError";
+  }
+}
+
 type SseOptions = {
   signal: AbortSignal;
   idleTimeoutMs?: number;
@@ -78,13 +92,9 @@ export async function* readSseJson(
     ? (options.meaningfulIdleTimeoutMs ?? idleTimeoutMs)
     : undefined;
   const semanticTimeoutError = () =>
-    new Error(
-      `模型响应流长时间没有有效事件（${Math.round(idleTimeoutMs / 1_000)} 秒）`,
-    );
+    new SseStreamTimeoutError("idle", idleTimeoutMs);
   const meaningfulTimeoutError = () =>
-    new Error(
-      `模型响应流持续没有正文或工具调用（${Math.round((meaningfulIdleTimeoutMs ?? 0) / 1_000)} 秒）`,
-    );
+    new SseStreamTimeoutError("meaningful", meaningfulIdleTimeoutMs ?? 0);
   try {
     while (!terminal) {
       const now = Date.now();

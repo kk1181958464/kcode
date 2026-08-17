@@ -64,11 +64,6 @@ export function isSshRemoteCredentialsRequired(error: unknown) {
   return error instanceof SshRemoteCredentialsRequiredError;
 }
 
-function temporaryCredentialsAreMissing(error: unknown) {
-  const message = error instanceof Error ? error.message : String(error);
-  return /临时连接|重新输入凭据|找不到已保存的 SSH Remote 连接/.test(message);
-}
-
 export async function restoreSshRemoteConnection(
   api: SshRemoteRecoveryApi,
   taskId: string,
@@ -77,13 +72,8 @@ export async function restoreSshRemoteConnection(
   const current = await api.state(taskId, workspace.id);
   if (current.connected) return current;
 
-  if (current.profile) {
-    try {
-      return await api.connectSaved(taskId, current.profile.id);
-    } catch (error) {
-      if (!temporaryCredentialsAreMissing(error)) throw error;
-    }
-  }
+  if (current.profile && current.reconnectAvailable)
+    return api.connectSaved(taskId, current.profile.id);
 
   const candidate = matchingSavedSshRemoteProfile(
     workspace,

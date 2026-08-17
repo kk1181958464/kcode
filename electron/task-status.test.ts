@@ -34,12 +34,66 @@ test("recovers persisted running tasks as paused", () => {
   );
 });
 
-test("does not infer completion from an earlier successful turn after failure", () => {
+test("recovers failure only from structured message errors", () => {
   assert.equal(
     recoverTaskRunStatus({
-      messages: [message("earlier result"), message("请求失败：upstream 502")],
+      messages: [
+        message("earlier result"),
+        { ...message("partial output"), error: "upstream 502" },
+      ],
     }),
     "failed",
+  );
+  assert.equal(
+    recoverTaskRunStatus({
+      messages: [message("请求失败：这是被引用的普通文字")],
+    }),
+    "completed",
+  );
+});
+
+test("recovers structured incomplete and blocked outcomes", () => {
+  assert.equal(
+    recoverTaskRunStatus({
+      messages: [
+        {
+          ...message("部分结果"),
+          completionResult: {
+            kind: "incomplete",
+            operations: [],
+            missingOperations: ["coding:modify"],
+            toolCalls: 0,
+            successfulTools: 0,
+            failedTools: 0,
+            changedFiles: [],
+            additions: 0,
+            deletions: 0,
+          },
+        },
+      ],
+    }),
+    "paused",
+  );
+  assert.equal(
+    recoverTaskRunStatus({
+      messages: [
+        {
+          ...message("等待输入"),
+          completionResult: {
+            kind: "blocked",
+            operations: [],
+            missingOperations: [],
+            toolCalls: 1,
+            successfulTools: 1,
+            failedTools: 0,
+            changedFiles: [],
+            additions: 0,
+            deletions: 0,
+          },
+        },
+      ],
+    }),
+    "blocked",
   );
 });
 

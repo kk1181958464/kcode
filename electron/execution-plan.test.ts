@@ -2,9 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   defaultExecutionPlan,
-  extractExecutionPlan,
   fallbackExecutionPlanStep,
-  sameExecutionPlan,
+  normalizePlanUpdate,
   summarizeExecutionPlan,
 } from "../src/execution-plan";
 import type { AgentActivity } from "../src/types";
@@ -24,21 +23,35 @@ function activity(
   };
 }
 
-test("extracts consecutive numbered plans from model narration", () => {
+test("validates structured plan updates", () => {
   assert.deepEqual(
-    extractExecutionPlan(
-      "我会按顺序处理：\n1. 读取当前实现\n2. 修改相关文件\n3. 运行测试",
-    ),
-    ["读取当前实现", "修改相关文件", "运行测试"],
+    normalizePlanUpdate({
+      explanation: "开始实现",
+      plan: [
+        { step: "检查当前实现", status: "completed" },
+        { step: "修改相关文件", status: "in_progress" },
+        { step: "运行测试", status: "pending" },
+      ],
+    }),
+    {
+      explanation: "开始实现",
+      plan: [
+        { step: "检查当前实现", status: "completed" },
+        { step: "修改相关文件", status: "in_progress" },
+        { step: "运行测试", status: "pending" },
+      ],
+    },
   );
-  assert.deepEqual(extractExecutionPlan("第一步：检查状态\n第二步：应用修改"), [
-    "检查状态",
-    "应用修改",
-  ]);
-});
-
-test("ignores an isolated numbered sentence", () => {
-  assert.deepEqual(extractExecutionPlan("结论如下：\n1. 只有一项"), []);
+  assert.throws(
+    () =>
+      normalizePlanUpdate({
+        plan: [
+          { step: "检查", status: "in_progress" },
+          { step: "修改", status: "in_progress" },
+        ],
+      }),
+    /最多只能有一个/,
+  );
 });
 
 test("summarizes plan progress from activity results", () => {
@@ -84,9 +97,24 @@ test("waiting tools do not complete an unexecuted plan step", () => {
   });
 });
 
-test("compares plan revisions without relying on object identity", () => {
-  assert.equal(sameExecutionPlan(["检查", "验证"], ["检查", "验证"]), true);
-  assert.equal(sameExecutionPlan(["检查"], ["检查", "验证"]), false);
+test("summarizes statuses emitted by update_plan", () => {
+  const planSteps = ["检查", "修改", "验证"];
+  assert.deepEqual(
+    summarizeExecutionPlan([
+      activity({
+        id: "plan",
+        tool: "update_plan",
+        planSteps,
+        planStatuses: ["completed", "in_progress", "pending"],
+        planStep: 1,
+      }),
+    ]),
+    {
+      steps: planSteps,
+      current: 1,
+      statuses: ["completed", "running", "pending"],
+    },
+  );
 });
 
 test("builds a fallback coding plan and maps concrete tools to its phases", () => {

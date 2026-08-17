@@ -1,4 +1,8 @@
-import type { ImageAttachment, ProviderConfig } from "./types";
+import type {
+  AgentCompletionResult,
+  ImageAttachment,
+  ProviderConfig,
+} from "./types";
 
 export const MAX_REMOTE_ATTACHMENT_BYTES = 7 * 1024 * 1024;
 
@@ -89,6 +93,7 @@ export type RemoteTaskSnapshot = {
     finalResponseOffset?: number;
     finalResponseStartedAt?: number;
     finalResponseProcess?: "correction";
+    completionResult?: AgentCompletionResult;
     model?: string;
     imageCount?: number;
     files?: Array<{ name: string; size: number }>;
@@ -106,6 +111,7 @@ export type RemoteTaskSnapshot = {
     recoverable?: boolean;
     liveStatus?: string;
     planSteps?: string[];
+    planStatuses?: Array<"pending" | "in_progress" | "completed">;
     planStep?: number;
     startedAt: number;
     completedAt?: number;

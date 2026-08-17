@@ -133,11 +133,7 @@ function MessageItem({
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [previewImage]);
-  const legacyError =
-    message.role === "assistant" && message.content.startsWith("请求失败：")
-      ? message.content.slice("请求失败：".length)
-      : undefined;
-  const error = message.error ?? legacyError;
+  const error = message.error;
   const isError = Boolean(error);
   const visibleContent =
     message.role === "assistant"
@@ -213,16 +209,16 @@ function MessageItem({
               ))}
             </div>
           )}
-          {message.role === "assistant" && !legacyError && assistantBody ? (
+          {message.role === "assistant" && assistantBody ? (
             assistantBody
           ) : visibleContent ? (
-            message.role === "assistant" && !legacyError ? (
+            message.role === "assistant" ? (
               <MarkdownMessage
                 content={visibleContent}
                 workspacePath={workspacePath}
               />
             ) : (
-              !legacyError && visibleContent
+              visibleContent
             )
           ) : running ? (
             <div className="thinking">
@@ -232,6 +228,14 @@ function MessageItem({
               正在思考
             </div>
           ) : null}
+          {message.role === "assistant" &&
+            message.completionResult?.kind === "incomplete" &&
+            message.completionResult.notice && (
+              <div className="message-completion-notice" role="status">
+                <CircleAlert size={14} />
+                <span>{message.completionResult.notice}</span>
+              </div>
+            )}
           {error && <div className="message-error">请求失败：{error}</div>}
         </div>
       </div>
@@ -494,7 +498,7 @@ const ActivityItem = memo(function ActivityItem({
                     true,
                     "once",
                     activity.command,
-                    undefined,
+                    activity.permissionCategory,
                     workspacePath,
                   )
                 }
@@ -512,7 +516,7 @@ const ActivityItem = memo(function ActivityItem({
                         true,
                         "session",
                         activity.command,
-                        undefined,
+                        activity.permissionCategory,
                         workspacePath,
                       )
                     }
@@ -528,7 +532,7 @@ const ActivityItem = memo(function ActivityItem({
                         true,
                         "permanent",
                         activity.command,
-                        undefined,
+                        activity.permissionCategory,
                         workspacePath,
                       )
                     }

@@ -51,4 +51,10 @@ test("extractCommandSignature returns exe + subcommand", () => {
   assert.deepEqual(extractCommandSignature("npm run build"), ["npm", "run"]);
   assert.deepEqual(extractCommandSignature("git commit -m 'fix'"), ["git", "commit"]);
   assert.deepEqual(extractCommandSignature("NODE_ENV=test jest --coverage"), ["jest", "--coverage"].slice(0, 1));
+  assert.deepEqual(
+    extractCommandSignature(
+      'powershell.exe -NoProfile -Command "git -C D:\\project commit -m test"',
+    ),
+    ["git", "commit"],
+  );
 });

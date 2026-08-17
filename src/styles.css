@@ -12456,6 +12456,23 @@ select:focus-visible {
   background: var(--danger-soft);
 }
 
+.message-completion-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid color-mix(in srgb, var(--warning) 24%, var(--ui-border));
+  color: var(--warning);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.message-completion-notice svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
 .run-state,
 .error-state {
   padding: 2px 6px;
