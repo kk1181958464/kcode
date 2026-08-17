@@ -103,7 +103,11 @@ import {
   validateGitRemoteName,
 } from "./git-remote-status";
 import { conciseFailureOutput } from "./activity-errors";
-import { powershellCommand } from "./powershell-command";
+import {
+  localShellInvocation,
+  localShellPromptInstruction,
+  localShellToolDescription,
+} from "./local-shell";
 import {
   fetchWithRetry,
   isRetryableStreamError,
@@ -914,8 +918,7 @@ const tools = [
   },
   {
     name: "start_process",
-    description:
-      "Start a long-running PowerShell process such as a dev server and return a process id.",
+    description: `${localShellToolDescription(true)} Use this for a dev server or another background service and return a process id.`,
     parameters: {
       type: "object",
       properties: { command: { type: "string" } },
@@ -1672,8 +1675,7 @@ const tools = [
   },
   {
     name: "run_command",
-    description:
-      "Run a Windows PowerShell 5.1 command in the workspace. This is not Bash: do not use <<EOF heredocs or &&/|| chains. Prefer browser tools for page interaction, responsive screenshots, and DOM inspection; do not launch Chrome/Edge from this tool. Use start_process for background services.",
+    description: `${localShellToolDescription()} Prefer browser tools for page interaction, responsive screenshots, and DOM inspection; do not launch a browser from this tool. Use start_process for background services.`,
     parameters: {
       type: "object",
       properties: {
@@ -2853,16 +2855,13 @@ async function execute(
     const script = String(call.input.command || "");
     if (!script) throw new Error("缺少进程命令");
     const id = randomUUID();
-    const child = spawn(
-      "powershell.exe",
-      ["-NoProfile", "-NonInteractive", "-Command", powershellCommand(script)],
-      {
-        cwd: root,
-        windowsHide: true,
-        shell: false,
-        detached: process.platform !== "win32",
-      },
-    );
+    const shell = localShellInvocation(script);
+    const child = spawn(shell.executable, shell.args, {
+      cwd: root,
+      windowsHide: true,
+      shell: false,
+      detached: process.platform !== "win32",
+    });
     const backgroundProcess = { root, requestId, child, output: "" } as {
       root: string;
       requestId: string;
@@ -4042,15 +4041,11 @@ async function execute(
         output: diagnostic.message ?? "项目未配置对应诊断脚本，已跳过。",
         executed: false,
       };
+    const shell = localShellInvocation(diagnostic.command!);
     const result = await command(
       root,
-      "powershell.exe",
-      [
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        powershellCommand(diagnostic.command!),
-      ],
+      shell.executable,
+      shell.args,
       signal,
       defaultCommandTimeoutMs(diagnostic.command!),
     );
@@ -4085,10 +4080,11 @@ async function execute(
   // installation gets a wider silence window; other network commands retain
   // the tighter guard so the UI cannot remain stuck for the full timeout.
   const idleTimeoutMs = defaultCommandIdleTimeoutMs(script, timeoutMs);
+  const shell = localShellInvocation(script);
   const result = await command(
     root,
-    "powershell.exe",
-    ["-NoProfile", "-NonInteractive", "-Command", powershellCommand(script)],
+    shell.executable,
+    shell.args,
     signal,
     timeoutMs,
     onProgress,
@@ -4672,6 +4668,7 @@ async function modelTurn(
   const enabledMcpServers = listMcpServerConfigs().filter(
     (server) => server.enabled,
   );
+  const localShellInstruction = localShellPromptInstruction();
   const activeSkills = [
     runtime?.activeSkills ??
       (await loadActiveSkillInstructions(latestUserRequest)),
@@ -4684,8 +4681,8 @@ async function modelTurn(
     "Past-tense claims about real workspace or external actions are checked against successful structured tool results. Do not say that a file was changed, a command ran, a test passed, a remote connection or transfer completed, a browser action happened, or a Git action completed unless the corresponding tool evidence exists in this run. Informational answers, explanations, planning, and content generation that require no real action may finish without calling a tool; do not invent an action claim merely to create evidence. If an earlier statement was wrong, retract it explicitly instead of inventing evidence.",
     "Saved credentials are local to this KCode installation and isolated by explicit tool scope. Never infer a credential category merely from words such as account, username, password, login, 账号, 密码, or 登录. SSH and database credentials belong only to their matching connect tools; call credential_list only after the target connection category is known. Website credentials belong only to the real origin currently open in the task browser: use browser_list_credentials, browser_save_credential, and browser_fill_credential there. If no target type or endpoint is known, call request_user_input for the target category and address instead of guessing website. A successful new SSH or database connection is remembered by default unless the user explicitly requests a temporary connection. Never invent an alias, put a decrypted secret in chat, send a secret to a subagent, or place one in a command when a native credential-aware tool can perform the action.",
     request.remoteWorkspace
-      ? "This is a managed SSH Remote task with hybrid file access: the ssh_* tools act on the remote server, while the local file, git, and command tools act on THIS local machine. Use ssh_run for remote shell work (its shell and OS come from the remote server); run_command runs local Windows PowerShell 5.1, not Bash, and must never use <<EOF heredocs or &&/|| chains. When the user points to local files by absolute path (for example D:\\project\\... on Windows), read, edit, build, and inspect them with the local file and command tools, then use ssh_upload_file to deploy the results to the server and ssh_download_file to pull remote files down. Reuse the managed session while it is connected. If an SSH tool explicitly reports that the session was lost, call ssh_connect with credentials already supplied by the user; never ask the user to create another SSH Remote manually. Do not disconnect the managed session unless the user explicitly requests it."
-      : "run_command uses Windows PowerShell 5.1, not Bash. Never use <<EOF heredocs or &&/|| chains; use a PowerShell here-string for multiline stdin and check $LASTEXITCODE explicitly when chaining native commands. Use browser_open, browser_snapshot, browser_click, browser_type, and browser_screenshot for browser work. For responsive validation, pass explicit width and height to browser_screenshot. Never launch Chrome or Edge through run_command for browsing, DOM inspection, version checks, or screenshots.",
+      ? `This is a managed SSH Remote task with hybrid file access: the ssh_* tools act on the remote server, while the local file, git, and command tools act on THIS local machine. Use ssh_run for remote shell work; its shell and OS come from the remote server. For local commands, ${localShellInstruction} When the user points to local files by absolute path, read, edit, build, and inspect them with the local file and command tools, then use ssh_upload_file to deploy the results to the server and ssh_download_file to pull remote files down. Reuse the managed session while it is connected. If an SSH tool explicitly reports that the session was lost, call ssh_connect with credentials already supplied by the user; never ask the user to create another SSH Remote manually. Do not disconnect the managed session unless the user explicitly requests it.`
+      : `${localShellInstruction} Use browser_open, browser_snapshot, browser_click, browser_type, and browser_screenshot for browser work. For responsive validation, pass explicit width and height to browser_screenshot. Never launch a browser through run_command for browsing, DOM inspection, version checks, or screenshots.`,
     !request.remoteWorkspace
       ? "When connecting to a remote project, pass its project directory as rootPath to ssh_connect so KCode opens the editable SSH Remote workspace immediately. If you learn the project directory only after connecting, call ssh_set_workspace once with that directory. Do not leave the editor rooted at the server home when a more specific project root is known, and do not call ssh_disconnect after finishing unless the user explicitly asks to disconnect."
       : "",
@@ -4701,7 +4698,7 @@ async function modelTurn(
   const remoteWorkspaceInstruction = request.remoteWorkspace
     ? `\n\n<ssh_remote_workspace>\nThis task is attached to a managed SSH Remote workspace. Try the existing session first. If an SSH tool explicitly reports that the session was lost, ssh_connect is available for recovery. When the user already supplied the host, username, password, private-key content, or an absolute private-key path, reconnect yourself immediately with those values; use privateKeyPath for a user-supplied key path and do not send the user to the SSH Remote dialog. The project source of truth is on ${request.remoteWorkspace.username}@${request.remoteWorkspace.host}:${request.remoteWorkspace.port} under ${request.remoteWorkspace.rootPath}. Pass that rootPath when reconnecting. Use ssh_list_directory, ssh_read_file, ssh_write_file, ssh_run, ssh_upload_file, and ssh_download_file for work on the remote server. Relative SSH file paths are automatically resolved under the remote root. Every ssh_run command starts in the remote root. This is a hybrid task: you ALSO have the local file, git, and command tools, which act on THIS machine. When the user references local project sources by absolute path (for example D:\\\\project\\\\... on Windows), use the local tools to read, edit, build, and inspect them, then ssh_upload_file to deploy build artifacts to the server. Note ${root} itself is only KCode metadata/cache, not the user's local project — do not treat that cache directory as the source, but do freely use the local tools on the absolute paths the user points you to.\n</ssh_remote_workspace>`
     : "";
-  const system = `${isolation.boundary}\nYou are a coding agent working in ${root}. Use the provided native tools to inspect and modify the project. Each run_command invocation uses a fresh PowerShell process, so environment variable changes do not persist to later commands; combine dependent setup and execution in one command. Prefer apply_patch for precise edits and write_file for new or complete files. Never invoke apply_patch, file deletion, file moves, or directory operations through run_command when a native tool exists. File tool paths accept absolute paths, including other drives (for example D:\\B on Windows); use them to read or write files the user explicitly points to outside ${root}, and resolve relative paths against ${root}. When you mention a file in your reply, always write its full workspace-relative path (for example src/views/Gooddetail.vue, not just Gooddetail.vue) so the user can tell exactly which file it is. Use web_search for current or externally verifiable information and fetch_url to inspect primary sources; preserve source URLs in the final answer. For interactive or authenticated sites use browser_open, browser_snapshot, browser_click, and browser_type. Credentials explicitly supplied by the user may be entered directly with browser_type. Browser recording is opt-in: call browser_record_start only after an explicit user request such as 开始录制, and call browser_record_stop when the user asks to stop or generate Python. Never record ordinary browsing by default. For independent work that can run concurrently, use spawn_agent with self-contained, non-overlapping tasks, then wait_agent before giving a final answer. Use list_agents, message_agent, and stop_agent to coordinate them. Subagents normally inherit this task's model; planner-executor collaboration routes executor agents to the configured execution model. Workspace and permissions remain shared. For remote servers, call ssh_connect with credentials explicitly supplied by the user, then use ssh_run and the SSH SFTP tools. Use ssh_upload_file to send a local file to the server and ssh_download_file to fetch a remote file to a local path; these transfer binary content directly, unlike ssh_write_file which only writes inline UTF-8 text. SSH exec sessions are non-interactive and may not load shell profiles; when a remote command depends on profile-defined PATH values, invoke the appropriate login shell explicitly. SSH host keys are not verified. Treat user credentials as secrets: pass them only to the matching credential-aware native tool, never echo them in narration, put them in a shell command, or send them to a subagent. For databases, use mysql_connect for direct MySQL access or mysql_connect_via_ssh for an SSH tunnel, then mysql_query; use ? placeholders and values for user-provided data when practical. Public direct MySQL connections use TLS by default and you must not retry with ssl=false unless the user explicitly approves. Never attempt to solve or bypass CAPTCHA, SMS, passkey, or two-factor verification. browser_snapshot waits while the user completes human verification in the visible browser and resumes automatically afterward, so do not end the task merely to ask the user to say continue. Do not claim an action succeeded until its tool result confirms it. Before finishing, compare every action requested by the user with successful tool results. A file task is complete only after a mutating tool produced an actual change; a validation is complete only after it really ran successfully after the latest change; a background service is started only after process_output confirms it is running. When the user explicitly requested a code or configuration change and successful inspection proves that change is unnecessary, call report_no_change with the specific evidence-based reason before the final response; do not manufacture a no-op edit. If the task cannot continue because the user must supply a URL, file, credential, repository target, requirement, permission, verification code, or another specific external input that cannot be discovered with the available tools, call request_user_input once with the exact question and required fields, then ask the user for them. Never use request_user_input to avoid work that the available tools can perform. For informational or status questions, answer from successful read-only evidence without calling report_no_change. If an action could not be completed, state that explicitly instead of saying it was done.${remoteWorkspaceInstruction}${activeSkills ? `\n\n${activeSkills}` : ""}${request.recoveryContext ? `\n\n<recovery_context>${request.recoveryContext}</recovery_context>\nThis task resumed after an interruption. Treat the recovery record as prior evidence. If the latest user asks only for a conclusion, status, or summary, answer directly from that evidence without repeating tool calls. If the user asks to continue execution, verify prior side effects before repeating them and recreate only interrupted work that is still needed.` : ""}`;
+  const system = `${isolation.boundary}\nYou are a coding agent working in ${root}. Use the provided native tools to inspect and modify the project. Each run_command invocation uses a fresh local shell process, so environment variable changes do not persist to later commands; combine dependent setup and execution in one command. Prefer apply_patch for precise edits and write_file for new or complete files. Never invoke apply_patch, file deletion, file moves, or directory operations through run_command when a native tool exists. File tool paths accept absolute paths, including other drives (for example D:\\B on Windows); use them to read or write files the user explicitly points to outside ${root}, and resolve relative paths against ${root}. When you mention a file in your reply, always write its full workspace-relative path (for example src/views/Gooddetail.vue, not just Gooddetail.vue) so the user can tell exactly which file it is. Use web_search for current or externally verifiable information and fetch_url to inspect primary sources; preserve source URLs in the final answer. For interactive or authenticated sites use browser_open, browser_snapshot, browser_click, and browser_type. Credentials explicitly supplied by the user may be entered directly with browser_type. Browser recording is opt-in: call browser_record_start only after an explicit user request such as 开始录制, and call browser_record_stop when the user asks to stop or generate Python. Never record ordinary browsing by default. For independent work that can run concurrently, use spawn_agent with self-contained, non-overlapping tasks, then wait_agent before giving a final answer. Use list_agents, message_agent, and stop_agent to coordinate them. Subagents normally inherit this task's model; planner-executor collaboration routes executor agents to the configured execution model. Workspace and permissions remain shared. For remote servers, call ssh_connect with credentials explicitly supplied by the user, then use ssh_run and the SSH SFTP tools. Use ssh_upload_file to send a local file to the server and ssh_download_file to fetch a remote file to a local path; these transfer binary content directly, unlike ssh_write_file which only writes inline UTF-8 text. SSH exec sessions are non-interactive and may not load shell profiles; when a remote command depends on profile-defined PATH values, invoke the appropriate login shell explicitly. SSH host keys are not verified. Treat user credentials as secrets: pass them only to the matching credential-aware native tool, never echo them in narration, put them in a shell command, or send them to a subagent. For databases, use mysql_connect for direct MySQL access or mysql_connect_via_ssh for an SSH tunnel, then mysql_query; use ? placeholders and values for user-provided data when practical. Public direct MySQL connections use TLS by default and you must not retry with ssl=false unless the user explicitly approves. Never attempt to solve or bypass CAPTCHA, SMS, passkey, or two-factor verification. browser_snapshot waits while the user completes human verification in the visible browser and resumes automatically afterward, so do not end the task merely to ask the user to say continue. Do not claim an action succeeded until its tool result confirms it. Before finishing, compare every action requested by the user with successful tool results. A file task is complete only after a mutating tool produced an actual change; a validation is complete only after it really ran successfully after the latest change; a background service is started only after process_output confirms it is running. When the user explicitly requested a code or configuration change and successful inspection proves that change is unnecessary, call report_no_change with the specific evidence-based reason before the final response; do not manufacture a no-op edit. If the task cannot continue because the user must supply a URL, file, credential, repository target, requirement, permission, verification code, or another specific external input that cannot be discovered with the available tools, call request_user_input once with the exact question and required fields, then ask the user for them. Never use request_user_input to avoid work that the available tools can perform. For informational or status questions, answer from successful read-only evidence without calling report_no_change. If an action could not be completed, state that explicitly instead of saying it was done.${remoteWorkspaceInstruction}${activeSkills ? `\n\n${activeSkills}` : ""}${request.recoveryContext ? `\n\n<recovery_context>${request.recoveryContext}</recovery_context>\nThis task resumed after an interruption. Treat the recovery record as prior evidence. If the latest user asks only for a conclusion, status, or summary, answer directly from that evidence without repeating tool calls. If the user asks to continue execution, verify prior side effects before repeating them and recreate only interrupted work that is still needed.` : ""}`;
   const imageInputNotice =
     omitImageInputs && hasImageAttachments(history)
       ? "\n\n当前模型不支持图片输入，历史图片附件已被省略。请只依据文字、上下文文件和工作区继续，不要假装看到了图片。"
