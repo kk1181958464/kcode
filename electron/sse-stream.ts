@@ -77,24 +77,26 @@ export async function* readSseJson(
   const meaningfulIdleTimeoutMs = options.meaningfulEvent
     ? (options.meaningfulIdleTimeoutMs ?? idleTimeoutMs)
     : undefined;
+  const semanticTimeoutError = () =>
+    new Error(
+      `模型响应流长时间没有有效事件（${Math.round(idleTimeoutMs / 1_000)} 秒）`,
+    );
+  const meaningfulTimeoutError = () =>
+    new Error(
+      `模型响应流持续没有正文或工具调用（${Math.round((meaningfulIdleTimeoutMs ?? 0) / 1_000)} 秒）`,
+    );
   try {
     while (!terminal) {
       const now = Date.now();
       if (softTerminalRemainingMs !== undefined && softTerminalRemainingMs <= 0)
         break;
       const semanticRemaining = idleTimeoutMs - (now - lastEventAt);
-      if (semanticRemaining <= 0)
-        throw new Error(
-          `模型响应流长时间没有有效事件（${Math.round(idleTimeoutMs / 1_000)} 秒）`,
-        );
+      if (semanticRemaining <= 0) throw semanticTimeoutError();
       const meaningfulRemaining =
         meaningfulIdleTimeoutMs === undefined
           ? Number.POSITIVE_INFINITY
           : meaningfulIdleTimeoutMs - (now - lastMeaningfulEventAt);
-      if (meaningfulRemaining <= 0)
-        throw new Error(
-          `模型响应流持续没有正文或工具调用（${Math.round(meaningfulIdleTimeoutMs! / 1_000)} 秒）`,
-        );
+      if (meaningfulRemaining <= 0) throw meaningfulTimeoutError();
       const terminalRemaining = softTerminalRemainingMs;
       const readTimeout = Math.max(
         1,
@@ -116,6 +118,14 @@ export async function* readSseJson(
         );
       } catch (error) {
         if (softTerminalRemainingMs !== undefined) break;
+        const failedAt = Date.now();
+        if (
+          meaningfulIdleTimeoutMs !== undefined &&
+          failedAt - lastMeaningfulEventAt >= meaningfulIdleTimeoutMs
+        )
+          throw meaningfulTimeoutError();
+        if (failedAt - lastEventAt >= idleTimeoutMs)
+          throw semanticTimeoutError();
         throw error;
       }
       if (softTerminalRemainingMs !== undefined)
