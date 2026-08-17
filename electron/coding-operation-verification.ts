@@ -160,6 +160,17 @@ export function requestedCodingOperations(
 ) {
   const content = relevantVerificationRequestContent(history);
   if (isAdvisoryOnlyRequest(content)) return new Set<CodingOperation>();
+  const latestUserContent = userIntentContent(
+    [...history]
+      .reverse()
+      .find(
+        (item): item is VerificationMessage =>
+          item.kind === "message" && item.role === "user",
+      )?.content ?? "",
+  );
+  const acceptsAssistantProposal = ASSISTANT_PROPOSAL_ACCEPTANCE_REQUEST.test(
+    latestUserContent.trim(),
+  );
   const validationContent = content
     .replace(/验证码|动态码|校验码|\b(?:otp|verification\s+codes?)\b/gi, "")
     .replace(
@@ -167,7 +178,7 @@ export function requestedCodingOperations(
       "",
     );
   const asksForCodingInformation =
-    /(?:是否|有没有|是不是|为什么|怎么|如何|能不能|能否|会不会|是什么|怎么回事|了吗|了没)[^。！!]*[？?]?|[吗么][？?]?$|\?$/i.test(
+    /(?:是否|有没有|是不是|为什么|怎么|如何|能不能|能否|会不会|是什么|怎么回事|哪些|哪(?:个|项|种|些)|有什么|有何|多少|了吗|了没)[^。！!]*[？?]?|[吗么][？?]?$|\?$/i.test(
       content.trim(),
     );
   const describesObservedState =
@@ -175,6 +186,7 @@ export function requestedCodingOperations(
       content,
     );
   const explicitModifyRequest =
+    acceptsAssistantProposal ||
     /(?:帮我|请(?!问)|麻烦|要你|开始|继续|把|替我|重新).{0,50}(?:修改|修复|改为|改成|修改成|切换为|替换为|解决|优化|增加|新增|添加|删除|重构|实现|调整|替换|创建|生成|编写|开发|搭建|配置|接入|edit|change|fix|implement|add|remove|create|develop|configure)/i.test(
       content,
     );
@@ -313,7 +325,15 @@ export function claimedCodingOperations(text: string) {
       /(?:如果|若|假如|一旦|\bif\b|\bwhen\b)[^。！？!?\n]{0,160}[。！？!?]?/gi,
       "",
     );
-  const assertedText = proseText.replace(
+  // Capability inventories describe the state discovered by inspection, not
+  // side effects performed during this turn. Without this normalization,
+  // phrases such as "已有分片上传" and "已支持课件配置" are mistaken for
+  // fresh upload/edit claims and make informational answers fail verification.
+  const inventoryNeutralText = proseText.replace(
+    /(?:(?:当前|目前|现有|原有|本系统|该系统|系统|项目|功能|模块|页面|接口|后台|员工端|电脑端|手机端)\s*){0,3}(?:已经有|已有|已经具备|已具备|具备|已支持|支持|已包含|包含|已提供|提供)[^。！？!?\n]*/gi,
+    "",
+  );
+  const assertedText = inventoryNeutralText.replace(
     /(?:无需|不需要|没有必要|不必)(?:再)?(?:修改|改动|变更)|(?:未|没有|尚未|无法|不能|不会|并未).{0,10}(?:检查|查看|读取|搜索|排查|审查|分析|确认|定位|修改|改动|修复|优化|新增|添加|创建|生成|写入|实现|调整|更新|运行|执行|启动|安装|部署|发布|验证|测试|构建|连接|上传|下载)|\b(?:not|never|did not|could not|unable to)\b[^.!?\n]{0,40}\b(?:inspect|check|modify|edit|fix|implement|run|execute|validate|connect|upload|download)\b/gi,
     "",
   );
@@ -325,7 +345,7 @@ export function claimedCodingOperations(text: string) {
   )
     operations.add("inspect");
   if (
-    /(?:已|已经|完成|成功|落地|搞定|做好|弄好|处理好).{0,24}(?:修改|改造|修复|优化|适配|新增|添加|创建|新建|生成|写入|编写|开发|搭建|配置|删除|移除|重构|实现|替换|调整|更新)|(?:我|我们)(?:已经|已)?(?:修改|改动|改造|修复|优化|适配|新增|添加|创建|新建|生成|写入|编写|开发|搭建|配置|删除|移除|重构|实现|替换|调整|更新)(?:了|完成|好了)|(?:做了|完成了).{0,16}(?:修改|改动|改造|修复|优化|新增|添加|创建|配置|重构|调整|更新)|(?:修改|改动|改造|修复|优化|适配|实现|调整|创建|生成|写入|更新)(?:文件|范围|集中|位于|涉及|如下|完成|成功|好了|了)|修改文件\s*[:：]|\b(?:(?:i|we)(?:'ve| have)?\s+)?(?:modified|edited|changed|fixed|implemented|updated|created|written|built|configured)(?:\s+successfully)?\b/i.test(
+    /(?:已|已经|完成|成功|落地|搞定|做好|弄好|处理好).{0,24}(?:修改|改造|修复|优化|新增|添加|创建|新建|生成|写入|编写|开发|搭建|删除|移除|重构|替换|调整|更新)|(?:我|我们)(?:已经|已)?(?:修改|改动|改造|修复|优化|适配|新增|添加|创建|新建|生成|写入|编写|开发|搭建|配置|删除|移除|重构|实现|替换|调整|更新)(?:了|完成|好了)|(?:做了|完成了).{0,16}(?:修改|改动|改造|修复|优化|新增|添加|创建|配置|重构|调整|更新)|(?:修改|改动|改造|修复|优化|适配|实现|调整|创建|生成|写入|更新)(?:文件|范围|集中|位于|涉及|如下|完成|成功|好了|了)|修改文件\s*[:：]|\b(?:(?:i|we)(?:'ve| have)?\s+)?(?:modified|edited|changed|fixed|implemented|updated|created|written|built|configured)(?:\s+successfully)?\b/i.test(
       assertedText,
     )
   )

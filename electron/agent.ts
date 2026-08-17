@@ -6070,6 +6070,10 @@ export async function* runAgent(
         testsWereRun: false, // no tool calls means no tests ran
         changedFiles: turnDiffTracker.finalizeTurn().changedFiles,
         userGoal: latestUserRequest,
+        requiresAction:
+          requestedCodingEvidenceOps.size > 0 ||
+          requestedBrowserOps.size > 0 ||
+          requestedGitOps.size > 0,
         hasAnyToolEvidence: hasSuccessfulToolEvidence(evidenceHistory),
       });
       if (stopHookResult.action === "continue" && stopHookResult.inject) {

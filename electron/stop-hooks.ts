@@ -27,6 +27,8 @@ export interface StopHookContext {
   changedFiles: string[];
   /** The user's latest request/goal (for goal-based continuation) */
   userGoal?: string;
+  /** Whether the normalized latest request requires a side effect. */
+  requiresAction: boolean;
   /** Whether the model has made any tool calls at all during this request */
   hasAnyToolEvidence: boolean;
 }
@@ -144,11 +146,7 @@ export const goalContinuationHook: StopHook = {
     // Need a user goal to evaluate against
     if (!context.userGoal) return { action: "allow" };
 
-    // Detect if the user's goal requires action (not just a question)
-    const actionGoal = /(?:修改|修复|添加|创建|实现|写|改|删|移动|重构|优化|fix|add|create|implement|write|modify|update|delete|move|refactor|build|install|run|execute|deploy)/i.test(
-      context.userGoal,
-    );
-    if (!actionGoal) return { action: "allow" };
+    if (!context.requiresAction) return { action: "allow" };
 
     // Detect if model is punting instead of acting
     const puntingPatterns =

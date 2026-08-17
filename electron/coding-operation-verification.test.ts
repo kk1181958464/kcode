@@ -182,6 +182,50 @@ test("detects coding work requested and falsely claimed by a text-only reply", (
   );
 });
 
+test("keeps a continued requirements inventory informational", () => {
+  const history = [
+    {
+      kind: "message" as const,
+      role: "user" as const,
+      content: "文档上还有什么没实现的，你先说一下",
+    },
+    {
+      kind: "message" as const,
+      role: "assistant" as const,
+      content: "我会按未实现和部分实现继续整理。",
+    },
+    { kind: "message" as const, role: "user" as const, content: "继续整理" },
+  ];
+
+  assert.equal(relevantVerificationRequestContent(history), "继续整理");
+  assert.deepEqual([...requestedCodingOperations(history)], []);
+  assert.deepEqual(
+    [
+      ...requestedCodingOperations([
+        {
+          kind: "message",
+          role: "user",
+          content: "看下已经实现的功能和需求文档还有哪些差别",
+        },
+      ]),
+    ],
+    ["inspect"],
+  );
+});
+
+test("does not mistake an existing capability inventory for current turn changes", () => {
+  const inventory = `
+当前系统已经具备课程、题库和考试主体框架。
+- 以当前已经实现的系统为基准，对照需求文档列出差异。
+- 已实现全员、部门、岗位和指定人员的课程范围。
+- 已支持视频、PPT 和附件配置。
+- 已有整屏授权、分片上传、切屏记录和后台回放。
+- 目前员工端包含课程、刷题和积分页面。
+但消息、证书和完整实操考试还没有实现，不能认定全部功能已经实现。`;
+
+  assert.deepEqual([...claimedCodingOperations(inventory)], []);
+});
+
 test("requires successful tool evidence only when a task requested execution", () => {
   assert.equal(claimsTaskCompletion("任务已完成，问题已经解决。"), true);
   assert.equal(

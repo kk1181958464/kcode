@@ -417,6 +417,60 @@ test("runAgent accepts backend query conclusions without Git or browser correcti
   assert.equal(done?.outcome, "completed");
 });
 
+test("runAgent keeps an existing capability inventory as the final answer", async () => {
+  const request = await makeRequest();
+  request.messages = [
+    {
+      role: "user",
+      content: "看下已经实现的功能和需求文档还有哪些差别",
+    },
+  ];
+  const conclusion =
+    "当前系统已经具备课程和考试主流程。已实现全员、部门和岗位课程范围，已有录屏分片上传；但培训档案、证书和消息仍未实现。";
+  let rounds = 0;
+  const deps: RunAgentDeps = {
+    getProvider: fakeProvider("fake-model"),
+    async *streamTurn() {
+      rounds += 1;
+      if (rounds > 1)
+        throw new Error("capability inventory incorrectly entered verification");
+      yield { type: "text", delta: conclusion };
+      yield {
+        type: "complete",
+        turn: {
+          text: conclusion,
+          calls: [],
+          rawCalls: [],
+          usage: { input: 20, output: 16, cached: 0 },
+        },
+      };
+    },
+  };
+
+  const events = await collect(
+    runAgent(
+      "test-capability-inventory",
+      request,
+      new AbortController().signal,
+      deps,
+    ),
+  );
+  assert.equal(rounds, 1);
+  assert.equal(
+    events
+      .filter((event) => event.type === "text")
+      .map((event) => (event as Extract<AgentEvent, { type: "text" }>).delta)
+      .join(""),
+    conclusion,
+  );
+  const done = events.find(
+    (event): event is Extract<AgentEvent, { type: "done" }> =>
+      event.type === "done",
+  );
+  assert.equal(done?.outcome, "completed");
+  assert.equal(events.some((event) => event.type === "error"), false);
+});
+
 test("runAgent retries when the model claims a change without tool evidence", async () => {
   const request = await makeRequest();
   request.messages = [
