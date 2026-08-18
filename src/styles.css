@@ -2029,6 +2029,14 @@ button:not(:disabled) {
 .completed-process.failed .completed-process-state strong {
   color: var(--danger);
 }
+.completed-process.paused .completed-process-state > svg,
+.completed-process.paused .completed-process-state strong {
+  color: var(--warning);
+}
+.completed-process.blocked .completed-process-state > svg,
+.completed-process.blocked .completed-process-state strong {
+  color: var(--accent-strong);
+}
 .completed-process-body {
   padding: 3px 0 10px;
 }
@@ -12471,6 +12479,66 @@ select:focus-visible {
 .message-completion-notice svg {
   flex: 0 0 auto;
   margin-top: 2px;
+}
+
+.message-completion-notice > span {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.message-completion-notice > span > strong {
+  color: inherit;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.message-completion-notice > span > small {
+  color: color-mix(in srgb, currentColor 82%, transparent);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.message-completion-notice.is-paused {
+  color: var(--warning);
+}
+
+.message-completion-notice.is-blocked {
+  color: var(--accent-strong);
+}
+
+.message-completion-stats {
+  font-variant-numeric: tabular-nums;
+}
+
+.message-completion-files {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+}
+
+.message-completion-files b {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.message-completion-files code {
+  max-width: min(100%, 360px);
+  overflow: hidden;
+  padding: 2px 5px;
+  border: 1px solid color-mix(in srgb, currentColor 22%, var(--ui-border));
+  border-radius: 4px;
+  color: color-mix(in srgb, currentColor 90%, var(--ui-text));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.message-completion-files em {
+  font-size: 10px;
+  font-style: normal;
 }
 
 .run-state,

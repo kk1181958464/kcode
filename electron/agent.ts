@@ -56,6 +56,7 @@ import { createTwoFilesPatch, diffLines } from "diff";
 import {
   inferReasoningConfig,
   type AgentActivity,
+  type AgentCompletionResult,
   type AgentEvent,
   type AgentPlanStepStatus,
   type AgentToolName,
@@ -74,6 +75,7 @@ import {
   executionNarrativePreview,
   nextClosingVerificationRounds,
   nextExecutionNarrative,
+  nextPostPlanVerificationRounds,
   shouldFinalizeClosingVerification,
 } from "../src/execution-narrative";
 import { normalizePlanUpdate } from "../src/execution-plan";
@@ -4118,6 +4120,7 @@ async function* sseJson(
   idleTimeoutMs?: number,
   onProgress?: (message: string) => void,
   meaningfulEvent?: (event: any) => boolean,
+  meaningfulIdleTimeoutMs?: number,
 ): AsyncGenerator<any> {
   yield* readSseJson(response, {
     signal,
@@ -4127,7 +4130,7 @@ async function* sseJson(
     // reasoning without answer text or a tool call is a broken turn, not work.
     meaningfulEvent,
     meaningfulIdleTimeoutMs: meaningfulEvent
-      ? Math.min(idleTimeoutMs ?? 120_000, 120_000)
+      ? (meaningfulIdleTimeoutMs ?? Math.min(idleTimeoutMs ?? 120_000, 120_000))
       : undefined,
     onProgress,
   });
@@ -4184,6 +4187,7 @@ async function parseStreamedTurn(
   onProgress?: (message: string) => void,
   idleTimeoutMs?: number,
   chatChunkMode: "delta" | "cumulative" | "auto" = "delta",
+  meaningfulIdleTimeoutMs?: number,
 ): Promise<Turn> {
   if (response.body) {
     const assembler = new AgentStreamAssembler(
@@ -4198,6 +4202,7 @@ async function parseStreamedTurn(
       idleTimeoutMs,
       onProgress,
       (event) => isProductiveSseEvent(protocol, event),
+      meaningfulIdleTimeoutMs,
     ))
       assembler.consume(event);
     assembler.assertStreamComplete();
@@ -4524,6 +4529,10 @@ async function* streamModelTurn(
           error instanceof SseStreamTimeoutError &&
           error.timeoutKind === "meaningful";
         if (reasoningOnlyStream) {
+          if (!toolsEnabled)
+            throw new Error(
+              "模型收尾阶段持续只有思考内容，未返回正文或工具调用。",
+            );
           if (
             signal.aborted ||
             reasoningOnlyRecoveryAttempted ||
@@ -5048,8 +5057,12 @@ async function modelTurn(
   // Reasoning models can spend minutes thinking before the first byte arrives,
   // especially behind a third-party proxy with a large context. Keep a shorter
   // bound for regular models while progress events make either wait observable.
-  const firstByteTimeoutMs =
-    reasoning.reasoningMode !== "none" ? 300_000 : 90_000;
+  const finalizationTurn = !toolsEnabled;
+  const firstByteTimeoutMs = finalizationTurn
+    ? 90_000
+    : reasoning.reasoningMode !== "none"
+      ? 300_000
+      : 90_000;
   const serializedBody = JSON.stringify(body);
   const networkTransport = runtime?.networkTransport ?? "electron";
   const modelFetch =
@@ -5230,6 +5243,7 @@ async function modelTurn(
       onProgress,
       reasoning.reasoningMode !== "none" ? 180_000 : undefined,
       compatibility.streamMode,
+      finalizationTurn ? 45_000 : undefined,
     );
   const json = JSON.parse(await readResponseText(response, signal)) as any;
   if (protocol === "openai-chat") {
@@ -5333,6 +5347,7 @@ async function modelTurn(
 function blockedVerificationEvents(
   textOffset: number,
   message: string,
+  result?: AgentCompletionResult,
 ): AgentEvent[] {
   return [
     {
@@ -5344,8 +5359,107 @@ function blockedVerificationEvents(
     { type: "text", delta: message, phase: "final_answer" },
     // A runtime hard-stop is a PAUSE, not a request for user input. Only the
     // native request_user_input tool maps to the "待补充" (blocked) badge.
-    { type: "done", outcome: "paused" },
+    { type: "done", outcome: "paused", result },
   ];
+}
+
+function buildPausedCompletionResult({
+  evidenceHistory,
+  requestedCodingEvidenceOps,
+  requestedBrowserOps,
+  requestedGitOps,
+  plannerExecutionPending,
+}: {
+  evidenceHistory: HistoryItem[];
+  requestedCodingEvidenceOps: Set<CodingOperation>;
+  requestedBrowserOps: Set<BrowserOperation>;
+  requestedGitOps: Set<GitOperation>;
+  plannerExecutionPending: boolean;
+}): AgentCompletionResult {
+  const codingEvidence = successfulCodingEvidence(evidenceHistory);
+  const browserEvidence = successfulBrowserEvidence(evidenceHistory);
+  const gitEvidence = successfulGitEvidence(evidenceHistory);
+  const unavailableGitEvidence = unavailableGitOperations(evidenceHistory);
+  const missingCodingEvidence = missingVerifiedCodingOperations(
+    requestedCodingEvidenceOps,
+    codingEvidence,
+    evidenceHistory,
+  );
+  const requestedOperations = [
+    ...[...requestedCodingEvidenceOps].map(
+      (operation) => `coding:${operation}`,
+    ),
+    ...[...requestedBrowserOps].map((operation) => `browser:${operation}`),
+    ...[...requestedGitOps].map((operation) => `git:${operation}`),
+    ...(plannerExecutionPending ? ["agent:spawn_executor"] : []),
+  ];
+  const observedOperations = [
+    ...[...codingEvidence].map((operation) => `coding:${operation}`),
+    ...[...browserEvidence].map((operation) => `browser:${operation}`),
+    ...[...gitEvidence].map((operation) => `git:${operation}`),
+    ...(successfulToolNames(evidenceHistory).has("spawn_agent")
+      ? ["agent:spawn_executor"]
+      : []),
+  ];
+  const missingOperations = [
+    ...missingCodingEvidence
+      .filter((operation) => operation !== "inspect")
+      .map((operation) => `coding:${operation}`),
+    ...missingRequestedBrowserOperations(
+      requestedBrowserOps,
+      browserEvidence,
+    ).map((operation) => `browser:${operation}`),
+    ...missingRequestedGitOperations(requestedGitOps, gitEvidence)
+      .filter((operation) => !unavailableGitEvidence.has(operation))
+      .map((operation) => `git:${operation}`),
+    ...(plannerExecutionPending ? ["agent:spawn_executor"] : []),
+  ];
+  const result = buildAgentCompletionResult({
+    requestedOperations,
+    observedOperations,
+    missingOperations,
+    evidence: structuredToolEvidenceSummary(evidenceHistory),
+    waitingForUser: hasRequestedUserInputEvidence(evidenceHistory),
+    verifiedNoChange: hasVerifiedNoChangeReport(evidenceHistory),
+  });
+  return {
+    ...result,
+    kind: result.kind === "blocked" ? "blocked" : "incomplete",
+    notice:
+      result.notice ??
+      "任务因连续无新进展而暂停，已有执行记录和实际改动已保留。",
+  };
+}
+
+function isFinalizationReasoningFailure(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return /收尾阶段持续只有思考内容|连续只输出思考内容|持续没有正文或工具调用/.test(
+    message,
+  );
+}
+
+function runtimeFinalizationFallback(
+  evidenceHistory: HistoryItem[],
+  evidenceComplete: boolean,
+  latestActivity?: AgentActivity,
+) {
+  const summary = structuredToolEvidenceSummary(evidenceHistory);
+  const changedFiles = summary.changedFiles.slice(0, 5);
+  const fileDetail = changedFiles.length
+    ? `，记录到 ${summary.changedFiles.length} 个实际变更文件：${changedFiles.join("、")}${summary.changedFiles.length > changedFiles.length ? " 等" : ""}`
+    : "";
+  const failureDetail = summary.failedTools
+    ? `，另有 ${summary.failedTools} 项失败工具记录`
+    : "";
+  const latestDetail =
+    latestActivity?.status === "success" && latestActivity.output
+      ? ` 最近一次成功结果：${latestActivity.output.replace(/\s+/g, " ").trim().slice(0, 240)}。`
+      : "";
+  return `模型在收尾阶段持续只输出内部推理，KCode 已停止继续调用工具。当前保留 ${summary.successfulTools} 项成功工具记录${fileDetail}${failureDetail}。${latestDetail}${
+    evidenceComplete
+      ? "结构化完成条件已经满足，以上方执行记录为准。"
+      : "仍有结构化操作证据缺口，本轮已按未完整完成暂停；以上方执行记录为准。"
+  }`;
 }
 
 export async function* runAgent(
@@ -5445,6 +5559,7 @@ export async function* runAgent(
   let round = 0,
     stalledRounds = 0,
     closingVerificationRounds = 0,
+    postPlanVerificationRounds = 0,
     lastFingerprint = "";
   // Recovery budgets cap protocol retries without using assistant prose as a
   // completion signal.
@@ -5492,6 +5607,7 @@ export async function* runAgent(
       budgets.emptyTurns = 0;
       stalledRounds = 0;
       closingVerificationRounds = 0;
+      postPlanVerificationRounds = 0;
       lastFingerprint = "";
       plan.steps = [];
       plan.statuses = undefined;
@@ -5531,7 +5647,8 @@ export async function* runAgent(
       pendingParentInstructions.length > 0 || pendingSteering.length > 0;
     const forcedClosingFinalization =
       !hasPendingInstructions &&
-      shouldFinalizeClosingVerification(closingVerificationRounds);
+      (shouldFinalizeClosingVerification(closingVerificationRounds) ||
+        shouldFinalizeClosingVerification(postPlanVerificationRounds));
     const finalizationMode = forcedClosingFinalization
       ? evidenceComplete
         ? "evidence-complete"
@@ -5638,7 +5755,9 @@ export async function* runAgent(
         kind: "message",
         role: "user",
         content: forcedClosingFinalization
-          ? "<runtime_finalization>所需操作证据已经完整，但随后又连续出现无实际改动的复核工具调用。现在禁止继续调用工具或重复检查。请立即根据已有工具证据给出结论：已确认事实、完成的改动、成功和失败的验证，以及仍无法确认的事项。不得把未完成项写成已完成。</runtime_finalization>"
+          ? evidenceComplete
+            ? "<runtime_finalization>所需操作证据已经完整，但随后又连续出现无实际改动的复核工具调用。现在禁止继续调用工具或重复检查。请立即根据已有工具证据给出结论：已确认事实、完成的改动、成功和失败的验证，以及仍无法确认的事项。不得把未完成项写成已完成。</runtime_finalization>"
+            : "<runtime_finalization>执行计划已全部标记完成，但随后仍连续出现无实际改动的复核工具调用，而且结构化操作证据仍有缺口。现在禁止继续调用工具或重复检查。请立即汇总已有成功结果、失败记录和仍缺少证据的事项；不得把未确认项写成已完成。</runtime_finalization>"
           : finalizationMode === "evidence-complete"
             ? request.agentRole === "planner"
               ? "<runtime_finalization>执行模型已返回覆盖本次要求的成功工具证据，规划阶段现在进入收尾。不要再派发新的执行 Agent，也不要重复复核。请依据已收集的执行结果给出简洁最终总结：完成内容、修改文件、验证结果、可用地址和真实残留问题。不得声称未经执行模型证实的事项。</runtime_finalization>"
@@ -5679,6 +5798,7 @@ export async function* runAgent(
       };
     }
     let imageRetryAttempted = false;
+    let usedRuntimeFinalizationFallback = false;
     const turnAttemptBudget = new ModelAttemptBudget(4);
     for (;;) {
       try {
@@ -5728,6 +5848,28 @@ export async function* runAgent(
         }
         break;
       } catch (error) {
+        if (finalizationMode && isFinalizationReasoningFailure(error)) {
+          usedRuntimeFinalizationFallback = true;
+          streamedReasoning = "";
+          yield { type: "reasoning_reset" };
+          yield {
+            type: "progress",
+            message:
+              "模型未能生成收尾正文，已停止继续请求并根据结构化工具记录生成结论…",
+          };
+          turn = {
+            text: runtimeFinalizationFallback(
+              evidenceHistory,
+              evidenceComplete,
+              prevRound.activity,
+            ),
+            calls: [],
+            rawCalls: [],
+            usage: { input: 0, output: 0, cached: 0 },
+            finishReason: "runtime_finalization",
+          };
+          break;
+        }
         const canRetryWithoutImages =
           requestContainsImages &&
           !imageRetryAttempted &&
@@ -5752,13 +5894,15 @@ export async function* runAgent(
     if (!turn) throw new Error("模型流结束但没有完成结果");
     if (turn.reasoningContent && !streamedReasoning.trim())
       yield { type: "reasoning", delta: turn.reasoningContent };
-    lastPromptTokens = turn.usage.input;
-    usage.input += turn.usage.input;
-    usage.output += turn.usage.output;
-    usage.cached += turn.usage.cached;
-    // input/output/cached accumulate across rounds for billing; promptTokens is
-    // the latest round's prompt size, i.e. the real current context occupancy.
-    yield { type: "usage", ...usage, promptTokens: lastPromptTokens };
+    if (!usedRuntimeFinalizationFallback) {
+      lastPromptTokens = turn.usage.input;
+      usage.input += turn.usage.input;
+      usage.output += turn.usage.output;
+      usage.cached += turn.usage.cached;
+      // input/output/cached accumulate across rounds for billing; promptTokens is
+      // the latest round's prompt size, i.e. the real current context occupancy.
+      yield { type: "usage", ...usage, promptTokens: lastPromptTokens };
+    }
     if (!turn.text.trim() && !turn.calls.length) {
       if (budgets.emptyTurns < 2) {
         budgets.emptyTurns += 1;
@@ -5886,7 +6030,7 @@ export async function* runAgent(
       (truncated || collaborationPlanPending) &&
       budgets.autoContinues < 4;
     const stopHookResult =
-      !turn.calls.length && !willAutoContinue
+      !finalizationMode && !turn.calls.length && !willAutoContinue
         ? stopHooks.evaluate({
             requestedOperations: requestedOperationKeys,
             observedOperations: observedOperationKeys,
@@ -6824,6 +6968,17 @@ export async function* runAgent(
         codingEvidenceAfterRound.has(operation as CodingOperation),
       ),
     });
+    const planCompleted =
+      plan.steps.length > 0 &&
+      plan.statuses?.length === plan.steps.length &&
+      plan.statuses.every((status) => status === "completed");
+    postPlanVerificationRounds = nextPostPlanVerificationRounds({
+      previous: postPlanVerificationRounds,
+      planCompleted,
+      hadToolCalls: turn.calls.length > 0,
+      madeChanges: roundAdvanced,
+      hadFailure: Boolean(roundFailedActivity),
+    });
     const madeProgress = roundAdvanced || roundFingerprint !== lastFingerprint;
     stalledRounds = madeProgress ? 0 : stalledRounds + 1;
     lastFingerprint = roundFingerprint;
@@ -6850,9 +7005,17 @@ export async function* runAgent(
       continue;
     }
     if (currentStallAction === "pause") {
+      const pausedCompletionResult = buildPausedCompletionResult({
+        evidenceHistory,
+        requestedCodingEvidenceOps,
+        requestedBrowserOps,
+        requestedGitOps,
+        plannerExecutionPending: plannerExecutionPendingAfterRound,
+      });
       for (const event of blockedVerificationEvents(
         timelineTextLength,
         `Agent 已暂停：连续 ${STALL_PAUSE_ROUNDS} 轮重复了相同操作且没有取得新进展。已有结果均已保留，可以继续任务并从当前状态更换策略。`,
+        pausedCompletionResult,
       ))
         yield event;
       return;

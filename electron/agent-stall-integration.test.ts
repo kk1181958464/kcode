@@ -83,16 +83,21 @@ test("asks the model to change strategy before pausing repeated tool rounds", as
   );
   assert.ok(
     events.some(
-      (event) =>
-        event.type === "text" && event.delta.includes("连续 5 轮"),
+      (event) => event.type === "text" && event.delta.includes("连续 5 轮"),
     ),
   );
-  assert.equal(events.some((event) => event.type === "error"), false);
+  assert.equal(
+    events.some((event) => event.type === "error"),
+    false,
+  );
   assert.ok(
-    events.some(
-      (event) => event.type === "done" && event.outcome === "paused",
-    ),
+    events.some((event) => event.type === "done" && event.outcome === "paused"),
   );
+  const done = events.find(
+    (event): event is Extract<AgentEvent, { type: "done" }> =>
+      event.type === "done",
+  );
+  assert.equal(done?.result?.kind, "incomplete");
 });
 
 test("finalizes repeated post-change checks from structured evidence", async () => {
@@ -197,5 +202,102 @@ test("finalizes repeated post-change checks from structured evidence", async () 
       (event) => event.type === "done" && event.outcome === "completed",
     ),
   );
-  assert.equal(events.some((event) => event.type === "error"), false);
+  assert.equal(
+    events.some((event) => event.type === "error"),
+    false,
+  );
+});
+
+test("stops varied checks after a completed plan even when mutation evidence is missing", async () => {
+  const workspacePath = await mkdtemp(
+    path.join(os.tmpdir(), "kcode-post-plan-stall-"),
+  );
+  await writeFile(path.join(workspacePath, "first.txt"), "first\n", "utf8");
+  await writeFile(path.join(workspacePath, "second.txt"), "second\n", "utf8");
+  const request: ModelRequest = {
+    providerId: "fake",
+    modelId: "fake-model",
+    messages: [{ role: "user", content: "修改文件并验证" }],
+    permissionMode: "full-access",
+    workspacePath,
+  };
+  let rounds = 0;
+  let finalizationDisabledTools = false;
+  const events: AgentEvent[] = [];
+  for await (const event of runAgent(
+    "post-plan-stall-integration",
+    request,
+    new AbortController().signal,
+    {
+      getProvider: fakeProvider(),
+      async *streamTurn(args) {
+        rounds += 1;
+        if (rounds === 4) {
+          finalizationDisabledTools = !args.toolsEnabled;
+          throw new Error(
+            "模型收尾阶段持续只有思考内容，未返回正文或工具调用。",
+          );
+        }
+        const calls =
+          rounds === 1
+            ? [
+                {
+                  id: "failed-modification",
+                  name: "apply_patch" as const,
+                  input: { patch: "not a patch" },
+                },
+                {
+                  id: "completed-plan",
+                  name: "update_plan" as const,
+                  input: {
+                    plan: [
+                      { step: "修改目标", status: "completed" },
+                      { step: "验证结果", status: "completed" },
+                    ],
+                  },
+                },
+              ]
+            : [
+                {
+                  id: `different-check-${rounds}`,
+                  name: "path_info" as const,
+                  input: {
+                    path: rounds === 2 ? "first.txt" : "second.txt",
+                  },
+                },
+              ];
+        yield {
+          type: "complete",
+          turn: {
+            text: "继续核对。",
+            calls,
+            rawCalls: [],
+            usage: { input: 10, output: 5, cached: 0 },
+          },
+        };
+      },
+    },
+  ))
+    events.push(event);
+
+  assert.equal(rounds, 4);
+  assert.equal(finalizationDisabledTools, true);
+  assert.ok(
+    events.some(
+      (event) =>
+        event.type === "text" && event.delta.includes("停止继续调用工具"),
+    ),
+  );
+  assert.ok(
+    events.some((event) => event.type === "done" && event.outcome === "paused"),
+  );
+  const done = events.find(
+    (event): event is Extract<AgentEvent, { type: "done" }> =>
+      event.type === "done",
+  );
+  assert.equal(done?.result?.kind, "incomplete");
+  assert.equal(
+    events.some((event) => event.type === "error"),
+    false,
+  );
 });

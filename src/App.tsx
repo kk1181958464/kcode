@@ -273,6 +273,7 @@ import {
   type TaskRunStatus,
 } from "./task-status";
 import { truncateAssistantMessageForTextReset } from "./conversation-rendering";
+import { completionResultFromActivities } from "./completion-summary";
 import type {
   AgentActivity,
   AgentCheckpoint,
@@ -5237,12 +5238,37 @@ export default function App() {
         emitReset: false,
       });
       const completedAt = Date.now();
+      const stopActivities = (all: AgentActivity[]) =>
+        all.map((activity) =>
+          activity.requestId === requestId &&
+          (activity.status === "running" || activity.status === "waiting")
+            ? {
+                ...activity,
+                status: "failed" as const,
+                completedAt,
+                errorSummary: "操作已停止",
+                output: activity.output
+                  ? `${activity.output}\n\n操作已停止`
+                  : "操作已停止",
+              }
+            : activity,
+        );
+      const stoppedActivities = stopActivities(
+        activities.length ? activities : activeTask?.activities ?? [],
+      );
+      const pausedResult = completionResultFromActivities(
+        stoppedActivities.filter(
+          (activity) => activity.requestId === requestId,
+        ),
+        "本轮已停止，已有执行记录和实际改动已保留。",
+      );
       const commitStoppedText = (all: ChatMessage[]) =>
         all.map((message) =>
           message.id === `assistant:${requestId}`
             ? {
                 ...message,
                 content: message.content + partialText,
+                completionResult: pausedResult,
                 completedAt,
               }
             : message,
@@ -5265,22 +5291,7 @@ export default function App() {
       setRunningId(undefined);
       clearPendingReasoning(requestId);
       clearStreamingProgress(requestId);
-      const stopActivities = (all: AgentActivity[]) =>
-        all.map((activity) =>
-          activity.requestId === requestId &&
-          (activity.status === "running" || activity.status === "waiting")
-            ? {
-                ...activity,
-                status: "failed" as const,
-                completedAt,
-                errorSummary: "操作已停止",
-                output: activity.output
-                  ? `${activity.output}\n\n操作已停止`
-                  : "操作已停止",
-              }
-            : activity,
-        );
-      setActivities(stopActivities);
+      setActivities(stoppedActivities);
       if (activeTask?.id)
         setTasks((all) =>
           all.map((task) =>
@@ -5377,6 +5388,27 @@ export default function App() {
           else {
             await window.kcode.chat.cancel(task.runningId);
             const completedAt = Date.now();
+            const requestId = task.runningId;
+            const stoppedActivities = task.activities.map((activity) =>
+              activity.requestId === requestId &&
+              (activity.status === "running" || activity.status === "waiting")
+                ? {
+                    ...activity,
+                    status: "failed" as const,
+                    completedAt,
+                    errorSummary: "操作已从手机停止",
+                    output: activity.output
+                      ? `${activity.output}\n\n操作已从手机停止`
+                      : "操作已从手机停止",
+                  }
+                : activity,
+            );
+            const pausedResult = completionResultFromActivities(
+              stoppedActivities.filter(
+                (activity) => activity.requestId === requestId,
+              ),
+              "本轮已从手机停止，已有执行记录和实际改动已保留。",
+            );
             taskRuntimeStore.finish(task.id, task.runningId);
             setTasks((all) =>
               all.map((item) =>
@@ -5388,22 +5420,15 @@ export default function App() {
                       runtimeStatus: "interrupted",
                       updatedAt: completedAt,
                       messages: item.messages.map((message) =>
-                        message.id === `assistant:${task.runningId}`
-                          ? { ...message, completedAt }
+                        message.id === `assistant:${requestId}`
+                          ? {
+                              ...message,
+                              completionResult: pausedResult,
+                              completedAt,
+                            }
                           : message,
                       ),
-                      activities: item.activities.map((activity) =>
-                        activity.requestId === task.runningId &&
-                        (activity.status === "running" ||
-                          activity.status === "waiting")
-                          ? {
-                              ...activity,
-                              status: "failed" as const,
-                              completedAt,
-                              errorSummary: "操作已从手机停止",
-                            }
-                          : activity,
-                      ),
+                      activities: stoppedActivities,
                     }
                   : item,
               ),

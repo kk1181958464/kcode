@@ -16,6 +16,7 @@ import {
   CircleAlert,
   Copy,
   Cpu,
+  Clock3,
   FileCode2,
   FolderOpen,
   ListChecks,
@@ -229,11 +230,56 @@ function MessageItem({
             </div>
           ) : null}
           {message.role === "assistant" &&
-            message.completionResult?.kind === "incomplete" &&
-            message.completionResult.notice && (
-              <div className="message-completion-notice" role="status">
-                <CircleAlert size={14} />
-                <span>{message.completionResult.notice}</span>
+            message.completionResult &&
+            ["incomplete", "blocked"].includes(
+              message.completionResult.kind,
+            ) && (
+              <div
+                className={`message-completion-notice ${message.completionResult.kind === "blocked" ? "is-blocked" : "is-paused"}`}
+                role="status"
+              >
+                {message.completionResult.kind === "blocked" ? (
+                  <CircleAlert size={14} />
+                ) : (
+                  <Clock3 size={14} />
+                )}
+                <span>
+                  <strong>
+                    {message.completionResult.kind === "blocked"
+                      ? "等待补充信息"
+                      : "已暂停，执行结果已保留"}
+                  </strong>
+                  {message.completionResult.notice && (
+                    <small>{message.completionResult.notice}</small>
+                  )}
+                  <small className="message-completion-stats">
+                    已执行 {message.completionResult.toolCalls} 项工具 · 成功{" "}
+                    {message.completionResult.successfulTools} 项
+                    {message.completionResult.failedTools > 0 &&
+                      ` · 失败或停止 ${message.completionResult.failedTools} 项`}
+                    {(message.completionResult.additions > 0 ||
+                      message.completionResult.deletions > 0) &&
+                      ` · +${message.completionResult.additions} -${message.completionResult.deletions}`}
+                  </small>
+                  {message.completionResult.changedFiles.length > 0 && (
+                    <span className="message-completion-files">
+                      <b>实际改动文件</b>
+                      {message.completionResult.changedFiles
+                        .slice(0, 8)
+                        .map((file) => (
+                          <code key={file} title={file}>
+                            {file}
+                          </code>
+                        ))}
+                      {message.completionResult.changedFiles.length > 8 && (
+                        <em>
+                          还有{" "}
+                          {message.completionResult.changedFiles.length - 8} 个
+                        </em>
+                      )}
+                    </span>
+                  )}
+                </span>
               </div>
             )}
           {error && <div className="message-error">请求失败：{error}</div>}
@@ -1430,11 +1476,15 @@ function AssistantTailState({
 function CompletedProcessDisclosure({
   durationMs,
   failed,
+  paused = false,
+  blocked = false,
   activities,
   children,
 }: {
   durationMs: number;
   failed: boolean;
+  paused?: boolean;
+  blocked?: boolean;
   activities: AgentActivity[];
   children: React.ReactNode;
 }) {
@@ -1448,7 +1498,7 @@ function CompletedProcessDisclosure({
     <section
       className={`completed-process ${expanded ? "expanded" : ""} ${
         failed ? "failed" : ""
-      }`}
+      } ${paused ? "paused" : ""} ${blocked ? "blocked" : ""}`}
     >
       <button
         type="button"
@@ -1457,8 +1507,24 @@ function CompletedProcessDisclosure({
         onClick={() => setExpanded((value) => !value)}
       >
         <span className="completed-process-state">
-          {failed ? <CircleAlert size={13} /> : <CheckCircle2 size={13} />}
-          <strong>{failed ? "处理未完成" : "已处理"}</strong>
+          {blocked ? (
+            <CircleAlert size={13} />
+          ) : paused ? (
+            <Clock3 size={13} />
+          ) : failed ? (
+            <CircleAlert size={13} />
+          ) : (
+            <CheckCircle2 size={13} />
+          )}
+          <strong>
+            {blocked
+              ? "等待输入"
+              : paused
+                ? "已暂停"
+                : failed
+                  ? "处理未完成"
+                  : "已处理"}
+          </strong>
           <time>{formatCompactDuration(durationMs)}</time>
         </span>
         <span className="completed-process-metrics">
@@ -1534,6 +1600,8 @@ const AssistantTimeline = memo(function AssistantTimeline({
         Math.max(0, Math.floor(storedFinalResponseOffset)),
       )
     : undefined;
+  const paused = message.completionResult?.kind === "incomplete";
+  const blocked = message.completionResult?.kind === "blocked";
   if (!activities.length) {
     if (
       message.finalResponseProcess === "correction" &&
@@ -1553,6 +1621,8 @@ const AssistantTimeline = memo(function AssistantTimeline({
               activities,
             )}
             failed={Boolean(message.error)}
+            paused={paused}
+            blocked={blocked}
             activities={activities}
           >
             {processNode}
@@ -1647,6 +1717,8 @@ const AssistantTimeline = memo(function AssistantTimeline({
             activities,
           )}
           failed={Boolean(message.error)}
+          paused={paused}
+          blocked={blocked}
           activities={activities}
         >
           {timelineNodes}

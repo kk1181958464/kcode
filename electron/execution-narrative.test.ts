@@ -7,6 +7,7 @@ import {
   executionNarrativePreview,
   nextClosingVerificationRounds,
   nextExecutionNarrative,
+  nextPostPlanVerificationRounds,
   normalizeExecutionNarrative,
   shouldFinalizeClosingVerification,
 } from "../src/execution-narrative";
@@ -156,6 +157,34 @@ test("resets closing-check detection after a real change or ordinary work", () =
       madeChanges: false,
       evidenceComplete: true,
       hasMutationEvidence: false,
+    }),
+    0,
+  );
+});
+
+test("forces finalization after a completed plan keeps running unchanged checks", () => {
+  let rounds = nextPostPlanVerificationRounds({
+    previous: 0,
+    planCompleted: true,
+    hadToolCalls: true,
+    madeChanges: false,
+    hadFailure: false,
+  });
+  rounds = nextPostPlanVerificationRounds({
+    previous: rounds,
+    planCompleted: true,
+    hadToolCalls: true,
+    madeChanges: false,
+    hadFailure: false,
+  });
+  assert.equal(shouldFinalizeClosingVerification(rounds), true);
+  assert.equal(
+    nextPostPlanVerificationRounds({
+      previous: rounds,
+      planCompleted: true,
+      hadToolCalls: true,
+      madeChanges: true,
+      hadFailure: false,
     }),
     0,
   );
