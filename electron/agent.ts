@@ -88,7 +88,13 @@ import {
   historyFingerprint,
 } from "./conversation-isolation";
 import { writeLog } from "./logger";
-import { networkFetch } from "./network";
+import { directNetworkFetch, networkFetch } from "./network";
+import {
+  modelNetworkTransportLabel,
+  nextModelNetworkTransport,
+  networkTransportErrorText,
+  type ModelNetworkTransport,
+} from "./model-network-transport";
 import {
   assertGitHubRequestAllowed,
   githubRequestHeaders,
@@ -370,6 +376,7 @@ type ModelTurnRuntime = {
   omitImageInputs?: boolean;
   keyIndex?: number;
   triedKeyIndexes?: number[];
+  networkTransport?: ModelNetworkTransport;
 };
 type HistoryItem =
   | {
@@ -4434,6 +4441,7 @@ async function* streamModelTurn(
   runtime: ModelTurnRuntime,
   attemptBudget: ModelAttemptBudget,
 ): AsyncGenerator<TurnStreamEvent> {
+  const maxAttempts = 4;
   const queue = new AsyncQueue<TurnStreamEvent>();
   let turn: Turn | undefined;
   let reasoningOnlyRecoveryAttempted = false;
@@ -4538,13 +4546,34 @@ async function* streamModelTurn(
           if (signal.aborted) throw error;
           continue;
         }
+        const retryable = isRetryableStreamError(error);
         if (
           signal.aborted ||
-          attempt >= 3 ||
+          attempt >= maxAttempts ||
           !attemptBudget.canAttempt() ||
-          !isRetryableStreamError(error)
+          !retryable
         )
           throw error;
+        const currentTransport = runtime.networkTransport ?? "electron";
+        const nextTransport = nextModelNetworkTransport(
+          currentTransport,
+          error,
+        );
+        runtime.networkTransport = nextTransport;
+        writeLog("warn", "model.stream.retry", {
+          requestId,
+          attempt,
+          maxAttempts,
+          transport: modelNetworkTransportLabel(currentTransport),
+          nextTransport: modelNetworkTransportLabel(nextTransport),
+          error: networkTransportErrorText(error),
+        });
+        if (nextTransport !== currentTransport)
+          pushProgress(
+            nextTransport === "direct"
+              ? "检测到应用网络通道断流，正在切换备用直连通道重试…"
+              : "备用直连通道不可用，正在切回应用网络通道重试…",
+          );
         // Keep already visible text. The next attempt is reconciled against
         // that prefix, so replayed output is suppressed without a visual reset.
         const delay =
@@ -5022,6 +5051,9 @@ async function modelTurn(
   const firstByteTimeoutMs =
     reasoning.reasoningMode !== "none" ? 300_000 : 90_000;
   const serializedBody = JSON.stringify(body);
+  const networkTransport = runtime?.networkTransport ?? "electron";
+  const modelFetch =
+    networkTransport === "direct" ? directNetworkFetch : networkFetch;
   let response: Response;
   try {
     response = await fetchWithRetry(
@@ -5034,9 +5066,13 @@ async function modelTurn(
       {
         signal,
         firstByteTimeoutMs,
-        retries: 2,
+        // streamModelTurn owns the single retry budget for both header and
+        // mid-stream failures, so one broken transport cannot consume every
+        // attempt before the alternate transport is tried.
+        retries: 0,
         retryDelayMs: 2_000,
         maxBackoffMs: 30_000,
+        fetchImpl: modelFetch,
         onProgress,
         attemptBudget,
       },
@@ -5069,6 +5105,7 @@ async function modelTurn(
           omitImageInputs: runtime?.omitImageInputs,
           keyIndex: nextKeyIndex,
           triedKeyIndexes: [...triedKeyIndexes],
+          networkTransport,
         },
         attemptBudget,
       );
@@ -5082,6 +5119,7 @@ async function modelTurn(
     providerId: request.providerId,
     modelId: request.modelId,
     protocol,
+    transport: modelNetworkTransportLabel(networkTransport),
     status: response.status,
     requestBytes: Buffer.byteLength(serializedBody, "utf8"),
     toolCount: runtimeTools.length,
@@ -5172,6 +5210,7 @@ async function modelTurn(
           omitImageInputs: runtime?.omitImageInputs,
           keyIndex: nextKeyIndex,
           triedKeyIndexes: [...triedKeyIndexes],
+          networkTransport,
         },
         attemptBudget,
       );
@@ -5640,7 +5679,7 @@ export async function* runAgent(
       };
     }
     let imageRetryAttempted = false;
-    const turnAttemptBudget = new ModelAttemptBudget(3);
+    const turnAttemptBudget = new ModelAttemptBudget(4);
     for (;;) {
       try {
         for await (const event of streamTurn({
