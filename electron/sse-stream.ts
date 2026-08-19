@@ -1,4 +1,7 @@
-import { readStreamChunk } from "./request-guard";
+import {
+  readStreamChunk,
+  StreamReadTimeoutError,
+} from "./request-guard";
 
 export class SseStreamTimeoutError extends Error {
   constructor(
@@ -108,6 +111,11 @@ export async function* readSseJson(
           : meaningfulIdleTimeoutMs - (now - lastMeaningfulEventAt);
       if (meaningfulRemaining <= 0) throw meaningfulTimeoutError();
       const terminalRemaining = softTerminalRemainingMs;
+      const meaningfulDeadlineSelected =
+        meaningfulIdleTimeoutMs !== undefined &&
+        meaningfulRemaining <= semanticRemaining &&
+        meaningfulRemaining <=
+          (terminalRemaining ?? Number.POSITIVE_INFINITY);
       const readTimeout = Math.max(
         1,
         Math.min(
@@ -131,7 +139,9 @@ export async function* readSseJson(
         const failedAt = Date.now();
         if (
           meaningfulIdleTimeoutMs !== undefined &&
-          failedAt - lastMeaningfulEventAt >= meaningfulIdleTimeoutMs
+          ((error instanceof StreamReadTimeoutError &&
+            meaningfulDeadlineSelected) ||
+            failedAt - lastMeaningfulEventAt >= meaningfulIdleTimeoutMs)
         )
           throw meaningfulTimeoutError();
         if (failedAt - lastEventAt >= idleTimeoutMs)

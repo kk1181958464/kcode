@@ -10,6 +10,15 @@ const DEFAULT_IDLE_TIMEOUT_MS = 120_000;
 const WAIT_PROGRESS_INTERVAL_MS = 10_000;
 const DEFAULT_MAX_BACKOFF_MS = 30_000;
 
+export class StreamReadTimeoutError extends Error {
+  constructor(public readonly timeoutMs: number) {
+    super(
+      `模型响应流长时间没有新数据（${Math.round(timeoutMs / 1_000)} 秒）`,
+    );
+    this.name = "StreamReadTimeoutError";
+  }
+}
+
 type FetchWithRetryOptions = {
   signal: AbortSignal;
   firstByteTimeoutMs?: number;
@@ -206,12 +215,7 @@ export async function readStreamChunk(
       };
       const timer = setTimeout(() => {
         void reader.cancel().catch(() => undefined);
-        finish(
-          reject,
-          new Error(
-            `模型响应流长时间没有新数据（${Math.round(idleTimeoutMs / 1_000)} 秒）`,
-          ),
-        );
+        finish(reject, new StreamReadTimeoutError(idleTimeoutMs));
       }, idleTimeoutMs);
       const progress = setInterval(() => {
         const seconds = Math.round((Date.now() - startedAt) / 1_000);
