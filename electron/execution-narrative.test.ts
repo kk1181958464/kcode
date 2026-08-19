@@ -1,15 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  CLOSING_VERIFICATION_ROUND_LIMIT,
   activityExecutionNarrative,
   dedupeExecutionNarrative,
   executionNarrativePreview,
-  nextClosingVerificationRounds,
   nextExecutionNarrative,
-  nextPostPlanVerificationRounds,
   normalizeExecutionNarrative,
-  shouldFinalizeClosingVerification,
 } from "../src/execution-narrative";
 import type { AgentActivity } from "../src/types";
 
@@ -107,85 +103,5 @@ test("deduplicates before preview clipping so later narration stays visible", ()
       dedupeExecutionNarrative(`${previous}${next}`, previous),
     ),
     next,
-  );
-});
-
-test("forces a conclusion after structured evidence is complete", () => {
-  let rounds = nextClosingVerificationRounds({
-    previous: 0,
-    hadToolCalls: true,
-    madeChanges: false,
-    evidenceComplete: true,
-    hasMutationEvidence: true,
-  });
-  rounds = nextClosingVerificationRounds({
-    previous: rounds,
-    hadToolCalls: true,
-    madeChanges: false,
-    evidenceComplete: true,
-    hasMutationEvidence: true,
-  });
-  assert.equal(rounds, CLOSING_VERIFICATION_ROUND_LIMIT);
-  assert.equal(shouldFinalizeClosingVerification(rounds), true);
-});
-
-test("resets closing-check detection after a real change or ordinary work", () => {
-  assert.equal(
-    nextClosingVerificationRounds({
-      previous: 1,
-      hadToolCalls: true,
-      madeChanges: true,
-      evidenceComplete: true,
-      hasMutationEvidence: true,
-    }),
-    0,
-  );
-  assert.equal(
-    nextClosingVerificationRounds({
-      previous: 1,
-      hadToolCalls: true,
-      madeChanges: false,
-      evidenceComplete: false,
-      hasMutationEvidence: true,
-    }),
-    0,
-  );
-  assert.equal(
-    nextClosingVerificationRounds({
-      previous: 1,
-      hadToolCalls: true,
-      madeChanges: false,
-      evidenceComplete: true,
-      hasMutationEvidence: false,
-    }),
-    0,
-  );
-});
-
-test("forces finalization after a completed plan keeps running unchanged checks", () => {
-  let rounds = nextPostPlanVerificationRounds({
-    previous: 0,
-    planCompleted: true,
-    hadToolCalls: true,
-    madeChanges: false,
-    hadFailure: false,
-  });
-  rounds = nextPostPlanVerificationRounds({
-    previous: rounds,
-    planCompleted: true,
-    hadToolCalls: true,
-    madeChanges: false,
-    hadFailure: false,
-  });
-  assert.equal(shouldFinalizeClosingVerification(rounds), true);
-  assert.equal(
-    nextPostPlanVerificationRounds({
-      previous: rounds,
-      planCompleted: true,
-      hadToolCalls: true,
-      madeChanges: true,
-      hadFailure: false,
-    }),
-    0,
   );
 });

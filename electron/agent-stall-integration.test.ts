@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -100,7 +100,7 @@ test("asks the model to change strategy before pausing repeated tool rounds", as
   assert.equal(done?.result?.kind, "incomplete");
 });
 
-test("finalizes repeated post-change checks from structured evidence", async () => {
+test("keeps tools enabled while recovering repeated post-change checks", async () => {
   const workspacePath = await mkdtemp(path.join(os.tmpdir(), "kcode-closing-"));
   await writeFile(
     path.join(workspacePath, "first.js"),
@@ -116,8 +116,9 @@ test("finalizes repeated post-change checks from structured evidence", async () 
     workspacePath,
   };
   let rounds = 0;
+  let recoveryInstructionSeen = false;
   let finalizationInstructionSeen = false;
-  let finalizationDisabledTools = false;
+  let finalTurnToolsEnabled = false;
   const events: AgentEvent[] = [];
   for await (const event of runAgent(
     "closing-policy-integration",
@@ -127,13 +128,18 @@ test("finalizes repeated post-change checks from structured evidence", async () 
       getProvider: fakeProvider(),
       async *streamTurn(args) {
         rounds += 1;
+        recoveryInstructionSeen ||= args.history.some(
+          (item) =>
+            item.kind === "message" &&
+            item.content.includes("<runtime_stall_recovery>"),
+        );
         finalizationInstructionSeen ||= args.history.some(
           (item) =>
             item.kind === "message" &&
             item.content.includes("操作证据已经完整"),
         );
-        if (rounds === 4) {
-          finalizationDisabledTools = !args.toolsEnabled;
+        if (rounds === 5) {
+          finalTurnToolsEnabled = args.toolsEnabled;
           yield {
             type: "complete",
             turn: {
@@ -171,7 +177,9 @@ test("finalizes repeated post-change checks from structured evidence", async () 
                 {
                   id: `closing-call-${rounds}`,
                   name: "path_info" as const,
-                  input: { path: rounds === 2 ? "first.js" : "second.txt" },
+                  input: {
+                    path: rounds % 2 === 0 ? "first.js" : "second.txt",
+                  },
                 },
               ];
         yield {
@@ -188,13 +196,14 @@ test("finalizes repeated post-change checks from structured evidence", async () 
   ))
     events.push(event);
 
-  assert.equal(rounds, 4);
-  assert.equal(finalizationInstructionSeen, true);
-  assert.equal(finalizationDisabledTools, true);
+  assert.equal(rounds, 5);
+  assert.equal(recoveryInstructionSeen, true);
+  assert.equal(finalizationInstructionSeen, false);
+  assert.equal(finalTurnToolsEnabled, true);
   assert.ok(
     events.some(
       (event) =>
-        event.type === "progress" && event.message.includes("停止继续检查"),
+        event.type === "progress" && event.message.includes("更换执行策略"),
     ),
   );
   assert.ok(
@@ -208,7 +217,7 @@ test("finalizes repeated post-change checks from structured evidence", async () 
   );
 });
 
-test("stops varied checks after a completed plan even when mutation evidence is missing", async () => {
+test("reopens execution after a completed plan lacks mutation evidence", async () => {
   const workspacePath = await mkdtemp(
     path.join(os.tmpdir(), "kcode-post-plan-stall-"),
   );
@@ -222,7 +231,8 @@ test("stops varied checks after a completed plan even when mutation evidence is 
     workspacePath,
   };
   let rounds = 0;
-  let finalizationDisabledTools = false;
+  let recoveryInstructionSeen = false;
+  let toolsDisabled = false;
   const events: AgentEvent[] = [];
   for await (const event of runAgent(
     "post-plan-stall-integration",
@@ -232,11 +242,23 @@ test("stops varied checks after a completed plan even when mutation evidence is 
       getProvider: fakeProvider(),
       async *streamTurn(args) {
         rounds += 1;
-        if (rounds === 4) {
-          finalizationDisabledTools = !args.toolsEnabled;
-          throw new Error(
-            "模型收尾阶段持续只有思考内容，未返回正文或工具调用。",
-          );
+        toolsDisabled ||= !args.toolsEnabled;
+        recoveryInstructionSeen ||= args.history.some(
+          (item) =>
+            item.kind === "message" &&
+            item.content.includes("<runtime_stall_recovery>"),
+        );
+        if (rounds === 6) {
+          yield {
+            type: "complete",
+            turn: {
+              text: "结论：遗漏的修改已经实际完成。",
+              calls: [],
+              rawCalls: [],
+              usage: { input: 10, output: 5, cached: 0 },
+            },
+          };
+          return;
         }
         const calls =
           rounds === 1
@@ -257,7 +279,15 @@ test("stops varied checks after a completed plan even when mutation evidence is 
                   },
                 },
               ]
-            : [
+            : rounds === 5
+              ? [
+                  {
+                    id: "recovered-modification",
+                    name: "write_file" as const,
+                    input: { path: "first.txt", content: "changed\n" },
+                  },
+                ]
+              : [
                 {
                   id: `different-check-${rounds}`,
                   name: "path_info" as const,
@@ -280,22 +310,23 @@ test("stops varied checks after a completed plan even when mutation evidence is 
   ))
     events.push(event);
 
-  assert.equal(rounds, 4);
-  assert.equal(finalizationDisabledTools, true);
-  assert.ok(
-    events.some(
-      (event) =>
-        event.type === "text" && event.delta.includes("停止继续调用工具"),
-    ),
+  assert.equal(rounds, 6);
+  assert.equal(recoveryInstructionSeen, true);
+  assert.equal(toolsDisabled, false);
+  assert.equal(
+    await readFile(path.join(workspacePath, "first.txt"), "utf8"),
+    "changed\n",
   );
   assert.ok(
-    events.some((event) => event.type === "done" && event.outcome === "paused"),
+    events.some(
+      (event) => event.type === "done" && event.outcome === "completed",
+    ),
   );
   const done = events.find(
     (event): event is Extract<AgentEvent, { type: "done" }> =>
       event.type === "done",
   );
-  assert.equal(done?.result?.kind, "incomplete");
+  assert.equal(done?.result?.kind, "changed");
   assert.equal(
     events.some((event) => event.type === "error"),
     false,

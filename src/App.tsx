@@ -230,7 +230,10 @@ import {
 import { BrowserPanel } from "./components/browser/BrowserPanel";
 import { TitleBar } from "./components/chrome/TitleBar";
 import { TopBar } from "./components/topbar/TopBar";
-import { Sidebar } from "./components/sidebar/Sidebar";
+import {
+  Sidebar,
+  type SidebarLocalWorkspaceTarget,
+} from "./components/sidebar/Sidebar";
 import { StatusPanel } from "./components/status/StatusPanel";
 import {
   COMPOSER_STREAM_PAUSE_MS,
@@ -3265,7 +3268,10 @@ export default function App() {
             ? {
                 ...t,
                 workspaceName: folder.name,
-                workspacePath: folder.path,
+                localWorkspacePath: folder.path,
+                workspacePath: t.remoteWorkspace
+                  ? t.workspacePath
+                  : folder.path,
                 updatedAt: Date.now(),
               }
             : t,
@@ -3273,6 +3279,37 @@ export default function App() {
       );
     } catch (error) {
       setContextError(errorMessage(error));
+    }
+  }
+
+  async function assignSidebarLocalWorkspace(
+    target: SidebarLocalWorkspaceTarget,
+  ) {
+    try {
+      const folder = await window.kcode?.workspace.pickFolder();
+      if (!folder) return;
+      const matches = (task: TaskRecord) =>
+        target.kind === "workspace"
+          ? sidebarWorkspaceKey(task) === target.workspaceKey
+          : task.id === target.taskId;
+      setTasks((all) =>
+        all.map((task) =>
+          matches(task)
+            ? {
+                ...task,
+                workspaceName: task.workspaceName || folder.name,
+                localWorkspacePath: folder.path,
+                workspacePath: task.remoteWorkspace
+                  ? task.workspacePath
+                  : folder.path,
+                updatedAt: Date.now(),
+              }
+            : task,
+        ),
+      );
+      flashAppToast(`已关联本地项目：${folder.path}`);
+    } catch (error) {
+      setContextError(`关联本地项目失败：${errorMessage(error)}`);
     }
   }
 
@@ -3367,6 +3404,7 @@ export default function App() {
       id: uid(),
       name: newTaskName.trim() || pendingFolder?.name || "新任务",
       workspaceName: pendingFolder?.name,
+      localWorkspacePath: pendingFolder?.path,
       workspacePath: pendingFolder?.path ?? "",
       createdAt: now,
       updatedAt: now,
@@ -3555,6 +3593,18 @@ export default function App() {
     setShowScrollToBottom(!targetScroll.atBottom);
   }
 
+  async function openTaskEditor(taskId: string) {
+    const task = tasksRef.current.find((item) => item.id === taskId);
+    if (
+      !task ||
+      (!task.workspacePath && !task.localWorkspacePath && !task.remoteWorkspace)
+    )
+      return;
+    await switchTask(task);
+    setWorkspaceView("editor");
+    setStatusOpen(false);
+  }
+
   async function createConversation(workspaceKey: string) {
     if (creatingConversationPathsRef.current.has(workspaceKey)) return;
     const feedbackStartedAt = performance.now();
@@ -3595,6 +3645,7 @@ export default function App() {
         id: taskId,
         name: "新对话",
         workspaceName: sourceTask ? taskWorkspaceName(sourceTask) : undefined,
+        localWorkspacePath: sourceTask?.localWorkspacePath,
         workspacePath: targetWorkspacePath,
         remoteWorkspace,
         createdAt: now,
@@ -3652,10 +3703,11 @@ export default function App() {
     }
   }
 
-  async function forkActiveTask() {
-    if (!activeTask) return;
+  async function forkTask(sourceTask?: TaskRecord) {
+    const selectedTask = sourceTask ?? activeTask;
+    if (!selectedTask) return;
     try {
-      const source = await ensureTaskLoaded(activeTask);
+      const source = await ensureTaskLoaded(selectedTask);
       const full = await ensureFullTaskHistory(source);
       const now = Date.now();
       const fork: TaskRecord = {
@@ -5756,6 +5808,18 @@ export default function App() {
     const task = tasksRef.current.find((item) => item.id === taskId);
     if (task) void toggleTaskArchived(task);
   });
+  const onOpenTaskEditor = useEventCallback((taskId: string) => {
+    void openTaskEditor(taskId);
+  });
+  const onForkSidebarTask = useEventCallback((taskId: string) => {
+    const task = tasksRef.current.find((item) => item.id === taskId);
+    if (task) void forkTask(task);
+  });
+  const onAssignSidebarLocalWorkspace = useEventCallback(
+    (target: SidebarLocalWorkspaceTarget) => {
+      void assignSidebarLocalWorkspace(target);
+    },
+  );
   const onOpenSettings = useEventCallback(openSettings);
   const onStartSidebarResize = useEventCallback(startSidebarResize);
   const onWorkspaceViewChange = useEventCallback((view: "chat" | "editor") => {
@@ -5836,8 +5900,10 @@ export default function App() {
           createConversation={onCreateConversation}
           switchTask={onSwitchTask}
           toggleTaskArchived={onToggleTaskArchived}
+          openTaskEditor={onOpenTaskEditor}
+          forkTask={onForkSidebarTask}
+          assignLocalWorkspace={onAssignSidebarLocalWorkspace}
           setDeleteTarget={onSetSidebarDeleteTarget}
-          setContextError={setContextError}
           openSettings={onOpenSettings}
           closeSidebar={closeSidebar}
           startSidebarResize={onStartSidebarResize}
@@ -5853,11 +5919,15 @@ export default function App() {
             updateStatusPanel={onUpdateStatusPanel}
             gitState={gitState}
             remoteWorkspace={activeTask?.remoteWorkspace}
-            remoteState={sshRemoteState}
+            remoteState={
+              sshRemoteState?.taskId === activeTask?.id
+                ? sshRemoteState
+                : undefined
+            }
             editorAvailable={Boolean(activeTask?.workspacePath)}
             workspaceView={workspaceView}
             setWorkspaceView={onWorkspaceViewChange}
-            forkTask={() => void forkActiveTask()}
+            forkTask={() => void forkTask()}
             exportTask={(format) => void exportActiveTask(format)}
           />
           {workspaceView === "editor" && activeTask?.remoteWorkspace && (
@@ -5872,7 +5942,11 @@ export default function App() {
                 key={`${activeTask.id}:${activeTask.remoteWorkspace.id}:${activeTask.remoteWorkspace.rootPath}`}
                 taskId={activeTask.id}
                 workspace={activeTask.remoteWorkspace}
-                state={sshRemoteState}
+                state={
+                  sshRemoteState?.taskId === activeTask.id
+                    ? sshRemoteState
+                    : undefined
+                }
                 onStateChange={setSshRemoteState}
                 onReconnect={() => setSshRemoteDialogTaskId(activeTask.id)}
               />

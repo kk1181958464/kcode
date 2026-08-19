@@ -46,6 +46,8 @@ export type TaskRecord = {
   id: string;
   name: string;
   workspaceName?: string;
+  /** The user-selected local project directory, even when execution uses an SSH cache. */
+  localWorkspacePath?: string;
   workspacePath: string;
   remoteWorkspace?: SshRemoteWorkspace;
   createdAt: number;
@@ -103,6 +105,7 @@ export type SidebarTask = Pick<
   | "id"
   | "name"
   | "workspaceName"
+  | "localWorkspacePath"
   | "workspacePath"
   | "remoteWorkspace"
   | "archived"
@@ -113,6 +116,7 @@ export type SidebarTask = Pick<
 export type SidebarWorkspaceGroup = {
   key: string;
   workspacePath: string;
+  localWorkspacePath?: string;
   name: string;
   conversations: SidebarTask[];
   remote?: boolean;

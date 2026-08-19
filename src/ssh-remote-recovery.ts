@@ -7,7 +7,11 @@ import type {
 type SshRemoteRecoveryApi = {
   profiles(): Promise<SshRemoteProfile[]>;
   state(taskId: string, profileId?: string): Promise<SshRemoteState>;
-  connectSaved(taskId: string, profileId: string): Promise<SshRemoteState>;
+  connectSaved(
+    taskId: string,
+    profileId: string,
+    rootPath?: string,
+  ): Promise<SshRemoteState>;
 };
 
 function normalizedHost(value: string) {
@@ -70,15 +74,21 @@ export async function restoreSshRemoteConnection(
   workspace: SshRemoteWorkspace,
 ) {
   const current = await api.state(taskId, workspace.id);
-  if (current.connected) return current;
+  if (
+    current.connected &&
+    current.profile &&
+    normalizedRoot(current.profile.rootPath) === normalizedRoot(workspace.rootPath)
+  )
+    return current;
 
   if (current.profile && current.reconnectAvailable)
-    return api.connectSaved(taskId, current.profile.id);
+    return api.connectSaved(taskId, current.profile.id, workspace.rootPath);
 
   const candidate = matchingSavedSshRemoteProfile(
     workspace,
     await api.profiles(),
   );
-  if (candidate) return api.connectSaved(taskId, candidate.id);
+  if (candidate)
+    return api.connectSaved(taskId, candidate.id, workspace.rootPath);
   throw new SshRemoteCredentialsRequiredError(workspace);
 }

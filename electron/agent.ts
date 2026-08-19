@@ -73,10 +73,7 @@ import {
   activityExecutionNarrative,
   dedupeExecutionNarrative,
   executionNarrativePreview,
-  nextClosingVerificationRounds,
   nextExecutionNarrative,
-  nextPostPlanVerificationRounds,
-  shouldFinalizeClosingVerification,
 } from "../src/execution-narrative";
 import { normalizePlanUpdate } from "../src/execution-plan";
 import {
@@ -2184,6 +2181,7 @@ async function prepareDatabaseSsh(
   input: Record<string, unknown>,
   linkedCredentialName: string | undefined,
   signal: AbortSignal,
+  workspaceRoot?: string,
 ): Promise<PreparedDatabaseSsh> {
   const explicitCredentialName = String(input.sshCredentialName || "").trim();
   if (explicitCredentialName && input.sshHost)
@@ -2193,7 +2191,7 @@ async function prepareDatabaseSsh(
     (input.sshHost ? "" : String(linkedCredentialName || "").trim());
   if (requestedCredentialName) {
     const profile = await savedSshCredential(requestedCredentialName);
-    await connectSavedSshRemote(taskId, profile.id);
+    await connectSavedSshRemote(taskId, profile.id, workspaceRoot);
     return {
       sessionId: taskId,
       temporary: false,
@@ -2475,10 +2473,16 @@ async function execute(
   signal: AbortSignal,
   onProgress: (output: string) => void = () => undefined,
 ): Promise<ToolResult> {
+  const runtimeRemoteState = call.name.startsWith("ssh_")
+    ? await sshRemoteState(browserSessionId).catch(() => undefined)
+    : undefined;
+  const activeRemoteWorkspace =
+    (runtimeRemoteState?.connected ? runtimeRemoteState.profile : undefined) ??
+    request.remoteWorkspace;
   const resolveRemoteToolPath = (value: unknown, fallback = "") => {
     const raw = String(value || fallback);
-    if (!request.remoteWorkspace || !raw) return raw;
-    return resolveSshWorkspacePath(request.remoteWorkspace.rootPath, raw);
+    if (!activeRemoteWorkspace || !raw) return raw;
+    return resolveSshWorkspacePath(activeRemoteWorkspace.rootPath, raw);
   };
   if (call.name === "list_directory") {
     const directory = workspacePath(root, call.input.path);
@@ -3247,14 +3251,12 @@ async function execute(
     const credentialName = String(call.input.credentialName || "").trim();
     if (credentialName) {
       const saved = await savedSshCredential(credentialName);
-      let state = await connectSavedSshRemote(browserSessionId, saved.id);
       const requestedRootPath = String(call.input.rootPath || "").trim();
-      if (requestedRootPath && requestedRootPath !== state.profile?.rootPath)
-        state = await adoptActiveSshRemote(
-          browserSessionId,
-          requestedRootPath,
-          saved.name,
-        );
+      const state = await connectSavedSshRemote(
+        browserSessionId,
+        saved.id,
+        requestedRootPath || request.remoteWorkspace?.rootPath || undefined,
+      );
       const profile = state.profile;
       if (!profile) throw new Error(`SSH 凭据“${saved.name}”连接后状态丢失。`);
       return {
@@ -3335,15 +3337,21 @@ async function execute(
       String(call.input.path || ""),
       signal,
     );
+    const state = await adoptActiveSshRemote(browserSessionId, rootPath);
+    const activeRootPath = state.profile?.rootPath ?? rootPath;
     return {
-      output: JSON.stringify({ connected: true, rootPath }, null, 2),
-      path: rootPath,
+      output: JSON.stringify(
+        { connected: state.connected, rootPath: activeRootPath },
+        null,
+        2,
+      ),
+      path: activeRootPath,
     };
   }
   if (call.name === "ssh_run") {
     const requestedCommand = String(call.input.command || "");
-    const remoteCommand = request.remoteWorkspace
-      ? sshWorkspaceCommand(request.remoteWorkspace.rootPath, requestedCommand)
+    const remoteCommand = activeRemoteWorkspace
+      ? sshWorkspaceCommand(activeRemoteWorkspace.rootPath, requestedCommand)
       : requestedCommand;
     const result = await runSshCommand(
       browserSessionId,
@@ -3498,6 +3506,7 @@ async function execute(
       call.input,
       credential.source?.sshCredentialName,
       signal,
+      request.remoteWorkspace?.rootPath,
     );
     const connectionInput = mysqlConnectInput(credential.input, "127.0.0.1");
     let result;
@@ -3597,6 +3606,7 @@ async function execute(
       call.input,
       credential.source?.sshCredentialName,
       signal,
+      request.remoteWorkspace?.rootPath,
     );
     const connectionInput = sqlServerConnectInput(
       credential.input,
@@ -3699,6 +3709,7 @@ async function execute(
       call.input,
       credential.source?.sshCredentialName,
       signal,
+      request.remoteWorkspace?.rootPath,
     );
     const connectionInput = mongoConnectInput(credential.input, "127.0.0.1");
     let result;
@@ -5363,20 +5374,34 @@ function blockedVerificationEvents(
   ];
 }
 
+function codingEvidenceWithBaseline(
+  history: HistoryItem[],
+  baseline: ReadonlySet<CodingOperation>,
+) {
+  const evidence = successfulCodingEvidence(history);
+  for (const operation of baseline) evidence.add(operation);
+  return evidence;
+}
+
 function buildPausedCompletionResult({
   evidenceHistory,
+  baselineCodingEvidence,
   requestedCodingEvidenceOps,
   requestedBrowserOps,
   requestedGitOps,
   plannerExecutionPending,
 }: {
   evidenceHistory: HistoryItem[];
+  baselineCodingEvidence: ReadonlySet<CodingOperation>;
   requestedCodingEvidenceOps: Set<CodingOperation>;
   requestedBrowserOps: Set<BrowserOperation>;
   requestedGitOps: Set<GitOperation>;
   plannerExecutionPending: boolean;
 }): AgentCompletionResult {
-  const codingEvidence = successfulCodingEvidence(evidenceHistory);
+  const codingEvidence = codingEvidenceWithBaseline(
+    evidenceHistory,
+    baselineCodingEvidence,
+  );
   const browserEvidence = successfulBrowserEvidence(evidenceHistory);
   const gitEvidence = successfulGitEvidence(evidenceHistory);
   const unavailableGitEvidence = unavailableGitOperations(evidenceHistory);
@@ -5474,6 +5499,21 @@ export async function* runAgent(
   const root = path.resolve(request.workspacePath);
   const browserSessionId =
     request.connectionSessionId || request.taskId || requestId;
+  const baselineCodingEvidence = new Set<CodingOperation>();
+  if (request.remoteWorkspace && request.connectionSessionId) {
+    try {
+      const remoteState = await sshRemoteState(
+        browserSessionId,
+        request.remoteWorkspace.id,
+      );
+      // A managed SSH workspace is connected before the model turn starts.
+      // Treat that runtime fact as connection evidence so a redundant or
+      // failed reconnect call cannot invalidate otherwise verified work.
+      if (remoteState.connected) baselineCodingEvidence.add("connect");
+    } catch {
+      // The normal SSH tools will report the concrete connection failure.
+    }
+  }
   bindBrowserRequest(browserSessionId, requestId);
   if (!path.isAbsolute(request.workspacePath))
     throw new Error("工作区路径必须是绝对路径");
@@ -5558,8 +5598,6 @@ export async function* runAgent(
   let lastPromptTokens = 0;
   let round = 0,
     stalledRounds = 0,
-    closingVerificationRounds = 0,
-    postPlanVerificationRounds = 0,
     lastFingerprint = "";
   // Recovery budgets cap protocol retries without using assistant prose as a
   // completion signal.
@@ -5606,15 +5644,15 @@ export async function* runAgent(
       budgets.autoContinues = 0;
       budgets.emptyTurns = 0;
       stalledRounds = 0;
-      closingVerificationRounds = 0;
-      postPlanVerificationRounds = 0;
       lastFingerprint = "";
       plan.steps = [];
       plan.statuses = undefined;
       plan.cursor = 0;
     }
-    const codingEvidenceAtRoundStart =
-      successfulCodingEvidence(evidenceHistory);
+    const codingEvidenceAtRoundStart = codingEvidenceWithBaseline(
+      evidenceHistory,
+      baselineCodingEvidence,
+    );
     const browserEvidenceAtRoundStart =
       successfulBrowserEvidence(evidenceHistory);
     const gitEvidenceAtRoundStart = successfulGitEvidence(evidenceHistory);
@@ -5629,9 +5667,10 @@ export async function* runAgent(
       (agent) => !agent.collected,
     );
     const evidenceComplete =
-      missingRequestedCodingOperations(
+      missingVerifiedCodingOperations(
         requestedCodingEvidenceOps,
         codingEvidenceAtRoundStart,
+        evidenceHistory,
       ).length === 0 &&
       missingRequestedBrowserOperations(
         requestedBrowserOps,
@@ -5645,30 +5684,21 @@ export async function* runAgent(
       !hasUncollectedAgentWork;
     const hasPendingInstructions =
       pendingParentInstructions.length > 0 || pendingSteering.length > 0;
-    const forcedClosingFinalization =
-      !hasPendingInstructions &&
-      (shouldFinalizeClosingVerification(closingVerificationRounds) ||
-        shouldFinalizeClosingVerification(postPlanVerificationRounds));
-    const finalizationMode = forcedClosingFinalization
-      ? evidenceComplete
-        ? "evidence-complete"
-        : "limit-reached"
-      : executorFinalizationMode({
-          agentRole: request.agentRole,
-          completedRounds: round,
-          elapsedMs: Date.now() - runStartedAt,
-          evidenceComplete,
-          hasPendingInstructions:
-            hasPendingInstructions || hasUncollectedAgentWork,
-        });
+    const finalizationMode = executorFinalizationMode({
+      agentRole: request.agentRole,
+      completedRounds: round,
+      elapsedMs: Date.now() - runStartedAt,
+      evidenceComplete,
+      hasPendingInstructions:
+        hasPendingInstructions || hasUncollectedAgentWork,
+    });
     round += 1;
     const finalizationRoleLabel =
       request.agentRole === "planner" ? "规划模型" : "执行模型";
     yield {
       type: "progress",
-      message: forcedClosingFinalization
-        ? "检测到连续重复的收尾复核，正在停止继续检查并汇总结论…"
-        : finalizationMode === "evidence-complete"
+      message:
+        finalizationMode === "evidence-complete"
           ? `${finalizationRoleLabel}已完成主要修改和验证，正在收尾总结…`
           : finalizationMode === "limit-reached"
             ? `${finalizationRoleLabel}已达到运行上限，正在汇总已有结果和未完成项…`
@@ -5754,11 +5784,8 @@ export async function* runAgent(
       history.push({
         kind: "message",
         role: "user",
-        content: forcedClosingFinalization
-          ? evidenceComplete
-            ? "<runtime_finalization>所需操作证据已经完整，但随后又连续出现无实际改动的复核工具调用。现在禁止继续调用工具或重复检查。请立即根据已有工具证据给出结论：已确认事实、完成的改动、成功和失败的验证，以及仍无法确认的事项。不得把未完成项写成已完成。</runtime_finalization>"
-            : "<runtime_finalization>执行计划已全部标记完成，但随后仍连续出现无实际改动的复核工具调用，而且结构化操作证据仍有缺口。现在禁止继续调用工具或重复检查。请立即汇总已有成功结果、失败记录和仍缺少证据的事项；不得把未确认项写成已完成。</runtime_finalization>"
-          : finalizationMode === "evidence-complete"
+        content:
+          finalizationMode === "evidence-complete"
             ? request.agentRole === "planner"
               ? "<runtime_finalization>执行模型已返回覆盖本次要求的成功工具证据，规划阶段现在进入收尾。不要再派发新的执行 Agent，也不要重复复核。请依据已收集的执行结果给出简洁最终总结：完成内容、修改文件、验证结果、可用地址和真实残留问题。不得声称未经执行模型证实的事项。</runtime_finalization>"
               : "<runtime_finalization>已有成功工具记录覆盖本次要求，执行预算现在进入收尾阶段。不要再调用工具、不要继续修改，也不要追加重复验证。请仅依据现有工具结果给出简洁最终总结：完成内容、修改文件、验证结果、可用地址和真实残留问题。不得声称未验证的事项。</runtime_finalization>"
@@ -5814,7 +5841,10 @@ export async function* runAgent(
             : shouldRequireCodingTool(
                 request.modelId,
                 requestedCodingEvidenceOps,
-                successfulCodingEvidence(evidenceHistory),
+                codingEvidenceWithBaseline(
+                  evidenceHistory,
+                  baselineCodingEvidence,
+                ),
                 evidenceHistory,
               ),
           runtime: modelRuntime,
@@ -5938,7 +5968,10 @@ export async function* runAgent(
       requestedGitOps,
       gitEvidence,
     ).filter((operation) => !unavailableGitEvidence.has(operation));
-    const codingEvidence = successfulCodingEvidence(evidenceHistory);
+    const codingEvidence = codingEvidenceWithBaseline(
+      evidenceHistory,
+      baselineCodingEvidence,
+    );
     const missingCodingEvidence = missingVerifiedCodingOperations(
       requestedCodingEvidenceOps,
       codingEvidence,
@@ -6935,7 +6968,10 @@ export async function* runAgent(
     prevRound.activity = roundLastActivity;
     prevRound.failure = roundFailedActivity;
     const roundFingerprint = roundFingerprints.join("|");
-    const codingEvidenceAfterRound = successfulCodingEvidence(evidenceHistory);
+    const codingEvidenceAfterRound = codingEvidenceWithBaseline(
+      evidenceHistory,
+      baselineCodingEvidence,
+    );
     const browserEvidenceAfterRound =
       successfulBrowserEvidence(evidenceHistory);
     const gitEvidenceAfterRound = successfulGitEvidence(evidenceHistory);
@@ -6945,9 +6981,10 @@ export async function* runAgent(
       plan.steps.length >= 2 &&
       !successfulToolNames(evidenceHistory).has("spawn_agent");
     const evidenceCompleteAfterRound =
-      missingRequestedCodingOperations(
+      missingVerifiedCodingOperations(
         requestedCodingEvidenceOps,
         codingEvidenceAfterRound,
+        evidenceHistory,
       ).length === 0 &&
       missingRequestedBrowserOperations(
         requestedBrowserOps,
@@ -6959,27 +6996,34 @@ export async function* runAgent(
       ).every((operation) => unavailableGitAfterRound.has(operation)) &&
       !plannerExecutionPendingAfterRound &&
       !listSubagents(requestId).some((agent) => !agent.collected);
-    closingVerificationRounds = nextClosingVerificationRounds({
-      previous: closingVerificationRounds,
-      hadToolCalls: turn.calls.length > 0,
-      madeChanges: roundAdvanced,
-      evidenceComplete: evidenceCompleteAfterRound,
-      hasMutationEvidence: ["modify", "upload", "download"].some((operation) =>
-        codingEvidenceAfterRound.has(operation as CodingOperation),
-      ),
-    });
+    const hasMutationEvidenceAfterRound = [
+      "modify",
+      "upload",
+      "download",
+    ].some((operation) =>
+      codingEvidenceAfterRound.has(operation as CodingOperation),
+    );
     const planCompleted =
       plan.steps.length > 0 &&
       plan.statuses?.length === plan.steps.length &&
       plan.statuses.every((status) => status === "completed");
-    postPlanVerificationRounds = nextPostPlanVerificationRounds({
-      previous: postPlanVerificationRounds,
-      planCompleted,
-      hadToolCalls: turn.calls.length > 0,
-      madeChanges: roundAdvanced,
-      hadFailure: Boolean(roundFailedActivity),
-    });
-    const madeProgress = roundAdvanced || roundFingerprint !== lastFingerprint;
+    const planUpdatedThisRound = turn.calls.some(
+      (call) => call.name === "update_plan",
+    );
+    // Different read-only checks are not material progress once the model has
+    // declared the plan complete or all known mutation evidence is already in
+    // place. Keep tools enabled, but let the normal stall policy request a new
+    // strategy and eventually pause instead of forcing a false final answer.
+    const verificationOnlyRound = Boolean(
+      turn.calls.length &&
+      !roundAdvanced &&
+      !roundFailedActivity &&
+      ((planCompleted && !planUpdatedThisRound) ||
+        (evidenceCompleteAfterRound && hasMutationEvidenceAfterRound)),
+    );
+    const madeProgress =
+      roundAdvanced ||
+      (!verificationOnlyRound && roundFingerprint !== lastFingerprint);
     stalledRounds = madeProgress ? 0 : stalledRounds + 1;
     lastFingerprint = roundFingerprint;
     if (signal.aborted) {
@@ -7007,6 +7051,7 @@ export async function* runAgent(
     if (currentStallAction === "pause") {
       const pausedCompletionResult = buildPausedCompletionResult({
         evidenceHistory,
+        baselineCodingEvidence,
         requestedCodingEvidenceOps,
         requestedBrowserOps,
         requestedGitOps,
@@ -7014,7 +7059,7 @@ export async function* runAgent(
       });
       for (const event of blockedVerificationEvents(
         timelineTextLength,
-        `Agent 已暂停：连续 ${STALL_PAUSE_ROUNDS} 轮重复了相同操作且没有取得新进展。已有结果均已保留，可以继续任务并从当前状态更换策略。`,
+        `Agent 已暂停：连续 ${STALL_PAUSE_ROUNDS} 轮没有取得实质进展。已有结果和实际修改均已保留，可以继续任务并从当前状态更换策略。`,
         pausedCompletionResult,
       ))
         yield event;

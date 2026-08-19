@@ -1,7 +1,6 @@
 import type { AgentActivity } from "./types";
 
 export const EXECUTION_NARRATIVE_VISIBLE_LIMIT = 320;
-export const CLOSING_VERIFICATION_ROUND_LIMIT = 2;
 const EXECUTION_NARRATIVE_DEDUP_MIN = 24;
 
 const INSPECTION_TOOLS = new Set<AgentActivity["tool"]>([
@@ -67,51 +66,6 @@ function executionNarrativeSource(value: string) {
   return {
     value: normalizeExecutionNarrative(visible, 16_000),
   };
-}
-
-export function nextClosingVerificationRounds({
-  previous,
-  hadToolCalls,
-  madeChanges,
-  evidenceComplete,
-  hasMutationEvidence,
-}: {
-  previous: number;
-  hadToolCalls: boolean;
-  madeChanges: boolean;
-  evidenceComplete: boolean;
-  hasMutationEvidence: boolean;
-}) {
-  if (!hadToolCalls || madeChanges || !evidenceComplete || !hasMutationEvidence)
-    return 0;
-  return previous + 1;
-}
-
-export function shouldFinalizeClosingVerification(rounds: number) {
-  return rounds >= CLOSING_VERIFICATION_ROUND_LIMIT;
-}
-
-/**
- * A completed structured plan is also a hard boundary. Models sometimes keep
- * inventing slightly different read-only checks when one earlier mutation
- * lacks structured proof; two unchanged post-plan rounds are enough to stop
- * calling tools and summarize the evidence gap instead of looping forever.
- */
-export function nextPostPlanVerificationRounds({
-  previous,
-  planCompleted,
-  hadToolCalls,
-  madeChanges,
-  hadFailure,
-}: {
-  previous: number;
-  planCompleted: boolean;
-  hadToolCalls: boolean;
-  madeChanges: boolean;
-  hadFailure: boolean;
-}) {
-  if (!planCompleted || !hadToolCalls || madeChanges || hadFailure) return 0;
-  return previous + 1;
 }
 
 function trimNarrativeContinuation(value: string) {

@@ -123,8 +123,6 @@ const api: KCodeApi = {
       ipcRenderer.invoke("workspace:git-state", path, includeDiff),
     gitFileDiff: (path, filePath) =>
       ipcRenderer.invoke("workspace:git-file-diff", path, filePath),
-    showFolderMenu: (path) =>
-      ipcRenderer.invoke("workspace:show-folder-menu", path),
     list: (root, directory) =>
       ipcRenderer.invoke("workspace:list", root, directory),
     read: (root, filePath) =>
@@ -143,17 +141,36 @@ const api: KCodeApi = {
     connect: (input) => ipcRenderer.invoke("ssh-remote:connect", input),
     adopt: (taskId, rootPath) =>
       ipcRenderer.invoke("ssh-remote:adopt", taskId, rootPath),
-    connectSaved: (taskId, profileId) =>
-      ipcRenderer.invoke("ssh-remote:connect-saved", taskId, profileId),
+    connectSaved: (taskId, profileId, rootPath) =>
+      ipcRenderer.invoke("ssh-remote:connect-saved", taskId, profileId, rootPath),
     state: (taskId, profileId) =>
       ipcRenderer.invoke("ssh-remote:state", taskId, profileId),
     disconnect: (taskId) => ipcRenderer.invoke("ssh-remote:disconnect", taskId),
     forget: (profileId) => ipcRenderer.invoke("ssh-remote:forget", profileId),
-    list: (taskId, profileId, remotePath) =>
-      ipcRenderer.invoke("ssh-remote:list", taskId, profileId, remotePath),
-    read: (taskId, profileId, remotePath) =>
-      ipcRenderer.invoke("ssh-remote:read", taskId, profileId, remotePath),
-    write: (taskId, profileId, remotePath, content, expectedContent) =>
+    list: (taskId, profileId, remotePath, workspaceRoot) =>
+      ipcRenderer.invoke(
+        "ssh-remote:list",
+        taskId,
+        profileId,
+        remotePath,
+        workspaceRoot,
+      ),
+    read: (taskId, profileId, remotePath, workspaceRoot) =>
+      ipcRenderer.invoke(
+        "ssh-remote:read",
+        taskId,
+        profileId,
+        remotePath,
+        workspaceRoot,
+      ),
+    write: (
+      taskId,
+      profileId,
+      remotePath,
+      content,
+      expectedContent,
+      workspaceRoot,
+    ) =>
       ipcRenderer.invoke(
         "ssh-remote:write",
         taskId,
@@ -161,6 +178,7 @@ const api: KCodeApi = {
         remotePath,
         content,
         expectedContent,
+        workspaceRoot,
       ),
     pickPrivateKey: () => ipcRenderer.invoke("ssh-remote:pick-private-key"),
   },

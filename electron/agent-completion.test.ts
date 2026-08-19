@@ -46,6 +46,27 @@ test("missing runtime evidence is incomplete rather than a failed claim", () => 
   assert.match(result.notice ?? "", /修改后验证/);
 });
 
+test("accepts an already-connected managed SSH session as connection evidence", () => {
+  const result = buildAgentCompletionResult({
+    requestedOperations: ["coding:connect", "coding:modify", "coding:validate"],
+    observedOperations: ["coding:connect", "coding:modify", "coding:validate"],
+    missingOperations: [],
+    evidence: {
+      ...emptyEvidence,
+      toolCalls: 2,
+      successfulTools: 2,
+      changedFiles: ["remote.php"],
+      additions: 3,
+      deletions: 1,
+    },
+    waitingForUser: false,
+    verifiedNoChange: false,
+  });
+
+  assert.equal(result.kind, "changed");
+  assert.deepEqual(result.missingOperations, []);
+});
+
 test("completion evidence is derived from successful structured tool results", () => {
   const history: CodingVerificationHistoryItem[] = [
     {

@@ -1,5 +1,5 @@
 import { app, safeStorage } from "electron";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   chmod,
   mkdir,
@@ -27,6 +27,7 @@ import {
   writeSshFile,
 } from "./ssh";
 import { resolveSshWorkspacePath } from "./ssh-remote-path";
+import { SshRemoteTaskWorkspaceBindings } from "./ssh-remote-bindings";
 
 type SshRemoteSecret = {
   password?: string;
@@ -46,7 +47,7 @@ const runtimeProfiles = new Map<
   string,
   { profile: SshRemoteProfile; secret?: SshRemoteSecret }
 >();
-const bindings = new Map<string, string>();
+const taskWorkspaces = new SshRemoteTaskWorkspaceBindings();
 const connectionErrors = new Map<string, string>();
 const connectingTasks = new Set<string>();
 let loaded = false;
@@ -126,18 +127,27 @@ async function privateKeyFromInput(input: SshRemoteConnectInput) {
   }
 }
 
-function cachePath(profileId: string) {
-  return path.join(cacheRoot(), profileId);
+function cachePath(profileId: string, taskId: string) {
+  const taskKey = createHash("sha256").update(taskId).digest("hex").slice(0, 20);
+  return path.join(cacheRoot(), profileId, taskKey);
+}
+
+function normalizedRemoteRoot(value: string) {
+  const normalized = value.trim().replace(/\\/g, "/").replace(/\/+$/, "");
+  return normalized || "/";
 }
 
 async function connectWithProfile(
   taskId: string,
   profile: SshRemoteProfile,
   secret: SshRemoteSecret,
+  options: {
+    credentialProfile?: SshRemoteProfile;
+    updateDefaultRoot?: boolean;
+  } = {},
 ) {
   connectingTasks.add(taskId);
   connectionErrors.delete(taskId);
-  bindings.delete(taskId);
   const signal = new AbortController().signal;
   try {
     const connection = await connectSsh(
@@ -166,12 +176,19 @@ async function connectWithProfile(
       rootPath,
       hostFingerprint: connection.hostFingerprint,
     };
+    const credentialProfile = options.credentialProfile ?? profile;
     runtimeProfiles.set(profile.id, {
-      profile: resolvedProfile,
+      profile:
+        options.updateDefaultRoot === false
+          ? {
+              ...credentialProfile,
+              hostFingerprint: connection.hostFingerprint,
+            }
+          : resolvedProfile,
       secret,
     });
-    bindings.set(taskId, profile.id);
-    await mkdir(cachePath(profile.id), { recursive: true });
+    taskWorkspaces.bind(taskId, resolvedProfile);
+    await mkdir(cachePath(profile.id, taskId), { recursive: true });
     return resolvedProfile;
   } catch (error) {
     disconnectSsh(taskId);
@@ -192,6 +209,8 @@ export async function connectSshRemote(input: SshRemoteConnectInput) {
   await ensureLoaded();
   const profileId = input.profileId?.trim() || randomUUID();
   const previousRuntime = runtimeProfiles.get(profileId);
+  const previousStored = profiles.get(profileId);
+  const previousWorkspace = taskWorkspaces.workspace(input.taskId);
   const privateKey = await privateKeyFromInput(input);
   const secret: SshRemoteSecret = {
     password: input.authType === "password" ? input.password : undefined,
@@ -199,7 +218,7 @@ export async function connectSshRemote(input: SshRemoteConnectInput) {
     passphrase: input.passphrase,
   };
   const encryptedSecret = input.remember ? encryptSecret(secret) : undefined;
-  const profile: SshRemoteProfile = {
+  const requestedProfile: SshRemoteProfile = {
     id: profileId,
     name: normalizeProfileName(input),
     host: input.host.trim(),
@@ -209,17 +228,41 @@ export async function connectSshRemote(input: SshRemoteConnectInput) {
     authType: input.authType,
     remembered: Boolean(input.remember),
   };
-  const resolved = await connectWithProfile(input.taskId, profile, secret);
+  const previousProfile =
+    previousRuntime?.profile ??
+    (previousStored ? publicProfile(previousStored) : undefined);
+  const credentialProfile: SshRemoteProfile = previousProfile
+    ? {
+        ...requestedProfile,
+        rootPath: previousProfile.rootPath,
+        hostFingerprint: previousProfile.hostFingerprint,
+      }
+    : requestedProfile;
+  const resolved = await connectWithProfile(
+    input.taskId,
+    requestedProfile,
+    secret,
+    {
+      credentialProfile,
+      updateDefaultRoot: !previousProfile,
+    },
+  );
   if (encryptedSecret) {
-    const previous = profiles.get(profileId);
-    profiles.set(profileId, storedProfile(resolved, encryptedSecret));
+    const persistedProfile = {
+      ...credentialProfile,
+      hostFingerprint: resolved.hostFingerprint,
+      remembered: true,
+    };
+    profiles.set(profileId, storedProfile(persistedProfile, encryptedSecret));
     try {
       await persistProfiles();
     } catch (error) {
-      if (previous) profiles.set(profileId, previous);
+      if (previousStored) profiles.set(profileId, previousStored);
       else profiles.delete(profileId);
       disconnectSsh(input.taskId);
-      bindings.delete(input.taskId);
+      if (previousWorkspace)
+        taskWorkspaces.bind(input.taskId, previousWorkspace);
+      else taskWorkspaces.unbind(input.taskId);
       if (previousRuntime) runtimeProfiles.set(profileId, previousRuntime);
       else runtimeProfiles.delete(profileId);
       throw new Error(
@@ -230,36 +273,59 @@ export async function connectSshRemote(input: SshRemoteConnectInput) {
   return sshRemoteState(input.taskId, profileId);
 }
 
-export async function connectSavedSshRemote(taskId: string, profileId: string) {
+export async function connectSavedSshRemote(
+  taskId: string,
+  profileId: string,
+  rootPath?: string,
+) {
   await ensureLoaded();
   const runtime = runtimeProfiles.get(profileId);
-  if (runtime?.secret)
-    await connectWithProfile(taskId, runtime.profile, runtime.secret);
-  else {
-    const stored = profiles.get(profileId);
-    if (!stored) {
-      if (runtime)
-        throw new Error("此 SSH Remote 来自临时连接，断开后需要重新输入凭据。");
-      throw new Error("找不到已保存的 SSH Remote 连接。");
-    }
-    const resolved = await connectWithProfile(
-      taskId,
-      publicProfile(stored),
-      decryptSecret(stored),
+  const stored = profiles.get(profileId);
+  if (!runtime?.secret && !stored) {
+    if (runtime)
+      throw new Error("此 SSH Remote 来自临时连接，断开后需要重新输入凭据。");
+    throw new Error("找不到已保存的 SSH Remote 连接。");
+  }
+  const credentialProfile = runtime?.secret
+    ? runtime.profile
+    : publicProfile(stored!);
+  const secret = runtime?.secret ?? decryptSecret(stored!);
+  const previousRuntime = runtimeProfiles.get(profileId);
+  const previousWorkspace = taskWorkspaces.workspace(taskId);
+  const workspaceProfile = {
+    ...credentialProfile,
+    rootPath:
+      rootPath?.trim() ||
+      taskWorkspaces.workspace(taskId, profileId)?.rootPath ||
+      credentialProfile.rootPath,
+  };
+  const resolved = await connectWithProfile(
+    taskId,
+    workspaceProfile,
+    secret,
+    { credentialProfile, updateDefaultRoot: false },
+  );
+  if (stored && !stored.hostFingerprint && resolved.hostFingerprint) {
+    const persistedProfile = {
+      ...publicProfile(stored),
+      hostFingerprint: resolved.hostFingerprint,
+    };
+    profiles.set(
+      profileId,
+      storedProfile(persistedProfile, stored.encryptedSecret),
     );
-    if (!stored.hostFingerprint && resolved.hostFingerprint) {
-      profiles.set(profileId, storedProfile(resolved, stored.encryptedSecret));
-      try {
-        await persistProfiles();
-      } catch (error) {
-        profiles.set(profileId, stored);
-        disconnectSsh(taskId);
-        bindings.delete(taskId);
-        runtimeProfiles.delete(profileId);
-        throw new Error(
-          `无法保存 SSH 主机指纹：${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
+    try {
+      await persistProfiles();
+    } catch (error) {
+      profiles.set(profileId, stored);
+      disconnectSsh(taskId);
+      if (previousWorkspace) taskWorkspaces.bind(taskId, previousWorkspace);
+      else taskWorkspaces.unbind(taskId);
+      if (previousRuntime) runtimeProfiles.set(profileId, previousRuntime);
+      else runtimeProfiles.delete(profileId);
+      throw new Error(
+        `无法保存 SSH 主机指纹：${error instanceof Error ? error.message : String(error)}`,
+      );
     }
   }
   return sshRemoteState(taskId, profileId);
@@ -267,20 +333,22 @@ export async function connectSavedSshRemote(taskId: string, profileId: string) {
 
 export async function sshRemoteState(taskId: string, profileId?: string) {
   await ensureLoaded();
-  const id = profileId || bindings.get(taskId);
+  const id = profileId || taskWorkspaces.profileId(taskId);
   const stored = id ? profiles.get(id) : undefined;
   const runtime = id ? runtimeProfiles.get(id) : undefined;
   const profile =
-    runtime?.profile ?? (stored ? publicProfile(stored) : undefined);
+    (id ? taskWorkspaces.workspace(taskId, id) : undefined) ??
+    runtime?.profile ??
+    (stored ? publicProfile(stored) : undefined);
   const sessionConnected = sshSessionInfo(taskId).connected;
-  const bindingMatches = !id || bindings.get(taskId) === id;
+  const bindingMatches = !id || taskWorkspaces.profileId(taskId) === id;
   return {
     taskId,
     connected: sessionConnected && bindingMatches,
     connecting: connectingTasks.has(taskId),
     reconnectAvailable: Boolean(runtime?.secret || stored),
     profile,
-    cachePath: id ? cachePath(id) : undefined,
+    cachePath: id ? cachePath(id, taskId) : undefined,
     error: connectionErrors.get(taskId),
   } satisfies SshRemoteState;
 }
@@ -306,12 +374,15 @@ export async function adoptActiveSshRemote(
     new AbortController().signal,
   );
   const recovery = sshSessionRecovery(taskId);
-  const boundProfileId = bindings.get(taskId);
+  const boundProfileId = taskWorkspaces.profileId(taskId);
   const boundRuntime = boundProfileId
     ? runtimeProfiles.get(boundProfileId)
     : undefined;
   const boundStored = boundProfileId ? profiles.get(boundProfileId) : undefined;
   const boundProfile =
+    (boundProfileId
+      ? taskWorkspaces.workspace(taskId, boundProfileId)
+      : undefined) ??
     boundRuntime?.profile ??
     (boundStored ? publicProfile(boundStored) : undefined);
   const sameEndpoint =
@@ -364,7 +435,8 @@ export async function adoptActiveSshRemote(
       // The active session remains usable when secure persistence is unavailable.
     }
   }
-  let profile: SshRemoteProfile = {
+  const remembered = Boolean(encryptedSecret || stored);
+  let credentialProfile: SshRemoteProfile = {
     id: profileId,
     name:
       preferredName?.trim().slice(0, 160) ||
@@ -373,50 +445,70 @@ export async function adoptActiveSshRemote(
     host: session.host,
     port: session.port,
     username: session.username,
-    rootPath,
+    rootPath: previousProfile?.rootPath ?? rootPath,
     authType: session.authType,
     hostFingerprint: session.hostFingerprint,
-    remembered: Boolean(encryptedSecret),
+    remembered,
   };
+  let profile: SshRemoteProfile = { ...credentialProfile, rootPath };
   runtimeProfiles.set(profileId, {
-    profile,
+    profile: credentialProfile,
     secret,
   });
-  bindings.set(taskId, profileId);
+  taskWorkspaces.bind(taskId, profile);
   connectionErrors.delete(taskId);
-  await mkdir(cachePath(profileId), { recursive: true });
+  await mkdir(cachePath(profileId, taskId), { recursive: true });
   if (encryptedSecret) {
     const previousStored = profiles.get(profileId);
-    profiles.set(profileId, storedProfile(profile, encryptedSecret));
+    credentialProfile = { ...credentialProfile, remembered: true };
+    profile = { ...profile, remembered: true };
+    profiles.set(
+      profileId,
+      storedProfile(credentialProfile, encryptedSecret),
+    );
     try {
       await persistProfiles();
     } catch {
       if (previousStored) profiles.set(profileId, previousStored);
       else profiles.delete(profileId);
       profile = { ...profile, remembered: Boolean(previousStored) };
-      runtimeProfiles.set(profileId, { profile, secret });
+      credentialProfile = {
+        ...credentialProfile,
+        remembered: Boolean(previousStored),
+      };
+      runtimeProfiles.set(profileId, { profile: credentialProfile, secret });
     }
+    taskWorkspaces.bind(taskId, profile);
   }
   return sshRemoteState(taskId, profileId);
 }
 
 export async function forgetSshRemoteProfile(profileId: string) {
   await ensureLoaded();
-  for (const [taskId, boundProfileId] of bindings)
-    if (boundProfileId === profileId) {
-      disconnectSsh(taskId);
-      bindings.delete(taskId);
-      connectionErrors.set(taskId, "已删除此任务使用的 SSH Remote 连接。");
-    }
+  for (const taskId of taskWorkspaces.removeProfile(profileId)) {
+    disconnectSsh(taskId);
+    connectionErrors.set(taskId, "已删除此任务使用的 SSH Remote 连接。");
+  }
   profiles.delete(profileId);
   runtimeProfiles.delete(profileId);
   await persistProfiles();
   return listSshRemoteProfiles();
 }
 
-async function profileForTask(taskId: string, profileId: string) {
+async function profileForTask(
+  taskId: string,
+  profileId: string,
+  workspaceRoot?: string,
+) {
   let state = await sshRemoteState(taskId, profileId);
-  if (!state.connected) state = await connectSavedSshRemote(taskId, profileId);
+  const rootMismatch = Boolean(
+    workspaceRoot &&
+    state.profile &&
+    normalizedRemoteRoot(state.profile.rootPath) !==
+      normalizedRemoteRoot(workspaceRoot),
+  );
+  if (!state.connected || rootMismatch)
+    state = await connectSavedSshRemote(taskId, profileId, workspaceRoot);
   if (!state.profile) throw new Error("SSH Remote 配置不存在。");
   return state.profile;
 }
@@ -425,8 +517,9 @@ export async function listSshRemoteDirectory(
   taskId: string,
   profileId: string,
   requestedPath?: string,
+  workspaceRoot?: string,
 ) {
-  const profile = await profileForTask(taskId, profileId);
+  const profile = await profileForTask(taskId, profileId, workspaceRoot);
   const remotePath = resolveSshWorkspacePath(
     profile.rootPath,
     requestedPath,
@@ -459,8 +552,9 @@ export async function readSshRemoteFile(
   taskId: string,
   profileId: string,
   requestedPath: string,
+  workspaceRoot?: string,
 ) {
-  const profile = await profileForTask(taskId, profileId);
+  const profile = await profileForTask(taskId, profileId, workspaceRoot);
   const remotePath = resolveSshWorkspacePath(profile.rootPath, requestedPath);
   const content = await readSshFile(
     taskId,
@@ -482,8 +576,9 @@ export async function writeSshRemoteFile(
   requestedPath: string,
   content: string,
   expectedContent?: string | null,
+  workspaceRoot?: string,
 ) {
-  const profile = await profileForTask(taskId, profileId);
+  const profile = await profileForTask(taskId, profileId, workspaceRoot);
   const remotePath = resolveSshWorkspacePath(profile.rootPath, requestedPath);
   const result = await writeSshFile(
     taskId,

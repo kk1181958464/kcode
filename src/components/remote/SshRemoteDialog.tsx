@@ -60,7 +60,13 @@ export function SshRemoteDialog({
     setError("");
     try {
       onConnected(
-        await window.kcode.sshRemote.connectSaved(taskId, profile.id),
+        await window.kcode.sshRemote.connectSaved(
+          taskId,
+          profile.id,
+          initialProfile?.id === profile.id
+            ? initialProfile.rootPath
+            : profile.rootPath,
+        ),
       );
     } catch (reason) {
       setError(errorMessage(reason));

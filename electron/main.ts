@@ -892,8 +892,12 @@ app.whenReady().then(async () => {
   );
   ipcMain.handle(
     "ssh-remote:connect-saved",
-    (_e, taskId: string, profileId: string) =>
-      connectSavedSshRemote(idSchema.parse(taskId), idSchema.parse(profileId)),
+    (_e, taskId: string, profileId: string, rootPath?: string) =>
+      connectSavedSshRemote(
+        idSchema.parse(taskId),
+        idSchema.parse(profileId),
+        rootPath ? sshRemotePathSchema.parse(rootPath) : undefined,
+      ),
   );
   ipcMain.handle("ssh-remote:state", (_e, taskId: string, profileId?: string) =>
     sshRemoteState(
@@ -909,20 +913,34 @@ app.whenReady().then(async () => {
   );
   ipcMain.handle(
     "ssh-remote:list",
-    (_e, taskId: string, profileId: string, remotePath?: string) =>
+    (
+      _e,
+      taskId: string,
+      profileId: string,
+      remotePath?: string,
+      workspaceRoot?: string,
+    ) =>
       listSshRemoteDirectory(
         idSchema.parse(taskId),
         idSchema.parse(profileId),
         remotePath ? sshRemotePathSchema.parse(remotePath) : undefined,
+        workspaceRoot ? sshRemotePathSchema.parse(workspaceRoot) : undefined,
       ),
   );
   ipcMain.handle(
     "ssh-remote:read",
-    (_e, taskId: string, profileId: string, remotePath: string) =>
+    (
+      _e,
+      taskId: string,
+      profileId: string,
+      remotePath: string,
+      workspaceRoot?: string,
+    ) =>
       readSshRemoteFile(
         idSchema.parse(taskId),
         idSchema.parse(profileId),
         sshRemotePathSchema.parse(remotePath),
+        workspaceRoot ? sshRemotePathSchema.parse(workspaceRoot) : undefined,
       ),
   );
   ipcMain.handle(
@@ -934,6 +952,7 @@ app.whenReady().then(async () => {
       remotePath: string,
       content: string,
       expectedContent?: string | null,
+      workspaceRoot?: string,
     ) =>
       writeSshRemoteFile(
         idSchema.parse(taskId),
@@ -941,6 +960,7 @@ app.whenReady().then(async () => {
         sshRemotePathSchema.parse(remotePath),
         sshRemoteContentSchema.parse(content),
         sshRemoteExpectedContentSchema.parse(expectedContent),
+        workspaceRoot ? sshRemotePathSchema.parse(workspaceRoot) : undefined,
       ),
   );
   ipcMain.handle("ssh-remote:pick-private-key", async (event) => {
@@ -976,32 +996,6 @@ app.whenReady().then(async () => {
     const folderPath = path.resolve(result.filePaths[0]);
     return { name: path.basename(folderPath), path: folderPath };
   });
-  ipcMain.handle(
-    "workspace:show-folder-menu",
-    async (event, workspacePath: string) => {
-      const owner = BrowserWindow.fromWebContents(event.sender);
-      if (!owner || owner.isDestroyed()) throw new Error("无法确认工作区窗口");
-      const root = path.resolve(workspacePathSchema.parse(workspacePath));
-      const info = await stat(root);
-      if (!info.isDirectory()) throw new Error("工作区不是有效目录");
-      Menu.buildFromTemplate([
-        {
-          label: "在文件资源管理器中打开",
-          click: () => {
-            void shell.openPath(root).then((error) => {
-              if (error)
-                void dialog.showMessageBox(owner, {
-                  type: "error",
-                  title: "无法打开文件夹",
-                  message: "无法在文件资源管理器中打开工作区",
-                  detail: error,
-                });
-            });
-          },
-        },
-      ]).popup({ window: owner });
-    },
-  );
   const runGit = (root: string, args: string[]) =>
     new Promise<{ code: number; output: string }>((resolve) => {
       const child = spawn(resolveGitExecutable(), args, {

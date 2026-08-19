@@ -101,10 +101,16 @@ export default function SshRemoteEditor({
   const [confirmClosePath, setConfirmClosePath] = useState<string>();
   const [languageExtension, setLanguageExtension] = useState<Extension>([]);
   const saveActiveRef = useRef<() => void>(() => undefined);
+  const connectionState = state?.taskId === taskId ? state : undefined;
+  const connected = Boolean(
+    connectionState?.connected &&
+    connectionState.profile?.id === workspace.id &&
+    connectionState.profile.rootPath === workspace.rootPath,
+  );
 
   const loadDirectory = useCallback(
     async (remotePath: string, force = false) => {
-      if (!state?.connected || (directories[remotePath] && !force)) return;
+      if (!connected || (directories[remotePath] && !force)) return;
       setLoadingDirectories((current) => new Set(current).add(remotePath));
       setError("");
       try {
@@ -112,6 +118,7 @@ export default function SshRemoteEditor({
           taskId,
           workspace.id,
           remotePath,
+          workspace.rootPath,
         );
         setDirectories((current) => ({ ...current, [remotePath]: entries }));
         const latest = await window.kcode.sshRemote.state(taskId, workspace.id);
@@ -130,7 +137,14 @@ export default function SshRemoteEditor({
         });
       }
     },
-    [directories, onStateChange, state?.connected, taskId, workspace.id],
+    [
+      connected,
+      directories,
+      onStateChange,
+      taskId,
+      workspace.id,
+      workspace.rootPath,
+    ],
   );
 
   useEffect(() => {
@@ -173,8 +187,8 @@ export default function SshRemoteEditor({
   }, [hasDirtyTabs]);
 
   useEffect(() => {
-    if (state?.connected) void loadDirectory(workspace.rootPath);
-  }, [loadDirectory, state?.connected, workspace.rootPath]);
+    if (connected) void loadDirectory(workspace.rootPath);
+  }, [connected, loadDirectory, workspace.rootPath]);
 
   const visibleEntries = useMemo(() => {
     const rows: Array<SshRemoteEntry & { depth: number }> = [];
@@ -240,6 +254,7 @@ export default function SshRemoteEditor({
         taskId,
         workspace.id,
         entry.path,
+        workspace.rootPath,
       );
       setTabs((current) =>
         current.map((tab) =>
@@ -276,6 +291,7 @@ export default function SshRemoteEditor({
         activeTab.path,
         activeTab.content,
         activeTab.savedContent,
+        workspace.rootPath,
       );
       setTabs((current) =>
         current.map((tab) =>
@@ -305,6 +321,7 @@ export default function SshRemoteEditor({
         remotePath,
         "",
         null,
+        workspace.rootPath,
       );
       setNewFileName("");
       setNewFileOpen(false);
@@ -342,7 +359,7 @@ export default function SshRemoteEditor({
     return () => window.removeEventListener("keydown", handleSave, true);
   }, []);
 
-  if (!state?.connected)
+  if (!connected)
     return (
       <section className="ssh-editor ssh-editor-disconnected">
         <div>
@@ -351,7 +368,7 @@ export default function SshRemoteEditor({
           </span>
           <strong>SSH Remote 未连接</strong>
           <small>
-            {state?.error ||
+            {connectionState?.error ||
               `${workspace.username}@${workspace.host}:${workspace.port}`}
           </small>
           <button type="button" onClick={onReconnect}>

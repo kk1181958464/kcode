@@ -126,6 +126,107 @@ test("groups SSH Remote tasks by profile without replacing the project name", ()
   assert.equal(projection.workspaceGroups[0].conversations.length, 2);
 });
 
+test("exposes a shared local project path for an SSH workspace", () => {
+  const remoteWorkspace = {
+    id: "profile-a",
+    name: "生产服务器",
+    host: "203.0.113.8",
+    port: 22,
+    username: "deploy",
+    rootPath: "/srv/app",
+    authType: "private-key" as const,
+    remembered: true,
+  };
+  const projection = projectSidebarWorkspaceGroups(
+    [
+      {
+        ...task("task-a", "部署", "C:\\cache\\profile-a"),
+        workspaceName: "支付系统",
+        localWorkspacePath: "D:\\projects\\payment",
+        remoteWorkspace,
+      },
+      {
+        ...task("task-b", "检查", "C:\\cache\\profile-a"),
+        workspaceName: "支付系统",
+        localWorkspacePath: "D:\\projects\\payment",
+        remoteWorkspace,
+      },
+    ],
+    "",
+    false,
+  );
+
+  assert.equal(
+    projection.workspaceGroups[0].localWorkspacePath,
+    "D:\\projects\\payment",
+  );
+});
+
+test("does not expose an ambiguous local project path for mixed SSH tasks", () => {
+  const remoteWorkspace = {
+    id: "profile-a",
+    name: "生产服务器",
+    host: "203.0.113.8",
+    port: 22,
+    username: "deploy",
+    rootPath: "/srv/app",
+    authType: "private-key" as const,
+    remembered: true,
+  };
+  const projection = projectSidebarWorkspaceGroups(
+    [
+      {
+        ...task("task-a", "部署", "C:\\cache\\profile-a"),
+        workspaceName: "支付系统",
+        localWorkspacePath: "D:\\projects\\payment",
+        remoteWorkspace,
+      },
+      {
+        ...task("task-b", "检查", "C:\\cache\\profile-a"),
+        workspaceName: "支付系统",
+        localWorkspacePath: "D:\\projects\\other",
+        remoteWorkspace,
+      },
+    ],
+    "",
+    false,
+  );
+
+  assert.equal(projection.workspaceGroups[0].localWorkspacePath, undefined);
+});
+
+test("does not expose a group project path when one task has no local project", () => {
+  const remoteWorkspace = {
+    id: "profile-a",
+    name: "生产服务器",
+    host: "203.0.113.8",
+    port: 22,
+    username: "deploy",
+    rootPath: "/srv/app",
+    authType: "private-key" as const,
+    remembered: true,
+  };
+  const projection = projectSidebarWorkspaceGroups(
+    [
+      {
+        ...task("task-a", "部署", "C:\\cache\\profile-a"),
+        workspaceName: "支付系统",
+        localWorkspacePath: "D:\\projects\\payment",
+        remoteWorkspace,
+      },
+      {
+        ...task("task-b", "检查", "C:\\cache\\profile-a"),
+        workspaceName: "支付系统",
+        remoteWorkspace,
+      },
+    ],
+    "",
+    false,
+  );
+
+  assert.equal(projection.workspaceGroups[0].localWorkspacePath, undefined);
+});
+
 test("keeps different project roots on one SSH profile in separate groups", () => {
   const remoteWorkspace = {
     id: "profile-a",

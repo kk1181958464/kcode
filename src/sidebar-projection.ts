@@ -1,5 +1,5 @@
 import type { SidebarTask, SidebarWorkspaceGroup, TaskRecord } from "./models";
-import { taskWorkspaceName } from "./task-workspace";
+import { localWorkspacePath, taskWorkspaceName } from "./task-workspace";
 
 export type SidebarProjection = {
   taskQuery: string;
@@ -14,7 +14,11 @@ export function sidebarTaskRenderKey(task: SidebarTask) {
 
 type SidebarWorkspaceIdentity = Pick<
   SidebarTask,
-  "name" | "workspaceName" | "workspacePath" | "remoteWorkspace"
+  | "name"
+  | "workspaceName"
+  | "localWorkspacePath"
+  | "workspacePath"
+  | "remoteWorkspace"
 >;
 
 function normalizedRemoteRoot(value: string) {
@@ -41,6 +45,7 @@ function sidebarFieldsMatch(task: TaskRecord, snapshot: SidebarTask) {
     task.id === snapshot.id &&
     task.name === snapshot.name &&
     task.workspaceName === snapshot.workspaceName &&
+    localWorkspacePath(task) === snapshot.localWorkspacePath &&
     task.workspacePath === snapshot.workspacePath &&
     sidebarWorkspaceKey(task) === sidebarWorkspaceKey(snapshot) &&
     Boolean(task.archived) === Boolean(snapshot.archived) &&
@@ -78,6 +83,7 @@ export function projectSidebarWorkspaceGroups(
         id: task.id,
         name: task.name,
         workspaceName: task.workspaceName,
+        localWorkspacePath: localWorkspacePath(task),
         workspacePath: task.workspacePath,
         remoteWorkspace: task.remoteWorkspace,
         archived: Boolean(task.archived),
@@ -90,7 +96,9 @@ export function projectSidebarWorkspaceGroups(
     if (Boolean(task.archived) !== showArchived) continue;
     if (
       query &&
-      !`${task.name} ${task.workspacePath}`.toLocaleLowerCase().includes(query)
+      !`${task.name} ${task.localWorkspacePath ?? ""} ${task.workspacePath}`
+        .toLocaleLowerCase()
+        .includes(query)
     )
       continue;
     const workspaceKey = sidebarWorkspaceKey(task);
@@ -110,6 +118,7 @@ export function projectSidebarWorkspaceGroups(
         return {
           key: workspaceKey,
           workspacePath: conversations[0]?.workspacePath ?? "",
+          localWorkspacePath: commonLocalWorkspacePath(conversations),
           name: unassigned
             ? "未分配工作区"
             : conversations[0]
@@ -122,4 +131,17 @@ export function projectSidebarWorkspaceGroups(
       },
     ),
   };
+}
+
+function commonLocalWorkspacePath(tasks: readonly SidebarTask[]) {
+  if (!tasks.length || tasks.some((task) => !localWorkspacePath(task)))
+    return undefined;
+  const paths = [
+    ...new Set(
+      tasks
+        .map((task) => localWorkspacePath(task))
+        .filter((value): value is string => Boolean(value)),
+    ),
+  ];
+  return paths.length === 1 ? paths[0] : undefined;
 }

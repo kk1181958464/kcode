@@ -850,7 +850,6 @@ export type KCodeApi = {
     pickFolder(): Promise<WorkspaceFolder | null>;
     gitState(path: string, includeDiff?: boolean): Promise<GitWorkspaceState>;
     gitFileDiff(path: string, filePath: string): Promise<GitFileDiff>;
-    showFolderMenu(path: string): Promise<void>;
     list(root: string, directory?: string): Promise<WorkspaceEntry[]>;
     read(root: string, filePath: string): Promise<WorkspaceTextFile>;
     write(
@@ -864,7 +863,11 @@ export type KCodeApi = {
     profiles(): Promise<SshRemoteProfile[]>;
     connect(input: SshRemoteConnectInput): Promise<SshRemoteState>;
     adopt(taskId: string, rootPath: string): Promise<SshRemoteState>;
-    connectSaved(taskId: string, profileId: string): Promise<SshRemoteState>;
+    connectSaved(
+      taskId: string,
+      profileId: string,
+      rootPath?: string,
+    ): Promise<SshRemoteState>;
     state(taskId: string, profileId?: string): Promise<SshRemoteState>;
     disconnect(taskId: string): Promise<SshRemoteState>;
     forget(profileId: string): Promise<SshRemoteProfile[]>;
@@ -872,11 +875,13 @@ export type KCodeApi = {
       taskId: string,
       profileId: string,
       remotePath?: string,
+      workspaceRoot?: string,
     ): Promise<SshRemoteEntry[]>;
     read(
       taskId: string,
       profileId: string,
       remotePath: string,
+      workspaceRoot?: string,
     ): Promise<SshRemoteFile>;
     write(
       taskId: string,
@@ -884,6 +889,7 @@ export type KCodeApi = {
       remotePath: string,
       content: string,
       expectedContent?: string | null,
+      workspaceRoot?: string,
     ): Promise<SshRemoteFile>;
     pickPrivateKey(): Promise<string | null>;
   };

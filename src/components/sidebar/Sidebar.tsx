@@ -15,13 +15,20 @@ import {
   Trash2,
 } from "lucide-react";
 import appLogo from "../../../build/icon.png";
-import { errorMessage } from "../../lib/format";
 import { sidebarTaskRenderKey } from "../../sidebar-projection";
 import type {
   SettingsSection,
   SidebarTask,
   SidebarWorkspaceGroup,
 } from "../../models";
+import {
+  SidebarContextMenu,
+  type SidebarContextMenuState,
+  type SidebarContextMenuTarget,
+  type SidebarLocalWorkspaceTarget,
+} from "./SidebarContextMenu";
+
+export type { SidebarLocalWorkspaceTarget } from "./SidebarContextMenu";
 
 type SidebarRow =
   | { kind: "workspace"; group: SidebarWorkspaceGroup }
@@ -59,6 +66,9 @@ export interface SidebarProps {
   createConversation(workspacePath: string): void;
   switchTask(taskId: string): void;
   toggleTaskArchived(taskId: string): void;
+  openTaskEditor(taskId: string): void;
+  forkTask(taskId: string): void;
+  assignLocalWorkspace(target: SidebarLocalWorkspaceTarget): void;
   setDeleteTarget(
     target:
       | {
@@ -69,7 +79,6 @@ export interface SidebarProps {
         }
       | { kind: "task"; taskId: string },
   ): void;
-  setContextError(message: string): void;
   openSettings(section: SettingsSection): void;
   closeSidebar(): void;
   startSidebarResize(event: React.PointerEvent): void;
@@ -93,8 +102,10 @@ export const Sidebar = memo(function Sidebar({
   createConversation,
   switchTask,
   toggleTaskArchived,
+  openTaskEditor,
+  forkTask,
+  assignLocalWorkspace,
   setDeleteTarget,
-  setContextError,
   openSettings,
   closeSidebar,
   startSidebarResize,
@@ -103,6 +114,7 @@ export const Sidebar = memo(function Sidebar({
   const [taskDropTarget, setTaskDropTarget] = useState<string>();
   const [draggedWorkspace, setDraggedWorkspace] = useState<string>();
   const [workspaceDropTarget, setWorkspaceDropTarget] = useState<string>();
+  const [contextMenu, setContextMenu] = useState<SidebarContextMenuState>();
   const workspaceTreeRef = useRef<HTMLElement | null>(null);
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const draggedTaskIdRef = useRef<string | undefined>(undefined);
@@ -214,6 +226,35 @@ export const Sidebar = memo(function Sidebar({
       workspaceTreeRef.current?.classList.remove("scrolling");
     };
   }, [finishTaskDrag, finishWorkspaceDrag]);
+  useEffect(() => {
+    if (!contextMenu) return;
+    const close = (event: PointerEvent) => {
+      if (
+        event.target instanceof Element &&
+        event.target.closest(".sidebar-context-menu")
+      )
+        return;
+      setContextMenu(undefined);
+    };
+    const closeWindow = () => setContextMenu(undefined);
+    window.addEventListener("pointerdown", close);
+    window.addEventListener("blur", closeWindow);
+    window.addEventListener("resize", closeWindow);
+    return () => {
+      window.removeEventListener("pointerdown", close);
+      window.removeEventListener("blur", closeWindow);
+      window.removeEventListener("resize", closeWindow);
+    };
+  }, [contextMenu]);
+
+  const showContextMenu = (
+    event: React.MouseEvent,
+    next: SidebarContextMenuTarget,
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setContextMenu({ ...next, x: event.clientX, y: event.clientY });
+  };
 
   return (
     <aside className="sidebar">
@@ -291,6 +332,12 @@ export const Sidebar = memo(function Sidebar({
                 <header
                   className="workspace-header"
                   onClick={() => toggleWorkspace(row.group.key)}
+                  onContextMenu={(event) =>
+                    showContextMenu(event, {
+                      kind: "workspace",
+                      group: row.group,
+                    })
+                  }
                 >
                   <span
                     className={`workspace-collapse ${collapsedWorkspaces.has(row.group.key) ? "collapsed" : ""}`}
@@ -299,9 +346,7 @@ export const Sidebar = memo(function Sidebar({
                         ? "展开对话"
                         : "折叠对话"
                     }
-                    aria-expanded={
-                      !collapsedWorkspaces.has(row.group.key)
-                    }
+                    aria-expanded={!collapsedWorkspaces.has(row.group.key)}
                   >
                     <ChevronDown size={13} />
                   </span>
@@ -312,140 +357,139 @@ export const Sidebar = memo(function Sidebar({
                 </header>
               </div>
             ) : (
-            <div
-              className={`workspace-flat-row ${draggedWorkspace === row.group.key ? "dragging" : ""} ${workspaceDropTarget === row.group.key && draggedWorkspace !== row.group.key ? "drop-target" : ""}`}
-              draggable
-              onDragStart={(event) => {
-                draggedWorkspaceRef.current = row.group.key;
-                setDraggedWorkspace(row.group.key);
-                event.dataTransfer.effectAllowed = "move";
-                event.dataTransfer.setData(
-                  "text/plain",
-                  row.group.key,
-                );
-              }}
-              onDragOver={(event) => {
-                if (!draggedWorkspaceRef.current) return;
-                event.preventDefault();
-                scheduleWorkspaceDropTarget(row.group.key);
-              }}
-              onDrop={(event) => {
-                const sourcePath = draggedWorkspaceRef.current;
-                if (!sourcePath) return;
-                event.preventDefault();
-                reorderWorkspace(sourcePath, row.group.key);
-                finishWorkspaceDrag();
-              }}
-              onDragEnd={finishWorkspaceDrag}
-            >
-              <header
-                title={row.group.workspacePath}
-                className="workspace-header"
-                onClick={() => toggleWorkspace(row.group.key)}
-                onContextMenu={(event) => {
-                  event.preventDefault();
-                  void window.kcode?.workspace
-                    .showFolderMenu(row.group.workspacePath)
-                    .catch((error: unknown) =>
-                      setContextError(
-                        `无法打开文件夹菜单：${errorMessage(error)}`,
-                      ),
-                    );
+              <div
+                className={`workspace-flat-row ${draggedWorkspace === row.group.key ? "dragging" : ""} ${workspaceDropTarget === row.group.key && draggedWorkspace !== row.group.key ? "drop-target" : ""}`}
+                draggable
+                onDragStart={(event) => {
+                  draggedWorkspaceRef.current = row.group.key;
+                  setDraggedWorkspace(row.group.key);
+                  event.dataTransfer.effectAllowed = "move";
+                  event.dataTransfer.setData("text/plain", row.group.key);
                 }}
+                onDragOver={(event) => {
+                  if (!draggedWorkspaceRef.current) return;
+                  event.preventDefault();
+                  scheduleWorkspaceDropTarget(row.group.key);
+                }}
+                onDrop={(event) => {
+                  const sourcePath = draggedWorkspaceRef.current;
+                  if (!sourcePath) return;
+                  event.preventDefault();
+                  reorderWorkspace(sourcePath, row.group.key);
+                  finishWorkspaceDrag();
+                }}
+                onDragEnd={finishWorkspaceDrag}
               >
-                <span
-                  className="workspace-grip"
-                  title="拖动工作区排序"
-                  onClick={(event) => event.stopPropagation()}
-                >
-                  <GripVertical size={13} />
-                </span>
-                <span
-                  className={`workspace-collapse ${collapsedWorkspaces.has(row.group.key) ? "collapsed" : ""}`}
+                <header
                   title={
-                    collapsedWorkspaces.has(row.group.key)
-                      ? "展开对话"
-                      : "折叠对话"
+                    row.group.remote
+                      ? `${row.group.localWorkspacePath || "未关联本地项目"}\n${row.group.conversations[0]?.remoteWorkspace?.username}@${row.group.conversations[0]?.remoteWorkspace?.host}:${row.group.conversations[0]?.remoteWorkspace?.rootPath}`
+                      : row.group.localWorkspacePath || row.group.workspacePath
                   }
-                  aria-expanded={
-                    !collapsedWorkspaces.has(row.group.key)
-                  }
-                >
-                  <ChevronDown size={13} />
-                </span>
-                {row.group.remote ? (
-                  <Server size={15} />
-                ) : (
-                  <FolderOpen size={15} />
-                )}
-                <span className="workspace-name">{row.group.name}</span>
-                <small>{row.group.conversations.length}</small>
-                <button
-                  type="button"
-                  className={`workspace-create ${
-                    creatingConversationPaths.has(
-                      conversationWorkspaceKey(row.group),
-                    )
-                      ? "creating"
-                      : ""
-                  }`}
-                  title={
-                    creatingConversationPaths.has(
-                      conversationWorkspaceKey(row.group),
-                    )
-                      ? `正在 ${row.group.name} 创建对话`
-                      : `在 ${row.group.name} 新建对话`
-                  }
-                  aria-label={`在 ${row.group.name} 新建对话`}
-                  aria-busy={creatingConversationPaths.has(
-                    conversationWorkspaceKey(row.group),
-                  )}
-                  disabled={
-                    !taskStorageReady ||
-                    creatingConversationPaths.has(
-                      conversationWorkspaceKey(row.group),
-                    )
-                  }
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    void createConversation(
-                      conversationWorkspaceKey(row.group),
-                    );
-                  }}
-                >
-                  {creatingConversationPaths.has(
-                    conversationWorkspaceKey(row.group),
-                  ) ? (
-                    <LoaderCircle className="spinning" size={14} />
-                  ) : (
-                    <Plus size={14} />
-                  )}
-                </button>
-                <button
-                  className="workspace-delete"
-                  title={`删除 ${row.group.name} 的全部对话记录`}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    setDeleteTarget({
+                  className="workspace-header"
+                  onClick={() => toggleWorkspace(row.group.key)}
+                  onContextMenu={(event) => {
+                    showContextMenu(event, {
                       kind: "workspace",
-                      workspaceKey: row.group.key,
-                      name: row.group.name,
-                      count: row.group.conversations.length,
+                      group: row.group,
                     });
                   }}
                 >
-                  <Trash2 size={13} />
-                </button>
-              </header>
-            </div>
-          )
-        ) : (
+                  <span
+                    className="workspace-grip"
+                    title="拖动工作区排序"
+                    onClick={(event) => event.stopPropagation()}
+                  >
+                    <GripVertical size={13} />
+                  </span>
+                  <span
+                    className={`workspace-collapse ${collapsedWorkspaces.has(row.group.key) ? "collapsed" : ""}`}
+                    title={
+                      collapsedWorkspaces.has(row.group.key)
+                        ? "展开对话"
+                        : "折叠对话"
+                    }
+                    aria-expanded={!collapsedWorkspaces.has(row.group.key)}
+                  >
+                    <ChevronDown size={13} />
+                  </span>
+                  {row.group.remote ? (
+                    <Server size={15} />
+                  ) : (
+                    <FolderOpen size={15} />
+                  )}
+                  <span className="workspace-name">{row.group.name}</span>
+                  <small>{row.group.conversations.length}</small>
+                  <button
+                    type="button"
+                    className={`workspace-create ${
+                      creatingConversationPaths.has(
+                        conversationWorkspaceKey(row.group),
+                      )
+                        ? "creating"
+                        : ""
+                    }`}
+                    title={
+                      creatingConversationPaths.has(
+                        conversationWorkspaceKey(row.group),
+                      )
+                        ? `正在 ${row.group.name} 创建对话`
+                        : `在 ${row.group.name} 新建对话`
+                    }
+                    aria-label={`在 ${row.group.name} 新建对话`}
+                    aria-busy={creatingConversationPaths.has(
+                      conversationWorkspaceKey(row.group),
+                    )}
+                    disabled={
+                      !taskStorageReady ||
+                      creatingConversationPaths.has(
+                        conversationWorkspaceKey(row.group),
+                      )
+                    }
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      void createConversation(
+                        conversationWorkspaceKey(row.group),
+                      );
+                    }}
+                  >
+                    {creatingConversationPaths.has(
+                      conversationWorkspaceKey(row.group),
+                    ) ? (
+                      <LoaderCircle className="spinning" size={14} />
+                    ) : (
+                      <Plus size={14} />
+                    )}
+                  </button>
+                  <button
+                    className="workspace-delete"
+                    title={`删除 ${row.group.name} 的全部对话记录`}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setDeleteTarget({
+                        kind: "workspace",
+                        workspaceKey: row.group.key,
+                        name: row.group.name,
+                        count: row.group.conversations.length,
+                      });
+                    }}
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                </header>
+              </div>
+            )
+          ) : (
             <div
               draggable
               role="button"
               tabIndex={0}
               className={`task-row task-flat-row ${row.task.id === activeTaskId ? "active" : ""} ${draggedTaskId === row.task.id ? "dragging" : ""} ${taskDropTarget === row.task.id && draggedTaskId !== row.task.id ? "drop-target" : ""}`}
-              title={`${row.task.name}\n${row.task.workspacePath}`}
+              title={`${row.task.name}\n${
+                row.task.remoteWorkspace
+                  ? `${row.task.localWorkspacePath || "未关联本地项目"}\n${row.task.remoteWorkspace.username}@${row.task.remoteWorkspace.host}:${row.task.remoteWorkspace.rootPath}`
+                  : row.task.localWorkspacePath || row.task.workspacePath
+              }`}
               onClick={(event) => {
                 if (
                   draggedTaskId ||
@@ -485,6 +529,9 @@ export const Sidebar = memo(function Sidebar({
                 finishTaskDrag();
               }}
               onDragEnd={finishTaskDrag}
+              onContextMenu={(event) =>
+                showContextMenu(event, { kind: "task", task: row.task })
+              }
             >
               <span className="task-grip" title="拖动排序">
                 <GripVertical size={13} />
@@ -532,6 +579,19 @@ export const Sidebar = memo(function Sidebar({
           设置
         </button>
       </div>
+      {contextMenu && (
+        <SidebarContextMenu
+          menu={contextMenu}
+          close={() => setContextMenu(undefined)}
+          toggleWorkspace={toggleWorkspace}
+          createConversation={createConversation}
+          openTaskEditor={openTaskEditor}
+          forkTask={forkTask}
+          assignLocalWorkspace={assignLocalWorkspace}
+          toggleTaskArchived={toggleTaskArchived}
+          setDeleteTarget={setDeleteTarget}
+        />
+      )}
       <div
         className="sidebar-resizer"
         role="separator"

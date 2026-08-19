@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { TaskRecord } from "../src/models";
 import type { SshRemoteProfile } from "../src/ssh-remote-types";
-import { attachSshWorkspace, taskWorkspaceName } from "../src/task-workspace";
+import {
+  attachSshWorkspace,
+  localWorkspacePath,
+  taskWorkspaceName,
+} from "../src/task-workspace";
 
 const profile: SshRemoteProfile = {
   id: "profile-a",
@@ -40,6 +44,47 @@ test("attaching SSH preserves the task and local project names", () => {
   assert.equal(attached.workspacePath, "C:\\cache\\profile-a");
   assert.equal(attached.remoteWorkspace, profile);
   assert.equal(attached.updatedAt, 2);
+});
+
+test("attaching SSH preserves the selected local project path", () => {
+  const attached = attachSshWorkspace(
+    task(),
+    { profile, cachePath: "C:\\cache\\profile-a" },
+    2,
+  );
+
+  assert.equal(attached.localWorkspacePath, "D:\\project\\注册机");
+  assert.equal(localWorkspacePath(attached), "D:\\project\\注册机");
+  assert.equal(attached.workspacePath, "C:\\cache\\profile-a");
+});
+
+test("legacy SSH tasks without a local path do not treat the cache as a project", () => {
+  const legacy = task({
+    workspacePath:
+      "C:\\Users\\user\\AppData\\Roaming\\kcode\\ssh-workspaces\\profile-a",
+    remoteWorkspace: profile,
+  });
+
+  assert.equal(localWorkspacePath(legacy), undefined);
+});
+
+test("legacy SSH tasks retain a non-cache local project path", () => {
+  const legacy = task({
+    workspacePath: "D:\\project\\注册机",
+    remoteWorkspace: profile,
+  });
+
+  assert.equal(localWorkspacePath(legacy), "D:\\project\\注册机");
+});
+
+test("task-specific SSH cache folders are not treated as local projects", () => {
+  const remoteTask = task({
+    workspacePath:
+      "C:\\Users\\user\\AppData\\Roaming\\kcode\\ssh-workspaces\\profile-a\\task-cache-key",
+    remoteWorkspace: profile,
+  });
+
+  assert.equal(localWorkspacePath(remoteTask), undefined);
 });
 
 test("reconnecting a legacy SSH task does not fall back to its profile name", () => {

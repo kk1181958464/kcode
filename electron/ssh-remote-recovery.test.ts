@@ -64,13 +64,13 @@ test("restores a missing SSH profile id through a unique saved endpoint", async 
     profile: candidate,
     cachePath: "C:\\cache\\saved-profile",
   };
-  const connectedIds: string[] = [];
+  const connectedWorkspaces: Array<[string, string | undefined]> = [];
   const state = await restoreSshRemoteConnection(
     {
       state: async () => disconnected(),
       profiles: async () => [candidate],
-      connectSaved: async (_taskId, profileId) => {
-        connectedIds.push(profileId);
+      connectSaved: async (_taskId, profileId, rootPath) => {
+        connectedWorkspaces.push([profileId, rootPath]);
         return connected;
       },
     },
@@ -78,7 +78,9 @@ test("restores a missing SSH profile id through a unique saved endpoint", async 
     workspace,
   );
   assert.equal(state.connected, true);
-  assert.deepEqual(connectedIds, ["saved-profile"]);
+  assert.deepEqual(connectedWorkspaces, [
+    ["saved-profile", workspace.rootPath],
+  ]);
 });
 
 test("uses structured reconnect availability instead of matching error text", async () => {
@@ -86,20 +88,55 @@ test("uses structured reconnect availability instead of matching error text", as
     ...disconnected(workspace),
     reconnectAvailable: true,
   };
-  const connectedIds: string[] = [];
+  const connectedWorkspaces: Array<[string, string | undefined]> = [];
   await restoreSshRemoteConnection(
     {
       state: async () => current,
       profiles: async () => [],
-      connectSaved: async (_taskId, profileId) => {
-        connectedIds.push(profileId);
+      connectSaved: async (_taskId, profileId, rootPath) => {
+        connectedWorkspaces.push([profileId, rootPath]);
         return { ...current, connected: true };
       },
     },
     "task-1",
     workspace,
   );
-  assert.deepEqual(connectedIds, [workspace.id]);
+  assert.deepEqual(connectedWorkspaces, [[workspace.id, workspace.rootPath]]);
+});
+
+test("restores the task root when a shared SSH profile is connected elsewhere", async () => {
+  const wrongWorkspace = {
+    ...workspace,
+    rootPath: "/srv/another-task",
+    remembered: true,
+  };
+  const connectedRoots: Array<string | undefined> = [];
+
+  await restoreSshRemoteConnection(
+    {
+      state: async () => ({
+        taskId: "task-1",
+        connected: true,
+        connecting: false,
+        reconnectAvailable: true,
+        profile: wrongWorkspace,
+      }),
+      profiles: async () => [wrongWorkspace],
+      connectSaved: async (_taskId, _profileId, rootPath) => {
+        connectedRoots.push(rootPath);
+        return {
+          taskId: "task-1",
+          connected: true,
+          connecting: false,
+          profile: { ...wrongWorkspace, rootPath: rootPath! },
+        };
+      },
+    },
+    "task-1",
+    workspace,
+  );
+
+  assert.deepEqual(connectedRoots, [workspace.rootPath]);
 });
 
 test("requests credentials when neither runtime nor saved SSH data exists", async () => {
