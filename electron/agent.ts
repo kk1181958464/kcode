@@ -115,6 +115,8 @@ import {
 } from "./local-shell";
 import {
   fetchWithRetry,
+  retryAfterMilliseconds,
+  UpstreamHttpError,
   isRetryableStreamError,
   readResponseText,
 } from "./request-guard";
@@ -157,6 +159,12 @@ import { buildAgentCompletionResult } from "./agent-completion";
 import { loadActiveSkillInstructions } from "./agent-skills";
 import { AsyncQueue } from "./async-queue";
 import { readSseJson, SseStreamTimeoutError } from "./sse-stream";
+import {
+  MODEL_STREAM_MAX_ATTEMPTS,
+  MODEL_TURN_HTTP_ATTEMPTS,
+  modelStreamMaxAttempts,
+  modelStreamRetryDelayMs,
+} from "./model-stream-retry";
 import { resolveModelCompatibility } from "./model-compatibility";
 import { ModelAttemptBudget } from "./model-attempt-budget";
 import { requiredToolChoiceForProtocol } from "./tool-choice-policy";
@@ -4457,7 +4465,6 @@ async function* streamModelTurn(
   runtime: ModelTurnRuntime,
   attemptBudget: ModelAttemptBudget,
 ): AsyncGenerator<TurnStreamEvent> {
-  const maxAttempts = 4;
   const queue = new AsyncQueue<TurnStreamEvent>();
   let turn: Turn | undefined;
   let reasoningOnlyRecoveryAttempted = false;
@@ -4510,8 +4517,9 @@ async function* streamModelTurn(
       }
       signal.addEventListener("abort", finish, { once: true });
     });
-  // Reconcile restarted streams with text already shown to the user. The same
-  // request budget also covers first-byte retries and protocol fallbacks.
+  // Reconcile restarted streams with text already shown to the user. Stream
+  // retries have their own Codex-style budget; the larger request budget only
+  // covers API-key and protocol fallbacks inside modelTurn.
   const run = async () => {
     for (let attempt = 1; ; attempt += 1) {
       reconciler.beginAttempt();
@@ -4567,6 +4575,10 @@ async function* streamModelTurn(
           continue;
         }
         const retryable = isRetryableStreamError(error);
+        const maxAttempts = Math.min(
+          MODEL_STREAM_MAX_ATTEMPTS,
+          modelStreamMaxAttempts(error),
+        );
         if (
           signal.aborted ||
           attempt >= maxAttempts ||
@@ -4596,10 +4608,9 @@ async function* streamModelTurn(
           );
         // Keep already visible text. The next attempt is reconciled against
         // that prefix, so replayed output is suppressed without a visual reset.
-        const delay =
-          2_000 * 2 ** (attempt - 1) + Math.floor(Math.random() * 750);
+        const delay = modelStreamRetryDelayMs(error, attempt);
         pushProgress(
-          `上游暂时不可用，${Math.ceil(delay / 1_000)} 秒后自动重试（第 ${attempt} 次）…`,
+          `上游连接中断，正在重连（${attempt}/${Math.max(1, maxAttempts - 1)}），${Math.ceil(delay / 1_000)} 秒后继续；已有输出和工具结果会保留…`,
         );
         await sleep(delay);
         if (signal.aborted) throw error;
@@ -4747,7 +4758,7 @@ async function modelTurn(
   const remoteWorkspaceInstruction = request.remoteWorkspace
     ? `\n\n<ssh_remote_workspace>\nThis task is attached to a managed SSH Remote workspace. Try the existing session first. If an SSH tool explicitly reports that the session was lost, ssh_connect is available for recovery. When the user already supplied the host, username, password, private-key content, or an absolute private-key path, reconnect yourself immediately with those values; use privateKeyPath for a user-supplied key path and do not send the user to the SSH Remote dialog. The project source of truth is on ${request.remoteWorkspace.username}@${request.remoteWorkspace.host}:${request.remoteWorkspace.port} under ${request.remoteWorkspace.rootPath}. Pass that rootPath when reconnecting. Use ssh_list_directory, ssh_read_file, ssh_write_file, ssh_run, ssh_upload_file, and ssh_download_file for work on the remote server. Relative SSH file paths are automatically resolved under the remote root. Every ssh_run command starts in the remote root. This is a hybrid task: you ALSO have the local file, git, and command tools, which act on THIS machine. When the user references local project sources by absolute path (for example D:\\\\project\\\\... on Windows), use the local tools to read, edit, build, and inspect them, then ssh_upload_file to deploy build artifacts to the server. Note ${root} itself is only KCode metadata/cache, not the user's local project — do not treat that cache directory as the source, but do freely use the local tools on the absolute paths the user points you to.\n</ssh_remote_workspace>`
     : "";
-  const system = `${isolation.boundary}\nYou are a coding agent working in ${root}. Use the provided native tools to inspect and modify the project. Each run_command invocation uses a fresh local shell process, so environment variable changes do not persist to later commands; combine dependent setup and execution in one command. Prefer apply_patch for precise edits and write_file for new or complete files. Never invoke apply_patch, file deletion, file moves, or directory operations through run_command when a native tool exists. File tool paths accept absolute paths, including other drives (for example D:\\B on Windows); use them to read or write files the user explicitly points to outside ${root}, and resolve relative paths against ${root}. When you mention a file in your reply, always write its full workspace-relative path (for example src/views/Gooddetail.vue, not just Gooddetail.vue) so the user can tell exactly which file it is. Use web_search for current or externally verifiable information and fetch_url to inspect primary sources; preserve source URLs in the final answer. For interactive or authenticated sites use browser_open, browser_snapshot, browser_click, and browser_type. Credentials explicitly supplied by the user may be entered directly with browser_type. Browser recording is opt-in: call browser_record_start only after an explicit user request such as 开始录制, and call browser_record_stop when the user asks to stop or generate Python. Never record ordinary browsing by default. For independent work that can run concurrently, use spawn_agent with self-contained, non-overlapping tasks, then wait_agent before giving a final answer. Use list_agents, message_agent, and stop_agent to coordinate them. Subagents normally inherit this task's model; planner-executor collaboration routes executor agents to the configured execution model. Workspace and permissions remain shared. For remote servers, call ssh_connect with credentials explicitly supplied by the user, then use ssh_run and the SSH SFTP tools. Use ssh_upload_file to send a local file to the server and ssh_download_file to fetch a remote file to a local path; these transfer binary content directly, unlike ssh_write_file which only writes inline UTF-8 text. SSH exec sessions are non-interactive and may not load shell profiles; when a remote command depends on profile-defined PATH values, invoke the appropriate login shell explicitly. SSH host keys are not verified. Treat user credentials as secrets: pass them only to the matching credential-aware native tool, never echo them in narration, put them in a shell command, or send them to a subagent. For databases, use mysql_connect for direct MySQL access or mysql_connect_via_ssh for an SSH tunnel, then mysql_query; use ? placeholders and values for user-provided data when practical. Public direct MySQL connections use TLS by default and you must not retry with ssl=false unless the user explicitly approves. Never attempt to solve or bypass CAPTCHA, SMS, passkey, or two-factor verification. browser_snapshot waits while the user completes human verification in the visible browser and resumes automatically afterward, so do not end the task merely to ask the user to say continue. Do not claim an action succeeded until its tool result confirms it. Before finishing, compare every action requested by the user with successful tool results. A file task is complete only after a mutating tool produced an actual change; a validation is complete only after it really ran successfully after the latest change; a background service is started only after process_output confirms it is running. When the user explicitly requested a code or configuration change and successful inspection proves that change is unnecessary, call report_no_change with the specific evidence-based reason before the final response; do not manufacture a no-op edit. If the task cannot continue because the user must supply a URL, file, credential, repository target, requirement, permission, verification code, or another specific external input that cannot be discovered with the available tools, call request_user_input once with the exact question and required fields, then ask the user for them. Never use request_user_input to avoid work that the available tools can perform. For informational or status questions, answer from successful read-only evidence without calling report_no_change. If an action could not be completed, state that explicitly instead of saying it was done.${remoteWorkspaceInstruction}${activeSkills ? `\n\n${activeSkills}` : ""}${request.recoveryContext ? `\n\n<recovery_context>${request.recoveryContext}</recovery_context>\nThis task resumed after an interruption. Treat the recovery record as prior evidence. If the latest user asks only for a conclusion, status, or summary, answer directly from that evidence without repeating tool calls. If the user asks to continue execution, verify prior side effects before repeating them and recreate only interrupted work that is still needed.` : ""}`;
+  const system = `${isolation.boundary}\nYou are a coding agent working in ${root}. Use the provided native tools to inspect and modify the project. Each run_command invocation uses a fresh local shell process, so environment variable changes do not persist to later commands; combine dependent setup and execution in one command. Prefer apply_patch for precise edits and write_file for new or complete files. Never invoke apply_patch, file deletion, file moves, or directory operations through run_command when a native tool exists. File tool paths accept absolute paths, including other drives (for example D:\\B on Windows); use them to read or write files the user explicitly points to outside ${root}, and resolve relative paths against ${root}. When you mention a file in your reply, always write its full workspace-relative path (for example src/views/Gooddetail.vue, not just Gooddetail.vue) so the user can tell exactly which file it is. Use web_search for current or externally verifiable information and fetch_url to inspect primary sources; preserve source URLs in the final answer. For interactive or authenticated sites use browser_open, browser_snapshot, browser_click, and browser_type. Credentials explicitly supplied by the user may be entered directly with browser_type. Browser recording is opt-in: call browser_record_start only after an explicit user request such as 开始录制, and call browser_record_stop when the user asks to stop or generate Python. Never record ordinary browsing by default. For independent work that can run concurrently, use spawn_agent with self-contained, non-overlapping tasks, then wait_agent before giving a final answer. Use list_agents, message_agent, and stop_agent to coordinate them. Subagents normally inherit this task's model; planner-executor collaboration routes executor agents to the configured execution model. Workspace and permissions remain shared. For remote servers, call ssh_connect with credentials explicitly supplied by the user, then use ssh_run and the SSH SFTP tools. Use ssh_upload_file to send a local file to the server and ssh_download_file to fetch a remote file to a local path; these transfer binary content directly, unlike ssh_write_file which only writes inline UTF-8 text. SSH exec sessions are non-interactive and may not load shell profiles; when a remote command depends on profile-defined PATH values, invoke the appropriate login shell explicitly. SSH host keys are not verified. Treat user credentials as secrets: pass them only to the matching credential-aware native tool, never echo them in narration, put them in a shell command, or send them to a subagent. For databases, use mysql_connect for direct MySQL access or mysql_connect_via_ssh for an SSH tunnel, then mysql_query; use ? placeholders and values for user-provided data when practical. Public direct MySQL connections use TLS by default and you must not retry with ssl=false unless the user explicitly approves. Never attempt to solve or bypass CAPTCHA, SMS, passkey, or two-factor verification. browser_snapshot waits while the user completes human verification in the visible browser and resumes automatically afterward, so do not end the task merely to ask the user to say continue. Do not claim an action succeeded until its tool result confirms it. Before finishing, compare every action requested by the user with successful tool results. A file task is complete only after a mutating tool produced an actual change; a validation is complete only after it really ran successfully after the latest change; a background service is started only after process_output confirms it is running. When the user explicitly requested a code or configuration change and successful inspection proves that change is unnecessary, call report_no_change with the specific evidence-based reason before the final response; do not manufacture a no-op edit. If the task cannot continue because the user must supply a URL, file, credential, repository target, requirement, permission, verification code, or another specific external input that cannot be discovered with the available tools, call request_user_input once with the exact question and required fields, then ask the user for them. Never use request_user_input to avoid work that the available tools can perform. For informational or status questions, answer from successful read-only evidence without calling report_no_change. If an action could not be completed, state that explicitly instead of saying it was done.${remoteWorkspaceInstruction}${activeSkills ? `\n\n${activeSkills}` : ""}${request.recoveryContext ? `\n\n<recovery_context>${request.recoveryContext}</recovery_context>\nThis task resumed after an interruption. Treat the recovery record as prior evidence. If the latest user asks only for a conclusion, status, or summary, answer directly from that evidence without repeating tool calls. If the user asks to continue execution, start with the first failed or incomplete structured plan step. Successful tools, recorded file changes, uploads, process starts, and commits are already facts; do not repeat them. Use only a minimal read-only check when it is necessary to confirm an external side effect before continuing interrupted work.` : ""}`;
   const imageInputNotice =
     omitImageInputs && hasImageAttachments(history)
       ? "\n\n当前模型不支持图片输入，历史图片附件已被省略。请只依据文字、上下文文件和工作区继续，不要假装看到了图片。"
@@ -5239,10 +5250,16 @@ async function modelTurn(
         attemptBudget,
       );
     }
-  if (!response.ok)
-    throw new Error(
-      `请求失败 (${response.status}): ${(responseErrorText ?? (await readResponseText(response, signal))).slice(0, 500)}`,
+  if (!response.ok) {
+    const detail = (
+      responseErrorText ?? (await readResponseText(response, signal))
+    ).slice(0, 500);
+    throw new UpstreamHttpError(
+      response.status,
+      detail,
+      retryAfterMilliseconds(response),
     );
+  }
   apiKeyCooldownPool.markHealthy(provider.id, keyIndex);
   if (/text\/event-stream/i.test(response.headers.get("content-type") || ""))
     return parseStreamedTurn(
@@ -5461,6 +5478,20 @@ function isFinalizationReasoningFailure(error: unknown) {
   return /收尾阶段持续只有思考内容|连续只输出思考内容|持续没有正文或工具调用/.test(
     message,
   );
+}
+
+function hasRecoverableToolEvidence(history: HistoryItem[]) {
+  return [...successfulToolNames(history)].some(
+    (tool) => tool !== "get_context_remaining",
+  );
+}
+
+function streamFailurePauseMessage(error: unknown) {
+  const cause =
+    error instanceof UpstreamHttpError
+      ? `上游返回 ${error.status}`
+      : "上游连接暂时不可用";
+  return `${cause}，多次自动重连后仍未恢复。任务已安全暂停，已有工具结果均已保留，已经发生的实际文件修改不会丢失；点击“继续”后会从未完成的步骤恢复，不会重做已确认成功的步骤。`;
 }
 
 function runtimeFinalizationFallback(
@@ -5826,7 +5857,7 @@ export async function* runAgent(
     }
     let imageRetryAttempted = false;
     let usedRuntimeFinalizationFallback = false;
-    const turnAttemptBudget = new ModelAttemptBudget(4);
+    const turnAttemptBudget = new ModelAttemptBudget(MODEL_TURN_HTTP_ATTEMPTS);
     for (;;) {
       try {
         for await (const event of streamTurn({
@@ -5908,7 +5939,34 @@ export async function* runAgent(
           !streamedText &&
           !streamedReasoning &&
           isUnsupportedImageInputError(error);
-        if (!canRetryWithoutImages) throw error;
+        if (!canRetryWithoutImages) {
+          // A late gateway/transport failure must not discard a long run that
+          // already produced real tool evidence. Keep the same completion
+          // ledger used by stall pauses so the next request can resume from a
+          // structured checkpoint instead of restarting the whole task.
+          if (
+            !signal.aborted &&
+            isRetryableStreamError(error) &&
+            hasRecoverableToolEvidence(evidenceHistory)
+          ) {
+            const pausedCompletionResult = buildPausedCompletionResult({
+              evidenceHistory,
+              baselineCodingEvidence,
+              requestedCodingEvidenceOps,
+              requestedBrowserOps,
+              requestedGitOps,
+              plannerExecutionPending,
+            });
+            for (const pausedEvent of blockedVerificationEvents(
+              timelineTextLength,
+              streamFailurePauseMessage(error),
+              pausedCompletionResult,
+            ))
+              yield pausedEvent;
+            return;
+          }
+          throw error;
+        }
         imageRetryAttempted = true;
         modelRuntime.omitImageInputs = true;
         if (!imageFallbackNoticeSent) {

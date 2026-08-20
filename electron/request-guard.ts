@@ -9,12 +9,30 @@ const DEFAULT_FIRST_BYTE_TIMEOUT_MS = 120_000;
 const DEFAULT_IDLE_TIMEOUT_MS = 120_000;
 const WAIT_PROGRESS_INTERVAL_MS = 10_000;
 const DEFAULT_MAX_BACKOFF_MS = 30_000;
+const MAX_RETRY_AFTER_MS = 60_000;
+
+export class FirstByteTimeoutError extends Error {
+  constructor(public readonly timeoutMs: number) {
+    super(`模型请求等待响应超时（${Math.round(timeoutMs / 1_000)} 秒）`);
+    this.name = "FirstByteTimeoutError";
+  }
+}
+
+/** Keeps response metadata available to the stream reconnection policy. */
+export class UpstreamHttpError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly detail: string,
+    public readonly retryAfterMs?: number,
+  ) {
+    super(`请求失败 (${status})${detail ? `: ${detail}` : ""}`);
+    this.name = "UpstreamHttpError";
+  }
+}
 
 export class StreamReadTimeoutError extends Error {
   constructor(public readonly timeoutMs: number) {
-    super(
-      `模型响应流长时间没有新数据（${Math.round(timeoutMs / 1_000)} 秒）`,
-    );
+    super(`模型响应流长时间没有新数据（${Math.round(timeoutMs / 1_000)} 秒）`);
     this.name = "StreamReadTimeoutError";
   }
 }
@@ -52,16 +70,20 @@ function isRetryableStatus(status: number) {
   return status === 408 || status === 425 || status === 429 || status >= 500;
 }
 
-function retryDelay(response: Response, fallbackMs: number) {
+export function retryAfterMilliseconds(
+  response: Response,
+  maxMs = MAX_RETRY_AFTER_MS,
+  now = Date.now(),
+): number | undefined {
   const value = response.headers.get("retry-after")?.trim();
-  if (!value) return fallbackMs;
+  if (!value) return undefined;
   const seconds = Number(value);
   if (Number.isFinite(seconds))
-    return Math.min(30_000, Math.max(0, seconds * 1_000));
+    return Math.min(maxMs, Math.max(0, seconds * 1_000));
   const at = Date.parse(value);
   return Number.isFinite(at)
-    ? Math.min(30_000, Math.max(0, at - Date.now()))
-    : fallbackMs;
+    ? Math.min(maxMs, Math.max(0, at - now))
+    : undefined;
 }
 
 function abortReason(signal: AbortSignal) {
@@ -135,10 +157,9 @@ export async function fetchWithRetry(
         (!attemptBudget || attemptBudget.canAttempt())
       ) {
         // Use server-provided retry-after if available, otherwise exponential backoff + jitter
-        const delay = retryDelay(
-          response,
-          exponentialBackoffWithJitter(retryDelayMs, attempt, maxBackoffMs),
-        );
+        const delay =
+          retryAfterMilliseconds(response, maxBackoffMs) ??
+          exponentialBackoffWithJitter(retryDelayMs, attempt, maxBackoffMs);
         onProgress?.(
           `上游返回 ${response.status}，将在 ${Math.max(1, Math.ceil(delay / 1_000))} 秒后重试…`,
         );
@@ -152,9 +173,7 @@ export async function fetchWithRetry(
     } catch (error) {
       if (signal.aborted) throw abortReason(signal);
       if (timedOut) {
-        lastError = new Error(
-          `模型请求等待响应超时（${Math.round(firstByteTimeoutMs / 1_000)} 秒）`,
-        );
+        lastError = new FirstByteTimeoutError(firstByteTimeoutMs);
         if (
           attempt >= retries ||
           (attemptBudget && !attemptBudget.canAttempt())
@@ -255,10 +274,29 @@ export async function readResponseText(
 // Chromium net:: errors that surface when a relay drops a chunked SSE stream
 // before its terminating chunk (ERR_INCOMPLETE_CHUNKED_ENCODING and friends).
 export function isRetryableStreamError(error: unknown) {
+  if (error instanceof UpstreamHttpError)
+    return (
+      error.status === 408 ||
+      error.status === 425 ||
+      error.status === 429 ||
+      error.status >= 500
+    );
+  if (error instanceof FirstByteTimeoutError) return true;
+  if (
+    error instanceof Error &&
+    error.name === "SseStreamTimeoutError" &&
+    (error as Error & { timeoutKind?: string }).timeoutKind !== "meaningful"
+  )
+    return true;
+  if (
+    error instanceof Error &&
+    error.name === "ModelAttemptBudgetExhaustedError"
+  )
+    return true;
   const message = networkTransportErrorText(error);
   return (
     isDirectNetworkTransportError(error) ||
-    /overload|rate.?limit|too many requests|429|50[0-9]|bad gateway|service unavailable|gateway time|upstream( request)? (failed|error)|upstream failed|proxy error|temporarily|stream[_ ]?read[_ ]?error|stream error|connection (reset|closed|error)|ECONNRESET|ECONNREFUSED|ETIMEDOUT|socket hang up|network|fetch failed|ERR_INCOMPLETE_CHUNKED_ENCODING|ERR_CONTENT_LENGTH_MISMATCH|ERR_CONNECTION_(CLOSED|RESET|ABORTED|FAILED)|ERR_NETWORK_CHANGED|ERR_HTTP2_PROTOCOL_ERROR|ERR_QUIC_PROTOCOL_ERROR|ERR_EMPTY_RESPONSE|ERR_RESPONSE_HEADERS_TRUNCATED|长时间没有新数据|超时|连接|意外中断|未收到完整响应|工具调用参数不完整/i.test(
+    /overload|rate.?limit|too many requests|429|50[0-9]|bad gateway|service unavailable|gateway time|upstream( request)? (failed|error)|upstream failed|proxy error|temporarily|stream[_ ]?read[_ ]?error|stream error|connection (reset|closed|error)|ECONNRESET|ECONNREFUSED|ETIMEDOUT|socket hang up|network|fetch failed|ERR_INCOMPLETE_CHUNKED_ENCODING|ERR_CONTENT_LENGTH_MISMATCH|ERR_CONNECTION_(CLOSED|RESET|ABORTED|FAILED)|ERR_NETWORK_CHANGED|ERR_HTTP2_PROTOCOL_ERROR|ERR_QUIC_PROTOCOL_ERROR|ERR_EMPTY_RESPONSE|ERR_RESPONSE_HEADERS_TRUNCATED|长时间没有新数据|超时|连接|意外中断|未收到完整响应|工具调用参数不完整|上游网关|网关错误|服务暂时不可用|模型服务暂时不可用|上游服务不可用|上游错误/i.test(
       message,
     )
   );

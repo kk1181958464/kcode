@@ -4887,7 +4887,7 @@ export default function App() {
         .join("\n\n");
       const recoveryNotice =
         resumingInterruptedRun && role === "user" && id === user.id
-          ? "\n\n<interrupted_turn_recovery>上一轮被停止、暂停或中断。已有助手输出和持久化工具证据仍然有效。若当前要求是总结或给出结论，请直接基于已有结果回答，不要重新执行整轮检查；若要求继续，再从尚未完成的步骤接着做。</interrupted_turn_recovery>"
+          ? "\n\n<interrupted_turn_recovery>上一轮被停止、暂停或中断。已有助手输出和持久化工具证据仍然有效。若当前要求是总结或给出结论，请直接基于已有结果回答，不要重新执行整轮检查；若要求继续，优先依据恢复检查点中的计划，从第一个失败或未完成步骤接着做。成功工具、文件修改、上传、启动和提交都不得重复；仅在确有必要时做最小的只读核验。</interrupted_turn_recovery>"
           : "";
       return {
         role,

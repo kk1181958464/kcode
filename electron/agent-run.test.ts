@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { runAgent, resolveApproval, type RunAgentDeps } from "./agent";
 import type { AgentEvent, ModelRequest } from "../src/types";
+import { UpstreamHttpError } from "./request-guard";
 
 /**
  * First integration test for runAgent, made possible by the ModelStreamFn
@@ -758,5 +759,62 @@ test("runAgent propagates a fatal model-stream failure to the caller", async () 
       runAgent("test-req-2", request, new AbortController().signal, deps),
     ),
     /上游连接失败/,
+  );
+});
+
+test("runAgent pauses and preserves completed tool evidence after a late gateway failure", async () => {
+  const request = await makeRequest();
+  let streamCalls = 0;
+  const deps: RunAgentDeps = {
+    getProvider: fakeProvider("fake-model"),
+    async *streamTurn() {
+      streamCalls += 1;
+      if (streamCalls === 1) {
+        yield {
+          type: "complete",
+          turn: {
+            text: "先检查工作区。",
+            calls: [
+              {
+                id: "list-before-gateway-failure",
+                name: "list_directory",
+                input: { path: "." },
+              },
+            ],
+            rawCalls: [],
+            usage: { input: 8, output: 4, cached: 0 },
+          },
+        };
+        return;
+      }
+      throw new UpstreamHttpError(502, "bad gateway");
+    },
+  };
+
+  const events = await collect(
+    runAgent(
+      "test-late-gateway-pause",
+      request,
+      new AbortController().signal,
+      deps,
+    ),
+  );
+  const done = events.find(
+    (event): event is Extract<AgentEvent, { type: "done" }> =>
+      event.type === "done",
+  );
+  assert.equal(streamCalls, 2);
+  assert.equal(
+    events.some((event) => event.type === "error"),
+    false,
+  );
+  assert.equal(done?.outcome, "paused");
+  assert.equal(done?.result?.kind, "incomplete");
+  assert.equal(done?.result?.successfulTools, 1);
+  assert.ok(
+    events.some(
+      (event) =>
+        event.type === "text" && event.delta.includes("已有工具结果均已保留"),
+    ),
   );
 });

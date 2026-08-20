@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { fetchWithRetry, readStreamChunk } from "./request-guard";
+import {
+  fetchWithRetry,
+  readStreamChunk,
+  retryAfterMilliseconds,
+} from "./request-guard";
 import { ModelAttemptBudget } from "./model-attempt-budget";
 
 test("retries one transient upstream response", async () => {
@@ -45,6 +49,32 @@ test("retries rate limits and reports retry progress", async () => {
   assert.equal(response.status, 200);
   assert.equal(attempts, 2);
   assert.match(progress.join("\n"), /上游返回 429/);
+});
+
+test("parses Retry-After seconds and dates with a bounded delay", () => {
+  const now = Date.parse("2026-08-20T00:00:00Z");
+  assert.equal(
+    retryAfterMilliseconds(
+      new Response("", { headers: { "retry-after": "12" } }),
+      60_000,
+      now,
+    ),
+    12_000,
+  );
+  assert.equal(
+    retryAfterMilliseconds(
+      new Response("", {
+        headers: { "retry-after": "Thu, 20 Aug 2026 00:02:00 GMT" },
+      }),
+      60_000,
+      now,
+    ),
+    60_000,
+  );
+  assert.equal(
+    retryAfterMilliseconds(new Response(""), 60_000, now),
+    undefined,
+  );
 });
 
 test("retries a first-byte timeout before failing", async () => {

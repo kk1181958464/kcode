@@ -17,6 +17,10 @@ test("treats generic upstream proxy failures as retryable", () => {
     true,
   );
   assert.equal(
+    isRetryableStreamError(new Error("模型服务暂时不可用（上游网关错误）")),
+    true,
+  );
+  assert.equal(
     isRetryableStreamError(
       new Error("模型响应流意外中断（上游连接在完成前断开）"),
     ),
@@ -77,4 +81,20 @@ test("treats Node direct-fetch stream failures as retryable", () => {
     true,
   );
   assert.equal(isRetryableStreamError(new Error("terminated")), true);
+  const budgetError = new Error("本轮模型请求已达到重试预算");
+  budgetError.name = "ModelAttemptBudgetExhaustedError";
+  assert.equal(isRetryableStreamError(budgetError), true);
+});
+
+test("treats a typed SSE idle timeout as retryable but leaves reasoning-only recovery separate", () => {
+  const idle = Object.assign(new Error("模型响应流长时间没有有效事件"), {
+    name: "SseStreamTimeoutError",
+    timeoutKind: "idle",
+  });
+  const meaningful = Object.assign(new Error("只有思考内容"), {
+    name: "SseStreamTimeoutError",
+    timeoutKind: "meaningful",
+  });
+  assert.equal(isRetryableStreamError(idle), true);
+  assert.equal(isRetryableStreamError(meaningful), false);
 });
