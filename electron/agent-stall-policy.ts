@@ -1,10 +1,13 @@
 export const STALL_RECOVERY_ROUNDS = 3;
-export const STALL_PAUSE_ROUNDS = 5;
 
-export type StallAction = "continue" | "recover" | "pause";
+export type StallAction = "continue" | "recover";
 
 export function stallAction(stalledRounds: number): StallAction {
-  if (stalledRounds >= STALL_PAUSE_ROUNDS) return "pause";
-  if (stalledRounds === STALL_RECOVERY_ROUNDS) return "recover";
-  return "continue";
+  // Repetition is a recovery hint, not a terminal state. A model may perform
+  // several legitimate read-only checks after its last mutation, so only an
+  // explicit turn end, interruption, run budget, or real error may stop it.
+  return stalledRounds >= STALL_RECOVERY_ROUNDS &&
+    stalledRounds % STALL_RECOVERY_ROUNDS === 0
+    ? "recover"
+    : "continue";
 }

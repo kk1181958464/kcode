@@ -1,4 +1,19 @@
-import { FolderOpen, FolderSearch, Trash2, X } from "lucide-react";
+import {
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type FormEvent,
+} from "react";
+import { createPortal } from "react-dom";
+import {
+  FolderOpen,
+  FolderSearch,
+  LoaderCircle,
+  Plus,
+  Trash2,
+  X,
+} from "lucide-react";
 import type { TaskRecord } from "../../models";
 
 interface PendingFolder {
@@ -27,66 +42,127 @@ export function NewTaskDialog({
   onPickFolder,
   onClose,
 }: NewTaskDialogProps) {
-  return (
+  const inputId = useId();
+  const inputRef = useRef<HTMLInputElement>(null);
+  const onCloseRef = useRef(onClose);
+  const submittingRef = useRef(false);
+  const [submitting, setSubmitting] = useState(false);
+  onCloseRef.current = onClose;
+
+  useEffect(() => {
+    const previousFocus = document.activeElement;
+    inputRef.current?.focus();
+    inputRef.current?.select();
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !submittingRef.current)
+        onCloseRef.current();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      if (previousFocus instanceof HTMLElement) previousFocus.focus();
+    };
+  }, []);
+
+  async function submitTask(event: FormEvent) {
+    event.preventDefault();
+    if (submittingRef.current) return;
+    submittingRef.current = true;
+    setSubmitting(true);
+    try {
+      await createTask();
+    } finally {
+      submittingRef.current = false;
+      setSubmitting(false);
+    }
+  }
+
+  if (typeof document === "undefined") return null;
+  return createPortal(
     <div
-      className="modal-backdrop"
-      onMouseDown={(event) => event.target === event.currentTarget && onClose()}
+      className="new-task-dialog-layer"
+      onMouseDown={(event) =>
+        event.target === event.currentTarget && !submitting && onClose()
+      }
     >
       <section
-        className="modal task-modal"
+        className="new-task-dialog"
         role="dialog"
         aria-modal="true"
         aria-labelledby="new-task-title"
       >
         <header>
-          <div>
-            <span className="eyebrow">新建任务</span>
-            <h2 id="new-task-title">命名任务</h2>
-          </div>
-          <button className="icon" onClick={onClose} title="关闭">
+          <span className="new-task-dialog-icon" aria-hidden="true">
+            <Plus size={17} />
+          </span>
+          <h2 id="new-task-title">新建任务</h2>
+          <button
+            type="button"
+            className="icon"
+            onClick={onClose}
+            title="关闭"
+            aria-label="关闭新建任务"
+            disabled={submitting}
+          >
             <X size={18} />
           </button>
         </header>
-        <label className="task-name-field">
-          任务名称
-          <input
-            autoFocus
-            value={newTaskName}
-            onChange={(event) => setNewTaskName(event.target.value)}
-            onKeyDown={(event) => event.key === "Enter" && void createTask()}
-            placeholder={pendingFolder?.name ?? "新任务"}
-            maxLength={80}
-          />
-        </label>
-        {pendingFolder ? (
-          <div className="selected-folder">
-            <FolderOpen size={16} />
-            <span>
-              <strong>{pendingFolder.name}</strong>
-              <small>{pendingFolder.path}</small>
-            </span>
+        <form onSubmit={(event) => void submitTask(event)}>
+          <div className="new-task-dialog-body">
+            <label className="new-task-name-label" htmlFor={inputId}>
+              <span>任务名称</span>
+              <small>{newTaskName.length}/80</small>
+            </label>
+            <input
+              ref={inputRef}
+              id={inputId}
+              className="new-task-name-input"
+              value={newTaskName}
+              onChange={(event) => setNewTaskName(event.target.value)}
+              placeholder={pendingFolder?.name ?? "新任务"}
+              maxLength={80}
+              disabled={submitting}
+            />
+            <span className="new-task-workspace-label">工作区</span>
             <button
-              className="icon folder-change-btn"
+              type="button"
+              className="new-task-workspace-picker"
               onClick={onPickFolder}
-              title="更换文件夹"
+              disabled={submitting}
             >
-              <FolderSearch size={14} />
+              {pendingFolder ? (
+                <FolderOpen size={17} />
+              ) : (
+                <FolderSearch size={17} />
+              )}
+              <span>
+                <strong>
+                  {pendingFolder?.name ?? "选择工作区文件夹"}
+                </strong>
+                <small>{pendingFolder?.path ?? "未关联工作区"}</small>
+              </span>
+              <span className="new-task-workspace-action">
+                {pendingFolder ? "更换" : "选择"}
+              </span>
             </button>
           </div>
-        ) : (
-          <button className="pick-folder-btn" onClick={onPickFolder}>
-            <FolderSearch size={15} />
-            选择工作区文件夹
-          </button>
-        )}
-        <footer className="task-modal-actions">
-          <button onClick={onClose}>取消</button>
-          <button className="primary" onClick={() => void createTask()}>
-            创建任务
-          </button>
-        </footer>
+          <footer>
+            <button type="button" onClick={onClose} disabled={submitting}>
+              取消
+            </button>
+            <button className="primary" type="submit" disabled={submitting}>
+              {submitting ? (
+                <LoaderCircle className="spin" size={14} />
+              ) : (
+                <Plus size={14} />
+              )}
+              {submitting ? "创建中" : "创建任务"}
+            </button>
+          </footer>
+        </form>
       </section>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

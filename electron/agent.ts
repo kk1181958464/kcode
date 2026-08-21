@@ -13,7 +13,7 @@ import {
   unregisterManagedProcess,
 } from "./process-registry";
 import { apiKeyCooldownPool } from "./api-key-cooldown";
-import { STALL_PAUSE_ROUNDS, stallAction } from "./agent-stall-policy";
+import { stallAction } from "./agent-stall-policy";
 import { approvalCache } from "./approval-cache";
 import { TurnDiffTracker } from "./turn-diff-tracker";
 import { buildTurnSummary, type ToolCallRecord } from "./tool-call-recorder";
@@ -279,7 +279,7 @@ import {
   plannerToolAllowed,
   remoteWorkspaceToolAllowed,
 } from "./collaboration";
-import { executorFinalizationMode } from "./agent-run-budget";
+import { agentFinalizationMode } from "./agent-run-budget";
 import {
   effectiveCommandExitCode,
   windowsCommandIssue,
@@ -1249,11 +1249,17 @@ const tools = [
   {
     name: "ssh_run",
     description:
-      "Run a command on the SSH server connected to this task. Defaults to a 180 second timeout and stops when the task is cancelled. Set pty and stdin only for commands that require controlled interactive input.",
+      "Run a command on the SSH server connected to this task. Defaults to a 180 second timeout and stops when the task is cancelled. Set purpose to validate only when exit code 0 deterministically proves the check passed; set it to inspect for read-only queries. Set pty and stdin only for commands that require controlled interactive input.",
     parameters: {
       type: "object",
       properties: {
         command: { type: "string" },
+        purpose: {
+          type: "string",
+          enum: ["execute", "inspect", "validate"],
+          description:
+            "Structured command purpose. Use validate only for a deterministic pass/fail check whose exit code proves the result.",
+        },
         stdin: { type: "string" },
         pty: { type: "boolean" },
         timeoutMs: {
@@ -1689,11 +1695,17 @@ const tools = [
   },
   {
     name: "run_command",
-    description: `${localShellToolDescription()} Prefer browser tools for page interaction, responsive screenshots, and DOM inspection; do not launch a browser from this tool. Use start_process for background services.`,
+    description: `${localShellToolDescription()} Set purpose to validate only when exit code 0 deterministically proves the check passed; set it to inspect for read-only queries. Prefer browser tools for page interaction, responsive screenshots, and DOM inspection; do not launch a browser from this tool. Use start_process for background services.`,
     parameters: {
       type: "object",
       properties: {
         command: { type: "string" },
+        purpose: {
+          type: "string",
+          enum: ["execute", "inspect", "validate"],
+          description:
+            "Structured command purpose. Use validate only for a deterministic pass/fail check whose exit code proves the result.",
+        },
         timeoutMs: {
           type: "number",
           minimum: 1_000,
@@ -3382,12 +3394,16 @@ async function execute(
       },
     );
     const operationEvidence: CodingOperation[] = ["execute"];
+    const purpose = String(call.input.purpose || "");
     if (
       (result.exitCode === 0 || result.exitCode === 1) &&
-      isInspectionCommand(remoteCommand)
+      (purpose === "inspect" || isInspectionCommand(requestedCommand))
     )
       operationEvidence.push("inspect");
-    if (result.exitCode === 0 && isValidationCommand(remoteCommand))
+    if (
+      result.exitCode === 0 &&
+      (purpose === "validate" || isValidationCommand(requestedCommand))
+    )
       operationEvidence.push("validate");
     return {
       ...result,
@@ -4120,9 +4136,16 @@ async function execute(
   );
   const exitCode = effectiveCommandExitCode(result.exitCode, result.output);
   const operationEvidence: CodingOperation[] = ["execute"];
-  if ((exitCode === 0 || exitCode === 1) && isInspectionCommand(script))
+  const purpose = String(call.input.purpose || "");
+  if (
+    (exitCode === 0 || exitCode === 1) &&
+    (purpose === "inspect" || isInspectionCommand(script))
+  )
     operationEvidence.push("inspect");
-  if (exitCode === 0 && isValidationCommand(script))
+  if (
+    exitCode === 0 &&
+    (purpose === "validate" || isValidationCommand(script))
+  )
     operationEvidence.push("validate");
   return {
     output: result.output || "命令未产生输出",
@@ -5653,6 +5676,7 @@ export async function* runAgent(
     cursor: 0,
   };
   let imageFallbackNoticeSent = false;
+  let repetitionFinalizationPending = false;
   while (!signal.aborted) {
     const pendingParentInstructions = drainSubagentMessages(requestId);
     const pendingSteering = turnSteeringQueue.drain(requestId);
@@ -5676,6 +5700,7 @@ export async function* runAgent(
       budgets.emptyTurns = 0;
       stalledRounds = 0;
       lastFingerprint = "";
+      repetitionFinalizationPending = false;
       plan.steps = [];
       plan.statuses = undefined;
       plan.cursor = 0;
@@ -5715,17 +5740,27 @@ export async function* runAgent(
       !hasUncollectedAgentWork;
     const hasPendingInstructions =
       pendingParentInstructions.length > 0 || pendingSteering.length > 0;
-    const finalizationMode = executorFinalizationMode({
-      agentRole: request.agentRole,
-      completedRounds: round,
-      elapsedMs: Date.now() - runStartedAt,
-      evidenceComplete,
-      hasPendingInstructions:
-        hasPendingInstructions || hasUncollectedAgentWork,
-    });
+    const finalizationMode =
+      repetitionFinalizationPending &&
+      evidenceComplete &&
+      !hasPendingInstructions &&
+      !hasUncollectedAgentWork
+        ? "evidence-complete"
+        : agentFinalizationMode({
+            agentRole: request.agentRole,
+            completedRounds: round,
+            elapsedMs: Date.now() - runStartedAt,
+            evidenceComplete,
+            hasPendingInstructions:
+              hasPendingInstructions || hasUncollectedAgentWork,
+          });
     round += 1;
     const finalizationRoleLabel =
-      request.agentRole === "planner" ? "规划模型" : "执行模型";
+      request.agentRole === "planner"
+        ? "规划模型"
+        : request.agentRole === "executor"
+          ? "执行模型"
+          : "当前任务";
     yield {
       type: "progress",
       message:
@@ -5822,7 +5857,9 @@ export async function* runAgent(
               : "<runtime_finalization>已有成功工具记录覆盖本次要求，执行预算现在进入收尾阶段。不要再调用工具、不要继续修改，也不要追加重复验证。请仅依据现有工具结果给出简洁最终总结：完成内容、修改文件、验证结果、可用地址和真实残留问题。不得声称未验证的事项。</runtime_finalization>"
             : request.agentRole === "planner"
               ? "<runtime_finalization>规划模型已达到运行预算上限。不要再派发或等待新的执行 Agent。请根据已收集的执行结果立即汇总：已完成内容、修改文件、成功和失败的验证、可用地址，以及尚未完成或无法确认的事项。必须如实区分完成项与残留项。</runtime_finalization>"
-              : "<runtime_finalization>执行 Agent 已达到运行预算上限。不要再调用工具或继续修改。请根据现有工具结果立即汇总：已完成内容、修改文件、成功和失败的验证、可用地址，以及尚未完成或无法确认的事项。必须如实区分完成项与残留项。</runtime_finalization>",
+              : request.agentRole === "executor"
+                ? "<runtime_finalization>执行 Agent 已达到运行预算上限。不要再调用工具或继续修改。请根据现有工具结果立即汇总：已完成内容、修改文件、成功和失败的验证、可用地址，以及尚未完成或无法确认的事项。必须如实区分完成项与残留项。</runtime_finalization>"
+                : "<runtime_finalization>当前任务已达到运行预算上限。不要再调用工具或继续修改。请根据现有工具结果立即汇总：已完成内容、修改文件、成功和失败的验证、可用地址，以及尚未完成或无法确认的事项。必须如实区分完成项与残留项。</runtime_finalization>",
       });
     let turn: Turn | undefined,
       streamedText = "",
@@ -7070,8 +7107,8 @@ export async function* runAgent(
     );
     // Different read-only checks are not material progress once the model has
     // declared the plan complete or all known mutation evidence is already in
-    // place. Keep tools enabled, but let the normal stall policy request a new
-    // strategy and eventually pause instead of forcing a false final answer.
+    // place. Repetition may request a strategy change or a final no-tool turn,
+    // but it is never itself a terminal condition.
     const verificationOnlyRound = Boolean(
       turn.calls.length &&
       !roundAdvanced &&
@@ -7093,35 +7130,24 @@ export async function* runAgent(
     }
     const currentStallAction = stallAction(stalledRounds);
     if (currentStallAction === "recover") {
+      const shouldFinalizeCompletedWork =
+        evidenceCompleteAfterRound &&
+        (planCompleted || hasMutationEvidenceAfterRound);
+      if (shouldFinalizeCompletedWork) repetitionFinalizationPending = true;
       yield {
         type: "progress",
-        message:
-          "检测到连续重复操作，正在要求 Agent 保留现有结果并更换执行策略…",
+        message: shouldFinalizeCompletedWork
+          ? "计划和工具证据已完成，正在结束重复核对并生成最终结果…"
+          : "检测到连续重复操作，正在要求 Agent 保留现有结果并更换执行策略…",
       };
       history.push({
         kind: "message",
         role: "user",
-        content:
-          "<runtime_stall_recovery>你已经连续多轮使用相同工具输入并得到相同结果。不要再次原样重试。请保留已有成果，检查最近一次失败或阻塞点，然后选择不同的命令或验证方式；已有后台进程时只读取其状态，不要重复启动；确实缺少外部信息时调用 request_user_input；任务已经完成时直接给出最终结论。</runtime_stall_recovery>",
+        content: shouldFinalizeCompletedWork
+          ? "<runtime_repetition_recovery>结构化计划和成功工具证据均已完整。停止追加文件存在性、目录、哈希或同类重复核对；下一轮直接依据现有结果给出最终结论。</runtime_repetition_recovery>"
+          : "<runtime_repetition_recovery>你已经连续多轮使用相同工具输入并得到相同结果。不要再次原样重试。请保留已有成果，检查最近一次失败或阻塞点，然后选择不同的命令或验证方式；已有后台进程时只读取其状态，不要重复启动；确实缺少外部信息时调用 request_user_input；任务已经完成时直接给出最终结论。</runtime_repetition_recovery>",
       });
       continue;
-    }
-    if (currentStallAction === "pause") {
-      const pausedCompletionResult = buildPausedCompletionResult({
-        evidenceHistory,
-        baselineCodingEvidence,
-        requestedCodingEvidenceOps,
-        requestedBrowserOps,
-        requestedGitOps,
-        plannerExecutionPending: plannerExecutionPendingAfterRound,
-      });
-      for (const event of blockedVerificationEvents(
-        timelineTextLength,
-        `Agent 已暂停：连续 ${STALL_PAUSE_ROUNDS} 轮没有取得实质进展。已有结果和实际修改均已保留，可以继续任务并从当前状态更换策略。`,
-        pausedCompletionResult,
-      ))
-        yield event;
-      return;
     }
   }
   turnSteeringQueue.clear(requestId);

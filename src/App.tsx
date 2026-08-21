@@ -1988,6 +1988,9 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [messages, activities, activeTaskId, runningId]);
   function openSettings(section: SettingsSection) {
+    setNewTaskOpen(false);
+    setPendingFolder(null);
+    setNewTaskName("");
     setSettingsSection(section);
     setSettings(true);
   }
@@ -3239,6 +3242,7 @@ export default function App() {
       setContextError("桌面主进程版本较旧，请重启应用后再试");
       return;
     }
+    setSettings(false);
     setPendingFolder(null);
     setNewTaskName("");
     setNewTaskOpen(true);

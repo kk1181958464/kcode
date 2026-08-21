@@ -1,6 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert";
-import { canonicalizeCommand, commandsMatch, extractCommandSignature } from "./command-canonicalize";
+import {
+  canonicalizeCommand,
+  commandsMatch,
+  extractCommandSignature,
+  parseCommandInvocations,
+} from "./command-canonicalize";
 
 test("collapses whitespace", () => {
   assert.equal(canonicalizeCommand("npm   run   build"), "npm run build");
@@ -56,5 +61,16 @@ test("extractCommandSignature returns exe + subcommand", () => {
       'powershell.exe -NoProfile -Command "git -C D:\\project commit -m test"',
     ),
     ["git", "commit"],
+  );
+});
+
+test("parses commands nested in POSIX control-flow blocks", () => {
+  const invocations = parseCommandInvocations(
+    'for f in app/*.php; do php -l "$f" || exit 1; done',
+  );
+  assert.ok(
+    invocations.some(
+      ({ executable, args }) => executable === "php" && args.includes("-l"),
+    ),
   );
 });

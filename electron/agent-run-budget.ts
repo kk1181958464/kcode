@@ -1,5 +1,13 @@
 import type { AgentRole } from "../src/types";
 
+// Root tasks have a generous guardrail because they may legitimately perform
+// long deployments or migrations. This is an explicit run budget; it does not
+// infer completion from assistant prose, file counts, or repeated commands.
+export const ROOT_SOFT_ROUND_LIMIT = 160;
+export const ROOT_HARD_ROUND_LIMIT = 320;
+export const ROOT_SOFT_DURATION_MS = 30 * 60_000;
+export const ROOT_HARD_DURATION_MS = 60 * 60_000;
+
 export const EXECUTOR_SOFT_ROUND_LIMIT = 24;
 export const EXECUTOR_HARD_ROUND_LIMIT = 48;
 export const EXECUTOR_SOFT_DURATION_MS = 15 * 60_000;
@@ -14,9 +22,9 @@ export const PLANNER_HARD_ROUND_LIMIT = 36;
 export const PLANNER_SOFT_DURATION_MS = 12 * 60_000;
 export const PLANNER_HARD_DURATION_MS = 24 * 60_000;
 
-export type ExecutorFinalizationMode = "evidence-complete" | "limit-reached";
+export type AgentFinalizationMode = "evidence-complete" | "limit-reached";
 
-export function executorFinalizationMode({
+export function agentFinalizationMode({
   agentRole,
   completedRounds,
   elapsedMs,
@@ -28,7 +36,7 @@ export function executorFinalizationMode({
   elapsedMs: number;
   evidenceComplete: boolean;
   hasPendingInstructions?: boolean;
-}): ExecutorFinalizationMode | undefined {
+}): AgentFinalizationMode | undefined {
   if (hasPendingInstructions) return undefined;
   const limits =
     agentRole === "executor"
@@ -45,8 +53,12 @@ export function executorFinalizationMode({
             softMs: PLANNER_SOFT_DURATION_MS,
             hardMs: PLANNER_HARD_DURATION_MS,
           }
-        : undefined;
-  if (!limits) return undefined;
+        : {
+            softRounds: ROOT_SOFT_ROUND_LIMIT,
+            hardRounds: ROOT_HARD_ROUND_LIMIT,
+            softMs: ROOT_SOFT_DURATION_MS,
+            hardMs: ROOT_HARD_DURATION_MS,
+          };
   if (
     completedRounds >= limits.hardRounds ||
     elapsedMs >= limits.hardMs

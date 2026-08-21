@@ -27,7 +27,7 @@ function fakeProvider(): RunAgentDeps["getProvider"] {
     }) as never;
 }
 
-test("asks the model to change strategy before pausing repeated tool rounds", async () => {
+test("keeps repeated checks recoverable until the model ends the turn", async () => {
   const workspacePath = await mkdtemp(path.join(os.tmpdir(), "kcode-stall-"));
   await writeFile(path.join(workspacePath, "unchanged.txt"), "same\n", "utf8");
   const request: ModelRequest = {
@@ -51,8 +51,20 @@ test("asks the model to change strategy before pausing repeated tool rounds", as
         recoveryInstructionSeen ||= args.history.some(
           (item) =>
             item.kind === "message" &&
-            item.content.includes("<runtime_stall_recovery>"),
+            item.content.includes("<runtime_repetition_recovery>"),
         );
+        if (rounds === 8) {
+          yield {
+            type: "complete",
+            turn: {
+              text: "检查完成，文件保持不变。",
+              calls: [],
+              rawCalls: [],
+              usage: { input: 10, output: 5, cached: 0 },
+            },
+          };
+          return;
+        }
         yield {
           type: "complete",
           turn: {
@@ -73,7 +85,7 @@ test("asks the model to change strategy before pausing repeated tool rounds", as
   ))
     events.push(event);
 
-  assert.equal(rounds, 6);
+  assert.equal(rounds, 8);
   assert.equal(recoveryInstructionSeen, true);
   assert.ok(
     events.some(
@@ -81,26 +93,23 @@ test("asks the model to change strategy before pausing repeated tool rounds", as
         event.type === "progress" && event.message.includes("更换执行策略"),
     ),
   );
-  assert.ok(
-    events.some(
-      (event) => event.type === "text" && event.delta.includes("连续 5 轮"),
-    ),
-  );
   assert.equal(
     events.some((event) => event.type === "error"),
     false,
   );
   assert.ok(
-    events.some((event) => event.type === "done" && event.outcome === "paused"),
+    events.some(
+      (event) => event.type === "done" && event.outcome === "completed",
+    ),
   );
   const done = events.find(
     (event): event is Extract<AgentEvent, { type: "done" }> =>
       event.type === "done",
   );
-  assert.equal(done?.result?.kind, "incomplete");
+  assert.notEqual(done?.result?.kind, "incomplete");
 });
 
-test("keeps tools enabled while recovering repeated post-change checks", async () => {
+test("finalizes a completed plan after repeated post-change checks", async () => {
   const workspacePath = await mkdtemp(path.join(os.tmpdir(), "kcode-closing-"));
   await writeFile(
     path.join(workspacePath, "first.js"),
@@ -118,7 +127,7 @@ test("keeps tools enabled while recovering repeated post-change checks", async (
   let rounds = 0;
   let recoveryInstructionSeen = false;
   let finalizationInstructionSeen = false;
-  let finalTurnToolsEnabled = false;
+  let finalTurnToolsEnabled = true;
   const events: AgentEvent[] = [];
   for await (const event of runAgent(
     "closing-policy-integration",
@@ -131,12 +140,12 @@ test("keeps tools enabled while recovering repeated post-change checks", async (
         recoveryInstructionSeen ||= args.history.some(
           (item) =>
             item.kind === "message" &&
-            item.content.includes("<runtime_stall_recovery>"),
+            item.content.includes("<runtime_repetition_recovery>"),
         );
         finalizationInstructionSeen ||= args.history.some(
           (item) =>
             item.kind === "message" &&
-            item.content.includes("操作证据已经完整"),
+            item.content.includes("<runtime_finalization>"),
         );
         if (rounds === 5) {
           finalTurnToolsEnabled = args.toolsEnabled;
@@ -198,12 +207,12 @@ test("keeps tools enabled while recovering repeated post-change checks", async (
 
   assert.equal(rounds, 5);
   assert.equal(recoveryInstructionSeen, true);
-  assert.equal(finalizationInstructionSeen, false);
-  assert.equal(finalTurnToolsEnabled, true);
+  assert.equal(finalizationInstructionSeen, true);
+  assert.equal(finalTurnToolsEnabled, false);
   assert.ok(
     events.some(
       (event) =>
-        event.type === "progress" && event.message.includes("更换执行策略"),
+        event.type === "progress" && event.message.includes("生成最终结果"),
     ),
   );
   assert.ok(
@@ -246,7 +255,7 @@ test("reopens execution after a completed plan lacks mutation evidence", async (
         recoveryInstructionSeen ||= args.history.some(
           (item) =>
             item.kind === "message" &&
-            item.content.includes("<runtime_stall_recovery>"),
+            item.content.includes("<runtime_repetition_recovery>"),
         );
         if (rounds === 6) {
           yield {

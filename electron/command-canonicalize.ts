@@ -181,6 +181,16 @@ function invocationTokens(segment: string[]) {
     while (index < tokens.length && tokens[index].startsWith("-")) index += 1;
     tokens = tokens.slice(index);
   }
+  // Commands inside POSIX control-flow blocks commonly start with `do` or
+  // `then` after shell segmentation (for example `for f in ...; do php -l
+  // "$f"; done`). Treat the following token as the executable so policy and
+  // evidence classification see the command that actually ran.
+  while (
+    ["do", "then", "else"].includes(
+      normalizeExecutable(tokens[0] ?? ""),
+    )
+  )
+    tokens = tokens.slice(1);
   return tokens;
 }
 

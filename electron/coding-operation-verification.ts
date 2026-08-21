@@ -56,13 +56,21 @@ const CONNECTION_CALL_TOOLS = new Set([
 
 /** Side effects become completion requirements only after a native call exists. */
 export function codingOperationsRequiredByCalls(
-  calls: ReadonlyArray<{ name: string }>,
+  calls: ReadonlyArray<{
+    name: string;
+    input?: Record<string, unknown>;
+  }>,
 ) {
   const operations = new Set<CodingOperation>();
   for (const call of calls) {
     if (MUTATION_CALL_TOOLS.has(call.name)) operations.add("modify");
     if (EXECUTION_CALL_TOOLS.has(call.name)) operations.add("execute");
     if (call.name === "diagnostics") operations.add("validate");
+    if (
+      ["run_command", "ssh_run"].includes(call.name) &&
+      call.input?.purpose === "validate"
+    )
+      operations.add("validate");
     if (CONNECTION_CALL_TOOLS.has(call.name)) operations.add("connect");
     if (call.name === "ssh_upload_file") operations.add("upload");
     if (call.name === "ssh_download_file") operations.add("download");
@@ -442,6 +450,15 @@ export function isValidationCommand(command: string) {
     value.replaceAll("\\", "/").split("/").at(-1)?.toLowerCase() ?? "";
   const meaningfulArgs = (args: string[]) =>
     args.map((arg) => arg.toLowerCase()).filter((arg) => arg !== "--");
+  const hasShellControlFlow =
+    /(?:^|[;&|()\s])(?:if|then|elif|else|fi|for|while|until|do|done)(?=$|[;&|()\s])/i.test(
+      command,
+    );
+  const preservesNestedFailure =
+    /\|\|\s*(?:exit|return)\s+[1-9]\d*\b|(?:^|[;&|()\s])set\s+-[^\s;&|]*e\b/i.test(
+      command,
+    );
+  if (hasShellControlFlow && !preservesNestedFailure) return false;
 
   return parseCommandInvocations(command).some(({ executable, args }) => {
     const lowerArgs = meaningfulArgs(args);

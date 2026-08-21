@@ -36,6 +36,20 @@ test("derives required work only from native tool calls", () => {
   );
 });
 
+test("requires successful evidence for explicitly classified validation commands", () => {
+  assert.deepEqual(
+    [
+      ...codingOperationsRequiredByCalls([
+        {
+          name: "ssh_run",
+          input: { command: "./custom-smoke-check", purpose: "validate" },
+        },
+      ]),
+    ],
+    ["execute", "validate"],
+  );
+});
+
 test("uses only the latest real user payload without interpreting prose", () => {
   const history: CodingVerificationHistoryItem[] = [
     { kind: "message", role: "user", content: "修改并测试项目" },
@@ -60,6 +74,7 @@ test("recognizes validation executables and shell wrappers structurally", () => 
     "python -m pytest",
     "node --check agreement/agreement.js",
     "php -l app/Controller.php",
+    'for f in app/*.php; do php -l "$f" || exit 1; done',
     "python -m json.tool package.json",
     "Get-Content package.json -Raw | ConvertFrom-Json",
     'powershell -Command "npm run typecheck"',
@@ -73,6 +88,8 @@ test("does not infer validation from arguments or output-like prose", () => {
     'echo "npm test"',
     "node -e \"console.log('validation success')\"",
     "node $scriptPath $root",
+    'for f in app/*.php; do php -l "$f"; done',
+    'if php -l app/Controller.php; then echo valid; fi',
   ])
     assert.equal(isValidationCommand(command), false, command);
 });

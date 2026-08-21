@@ -7,18 +7,40 @@ import {
   EXECUTOR_SOFT_ROUND_LIMIT,
   PLANNER_HARD_ROUND_LIMIT,
   PLANNER_SOFT_ROUND_LIMIT,
-  executorFinalizationMode,
+  ROOT_HARD_DURATION_MS,
+  ROOT_HARD_ROUND_LIMIT,
+  ROOT_SOFT_DURATION_MS,
+  ROOT_SOFT_ROUND_LIMIT,
+  agentFinalizationMode,
 } from "./agent-run-budget";
 
-test("does not limit ordinary runs", () => {
+test("bounds ordinary runs with an explicit root-task budget", () => {
   assert.equal(
-    executorFinalizationMode({
+    agentFinalizationMode({
       agentRole: undefined,
-      completedRounds: EXECUTOR_HARD_ROUND_LIMIT,
-      elapsedMs: EXECUTOR_HARD_DURATION_MS,
+      completedRounds: ROOT_SOFT_ROUND_LIMIT - 1,
+      elapsedMs: ROOT_SOFT_DURATION_MS - 1,
       evidenceComplete: true,
     }),
     undefined,
+  );
+  assert.equal(
+    agentFinalizationMode({
+      agentRole: undefined,
+      completedRounds: ROOT_SOFT_ROUND_LIMIT,
+      elapsedMs: 1,
+      evidenceComplete: true,
+    }),
+    "evidence-complete",
+  );
+  assert.equal(
+    agentFinalizationMode({
+      agentRole: undefined,
+      completedRounds: ROOT_HARD_ROUND_LIMIT,
+      elapsedMs: ROOT_HARD_DURATION_MS,
+      evidenceComplete: false,
+    }),
+    "limit-reached",
   );
 });
 
@@ -26,7 +48,7 @@ test("finalizes a planner coordinator on its own budget", () => {
   // The planner only inspects and delegates, so it gets a tighter budget than
   // the executor and must still finalize instead of spinning in read-only loops.
   assert.equal(
-    executorFinalizationMode({
+    agentFinalizationMode({
       agentRole: "planner",
       completedRounds: PLANNER_SOFT_ROUND_LIMIT,
       elapsedMs: 1,
@@ -35,7 +57,7 @@ test("finalizes a planner coordinator on its own budget", () => {
     "evidence-complete",
   );
   assert.equal(
-    executorFinalizationMode({
+    agentFinalizationMode({
       agentRole: "planner",
       completedRounds: PLANNER_HARD_ROUND_LIMIT,
       elapsedMs: 1,
@@ -45,7 +67,7 @@ test("finalizes a planner coordinator on its own budget", () => {
   );
   // Below the soft limit with incomplete evidence, the planner keeps going.
   assert.equal(
-    executorFinalizationMode({
+    agentFinalizationMode({
       agentRole: "planner",
       completedRounds: 1,
       elapsedMs: 1,
@@ -57,7 +79,7 @@ test("finalizes a planner coordinator on its own budget", () => {
 
 test("finalizes an executor after the soft limit when evidence is complete", () => {
   assert.equal(
-    executorFinalizationMode({
+    agentFinalizationMode({
       agentRole: "executor",
       completedRounds: EXECUTOR_SOFT_ROUND_LIMIT,
       elapsedMs: 1,
@@ -66,7 +88,7 @@ test("finalizes an executor after the soft limit when evidence is complete", () 
     "evidence-complete",
   );
   assert.equal(
-    executorFinalizationMode({
+    agentFinalizationMode({
       agentRole: "executor",
       completedRounds: 1,
       elapsedMs: EXECUTOR_SOFT_DURATION_MS,
@@ -78,7 +100,7 @@ test("finalizes an executor after the soft limit when evidence is complete", () 
 
 test("allows incomplete work until the executor hard limit", () => {
   assert.equal(
-    executorFinalizationMode({
+    agentFinalizationMode({
       agentRole: "executor",
       completedRounds: EXECUTOR_SOFT_ROUND_LIMIT,
       elapsedMs: EXECUTOR_SOFT_DURATION_MS,
@@ -87,7 +109,7 @@ test("allows incomplete work until the executor hard limit", () => {
     undefined,
   );
   assert.equal(
-    executorFinalizationMode({
+    agentFinalizationMode({
       agentRole: "executor",
       completedRounds: EXECUTOR_HARD_ROUND_LIMIT,
       elapsedMs: 1,
@@ -99,7 +121,7 @@ test("allows incomplete work until the executor hard limit", () => {
 
 test("defers finalization for a newly queued parent instruction", () => {
   assert.equal(
-    executorFinalizationMode({
+    agentFinalizationMode({
       agentRole: "executor",
       completedRounds: EXECUTOR_HARD_ROUND_LIMIT,
       elapsedMs: EXECUTOR_HARD_DURATION_MS,
