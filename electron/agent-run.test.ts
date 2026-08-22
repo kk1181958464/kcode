@@ -98,6 +98,90 @@ test("runAgent emits text then a completed done for a plain-text turn", async ()
   assert.match(answer, /编码 Agent/);
 });
 
+test("request_user_input blocks immediately without another model round", async () => {
+  const request = await makeRequest();
+  request.messages = [
+    {
+      role: "user",
+      content: "扫描完成后，只让我选择要卸载的软件，不要自行删除。",
+    },
+  ];
+  let rounds = 0;
+  const deps: RunAgentDeps = {
+    getProvider: fakeProvider("fake-model"),
+    async *streamTurn() {
+      rounds += 1;
+      assert.equal(
+        rounds,
+        1,
+        "waiting for user input must end the current run",
+      );
+      yield {
+        type: "complete",
+        turn: {
+          text: "扫描已经完成，需要你确认卸载范围。",
+          calls: [
+            {
+              id: "request-uninstall-selection",
+              name: "request_user_input",
+              input: {
+                question: "请选择需要卸载的软件编号，我会保留未选择的软件。",
+                fields: ["要卸载的软件编号，例如 5、6"],
+              },
+            },
+          ],
+          rawCalls: [],
+          usage: { input: 14, output: 8, cached: 0 },
+        },
+      };
+    },
+  };
+
+  const events = await collect(
+    runAgent(
+      "test-request-user-input-terminal",
+      request,
+      new AbortController().signal,
+      deps,
+    ),
+  );
+
+  assert.equal(rounds, 1);
+  const successfulInputActivities = events.filter(
+    (event): event is Extract<AgentEvent, { type: "activity" }> =>
+      event.type === "activity" &&
+      event.activity.tool === "request_user_input" &&
+      event.activity.status === "success",
+  );
+  assert.equal(
+    new Set(successfulInputActivities.map((event) => event.activity.id)).size,
+    1,
+  );
+  assert.match(
+    events
+      .filter(
+        (event): event is Extract<AgentEvent, { type: "text" }> =>
+          event.type === "text" && event.phase === "final_answer",
+      )
+      .map((event) => event.delta)
+      .join(""),
+    /请选择需要卸载的软件编号[\s\S]*要卸载的软件编号，例如 5、6/,
+  );
+  const done = events.find(
+    (event): event is Extract<AgentEvent, { type: "done" }> =>
+      event.type === "done",
+  );
+  assert.equal(done?.outcome, "blocked");
+  assert.equal(done?.result?.kind, "blocked");
+  assert.equal(done?.result?.toolCalls, 1);
+  assert.equal(done?.result?.successfulTools, 1);
+  assert.match(done?.result?.notice ?? "", /补充上述信息/);
+  assert.equal(
+    events.some((event) => event.type === "error"),
+    false,
+  );
+});
+
 test("runAgent publishes update_plan as structured activity state", async () => {
   const request = await makeRequest();
   await writeFile(

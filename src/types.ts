@@ -760,6 +760,10 @@ export type KCodeApi = {
       requestIds: string[],
     ): Promise<AgentActivity[]>;
     loadActivityPayload(activityId: string): Promise<unknown | null>;
+    renameTask(
+      id: string,
+      name: string,
+    ): Promise<{ name: string; updatedAt: number }>;
     saveTask(
       id: string,
       value: unknown,

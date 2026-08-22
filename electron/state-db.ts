@@ -383,6 +383,38 @@ export function listTaskHeaders() {
   return rows.map((row) => JSON.parse(row.header));
 }
 
+export function renameTaskInDatabase(
+  connection: DatabaseSync,
+  id: string,
+  name: string,
+  updatedAt = Date.now(),
+) {
+  const normalizedName = name.trim();
+  if (!normalizedName || normalizedName.length > 80)
+    throw new Error("任务名称必须为 1 到 80 个字符");
+  const row = connection
+    .prepare("SELECT value,header FROM tasks WHERE id = ?")
+    .get(id) as { value: string; header: string } | undefined;
+  if (!row) throw new Error("找不到要重命名的任务");
+
+  const value = JSON.parse(row.value) as Record<string, unknown>;
+  const header = JSON.parse(row.header || "{}") as Record<string, unknown>;
+  value.name = normalizedName;
+  value.updatedAt = updatedAt;
+  header.name = normalizedName;
+  header.updatedAt = updatedAt;
+  connection
+    .prepare(
+      "UPDATE tasks SET value = ?, header = ?, updated_at = ? WHERE id = ?",
+    )
+    .run(JSON.stringify(value), JSON.stringify(header), updatedAt, id);
+  return { name: normalizedName, updatedAt };
+}
+
+export function renameTask(id: string, name: string) {
+  return renameTaskInDatabase(db(), id, name);
+}
+
 export function loadTask(id: string): unknown | null {
   const connection = db();
   const row = connection

@@ -4,6 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 import {
   loadTaskActivitiesForRequestsFromDatabase,
   loadTaskItemPage,
+  renameTaskInDatabase,
   syncTaskItems,
 } from "./state-db";
 
@@ -84,6 +85,64 @@ test("partial task saves preserve unloaded rows and append new items", () => {
   assert.deepEqual(storedMessages(database), [
     { id: "m3", position: 0, content: "only" },
   ]);
+  database.close();
+});
+
+test("renames only the task header and core without touching task items", () => {
+  const database = itemDatabase();
+  database.exec(`
+    CREATE TABLE tasks (
+      id TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      header TEXT NOT NULL,
+      position INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+  `);
+  database
+    .prepare(
+      "INSERT INTO tasks(id,value,header,position,updated_at) VALUES(?,?,?,?,?)",
+    )
+    .run(
+      "task-1",
+      JSON.stringify({ id: "task-1", name: "旧名称", updatedAt: 1 }),
+      JSON.stringify({ id: "task-1", name: "旧名称", updatedAt: 1 }),
+      0,
+      1,
+    );
+  syncTaskItems(database, "task_messages", "task-1", [
+    { id: "m1", content: "保留的消息" },
+  ]);
+
+  assert.deepEqual(
+    renameTaskInDatabase(database, "task-1", "  新任务名称  ", 42),
+    { name: "新任务名称", updatedAt: 42 },
+  );
+  const row = database
+    .prepare("SELECT value,header,updated_at FROM tasks WHERE id = ?")
+    .get("task-1") as {
+    value: string;
+    header: string;
+    updated_at: number;
+  };
+  assert.deepEqual(JSON.parse(row.value), {
+    id: "task-1",
+    name: "新任务名称",
+    updatedAt: 42,
+  });
+  assert.deepEqual(JSON.parse(row.header), {
+    id: "task-1",
+    name: "新任务名称",
+    updatedAt: 42,
+  });
+  assert.equal(row.updated_at, 42);
+  assert.deepEqual(storedMessages(database), [
+    { id: "m1", position: 0, content: "保留的消息" },
+  ]);
+  assert.throws(
+    () => renameTaskInDatabase(database, "task-1", "   "),
+    /1 到 80/,
+  );
   database.close();
 });
 

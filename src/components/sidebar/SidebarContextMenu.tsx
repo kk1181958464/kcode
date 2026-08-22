@@ -9,6 +9,7 @@ import {
   FolderOpen,
   FolderSearch,
   GitFork,
+  PencilLine,
   Plus,
   Server,
   Trash2,
@@ -50,6 +51,7 @@ type ContextMenuProps = {
   toggleWorkspace(workspaceKey: string): void;
   createConversation(workspaceKey: string): void;
   openTaskEditor(taskId: string): void;
+  renameTask(taskId: string): void;
   forkTask(taskId: string): void;
   assignLocalWorkspace(target: SidebarLocalWorkspaceTarget): void;
   toggleTaskArchived(taskId: string): void;
@@ -86,6 +88,7 @@ function ContextMenu({
   toggleWorkspace,
   createConversation,
   openTaskEditor,
+  renameTask,
   forkTask,
   assignLocalWorkspace,
   toggleTaskArchived,
@@ -259,6 +262,11 @@ function ContextMenu({
         </>
       ) : (
         <>
+          <MenuItem
+            icon={<PencilLine size={14} />}
+            label="重命名任务"
+            onClick={() => run(() => renameTask(menuTask!.id))}
+          />
           <MenuItem
             icon={<GitFork size={14} />}
             label="从此会话创建分支"

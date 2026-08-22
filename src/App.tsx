@@ -226,6 +226,7 @@ import {
   AssignFolderDialog,
   DeleteDialog,
   NewTaskDialog,
+  RenameTaskDialog,
 } from "./components/dialogs/TaskDialogs";
 import { BrowserPanel } from "./components/browser/BrowserPanel";
 import { TitleBar } from "./components/chrome/TitleBar";
@@ -409,6 +410,10 @@ export default function App() {
     | { kind: "workspace"; workspaceKey: string; name: string; count: number }
     | { kind: "task"; task: TaskRecord }
   >();
+  const [renameTaskTarget, setRenameTaskTarget] = useState<{
+    id: string;
+    name: string;
+  }>();
   const [newTaskName, setNewTaskName] = useState("");
   const [taskQuery, setTaskQuery] = useState("");
   const deferredTaskQuery = useDeferredValue(taskQuery);
@@ -3609,6 +3614,49 @@ export default function App() {
     setStatusOpen(false);
   }
 
+  async function renameTask(taskId: string, name: string) {
+    const task = tasksRef.current.find((item) => item.id === taskId);
+    if (!task) throw new Error("找不到要重命名的任务");
+    const normalizedName = name.replace(/\s+/g, " ").trim();
+    if (!normalizedName) throw new Error("任务名称不能为空");
+    if (normalizedName.length > 80)
+      throw new Error("任务名称不能超过 80 个字符");
+    if (normalizedName === task.name) return;
+
+    const updatedAt = Date.now();
+    let renamed: { name: string; updatedAt: number };
+    if (window.kcode?.state.renameTask) {
+      renamed = await window.kcode.state.renameTask(taskId, normalizedName);
+    } else if (window.kcode?.state.saveTask) {
+      // Keep compatibility with an older preload while preserving paged-out
+      // messages and activities.
+      const loadedTask = await ensureTaskLoaded(task);
+      await window.kcode.state.saveTask(
+        taskId,
+        { ...loadedTask, name: normalizedName, updatedAt },
+        { preserveUnloadedItems: true },
+      );
+      renamed = { name: normalizedName, updatedAt };
+    } else {
+      renamed = { name: normalizedName, updatedAt };
+    }
+    setTasks((current) =>
+      current.map((item) =>
+        item.id === taskId
+          ? { ...item, name: renamed.name, updatedAt: renamed.updatedAt }
+          : item,
+      ),
+    );
+    const persisted = persistedTaskRefsRef.current.get(taskId);
+    if (persisted)
+      persistedTaskRefsRef.current.set(taskId, {
+        ...persisted,
+        name: renamed.name,
+        updatedAt: renamed.updatedAt,
+      });
+    flashAppToast("任务已重命名");
+  }
+
   async function createConversation(workspaceKey: string) {
     if (creatingConversationPathsRef.current.has(workspaceKey)) return;
     const feedbackStartedAt = performance.now();
@@ -5815,6 +5863,10 @@ export default function App() {
   const onOpenTaskEditor = useEventCallback((taskId: string) => {
     void openTaskEditor(taskId);
   });
+  const onRenameSidebarTask = useEventCallback((taskId: string) => {
+    const task = tasksRef.current.find((item) => item.id === taskId);
+    if (task) setRenameTaskTarget({ id: task.id, name: task.name });
+  });
   const onForkSidebarTask = useEventCallback((taskId: string) => {
     const task = tasksRef.current.find((item) => item.id === taskId);
     if (task) void forkTask(task);
@@ -5905,6 +5957,7 @@ export default function App() {
           switchTask={onSwitchTask}
           toggleTaskArchived={onToggleTaskArchived}
           openTaskEditor={onOpenTaskEditor}
+          renameTask={onRenameSidebarTask}
           forkTask={onForkSidebarTask}
           assignLocalWorkspace={onAssignSidebarLocalWorkspace}
           setDeleteTarget={onSetSidebarDeleteTarget}
@@ -6639,6 +6692,14 @@ export default function App() {
             taskName={assignFolderForTask.name}
             onPickFolder={() => void pickFolderAndAssign(assignFolderForTask)}
             onClose={() => setAssignFolderForTask(null)}
+          />
+        )}
+        {renameTaskTarget && (
+          <RenameTaskDialog
+            taskId={renameTaskTarget.id}
+            taskName={renameTaskTarget.name}
+            renameTask={renameTask}
+            onClose={() => setRenameTaskTarget(undefined)}
           />
         )}
         {sshRemoteDialogTaskId && (

@@ -1732,6 +1732,13 @@ button:not(:disabled) {
   box-shadow: 0 0 0 2px var(--focus-ring);
 }
 
+.rename-task-error {
+  margin: 8px 0 0;
+  color: var(--danger);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
 .new-task-workspace-label {
   display: block;
   margin-top: 17px;

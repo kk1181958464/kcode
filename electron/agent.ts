@@ -345,6 +345,38 @@ type ToolResult = Partial<
   };
 };
 
+type PendingUserInput = {
+  question: string;
+  fields: string[];
+};
+
+function normalizePendingUserInput(
+  input: Record<string, unknown>,
+): PendingUserInput | undefined {
+  const question = String(input.question || "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const fields = Array.isArray(input.fields)
+    ? input.fields
+        .map((field) => String(field).replace(/\s+/g, " ").trim())
+        .filter(Boolean)
+        .slice(0, 12)
+    : [];
+  if (question.length < 8 || !fields.length) return undefined;
+  return { question, fields };
+}
+
+function pendingUserInputMessage(input: PendingUserInput) {
+  return [
+    "需要你补充以下信息后才能继续：",
+    "",
+    input.question,
+    "",
+    "请提供：",
+    ...input.fields.map((field) => `- ${field}`),
+  ].join("\n");
+}
+
 async function* streamOperationProgress<T>(
   operation: (report: (output: string) => void) => Promise<T>,
 ): AsyncGenerator<string, T> {
@@ -989,7 +1021,7 @@ const tools = [
   {
     name: "request_user_input",
     description:
-      "Record that the task cannot continue until the user supplies specific missing information or completes a required human action. Use only when the information cannot be discovered with available tools. Ask one concise question and list the exact fields/actions required; never use this to avoid executable work.",
+      "Record that the task cannot continue until the user supplies specific missing information or completes a required human action. Use only when the information cannot be discovered with available tools. Ask one concise question and list the exact fields/actions required; never use this to avoid executable work. A successful call ends the current run immediately, so do not include other tool calls in the same response.",
     parameters: {
       type: "object",
       properties: {
@@ -4016,19 +4048,11 @@ async function execute(
     };
   }
   if (call.name === "request_user_input") {
-    const question = String(call.input.question || "")
-      .replace(/\s+/g, " ")
-      .trim();
-    const fields = Array.isArray(call.input.fields)
-      ? call.input.fields
-          .map((field) => String(field).replace(/\s+/g, " ").trim())
-          .filter(Boolean)
-          .slice(0, 12)
-      : [];
-    if (question.length < 8 || !fields.length)
+    const pendingInput = normalizePendingUserInput(call.input);
+    if (!pendingInput)
       throw new Error("等待用户输入时必须说明问题并列出所需信息");
     return {
-      output: `等待补充信息：${question}\n需要：${fields.join("、")}`,
+      output: `等待补充信息：${pendingInput.question}\n需要：${pendingInput.fields.join("、")}`,
       changed: false,
       userInputRequested: true,
     };
@@ -6266,6 +6290,7 @@ export async function* runAgent(
     let roundAdvanced = false;
     let roundLastActivity: AgentActivity | undefined;
     let roundFailedActivity: AgentActivity | undefined;
+    let pendingUserInput: PendingUserInput | undefined;
     for (const call of turn.calls) {
       const titles: Record<AgentToolName, string> = {
         list_directory: "查看目录",
@@ -6803,6 +6828,12 @@ export async function* runAgent(
               : undefined,
           liveStatus: undefined,
         });
+        if (
+          call.name === "request_user_input" &&
+          activity.status === "success" &&
+          result.userInputRequested === true
+        )
+          pendingUserInput = normalizePendingUserInput(call.input);
         toolRegistry.finish(
           toolTrace.callId,
           activity.status === "failed" ? "failed" : "success",
@@ -7091,6 +7122,79 @@ export async function* runAgent(
       ).every((operation) => unavailableGitAfterRound.has(operation)) &&
       !plannerExecutionPendingAfterRound &&
       !listSubagents(requestId).some((agent) => !agent.collected);
+    if (pendingUserInput) {
+      const missingCodingAfterRound = missingVerifiedCodingOperations(
+        requestedCodingEvidenceOps,
+        codingEvidenceAfterRound,
+        evidenceHistory,
+      ).filter((operation) => operation !== "inspect");
+      const missingBrowserAfterRound = missingRequestedBrowserOperations(
+        requestedBrowserOps,
+        browserEvidenceAfterRound,
+      );
+      const missingGitAfterRound = missingRequestedGitOperations(
+        requestedGitOps,
+        gitEvidenceAfterRound,
+      ).filter((operation) => !unavailableGitAfterRound.has(operation));
+      const completionResult = buildAgentCompletionResult({
+        requestedOperations: [
+          ...[...requestedCodingEvidenceOps].map(
+            (operation) => `coding:${operation}`,
+          ),
+          ...[...requestedBrowserOps].map(
+            (operation) => `browser:${operation}`,
+          ),
+          ...[...requestedGitOps].map((operation) => `git:${operation}`),
+          ...(plannerExecutionPendingAfterRound
+            ? ["agent:spawn_executor"]
+            : []),
+        ],
+        observedOperations: [
+          ...[...codingEvidenceAfterRound].map(
+            (operation) => `coding:${operation}`,
+          ),
+          ...[...browserEvidenceAfterRound].map(
+            (operation) => `browser:${operation}`,
+          ),
+          ...[...gitEvidenceAfterRound].map((operation) => `git:${operation}`),
+          ...(successfulToolNames(evidenceHistory).has("spawn_agent")
+            ? ["agent:spawn_executor"]
+            : []),
+        ],
+        missingOperations: [
+          ...missingCodingAfterRound.map((operation) => `coding:${operation}`),
+          ...missingBrowserAfterRound.map(
+            (operation) => `browser:${operation}`,
+          ),
+          ...missingGitAfterRound.map((operation) => `git:${operation}`),
+          ...(plannerExecutionPendingAfterRound
+            ? ["agent:spawn_executor"]
+            : []),
+        ],
+        evidence: structuredToolEvidenceSummary(evidenceHistory),
+        waitingForUser: true,
+        verifiedNoChange: hasVerifiedNoChangeReport(evidenceHistory),
+      });
+      const finalMessage = pendingUserInputMessage(pendingUserInput);
+      closeSubagentMessageQueue(requestId);
+      yield {
+        type: "final_response",
+        textOffset: timelineTextLength,
+        startedAt: Date.now(),
+        phase: "final_answer",
+      };
+      timelineTextLength += finalMessage.length;
+      yield { type: "text", delta: finalMessage, phase: "final_answer" };
+      yield {
+        type: "done",
+        outcome: "blocked",
+        result: {
+          ...completionResult,
+          notice: "已停止自动执行。补充上述信息后，可从当前结果继续。",
+        },
+      };
+      return;
+    }
     const hasMutationEvidenceAfterRound = [
       "modify",
       "upload",

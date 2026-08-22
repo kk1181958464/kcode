@@ -67,6 +67,7 @@ export interface SidebarProps {
   switchTask(taskId: string): void;
   toggleTaskArchived(taskId: string): void;
   openTaskEditor(taskId: string): void;
+  renameTask(taskId: string): void;
   forkTask(taskId: string): void;
   assignLocalWorkspace(target: SidebarLocalWorkspaceTarget): void;
   setDeleteTarget(
@@ -103,6 +104,7 @@ export const Sidebar = memo(function Sidebar({
   switchTask,
   toggleTaskArchived,
   openTaskEditor,
+  renameTask,
   forkTask,
   assignLocalWorkspace,
   setDeleteTarget,
@@ -586,6 +588,7 @@ export const Sidebar = memo(function Sidebar({
           toggleWorkspace={toggleWorkspace}
           createConversation={createConversation}
           openTaskEditor={openTaskEditor}
+          renameTask={renameTask}
           forkTask={forkTask}
           assignLocalWorkspace={assignLocalWorkspace}
           toggleTaskArchived={toggleTaskArchived}

@@ -7,9 +7,11 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import {
+  Check,
   FolderOpen,
   FolderSearch,
   LoaderCircle,
+  PencilLine,
   Plus,
   Trash2,
   X,
@@ -157,6 +159,145 @@ export function NewTaskDialog({
                 <Plus size={14} />
               )}
               {submitting ? "创建中" : "创建任务"}
+            </button>
+          </footer>
+        </form>
+      </section>
+    </div>,
+    document.body,
+  );
+}
+
+export interface RenameTaskDialogProps {
+  taskId: string;
+  taskName: string;
+  renameTask(taskId: string, name: string): Promise<void>;
+  onClose(): void;
+}
+
+export function RenameTaskDialog({
+  taskId,
+  taskName,
+  renameTask,
+  onClose,
+}: RenameTaskDialogProps) {
+  const inputId = useId();
+  const inputRef = useRef<HTMLInputElement>(null);
+  const onCloseRef = useRef(onClose);
+  const submittingRef = useRef(false);
+  const [name, setName] = useState(taskName);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+  const normalizedName = name.replace(/\s+/g, " ").trim();
+  const unchanged = normalizedName === taskName;
+  onCloseRef.current = onClose;
+
+  useEffect(() => {
+    const previousFocus = document.activeElement;
+    inputRef.current?.focus();
+    inputRef.current?.select();
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !submittingRef.current)
+        onCloseRef.current();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      if (previousFocus instanceof HTMLElement) previousFocus.focus();
+    };
+  }, []);
+
+  async function submitRename(event: FormEvent) {
+    event.preventDefault();
+    if (submittingRef.current || !normalizedName || unchanged) return;
+    submittingRef.current = true;
+    setSubmitting(true);
+    setError("");
+    try {
+      await renameTask(taskId, normalizedName);
+      onClose();
+    } catch (renameError) {
+      setError(
+        renameError instanceof Error
+          ? renameError.message
+          : "任务重命名失败，请重试",
+      );
+    } finally {
+      submittingRef.current = false;
+      setSubmitting(false);
+    }
+  }
+
+  if (typeof document === "undefined") return null;
+  return createPortal(
+    <div
+      className="new-task-dialog-layer"
+      onMouseDown={(event) =>
+        event.target === event.currentTarget && !submitting && onClose()
+      }
+    >
+      <section
+        className="new-task-dialog rename-task-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="rename-task-title"
+      >
+        <header>
+          <span className="new-task-dialog-icon" aria-hidden="true">
+            <PencilLine size={17} />
+          </span>
+          <h2 id="rename-task-title">重命名任务</h2>
+          <button
+            type="button"
+            className="icon"
+            onClick={onClose}
+            title="关闭"
+            aria-label="关闭重命名任务"
+            disabled={submitting}
+          >
+            <X size={18} />
+          </button>
+        </header>
+        <form onSubmit={(event) => void submitRename(event)}>
+          <div className="new-task-dialog-body">
+            <label className="new-task-name-label" htmlFor={inputId}>
+              <span>任务名称</span>
+              <small>{name.length}/80</small>
+            </label>
+            <input
+              ref={inputRef}
+              id={inputId}
+              className="new-task-name-input"
+              value={name}
+              onChange={(event) => {
+                setName(event.target.value);
+                setError("");
+              }}
+              maxLength={80}
+              aria-invalid={Boolean(error)}
+              disabled={submitting}
+            />
+            {error && (
+              <p className="rename-task-error" role="alert">
+                {error}
+              </p>
+            )}
+          </div>
+          <footer>
+            <button type="button" onClick={onClose} disabled={submitting}>
+              取消
+            </button>
+            <button
+              className="primary"
+              type="submit"
+              disabled={submitting || !normalizedName || unchanged}
+            >
+              {submitting ? (
+                <LoaderCircle className="spin" size={14} />
+              ) : (
+                <Check size={14} />
+              )}
+              {submitting ? "保存中" : "保存"}
             </button>
           </footer>
         </form>
