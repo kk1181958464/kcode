@@ -2107,11 +2107,6 @@ button:not(:disabled) {
   width: 40px;
   pointer-events: none;
 }
-.conversation-turn-item.complete {
-  content-visibility: auto;
-  contain: layout style paint;
-  contain-intrinsic-size: auto 440px;
-}
 .agent-activity {
   margin: -14px 0 22px 41px;
   border: 1px solid #d9ddd7;
@@ -2296,10 +2291,6 @@ button:not(:disabled) {
   .completed-process-executor {
     display: none;
   }
-}
-.assistant-timeline-group {
-  content-visibility: auto;
-  contain-intrinsic-size: auto 96px;
 }
 .assistant-timeline-group > :first-child {
   margin-top: 0;
@@ -2699,10 +2690,6 @@ button:not(:disabled) {
 .activity-output-truncated > button:hover {
   background: var(--surface-hover);
 }
-.agent-activity:not(.running):not(.waiting) {
-  content-visibility: auto;
-  contain-intrinsic-size: auto 48px;
-}
 .diff-view {
   display: block;
   min-width: 0;
@@ -3033,10 +3020,6 @@ button:not(:disabled) {
 }
 .message-body > :last-child {
   margin-bottom: 0;
-}
-.markdown-block {
-  content-visibility: auto;
-  contain-intrinsic-size: auto 72px;
 }
 .markdown-block > :first-child {
   margin-top: 0;

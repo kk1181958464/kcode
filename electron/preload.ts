@@ -41,6 +41,8 @@ const api: KCodeApi = {
     loadActivityPayload: (activityId) =>
       ipcRenderer.invoke("state:load-activity-payload", activityId),
     renameTask: (id, name) => ipcRenderer.invoke("state:rename-task", id, name),
+    renameWorkspace: (taskIds, name) =>
+      ipcRenderer.invoke("state:rename-workspace", taskIds, name),
     saveTask: (id, value, options) =>
       ipcRenderer.invoke("state:save-task", id, value, options),
     saveTaskOrder: (ids) => ipcRenderer.invoke("state:save-task-order", ids),

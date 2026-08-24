@@ -7,6 +7,7 @@ export const stateKeySchema = z.enum([
 ]);
 export const idSchema = z.string().trim().min(1).max(256);
 export const taskNameSchema = z.string().trim().min(1).max(80);
+export const taskIdsSchema = z.array(idSchema).min(1).max(5_000);
 export const steerContentSchema = z.string().trim().min(1).max(20_000);
 export const optionalIdSchema = idSchema.optional();
 export const taskItemPageOptionsSchema = z

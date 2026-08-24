@@ -764,6 +764,10 @@ export type KCodeApi = {
       id: string,
       name: string,
     ): Promise<{ name: string; updatedAt: number }>;
+    renameWorkspace?(
+      taskIds: string[],
+      name: string,
+    ): Promise<{ name: string; updatedAt: number; taskIds: string[] }>;
     saveTask(
       id: string,
       value: unknown,

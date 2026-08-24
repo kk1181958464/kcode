@@ -168,28 +168,29 @@ export function NewTaskDialog({
   );
 }
 
-export interface RenameTaskDialogProps {
-  taskId: string;
-  taskName: string;
-  renameTask(taskId: string, name: string): Promise<void>;
+export interface RenameDialogProps {
+  kind: "task" | "workspace";
+  initialName: string;
+  rename(name: string): Promise<void>;
   onClose(): void;
 }
 
-export function RenameTaskDialog({
-  taskId,
-  taskName,
-  renameTask,
+export function RenameDialog({
+  kind,
+  initialName,
+  rename,
   onClose,
-}: RenameTaskDialogProps) {
+}: RenameDialogProps) {
   const inputId = useId();
   const inputRef = useRef<HTMLInputElement>(null);
   const onCloseRef = useRef(onClose);
   const submittingRef = useRef(false);
-  const [name, setName] = useState(taskName);
+  const [name, setName] = useState(initialName);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const normalizedName = name.replace(/\s+/g, " ").trim();
-  const unchanged = normalizedName === taskName;
+  const unchanged = normalizedName === initialName;
+  const targetLabel = kind === "workspace" ? "工作区" : "任务";
   onCloseRef.current = onClose;
 
   useEffect(() => {
@@ -214,13 +215,13 @@ export function RenameTaskDialog({
     setSubmitting(true);
     setError("");
     try {
-      await renameTask(taskId, normalizedName);
+      await rename(normalizedName);
       onClose();
     } catch (renameError) {
       setError(
         renameError instanceof Error
           ? renameError.message
-          : "任务重命名失败，请重试",
+          : `${targetLabel}重命名失败，请重试`,
       );
     } finally {
       submittingRef.current = false;
@@ -240,19 +241,19 @@ export function RenameTaskDialog({
         className="new-task-dialog rename-task-dialog"
         role="dialog"
         aria-modal="true"
-        aria-labelledby="rename-task-title"
+        aria-labelledby="rename-item-title"
       >
         <header>
           <span className="new-task-dialog-icon" aria-hidden="true">
             <PencilLine size={17} />
           </span>
-          <h2 id="rename-task-title">重命名任务</h2>
+          <h2 id="rename-item-title">重命名{targetLabel}</h2>
           <button
             type="button"
             className="icon"
             onClick={onClose}
             title="关闭"
-            aria-label="关闭重命名任务"
+            aria-label={`关闭重命名${targetLabel}`}
             disabled={submitting}
           >
             <X size={18} />
@@ -261,7 +262,7 @@ export function RenameTaskDialog({
         <form onSubmit={(event) => void submitRename(event)}>
           <div className="new-task-dialog-body">
             <label className="new-task-name-label" htmlFor={inputId}>
-              <span>任务名称</span>
+              <span>{targetLabel}名称</span>
               <small>{name.length}/80</small>
             </label>
             <input

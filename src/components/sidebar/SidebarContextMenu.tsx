@@ -52,6 +52,7 @@ type ContextMenuProps = {
   createConversation(workspaceKey: string): void;
   openTaskEditor(taskId: string): void;
   renameTask(taskId: string): void;
+  renameWorkspace(workspaceKey: string): void;
   forkTask(taskId: string): void;
   assignLocalWorkspace(target: SidebarLocalWorkspaceTarget): void;
   toggleTaskArchived(taskId: string): void;
@@ -89,6 +90,7 @@ function ContextMenu({
   createConversation,
   openTaskEditor,
   renameTask,
+  renameWorkspace,
   forkTask,
   assignLocalWorkspace,
   toggleTaskArchived,
@@ -233,6 +235,13 @@ function ContextMenu({
       )}
       {group ? (
         <>
+          {!group.unassigned && (
+            <MenuItem
+              icon={<PencilLine size={14} />}
+              label="重命名工作区"
+              onClick={() => run(() => renameWorkspace(group.key))}
+            />
+          )}
           <MenuItem
             icon={<Plus size={15} />}
             label="在此工作区新建任务"

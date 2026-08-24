@@ -83,4 +83,108 @@ test.describe("KCode workbench smoke flow", () => {
     const download = await downloadPromise;
     expect(download.suggestedFilename()).toMatch(/\.json$/);
   });
+
+  test("renames a first-level workspace without renaming its conversations", async ({
+    page,
+  }) => {
+    await page.addInitScript(() => {
+      if (localStorage.getItem("kcode.tasks")) return;
+      const now = Date.now();
+      localStorage.setItem(
+        "kcode.tasks",
+        JSON.stringify([
+          {
+            id: "rename-workspace-task",
+            name: "保留的对话名",
+            workspaceName: "旧工作区",
+            workspacePath: "D:\\projects\\rename-workspace",
+            createdAt: now,
+            updatedAt: now,
+            messages: [],
+            activities: [],
+            runStatus: "idle",
+          },
+        ]),
+      );
+      localStorage.setItem("kcode.activeTaskId", "rename-workspace-task");
+    });
+    await page.goto("/");
+
+    await page.getByText("旧工作区", { exact: true }).click({ button: "right" });
+    await page.getByRole("menuitem", { name: "重命名工作区" }).click();
+    const dialog = page.getByRole("dialog", { name: "重命名工作区" });
+    await expect(dialog).toBeVisible();
+    await dialog.getByLabel("工作区名称").fill("新工作区");
+    await dialog.getByRole("button", { name: "保存" }).click();
+
+    await expect(page.getByText("新工作区", { exact: true })).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "保留的对话名", exact: true }),
+    ).toBeVisible();
+    await page.reload();
+    await expect(page.getByText("新工作区", { exact: true })).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "保留的对话名", exact: true }),
+    ).toBeVisible();
+  });
+
+  test("keeps completed conversation content fully laid out while scrolling", async ({
+    page,
+  }) => {
+    await page.addInitScript(() => {
+      if (localStorage.getItem("kcode.tasks")) return;
+      const now = Date.now();
+      localStorage.setItem(
+        "kcode.tasks",
+        JSON.stringify([
+          {
+            id: "scroll-layout-task",
+            name: "滚动测试",
+            workspaceName: "滚动测试项目",
+            workspacePath: "D:\\projects\\scroll-layout",
+            createdAt: now,
+            updatedAt: now,
+            messages: [
+              {
+                id: "user:scroll-layout",
+                role: "user",
+                content: "检查长内容滚动",
+                createdAt: now,
+              },
+              {
+                id: "assistant:scroll-layout",
+                role: "assistant",
+                content: Array.from(
+                  { length: 80 },
+                  (_, index) => `第 ${index + 1} 行滚动内容`,
+                ).join("\n\n"),
+                createdAt: now + 1,
+              },
+            ],
+            activities: [],
+            runStatus: "completed",
+          },
+        ]),
+      );
+      localStorage.setItem("kcode.activeTaskId", "scroll-layout-task");
+    });
+    await page.goto("/");
+
+    const turn = page.locator(".conversation-turn-item.complete").first();
+    const markdown = page.locator(".markdown-block").first();
+    await expect(turn).toBeVisible();
+    await expect(markdown).toBeVisible();
+    await expect
+      .poll(() =>
+        turn.evaluate((element) => getComputedStyle(element).contentVisibility),
+      )
+      .toBe("visible");
+    await expect
+      .poll(() =>
+        markdown.evaluate(
+          (element) => getComputedStyle(element).contentVisibility,
+        ),
+      )
+      .toBe("visible");
+  });
 });

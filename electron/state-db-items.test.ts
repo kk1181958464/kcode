@@ -5,6 +5,7 @@ import {
   loadTaskActivitiesForRequestsFromDatabase,
   loadTaskItemPage,
   renameTaskInDatabase,
+  renameWorkspaceInDatabase,
   syncTaskItems,
 } from "./state-db";
 
@@ -142,6 +143,107 @@ test("renames only the task header and core without touching task items", () => 
   assert.throws(
     () => renameTaskInDatabase(database, "task-1", "   "),
     /1 到 80/,
+  );
+  database.close();
+});
+
+test("renames every task in a workspace atomically without changing conversation names", () => {
+  const database = itemDatabase();
+  database.exec(`
+    CREATE TABLE tasks (
+      id TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      header TEXT NOT NULL,
+      position INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+  `);
+  const insert = database.prepare(
+    "INSERT INTO tasks(id,value,header,position,updated_at) VALUES(?,?,?,?,?)",
+  );
+  for (const [position, id, name] of [
+    [0, "task-1", "对话一"],
+    [1, "task-2", "对话二"],
+  ] as const) {
+    const task = {
+      id,
+      name,
+      workspaceName: "旧项目",
+      updatedAt: 1,
+    };
+    insert.run(id, JSON.stringify(task), JSON.stringify(task), position, 1);
+  }
+  syncTaskItems(database, "task_messages", "task-1", [
+    { id: "m1", content: "保留的消息" },
+  ]);
+
+  assert.deepEqual(
+    renameWorkspaceInDatabase(
+      database,
+      ["task-1", "task-2", "task-1"],
+      "  新   项目  ",
+      42,
+    ),
+    {
+      name: "新 项目",
+      updatedAt: 42,
+      taskIds: ["task-1", "task-2"],
+    },
+  );
+  const rows = database
+    .prepare("SELECT id,value,header,updated_at FROM tasks ORDER BY position")
+    .all() as {
+    id: string;
+    value: string;
+    header: string;
+    updated_at: number;
+  }[];
+  assert.deepEqual(
+    rows.map((row) => ({
+      id: row.id,
+      name: (JSON.parse(row.value) as { name: string }).name,
+      workspaceName: (JSON.parse(row.value) as { workspaceName: string })
+        .workspaceName,
+      headerWorkspaceName: (JSON.parse(row.header) as { workspaceName: string })
+        .workspaceName,
+      updatedAt: row.updated_at,
+    })),
+    [
+      {
+        id: "task-1",
+        name: "对话一",
+        workspaceName: "新 项目",
+        headerWorkspaceName: "新 项目",
+        updatedAt: 42,
+      },
+      {
+        id: "task-2",
+        name: "对话二",
+        workspaceName: "新 项目",
+        headerWorkspaceName: "新 项目",
+        updatedAt: 42,
+      },
+    ],
+  );
+  assert.deepEqual(storedMessages(database), [
+    { id: "m1", position: 0, content: "保留的消息" },
+  ]);
+
+  assert.throws(
+    () =>
+      renameWorkspaceInDatabase(
+        database,
+        ["task-1", "missing-task"],
+        "不应保存",
+      ),
+    /不存在/,
+  );
+  const rolledBack = database
+    .prepare("SELECT value FROM tasks WHERE id = ?")
+    .get("task-1") as { value: string };
+  assert.equal(
+    (JSON.parse(rolledBack.value) as { workspaceName: string }).workspaceName,
+    "新 项目",
   );
   database.close();
 });

@@ -86,6 +86,7 @@ import {
   loadRuntimeEvents,
   loadRuntimeTaskStatuses,
   renameTask,
+  renameWorkspace,
   saveTask,
   saveTaskOrder,
   saveState,
@@ -119,6 +120,7 @@ import {
   stateKeySchema,
   steerContentSchema,
   taskNameSchema,
+  taskIdsSchema,
   taskItemPageOptionsSchema,
   taskRequestIdsSchema,
   runtimeEventPageOptionsSchema,
@@ -684,6 +686,11 @@ app.whenReady().then(async () => {
   );
   ipcMain.handle("state:rename-task", (_e, id: string, name: string) =>
     renameTask(idSchema.parse(id), taskNameSchema.parse(name)),
+  );
+  ipcMain.handle(
+    "state:rename-workspace",
+    (_e, taskIds: unknown, name: string) =>
+      renameWorkspace(taskIdsSchema.parse(taskIds), taskNameSchema.parse(name)),
   );
   ipcMain.handle(
     "state:save-task",

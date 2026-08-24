@@ -415,6 +415,52 @@ export function renameTask(id: string, name: string) {
   return renameTaskInDatabase(db(), id, name);
 }
 
+export function renameWorkspaceInDatabase(
+  connection: DatabaseSync,
+  taskIds: string[],
+  name: string,
+  updatedAt = Date.now(),
+) {
+  const normalizedName = name.replace(/\s+/g, " ").trim();
+  const uniqueTaskIds = [...new Set(taskIds.map((id) => id.trim()))].filter(
+    Boolean,
+  );
+  if (!normalizedName || normalizedName.length > 80)
+    throw new Error("工作区名称必须为 1 到 80 个字符");
+  if (!uniqueTaskIds.length) throw new Error("工作区中没有可重命名的任务");
+
+  const select = connection.prepare(
+    "SELECT value,header FROM tasks WHERE id = ?",
+  );
+  const update = connection.prepare(
+    "UPDATE tasks SET value = ?, header = ?, updated_at = ? WHERE id = ?",
+  );
+  connection.exec("BEGIN IMMEDIATE");
+  try {
+    for (const id of uniqueTaskIds) {
+      const row = select.get(id) as
+        { value: string; header: string } | undefined;
+      if (!row) throw new Error("工作区中包含不存在的任务");
+      const value = JSON.parse(row.value) as Record<string, unknown>;
+      const header = JSON.parse(row.header || "{}") as Record<string, unknown>;
+      value.workspaceName = normalizedName;
+      value.updatedAt = updatedAt;
+      header.workspaceName = normalizedName;
+      header.updatedAt = updatedAt;
+      update.run(JSON.stringify(value), JSON.stringify(header), updatedAt, id);
+    }
+    connection.exec("COMMIT");
+  } catch (error) {
+    connection.exec("ROLLBACK");
+    throw error;
+  }
+  return { name: normalizedName, updatedAt, taskIds: uniqueTaskIds };
+}
+
+export function renameWorkspace(taskIds: string[], name: string) {
+  return renameWorkspaceInDatabase(db(), taskIds, name);
+}
+
 export function loadTask(id: string): unknown | null {
   const connection = db();
   const row = connection
