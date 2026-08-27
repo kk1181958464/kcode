@@ -279,7 +279,10 @@ import {
   plannerToolAllowed,
   remoteWorkspaceToolAllowed,
 } from "./collaboration";
-import { agentFinalizationMode } from "./agent-run-budget";
+import {
+  agentFinalizationMode,
+  type AgentFinalizationMode,
+} from "./agent-run-budget";
 import {
   effectiveCommandExitCode,
   windowsCommandIssue,
@@ -4166,10 +4169,7 @@ async function execute(
     (purpose === "inspect" || isInspectionCommand(script))
   )
     operationEvidence.push("inspect");
-  if (
-    exitCode === 0 &&
-    (purpose === "validate" || isValidationCommand(script))
-  )
+  if (exitCode === 0 && (purpose === "validate" || isValidationCommand(script)))
     operationEvidence.push("validate");
   return {
     output: result.output || "命令未产生输出",
@@ -5675,8 +5675,8 @@ export async function* runAgent(
   const usage = { input: 0, output: 0, cached: 0 };
   let lastPromptTokens = 0;
   let round = 0,
-    stalledRounds = 0,
-    lastFingerprint = "";
+    stalledRounds = 0;
+  const noProgressFingerprints = new Set<string>();
   // Recovery budgets cap protocol retries without using assistant prose as a
   // completion signal.
   const budgets = {
@@ -5700,7 +5700,7 @@ export async function* runAgent(
     cursor: 0,
   };
   let imageFallbackNoticeSent = false;
-  let repetitionFinalizationPending = false;
+  let repetitionFinalizationPending: AgentFinalizationMode | undefined;
   while (!signal.aborted) {
     const pendingParentInstructions = drainSubagentMessages(requestId);
     const pendingSteering = turnSteeringQueue.drain(requestId);
@@ -5723,8 +5723,8 @@ export async function* runAgent(
       budgets.autoContinues = 0;
       budgets.emptyTurns = 0;
       stalledRounds = 0;
-      lastFingerprint = "";
-      repetitionFinalizationPending = false;
+      noProgressFingerprints.clear();
+      repetitionFinalizationPending = undefined;
       plan.steps = [];
       plan.statuses = undefined;
       plan.cursor = 0;
@@ -5764,12 +5764,11 @@ export async function* runAgent(
       !hasUncollectedAgentWork;
     const hasPendingInstructions =
       pendingParentInstructions.length > 0 || pendingSteering.length > 0;
-    const finalizationMode =
+    const finalizationMode: AgentFinalizationMode | undefined =
       repetitionFinalizationPending &&
-      evidenceComplete &&
       !hasPendingInstructions &&
       !hasUncollectedAgentWork
-        ? "evidence-complete"
+        ? repetitionFinalizationPending
         : agentFinalizationMode({
             agentRole: request.agentRole,
             completedRounds: round,
@@ -5790,9 +5789,11 @@ export async function* runAgent(
       message:
         finalizationMode === "evidence-complete"
           ? `${finalizationRoleLabel}已完成主要修改和验证，正在收尾总结…`
-          : finalizationMode === "limit-reached"
-            ? `${finalizationRoleLabel}已达到运行上限，正在汇总已有结果和未完成项…`
-            : nextExecutionNarrative(prevRound.activity, prevRound.failure),
+          : finalizationMode === "repetition-stalled"
+            ? `${finalizationRoleLabel}重复核对未产生新结果，正在基于已有记录收尾…`
+            : finalizationMode === "limit-reached"
+              ? `${finalizationRoleLabel}已达到运行上限，正在汇总已有结果和未完成项…`
+              : nextExecutionNarrative(prevRound.activity, prevRound.failure),
     };
     if (
       request.contextWindow &&
@@ -5879,11 +5880,13 @@ export async function* runAgent(
             ? request.agentRole === "planner"
               ? "<runtime_finalization>执行模型已返回覆盖本次要求的成功工具证据，规划阶段现在进入收尾。不要再派发新的执行 Agent，也不要重复复核。请依据已收集的执行结果给出简洁最终总结：完成内容、修改文件、验证结果、可用地址和真实残留问题。不得声称未经执行模型证实的事项。</runtime_finalization>"
               : "<runtime_finalization>已有成功工具记录覆盖本次要求，执行预算现在进入收尾阶段。不要再调用工具、不要继续修改，也不要追加重复验证。请仅依据现有工具结果给出简洁最终总结：完成内容、修改文件、验证结果、可用地址和真实残留问题。不得声称未验证的事项。</runtime_finalization>"
-            : request.agentRole === "planner"
-              ? "<runtime_finalization>规划模型已达到运行预算上限。不要再派发或等待新的执行 Agent。请根据已收集的执行结果立即汇总：已完成内容、修改文件、成功和失败的验证、可用地址，以及尚未完成或无法确认的事项。必须如实区分完成项与残留项。</runtime_finalization>"
-              : request.agentRole === "executor"
-                ? "<runtime_finalization>执行 Agent 已达到运行预算上限。不要再调用工具或继续修改。请根据现有工具结果立即汇总：已完成内容、修改文件、成功和失败的验证、可用地址，以及尚未完成或无法确认的事项。必须如实区分完成项与残留项。</runtime_finalization>"
-                : "<runtime_finalization>当前任务已达到运行预算上限。不要再调用工具或继续修改。请根据现有工具结果立即汇总：已完成内容、修改文件、成功和失败的验证、可用地址，以及尚未完成或无法确认的事项。必须如实区分完成项与残留项。</runtime_finalization>",
+            : finalizationMode === "repetition-stalled"
+              ? '<runtime_finalization reason="repeated_tool_results">同一组工具输入已经连续返回相同结果，运行时现已禁用后续工具调用。请立即依据已有结构化工具结果给出简洁结论；明确区分已确认事实、未完成事项和仍无法确认的内容。不得再次承诺复核，不得把未发生的修改或验证说成已完成。</runtime_finalization>'
+              : request.agentRole === "planner"
+                ? "<runtime_finalization>规划模型已达到运行预算上限。不要再派发或等待新的执行 Agent。请根据已收集的执行结果立即汇总：已完成内容、修改文件、成功和失败的验证、可用地址，以及尚未完成或无法确认的事项。必须如实区分完成项与残留项。</runtime_finalization>"
+                : request.agentRole === "executor"
+                  ? "<runtime_finalization>执行 Agent 已达到运行预算上限。不要再调用工具或继续修改。请根据现有工具结果立即汇总：已完成内容、修改文件、成功和失败的验证、可用地址，以及尚未完成或无法确认的事项。必须如实区分完成项与残留项。</runtime_finalization>"
+                  : "<runtime_finalization>当前任务已达到运行预算上限。不要再调用工具或继续修改。请根据现有工具结果立即汇总：已完成内容、修改文件、成功和失败的验证、可用地址，以及尚未完成或无法确认的事项。必须如实区分完成项与残留项。</runtime_finalization>",
       });
     let turn: Turn | undefined,
       streamedText = "",
@@ -6288,6 +6291,7 @@ export async function* runAgent(
     const roundFingerprints: string[] = [];
     const turnRecords: ToolCallRecord[] = [];
     let roundAdvanced = false;
+    let roundWaitingOnExternalWork = false;
     let roundLastActivity: AgentActivity | undefined;
     let roundFailedActivity: AgentActivity | undefined;
     let pendingUserInput: PendingUserInput | undefined;
@@ -6960,6 +6964,12 @@ export async function* runAgent(
         diff: activity.diff?.slice(-2_000),
       });
       roundFingerprints.push(fingerprint);
+      roundWaitingOnExternalWork ||=
+        (call.name === "process_output" &&
+          activity.status === "success" &&
+          activity.exitCode === undefined) ||
+        (call.name === "wait_agent" &&
+          listSubagents(requestId).some((agent) => !agent.collected));
       const advanced =
         resultEvidence.changed === true ||
         Boolean(activity.diff) ||
@@ -7195,12 +7205,8 @@ export async function* runAgent(
       };
       return;
     }
-    const hasMutationEvidenceAfterRound = [
-      "modify",
-      "upload",
-      "download",
-    ].some((operation) =>
-      codingEvidenceAfterRound.has(operation as CodingOperation),
+    const hasMutationEvidenceAfterRound = ["modify", "upload", "download"].some(
+      (operation) => codingEvidenceAfterRound.has(operation as CodingOperation),
     );
     const planCompleted =
       plan.steps.length > 0 &&
@@ -7209,10 +7215,9 @@ export async function* runAgent(
     const planUpdatedThisRound = turn.calls.some(
       (call) => call.name === "update_plan",
     );
-    // Different read-only checks are not material progress once the model has
-    // declared the plan complete or all known mutation evidence is already in
-    // place. Repetition may request a strategy change or a final no-tool turn,
-    // but it is never itself a terminal condition.
+    // A repeated fingerprint remains a repeat even when the model alternates
+    // between two identical checks. Real mutations clear the set because they
+    // can invalidate earlier read-only results.
     const verificationOnlyRound = Boolean(
       turn.calls.length &&
       !roundAdvanced &&
@@ -7220,11 +7225,15 @@ export async function* runAgent(
       ((planCompleted && !planUpdatedThisRound) ||
         (evidenceCompleteAfterRound && hasMutationEvidenceAfterRound)),
     );
+    const repeatedNoProgressRound =
+      !roundAdvanced && noProgressFingerprints.has(roundFingerprint);
     const madeProgress =
       roundAdvanced ||
-      (!verificationOnlyRound && roundFingerprint !== lastFingerprint);
+      roundWaitingOnExternalWork ||
+      (!verificationOnlyRound && !repeatedNoProgressRound);
+    if (roundAdvanced) noProgressFingerprints.clear();
+    else noProgressFingerprints.add(roundFingerprint);
     stalledRounds = madeProgress ? 0 : stalledRounds + 1;
-    lastFingerprint = roundFingerprint;
     if (signal.aborted) {
       yield {
         type: "error",
@@ -7233,23 +7242,35 @@ export async function* runAgent(
       return;
     }
     const currentStallAction = stallAction(stalledRounds);
-    if (currentStallAction === "recover") {
-      const shouldFinalizeCompletedWork =
-        evidenceCompleteAfterRound &&
-        (planCompleted || hasMutationEvidenceAfterRound);
-      if (shouldFinalizeCompletedWork) repetitionFinalizationPending = true;
+    if (currentStallAction !== "continue") {
+      const shouldFinalizeAvailableResult =
+        evidenceCompleteAfterRound && !roundFailedActivity;
+      const shouldFinalizeNow =
+        currentStallAction === "finalize" || shouldFinalizeAvailableResult;
+      if (shouldFinalizeNow) {
+        repetitionFinalizationPending =
+          shouldFinalizeAvailableResult &&
+          (planCompleted || hasMutationEvidenceAfterRound)
+            ? "evidence-complete"
+            : "repetition-stalled";
+        yield {
+          type: "progress",
+          message: shouldFinalizeAvailableResult
+            ? "重复核对没有产生新结果，正在基于已有工具记录生成最终结论…"
+            : "重复操作在纠偏后仍未取得进展，正在汇总已有结果和未完成项…",
+        };
+        continue;
+      }
       yield {
         type: "progress",
-        message: shouldFinalizeCompletedWork
-          ? "计划和工具证据已完成，正在结束重复核对并生成最终结果…"
-          : "检测到连续重复操作，正在要求 Agent 保留现有结果并更换执行策略…",
+        message:
+          "检测到连续重复操作，正在要求 Agent 保留现有结果并更换执行策略…",
       };
       history.push({
         kind: "message",
         role: "user",
-        content: shouldFinalizeCompletedWork
-          ? "<runtime_repetition_recovery>结构化计划和成功工具证据均已完整。停止追加文件存在性、目录、哈希或同类重复核对；下一轮直接依据现有结果给出最终结论。</runtime_repetition_recovery>"
-          : "<runtime_repetition_recovery>你已经连续多轮使用相同工具输入并得到相同结果。不要再次原样重试。请保留已有成果，检查最近一次失败或阻塞点，然后选择不同的命令或验证方式；已有后台进程时只读取其状态，不要重复启动；确实缺少外部信息时调用 request_user_input；任务已经完成时直接给出最终结论。</runtime_repetition_recovery>",
+        content:
+          "<runtime_repetition_recovery>你已经连续多轮使用相同工具输入并得到相同结果。不要再次原样重试。请保留已有成果，检查最近一次失败或阻塞点，然后选择不同的命令或验证方式；已有后台进程时只读取其状态，不要重复启动；确实缺少外部信息时调用 request_user_input；任务已经完成时直接给出最终结论。</runtime_repetition_recovery>",
       });
       continue;
     }

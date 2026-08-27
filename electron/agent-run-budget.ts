@@ -22,7 +22,8 @@ export const PLANNER_HARD_ROUND_LIMIT = 36;
 export const PLANNER_SOFT_DURATION_MS = 12 * 60_000;
 export const PLANNER_HARD_DURATION_MS = 24 * 60_000;
 
-export type AgentFinalizationMode = "evidence-complete" | "limit-reached";
+export type AgentFinalizationMode =
+  "evidence-complete" | "limit-reached" | "repetition-stalled";
 
 export function agentFinalizationMode({
   agentRole,
@@ -59,10 +60,7 @@ export function agentFinalizationMode({
             softMs: ROOT_SOFT_DURATION_MS,
             hardMs: ROOT_HARD_DURATION_MS,
           };
-  if (
-    completedRounds >= limits.hardRounds ||
-    elapsedMs >= limits.hardMs
-  )
+  if (completedRounds >= limits.hardRounds || elapsedMs >= limits.hardMs)
     return "limit-reached";
   if (
     evidenceComplete &&

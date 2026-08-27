@@ -27,7 +27,7 @@ function fakeProvider(): RunAgentDeps["getProvider"] {
     }) as never;
 }
 
-test("keeps repeated checks recoverable until the model ends the turn", async () => {
+test("finalizes repeated read-only checks even while the plan remains active", async () => {
   const workspacePath = await mkdtemp(path.join(os.tmpdir(), "kcode-stall-"));
   await writeFile(path.join(workspacePath, "unchanged.txt"), "same\n", "utf8");
   const request: ModelRequest = {
@@ -38,7 +38,8 @@ test("keeps repeated checks recoverable until the model ends the turn", async ()
     workspacePath,
   };
   let rounds = 0;
-  let recoveryInstructionSeen = false;
+  let finalizationInstructionSeen = false;
+  let finalTurnToolsEnabled = true;
   const events: AgentEvent[] = [];
   for await (const event of runAgent(
     "stall-policy-integration",
@@ -48,16 +49,17 @@ test("keeps repeated checks recoverable until the model ends the turn", async ()
       getProvider: fakeProvider(),
       async *streamTurn(args) {
         rounds += 1;
-        recoveryInstructionSeen ||= args.history.some(
+        finalizationInstructionSeen ||= args.history.some(
           (item) =>
             item.kind === "message" &&
-            item.content.includes("<runtime_repetition_recovery>"),
+            item.content.includes('reason="repeated_tool_results"'),
         );
-        if (rounds === 8) {
+        if (!args.toolsEnabled) {
+          finalTurnToolsEnabled = false;
           yield {
             type: "complete",
             turn: {
-              text: "检查完成，文件保持不变。",
+              text: "结论：文件内容已读取，现有记录可以直接汇总。",
               calls: [],
               rawCalls: [],
               usage: { input: 10, output: 5, cached: 0 },
@@ -65,17 +67,45 @@ test("keeps repeated checks recoverable until the model ends the turn", async ()
           };
           return;
         }
+        const calls =
+          rounds === 1
+            ? [
+                {
+                  id: "active-plan",
+                  name: "update_plan" as const,
+                  input: {
+                    plan: [
+                      { step: "读取文件", status: "completed" },
+                      { step: "汇总结论", status: "in_progress" },
+                    ],
+                  },
+                },
+                {
+                  id: "initial-read",
+                  name: "read_file" as const,
+                  input: { path: "unchanged.txt" },
+                },
+              ]
+            : rounds % 2 === 0
+              ? [
+                  {
+                    id: `repeat-read-${rounds}`,
+                    name: "read_file" as const,
+                    input: { path: "unchanged.txt" },
+                  },
+                ]
+              : [
+                  {
+                    id: `repeat-info-${rounds}`,
+                    name: "path_info" as const,
+                    input: { path: "unchanged.txt" },
+                  },
+                ];
         yield {
           type: "complete",
           turn: {
-            text: "",
-            calls: [
-              {
-                id: `same-call-${rounds}`,
-                name: "path_info",
-                input: { path: "unchanged.txt" },
-              },
-            ],
+            text: "我再确认一次文件内容，然后给出结论。",
+            calls,
             rawCalls: [],
             usage: { input: 10, output: 5, cached: 0 },
           },
@@ -85,12 +115,16 @@ test("keeps repeated checks recoverable until the model ends the turn", async ()
   ))
     events.push(event);
 
-  assert.equal(rounds, 8);
-  assert.equal(recoveryInstructionSeen, true);
+  assert.ok(
+    rounds <= 6,
+    `expected bounded finalization, received ${rounds} rounds`,
+  );
+  assert.equal(finalizationInstructionSeen, true);
+  assert.equal(finalTurnToolsEnabled, false);
   assert.ok(
     events.some(
       (event) =>
-        event.type === "progress" && event.message.includes("更换执行策略"),
+        event.type === "progress" && event.message.includes("生成最终结论"),
     ),
   );
   assert.equal(
@@ -147,7 +181,7 @@ test("finalizes a completed plan after repeated post-change checks", async () =>
             item.kind === "message" &&
             item.content.includes("<runtime_finalization>"),
         );
-        if (rounds === 5) {
+        if (!args.toolsEnabled) {
           finalTurnToolsEnabled = args.toolsEnabled;
           yield {
             type: "complete",
@@ -205,14 +239,14 @@ test("finalizes a completed plan after repeated post-change checks", async () =>
   ))
     events.push(event);
 
-  assert.equal(rounds, 5);
-  assert.equal(recoveryInstructionSeen, true);
+  assert.equal(rounds, 4);
+  assert.equal(recoveryInstructionSeen, false);
   assert.equal(finalizationInstructionSeen, true);
   assert.equal(finalTurnToolsEnabled, false);
   assert.ok(
     events.some(
       (event) =>
-        event.type === "progress" && event.message.includes("生成最终结果"),
+        event.type === "progress" && event.message.includes("生成最终结论"),
     ),
   );
   assert.ok(
@@ -297,14 +331,14 @@ test("reopens execution after a completed plan lacks mutation evidence", async (
                   },
                 ]
               : [
-                {
-                  id: `different-check-${rounds}`,
-                  name: "path_info" as const,
-                  input: {
-                    path: rounds === 2 ? "first.txt" : "second.txt",
+                  {
+                    id: `different-check-${rounds}`,
+                    name: "path_info" as const,
+                    input: {
+                      path: rounds === 2 ? "first.txt" : "second.txt",
+                    },
                   },
-                },
-              ];
+                ];
         yield {
           type: "complete",
           turn: {
