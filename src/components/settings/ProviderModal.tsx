@@ -4,6 +4,7 @@ import {
   Cpu,
   Eye,
   EyeOff,
+  KeyRound,
   Plus,
   RefreshCw,
   Trash2,
@@ -46,6 +47,15 @@ export function ProviderModal({
   const [protocolSuggestion, setProtocolSuggestion] = useState<string>();
   const [error, setError] = useState("");
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const enteredKeyCount = apiKey
+    .split(/[\n,]+/)
+    .map((key) => key.trim())
+    .filter(Boolean).length;
+  const apiKeyStatus = enteredKeyCount
+    ? `已输入 ${enteredKeyCount} 个 Key`
+    : provider.hasApiKey
+      ? "已安全保存"
+      : "尚未配置";
   const patch = (next: Partial<ProviderConfig>) =>
     setProvider((value) => ({ ...value, ...next }));
 
@@ -167,7 +177,7 @@ export function ProviderModal({
       onMouseDown={(event) => event.target === event.currentTarget && onClose()}
     >
       <section
-        className="modal"
+        className="modal provider-modal"
         role="dialog"
         aria-modal="true"
         aria-labelledby="provider-title"
@@ -227,13 +237,35 @@ export function ProviderModal({
               placeholder="https://api.example.com"
             />
           </label>
-          <label className="wide">
-            API Key（支持多 Key 轮换）
-            <div className="provider-key-field">
+          <div className="wide provider-key-control">
+            <div className="provider-key-heading">
+              <label htmlFor="provider-api-keys">API Key</label>
+              <span
+                className={`provider-key-status ${enteredKeyCount || provider.hasApiKey ? "configured" : ""}`}
+              >
+                {apiKeyStatus}
+              </span>
+            </div>
+            <div
+              className={`provider-key-field ${showApiKeys ? "revealed" : ""}`}
+            >
+              <KeyRound
+                className="provider-key-leading-icon"
+                size={16}
+                aria-hidden="true"
+              />
               <textarea
+                id="provider-api-keys"
                 className={`provider-api-keys ${showApiKeys ? "" : "masked"}`}
                 value={apiKey}
                 onChange={(e) => setApiKey(e.target.value)}
+                rows={3}
+                wrap="off"
+                spellCheck={false}
+                autoComplete="off"
+                autoCapitalize="none"
+                autoCorrect="off"
+                aria-describedby="provider-api-key-hint"
                 placeholder={
                   provider.hasApiKey
                     ? "已安全保存，留空则不修改"
@@ -242,7 +274,7 @@ export function ProviderModal({
               />
               <button
                 type="button"
-                className="icon"
+                className="provider-key-visibility"
                 onClick={() => setShowApiKeys((value) => !value)}
                 title={showApiKeys ? "隐藏 API Key" : "显示 API Key"}
                 aria-label={showApiKeys ? "隐藏 API Key" : "显示 API Key"}
@@ -250,10 +282,11 @@ export function ProviderModal({
                 {showApiKeys ? <EyeOff size={14} /> : <Eye size={14} />}
               </button>
             </div>
-            <small className="field-hint">
-              遇到限流、临时不可用或认证失败时自动切换下一个 Key。
-            </small>
-          </label>
+            <div className="provider-key-meta" id="provider-api-key-hint">
+              <small>每行或逗号分隔多个 Key</small>
+              <small>不可用时自动切换</small>
+            </div>
+          </div>
         </div>
         <div className="model-editor">
           <div className="section-title">

@@ -1490,25 +1490,6 @@ button:not(:disabled) {
   opacity: 0.42;
   cursor: not-allowed;
 }
-.provider-key-field {
-  position: relative;
-}
-.provider-key-field .provider-api-keys {
-  min-height: 70px;
-  padding-right: 38px;
-  resize: vertical;
-}
-.provider-key-field .provider-api-keys.masked {
-  -webkit-text-security: disc;
-}
-.provider-key-field > .icon {
-  position: absolute;
-  top: 5px;
-  right: 5px;
-  width: 28px;
-  height: 28px;
-  color: var(--ui-text-tertiary);
-}
 .scheduled-workspace-picker {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 34px;
@@ -13941,6 +13922,176 @@ body.resizing-composer * {
 .settings-content select:focus {
   border-color: color-mix(in srgb, var(--accent) 62%, var(--ui-border));
   box-shadow: 0 0 0 2px var(--focus-ring);
+}
+
+.provider-key-control {
+  min-width: 0;
+  display: grid;
+  gap: 7px;
+}
+
+.provider-key-heading,
+.provider-key-meta {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.provider-key-heading > label {
+  color: var(--ui-text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.provider-key-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ui-text-tertiary);
+  font-size: 9.5px;
+  white-space: nowrap;
+}
+
+.provider-key-status::before {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 6px;
+  border-radius: 50%;
+  background: var(--ui-border-strong);
+  content: "";
+}
+
+.provider-key-status.configured {
+  color: var(--success);
+}
+
+.provider-key-status.configured::before {
+  background: var(--success);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--success) 14%, transparent);
+}
+
+.provider-key-field {
+  position: relative;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-control);
+  background: var(--ui-inset);
+  transition:
+    border-color var(--ui-motion-fast) ease,
+    background-color var(--ui-motion-fast) ease,
+    box-shadow var(--ui-motion-fast) ease;
+}
+
+.provider-key-field:hover {
+  border-color: var(--ui-border-strong);
+}
+
+.provider-key-field:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 62%, var(--ui-border));
+  background: var(--ui-elevated);
+  box-shadow: 0 0 0 2px var(--focus-ring);
+}
+
+.provider-key-leading-icon {
+  position: absolute;
+  z-index: 1;
+  top: 14px;
+  left: 13px;
+  color: var(--ui-text-tertiary);
+  pointer-events: none;
+}
+
+.provider-key-field:focus-within .provider-key-leading-icon {
+  color: var(--accent);
+}
+
+.provider-modal .provider-key-field .provider-api-keys,
+:root[data-theme="dark"] .provider-modal .provider-key-field .provider-api-keys {
+  width: 100%;
+  min-width: 0;
+  min-height: 86px;
+  max-height: 150px;
+  display: block;
+  box-sizing: border-box;
+  overflow: auto;
+  resize: none;
+  padding: 12px 46px 12px 40px;
+  border: 0;
+  border-radius: 0;
+  outline: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--ui-text);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.65;
+  letter-spacing: 0;
+}
+
+.provider-modal .provider-key-field .provider-api-keys:focus,
+.provider-modal .provider-key-field .provider-api-keys:focus-visible {
+  border: 0;
+  outline: 0;
+  box-shadow: none;
+}
+
+.provider-api-keys.masked {
+  -webkit-text-security: disc;
+}
+
+.provider-api-keys::placeholder {
+  color: var(--ui-text-tertiary);
+  font-family: inherit;
+  opacity: 0.82;
+  -webkit-text-security: none;
+}
+
+.provider-key-visibility {
+  position: absolute;
+  z-index: 2;
+  top: 8px;
+  right: 8px;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--ui-text-tertiary);
+}
+
+.provider-key-visibility:hover,
+.provider-key-visibility:focus-visible {
+  background: var(--ui-hover);
+  color: var(--ui-text);
+}
+
+.provider-key-meta {
+  color: var(--ui-text-tertiary);
+}
+
+.provider-key-meta small {
+  font-size: 9.5px;
+  line-height: 1.4;
+}
+
+@media (max-width: 620px) {
+  .provider-key-heading,
+  .provider-key-meta {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 4px 10px;
+  }
+
+  .provider-modal .provider-key-field .provider-api-keys,
+  :root[data-theme="dark"] .provider-modal .provider-key-field .provider-api-keys {
+    min-height: 82px;
+  }
 }
 
 .setting-switch,
