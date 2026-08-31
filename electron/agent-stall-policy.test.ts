@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   STALL_FINALIZATION_ROUNDS,
   STALL_RECOVERY_ROUNDS,
+  SEMANTIC_STALL_ROUNDS,
   stallAction,
 } from "./agent-stall-policy";
 
@@ -13,4 +14,5 @@ test("recovers once and then finalizes a repeated tool loop", () => {
   assert.equal(stallAction(STALL_FINALIZATION_ROUNDS - 1), "continue");
   assert.equal(stallAction(STALL_FINALIZATION_ROUNDS), "finalize");
   assert.equal(stallAction(STALL_FINALIZATION_ROUNDS + 20), "finalize");
+  assert.equal(SEMANTIC_STALL_ROUNDS, 10);
 });

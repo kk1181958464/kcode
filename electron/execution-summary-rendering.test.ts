@@ -75,6 +75,66 @@ test("collapses completed process output and keeps only the final result visible
   assert.doesNotMatch(markup, /file-changes-summary/);
 });
 
+test("uses structured completion evidence for paused file totals", () => {
+  const processText = "正在修改多个文件。\n\n";
+  const activity: AgentActivity = {
+    id: "activity-partial-file",
+    requestId: "request-paused-summary",
+    tool: "write_file",
+    status: "success",
+    title: "写入文件",
+    startedAt: 2_000,
+    completedAt: 3_000,
+    input: { path: "src/one.ts" },
+    path: "src/one.ts",
+    additions: 0,
+    deletions: 0,
+    textOffset: processText.length,
+  };
+  const markup = renderToStaticMarkup(
+    React.createElement(ConversationHistory, {
+      messages: [
+        {
+          id: "assistant:request-paused-summary",
+          role: "assistant",
+          content: `${processText}模型未返回最终正文，已有结果已保留。`,
+          createdAt: 1_000,
+          completedAt: 4_000,
+          finalResponseOffset: processText.length,
+          finalResponseStartedAt: 3_000,
+          model: "GPT-5.6 Sol",
+          completionResult: {
+            kind: "incomplete",
+            operations: ["coding:modify"],
+            missingOperations: [],
+            toolCalls: 3,
+            successfulTools: 2,
+            failedTools: 1,
+            changedFiles: ["src/one.ts", "src/two.ts"],
+            additions: 9,
+            deletions: 3,
+            notice: "模型没有返回最终正文。",
+          },
+        },
+      ],
+      hasOlderMessages: false,
+      hasNewerMessages: false,
+      activitiesByRequest: new Map([["request-paused-summary", [activity]]]),
+      workspacePath: "D:/project/kcode",
+      contextByMessage: new Map(),
+      onRetry() {},
+      onActivityChange() {},
+      registerTurn() {},
+      endRef: { current: null },
+    }),
+  );
+
+  assert.match(markup, /已暂停/);
+  assert.match(markup, /2 个文件/);
+  assert.match(markup, /\+9/);
+  assert.match(markup, /-3/);
+});
+
 test("collapses process output as soon as the final response starts", () => {
   const markup = renderConversationRun(true, true);
   assert.match(markup, /completed-process-trigger/);

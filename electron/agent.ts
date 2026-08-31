@@ -13,7 +13,7 @@ import {
   unregisterManagedProcess,
 } from "./process-registry";
 import { apiKeyCooldownPool } from "./api-key-cooldown";
-import { stallAction } from "./agent-stall-policy";
+import { SEMANTIC_STALL_ROUNDS, stallAction } from "./agent-stall-policy";
 import { approvalCache } from "./approval-cache";
 import { TurnDiffTracker } from "./turn-diff-tracker";
 import { buildTurnSummary, type ToolCallRecord } from "./tool-call-recorder";
@@ -169,6 +169,7 @@ import {
 } from "./model-stream-retry";
 import { resolveModelCompatibility } from "./model-compatibility";
 import { ModelAttemptBudget } from "./model-attempt-budget";
+import { effectiveRuntimePromptTokens } from "./runtime-context-budget";
 import { requiredToolChoiceForProtocol } from "./tool-choice-policy";
 import { toolRegistry } from "./tool-registry";
 import { agentHooks } from "./agent-hooks";
@@ -5567,7 +5568,7 @@ function runtimeFinalizationFallback(
       : "";
   return `模型在收尾阶段持续只输出内部推理，KCode 已停止继续调用工具。当前保留 ${summary.successfulTools} 项成功工具记录${fileDetail}${failureDetail}。${latestDetail}${
     evidenceComplete
-      ? "结构化完成条件已经满足，以上方执行记录为准。"
+      ? "结构化工具证据已经收集，但模型没有返回最终正文；已根据执行记录完成本轮。"
       : "仍有结构化操作证据缺口，本轮已按未完整完成暂停；以上方执行记录为准。"
   }`;
 }
@@ -5682,7 +5683,8 @@ export async function* runAgent(
   const usage = { input: 0, output: 0, cached: 0 };
   let lastPromptTokens = 0;
   let round = 0,
-    stalledRounds = 0;
+    stalledRounds = 0,
+    semanticStallRounds = 0;
   const noProgressFingerprints = new Set<string>();
   // Recovery budgets cap protocol retries without using assistant prose as a
   // completion signal.
@@ -5732,6 +5734,7 @@ export async function* runAgent(
       budgets.emptyTurns = 0;
       budgets.reasoningOnlyTurns = 0;
       stalledRounds = 0;
+      semanticStallRounds = 0;
       noProgressFingerprints.clear();
       repetitionFinalizationPending = undefined;
       plan.steps = [];
@@ -5786,6 +5789,10 @@ export async function* runAgent(
             hasPendingInstructions:
               hasPendingInstructions || hasUncollectedAgentWork,
           });
+    const currentPromptTokens = effectiveRuntimePromptTokens(
+      history,
+      lastPromptTokens,
+    );
     round += 1;
     const finalizationRoleLabel =
       request.agentRole === "planner"
@@ -5806,7 +5813,7 @@ export async function* runAgent(
     };
     if (
       request.contextWindow &&
-      lastPromptTokens >= request.contextWindow * 0.92
+      currentPromptTokens >= request.contextWindow * 0.92
     ) {
       const before = history.length;
       const compactionWindowId = `${requestId}:context:${round}`;
@@ -5815,20 +5822,20 @@ export async function* runAgent(
         phase: "started",
         windowId: compactionWindowId,
         beforeItems: before,
-        promptTokens: lastPromptTokens,
+        promptTokens: currentPromptTokens,
       };
       await agentHooks.run(
         "BeforeCompact",
         {
           requestId,
           taskId: request.taskId,
-          payload: { historyItems: before, promptTokens: lastPromptTokens },
+          payload: { historyItems: before, promptTokens: currentPromptTokens },
         },
         signal,
       );
       const contextCompacted = compactRuntimeHistory(
         history,
-        lastPromptTokens >= request.contextWindow * 0.99,
+        currentPromptTokens >= request.contextWindow * 0.99,
         activeConnectionFacts.values(),
       );
       yield {
@@ -5837,7 +5844,7 @@ export async function* runAgent(
         windowId: compactionWindowId,
         beforeItems: before,
         afterItems: history.length,
-        promptTokens: lastPromptTokens,
+        promptTokens: currentPromptTokens,
         changed: contextCompacted,
       };
       if (contextCompacted) {
@@ -5865,13 +5872,14 @@ export async function* runAgent(
             payload: {
               beforeItems: before,
               afterItems: history.length,
-              promptTokens: lastPromptTokens,
+              promptTokens: currentPromptTokens,
             },
           },
           signal,
         );
         yield { type: "activity", activity };
         lastPromptTokens = 0;
+        semanticStallRounds = 0;
       }
     }
     for (const message of pendingParentInstructions)
@@ -6056,7 +6064,10 @@ export async function* runAgent(
     if (turn.reasoningContent && !streamedReasoning.trim())
       yield { type: "reasoning", delta: turn.reasoningContent };
     if (!usedRuntimeFinalizationFallback) {
-      lastPromptTokens = turn.usage.input;
+      lastPromptTokens = effectiveRuntimePromptTokens(
+        history,
+        turn.usage.input,
+      );
       usage.input += turn.usage.input;
       usage.output += turn.usage.output;
       usage.cached += turn.usage.cached;
@@ -6074,6 +6085,32 @@ export async function* runAgent(
         type: "progress",
         message:
           "收尾模型没有返回正文，已停止重复请求，正在根据已确认的工具记录生成结论…",
+      };
+      turn = {
+        text: runtimeFinalizationFallback(
+          evidenceHistory,
+          evidenceComplete,
+          prevRound.activity,
+        ),
+        calls: [],
+        rawCalls: [],
+        usage: { input: 0, output: 0, cached: 0 },
+        finishReason: "runtime_finalization",
+      };
+    }
+    if (finalizationMode && turn.calls.length) {
+      // Tool definitions are intentionally removed in the finalization turn.
+      // A relay can still echo a stale function call, but executing it would
+      // reopen the very loop this bounded turn is supposed to close.
+      usedRuntimeFinalizationFallback = true;
+      if (streamedReasoning.trim() || turn.reasoningContent?.trim()) {
+        streamedReasoning = "";
+        yield { type: "reasoning_reset" };
+      }
+      yield {
+        type: "progress",
+        message:
+          "收尾阶段收到额外工具调用，已忽略并根据已确认的工具记录生成结论…",
       };
       turn = {
         text: runtimeFinalizationFallback(
@@ -6198,7 +6235,7 @@ export async function* runAgent(
       ...(plannerExecutionPending ? ["agent:spawn_executor"] : []),
     ];
     const waitingForUser = requestedUserInput;
-    const completionResult = buildAgentCompletionResult({
+    let completionResult = buildAgentCompletionResult({
       requestedOperations: requestedOperationKeys,
       observedOperations: observedOperationKeys,
       missingOperations: missingOperationKeys,
@@ -6206,6 +6243,14 @@ export async function* runAgent(
       waitingForUser,
       verifiedNoChange: hasVerifiedNoChangeReport(evidenceHistory),
     });
+    if (usedRuntimeFinalizationFallback)
+      completionResult = {
+        ...completionResult,
+        kind: evidenceComplete ? completionResult.kind : "incomplete",
+        notice: evidenceComplete
+          ? "模型没有返回最终正文，已根据结构化工具记录生成结论。"
+          : "模型没有返回最终正文，已停止重复请求；已有工具结果和实际文件修改已保留。本轮已暂停，可点击“继续”从当前状态恢复。",
+      };
     if (!turn.calls.length) {
       const lateInstructions = drainSubagentMessages(requestId);
       const uncollectedAgents = listSubagents(requestId).filter(
@@ -6365,6 +6410,7 @@ export async function* runAgent(
     const turnRecords: ToolCallRecord[] = [];
     let roundAdvanced = false;
     let roundWaitingOnExternalWork = false;
+    let roundPlanChanged = false;
     let roundLastActivity: AgentActivity | undefined;
     let roundFailedActivity: AgentActivity | undefined;
     let pendingUserInput: PendingUserInput | undefined;
@@ -6747,7 +6793,7 @@ export async function* runAgent(
         // Lightweight admin tool: get_context_remaining — no external execution needed
         if (call.name === "get_context_remaining") {
           const ctxWindow = request.contextWindow ?? 128_000;
-          const used = lastPromptTokens || 0;
+          const used = effectiveRuntimePromptTokens(history, lastPromptTokens);
           const remaining = Math.max(0, ctxWindow - used);
           const pct = ctxWindow > 0 ? Math.round((used / ctxWindow) * 100) : 0;
           const resultOutput = JSON.stringify({
@@ -6854,6 +6900,10 @@ export async function* runAgent(
           ...activityResult
         } = result;
         if (planUpdate) {
+          const previousPlan = JSON.stringify({
+            steps: plan.steps,
+            statuses: plan.statuses,
+          });
           plan.steps = planUpdate.plan.map((item) => item.step);
           plan.statuses = planUpdate.plan.map((item) => item.status);
           const activeStep = planUpdate.plan.findIndex(
@@ -6875,6 +6925,9 @@ export async function* runAgent(
           activity.planSteps = planSteps;
           activity.planStatuses = plan.statuses;
           activity.planStep = planStep;
+          roundPlanChanged ||=
+            previousPlan !==
+            JSON.stringify({ steps: plan.steps, statuses: plan.statuses });
         }
         resultEvidence = {
           changed: result.changed,
@@ -7143,6 +7196,7 @@ export async function* runAgent(
     // Finalize turn diff tracking — provides ground truth of file changes
     const turnDiff = turnDiffTracker.finalizeTurn();
     if (turnDiff.hasChanges) {
+      roundAdvanced = true;
       evidenceHistory.push({
         kind: "result",
         callId: turnDiffId(round),
@@ -7307,6 +7361,10 @@ export async function* runAgent(
     if (roundAdvanced) noProgressFingerprints.clear();
     else noProgressFingerprints.add(roundFingerprint);
     stalledRounds = madeProgress ? 0 : stalledRounds + 1;
+    semanticStallRounds =
+      roundAdvanced || roundWaitingOnExternalWork || roundPlanChanged
+        ? 0
+        : semanticStallRounds + 1;
     if (signal.aborted) {
       yield {
         type: "error",
@@ -7314,7 +7372,10 @@ export async function* runAgent(
       };
       return;
     }
-    const currentStallAction = stallAction(stalledRounds);
+    const semanticStallReached = semanticStallRounds >= SEMANTIC_STALL_ROUNDS;
+    const currentStallAction = semanticStallReached
+      ? "finalize"
+      : stallAction(stalledRounds);
     if (currentStallAction !== "continue") {
       const shouldFinalizeAvailableResult =
         evidenceCompleteAfterRound && !roundFailedActivity;
@@ -7322,15 +7383,18 @@ export async function* runAgent(
         currentStallAction === "finalize" || shouldFinalizeAvailableResult;
       if (shouldFinalizeNow) {
         repetitionFinalizationPending =
+          !semanticStallReached &&
           shouldFinalizeAvailableResult &&
           (planCompleted || hasMutationEvidenceAfterRound)
             ? "evidence-complete"
             : "repetition-stalled";
         yield {
           type: "progress",
-          message: shouldFinalizeAvailableResult
-            ? "重复核对没有产生新结果，正在基于已有工具记录生成最终结论…"
-            : "重复操作在纠偏后仍未取得进展，正在汇总已有结果和未完成项…",
+          message: semanticStallReached
+            ? `连续 ${semanticStallRounds} 轮没有产生实际状态变化，已停止继续检查，正在汇总结果…`
+            : shouldFinalizeAvailableResult
+              ? "重复核对没有产生新结果，正在基于已有工具记录生成最终结论…"
+              : "重复操作在纠偏后仍未取得进展，正在汇总已有结果和未完成项…",
         };
         continue;
       }

@@ -28,6 +28,7 @@ import {
 } from "lucide-react";
 import type {
   AgentActivity,
+  AgentCompletionResult,
   AgentToolName,
   ChatMessage,
   ContextFile,
@@ -1479,6 +1480,7 @@ function CompletedProcessDisclosure({
   paused = false,
   blocked = false,
   activities,
+  completionResult,
   children,
 }: {
   durationMs: number;
@@ -1486,6 +1488,7 @@ function CompletedProcessDisclosure({
   paused?: boolean;
   blocked?: boolean;
   activities: AgentActivity[];
+  completionResult?: AgentCompletionResult;
   children: React.ReactNode;
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -1493,6 +1496,12 @@ function CompletedProcessDisclosure({
     () => collectFileChangeStats(activities),
     [activities],
   );
+  const completionFileCount = completionResult?.changedFiles.length ?? 0;
+  const summaryFileStats = {
+    files: Math.max(fileStats.files, completionFileCount),
+    additions: completionResult?.additions || fileStats.additions,
+    deletions: completionResult?.deletions || fileStats.deletions,
+  };
   const executor = useMemo(() => executorEvidence(activities), [activities]);
   return (
     <section
@@ -1529,11 +1538,13 @@ function CompletedProcessDisclosure({
         </span>
         <span className="completed-process-metrics">
           {activities.length > 0 && <span>{activities.length} 个步骤</span>}
-          {fileStats.files > 0 && <span>{fileStats.files} 个文件</span>}
-          {fileStats.files > 0 && (
+          {summaryFileStats.files > 0 && (
+            <span>{summaryFileStats.files} 个文件</span>
+          )}
+          {summaryFileStats.files > 0 && (
             <span className="completed-process-diff">
-              <b>+{fileStats.additions}</b>
-              <i>-{fileStats.deletions}</i>
+              <b>+{summaryFileStats.additions}</b>
+              <i>-{summaryFileStats.deletions}</i>
             </span>
           )}
           {executor && (
@@ -1624,6 +1635,7 @@ const AssistantTimeline = memo(function AssistantTimeline({
             paused={paused}
             blocked={blocked}
             activities={activities}
+            completionResult={message.completionResult}
           >
             {processNode}
           </CompletedProcessDisclosure>
@@ -1720,6 +1732,7 @@ const AssistantTimeline = memo(function AssistantTimeline({
           paused={paused}
           blocked={blocked}
           activities={activities}
+          completionResult={message.completionResult}
         >
           {timelineNodes}
         </CompletedProcessDisclosure>
