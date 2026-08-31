@@ -168,6 +168,58 @@ test("routes inline thinking tags to reasoning across fragmented chunks", () => 
   assert.equal(streamedText, result.text);
   assert.equal(streamedReasoning, result.reasoningContent);
 });
+
+test("reports semantic progress only for visible text or tool calls", () => {
+  const a = new AgentStreamAssembler("openai-chat");
+  assert.equal(
+    a.consume({ choices: [{ delta: { reasoning_content: "先思考" } }] }),
+    false,
+  );
+  assert.equal(
+    a.consume({ choices: [{ delta: { content: "<think>继续思考" } }] }),
+    false,
+  );
+  assert.equal(
+    a.consume({ choices: [{ delta: { content: "</think>结论" } }] }),
+    true,
+  );
+
+  const cumulative = new AgentStreamAssembler(
+    "openai-chat",
+    undefined,
+    undefined,
+    { chatChunkMode: "cumulative" },
+  );
+  assert.equal(
+    cumulative.consume({ choices: [{ delta: { content: "Planning" } }] }),
+    true,
+  );
+  assert.equal(
+    cumulative.consume({ choices: [{ delta: { content: "Planning" } }] }),
+    false,
+  );
+
+  const tool = new AgentStreamAssembler("openai-chat", undefined, undefined, {
+    chatChunkMode: "cumulative",
+  });
+  const toolChunk = {
+    choices: [
+      {
+        delta: {
+          tool_calls: [
+            {
+              index: 0,
+              id: "call-1",
+              function: { name: "read_file", arguments: '{"path":"a"}' },
+            },
+          ],
+        },
+      },
+    ],
+  };
+  assert.equal(tool.consume(toolChunk), true);
+  assert.equal(tool.consume(toolChunk), false);
+});
 test("normalizes cumulative chunks before extracting inline thinking", () => {
   const a = new AgentStreamAssembler("openai-chat", undefined, undefined, {
     normalizeCumulativeChatChunks: true,

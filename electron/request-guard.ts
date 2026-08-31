@@ -285,7 +285,9 @@ export function isRetryableStreamError(error: unknown) {
   if (
     error instanceof Error &&
     error.name === "SseStreamTimeoutError" &&
-    (error as Error & { timeoutKind?: string }).timeoutKind !== "meaningful"
+    !["meaningful", "absolute"].includes(
+      (error as Error & { timeoutKind?: string }).timeoutKind ?? "",
+    )
   )
     return true;
   if (

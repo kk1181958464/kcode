@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { AgentStreamAssembler } from "./agent-stream";
 import { readSseJson } from "./sse-stream";
 
 const encode = (value: string) => new TextEncoder().encode(value);
@@ -159,6 +160,136 @@ test("reasoning-only events cannot keep a model turn alive indefinitely", async 
     }
   };
   await assert.rejects(consume(), /持续没有正文或工具调用/);
+});
+
+test("does not apply the semantic watchdog before the first parsed event", async () => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      timer = setTimeout(() => {
+        controller.enqueue(
+          encode(
+            'data: {"type":"response.output_text.delta","delta":"ready"}\n\n' +
+              'data: {"type":"response.completed"}\n\n',
+          ),
+        );
+      }, 35);
+    },
+    cancel() {
+      if (timer) clearTimeout(timer);
+    },
+  });
+  const events: any[] = [];
+  for await (const event of readSseJson(new Response(body), {
+    signal: new AbortController().signal,
+    idleTimeoutMs: 100,
+    meaningfulIdleTimeoutMs: 20,
+    meaningfulEvent: (event) => event.type === "response.output_text.delta",
+  }))
+    events.push(event);
+  assert.equal(events[0].delta, "ready");
+  assert.equal(events[1].type, "response.completed");
+});
+
+test("starts the semantic watchdog when the first non-meaningful event arrives", async () => {
+  let firstTimer: ReturnType<typeof setTimeout> | undefined;
+  let secondTimer: ReturnType<typeof setTimeout> | undefined;
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      firstTimer = setTimeout(() => {
+        controller.enqueue(encode('data: {"type":"response.created"}\n\n'));
+        secondTimer = setTimeout(() => {
+          controller.enqueue(
+            encode(
+              'data: {"type":"response.output_text.delta","delta":"ready"}\n\n' +
+                'data: {"type":"response.completed"}\n\n',
+            ),
+          );
+        }, 10);
+      }, 35);
+    },
+    cancel() {
+      if (firstTimer) clearTimeout(firstTimer);
+      if (secondTimer) clearTimeout(secondTimer);
+    },
+  });
+  const events: any[] = [];
+  for await (const event of readSseJson(new Response(body), {
+    signal: new AbortController().signal,
+    idleTimeoutMs: 100,
+    meaningfulIdleTimeoutMs: 20,
+    meaningfulEvent: (event) => event.type === "response.output_text.delta",
+  }))
+    events.push(event);
+  assert.equal(events[0].type, "response.created");
+  assert.equal(events[1].delta, "ready");
+});
+
+test("inline think content does not reset the semantic watchdog", async () => {
+  let timer: ReturnType<typeof setInterval> | undefined;
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      timer = setInterval(() => {
+        controller.enqueue(
+          encode(
+            'data: {"choices":[{"delta":{"content":"<think>still thinking"}}]}\n\n',
+          ),
+        );
+      }, 5);
+    },
+    cancel() {
+      if (timer) clearInterval(timer);
+    },
+  });
+  const assembler = new AgentStreamAssembler("openai-chat");
+  await assert.rejects(
+    (async () => {
+      for await (const _event of readSseJson(new Response(body), {
+        signal: new AbortController().signal,
+        idleTimeoutMs: 200,
+        meaningfulIdleTimeoutMs: 45,
+        // The raw event contains content, but the assembler correctly classifies
+        // it as inline reasoning and returns false.
+        meaningfulEvent: () => true,
+        processEvent: (event) => assembler.consume(event),
+      })) {
+        // The stream is expected to stop through the semantic watchdog.
+      }
+    })(),
+    /持续没有正文或工具调用/,
+  );
+});
+
+test("absolute model-turn deadline wins over a live duplicate stream", async () => {
+  let timer: ReturnType<typeof setInterval> | undefined;
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      timer = setInterval(() => {
+        controller.enqueue(
+          encode(
+            'data: {"choices":[{"delta":{"content":"Planning workspace inspection"}}]}\n\n',
+          ),
+        );
+      }, 5);
+    },
+    cancel() {
+      if (timer) clearInterval(timer);
+    },
+  });
+  await assert.rejects(
+    (async () => {
+      for await (const _event of readSseJson(new Response(body), {
+        signal: new AbortController().signal,
+        idleTimeoutMs: 200,
+        meaningfulIdleTimeoutMs: 1_000,
+        processEvent: () => false,
+        maxDurationMs: 45,
+      })) {
+        // Every transport event is deliberately non-meaningful.
+      }
+    })(),
+    /模型单轮响应超过安全时限/,
+  );
 });
 
 test("answer text resets the reasoning-only watchdog", async () => {

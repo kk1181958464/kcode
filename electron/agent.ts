@@ -160,6 +160,8 @@ import { loadActiveSkillInstructions } from "./agent-skills";
 import { AsyncQueue } from "./async-queue";
 import { readSseJson, SseStreamTimeoutError } from "./sse-stream";
 import {
+  FINALIZATION_TURN_MAX_DURATION_MS,
+  MODEL_TURN_MAX_DURATION_MS,
   MODEL_STREAM_MAX_ATTEMPTS,
   MODEL_TURN_HTTP_ATTEMPTS,
   modelStreamMaxAttempts,
@@ -4187,7 +4189,10 @@ async function* sseJson(
   onProgress?: (message: string) => void,
   meaningfulEvent?: (event: any) => boolean,
   meaningfulIdleTimeoutMs?: number,
+  processEvent?: (event: any) => boolean,
+  maxDurationMs?: number,
 ): AsyncGenerator<any> {
+  const meaningfulProgressEvent = meaningfulEvent ?? processEvent;
   yield* readSseJson(response, {
     signal,
     idleTimeoutMs,
@@ -4195,53 +4200,13 @@ async function* sseJson(
     // its first token. Once it has started streaming, though, endless internal
     // reasoning without answer text or a tool call is a broken turn, not work.
     meaningfulEvent,
-    meaningfulIdleTimeoutMs: meaningfulEvent
+    meaningfulIdleTimeoutMs: meaningfulProgressEvent
       ? (meaningfulIdleTimeoutMs ?? Math.min(idleTimeoutMs ?? 120_000, 120_000))
       : undefined,
+    processEvent,
+    maxDurationMs,
     onProgress,
   });
-}
-
-function isProductiveSseEvent(protocol: string, event: any) {
-  if (
-    event?.type === "__sse_done" ||
-    event?.type === "response.completed" ||
-    event?.type === "response.incomplete" ||
-    event?.type === "response.failed" ||
-    event?.type === "message_stop" ||
-    event?.type === "error" ||
-    event?.delta?.stop_reason ||
-    event?.candidates?.some((candidate: any) => candidate?.finishReason) ||
-    event?.choices?.some((choice: any) => choice?.finish_reason)
-  )
-    return true;
-  if (protocol === "openai-chat") {
-    const delta = event?.choices?.[0]?.delta;
-    return Boolean(delta?.content || delta?.tool_calls?.length);
-  }
-  if (protocol === "openai-responses")
-    return Boolean(
-      (event?.type === "response.output_text.delta" && event?.delta) ||
-      (event?.type === "response.output_item.added" &&
-        event?.item?.type === "function_call") ||
-      (event?.type === "response.function_call_arguments.delta" &&
-        event?.delta) ||
-      (event?.type === "response.output_item.done" &&
-        event?.item?.type === "function_call"),
-    );
-  if (protocol === "anthropic-messages")
-    return Boolean(
-      (event?.type === "content_block_delta" &&
-        (event?.delta?.type === "text_delta" ||
-          event?.delta?.type === "input_json_delta")) ||
-      (event?.type === "content_block_start" &&
-        event?.content_block?.type === "tool_use"),
-    );
-  return Boolean(
-    event?.candidates?.[0]?.content?.parts?.some(
-      (part: any) => part?.text || part?.functionCall,
-    ),
-  );
 }
 
 async function parseStreamedTurn(
@@ -4254,6 +4219,7 @@ async function parseStreamedTurn(
   idleTimeoutMs?: number,
   chatChunkMode: "delta" | "cumulative" | "auto" = "delta",
   meaningfulIdleTimeoutMs?: number,
+  maxDurationMs?: number,
 ): Promise<Turn> {
   if (response.body) {
     const assembler = new AgentStreamAssembler(
@@ -4267,10 +4233,14 @@ async function parseStreamedTurn(
       signal,
       idleTimeoutMs,
       onProgress,
-      (event) => isProductiveSseEvent(protocol, event),
+      undefined,
       meaningfulIdleTimeoutMs,
-    ))
-      assembler.consume(event);
+      (event) => assembler.consume(event),
+      maxDurationMs,
+    )) {
+      // The semantic event processor assembles the event before the SSE
+      // watchdog updates its meaningful-progress timestamp.
+    }
     assembler.assertStreamComplete();
     const assembled = assembler.finish();
     return { ...assembled, calls: validCalls(assembled.calls) };
@@ -4591,6 +4561,22 @@ async function* streamModelTurn(
         completeTextAttempt();
         return;
       } catch (error) {
+        const absoluteTurnLimitReached =
+          error instanceof SseStreamTimeoutError &&
+          error.timeoutKind === "absolute";
+        if (absoluteTurnLimitReached) {
+          writeLog("warn", "model.stream.turn-timeout", {
+            requestId,
+            timeoutMs: error.timeoutMs,
+            toolsEnabled,
+          });
+          pushProgress(
+            toolsEnabled
+              ? "模型单轮响应超过安全时限，已停止继续等待；已有输出和工具结果会保留…"
+              : "模型收尾单轮响应超过安全时限，已停止继续等待…",
+          );
+          throw error;
+        }
         const reasoningOnlyStream =
           error instanceof SseStreamTimeoutError &&
           error.timeoutKind === "meaningful";
@@ -5319,6 +5305,9 @@ async function modelTurn(
       reasoning.reasoningMode !== "none" ? 180_000 : undefined,
       compatibility.streamMode,
       finalizationTurn ? 45_000 : undefined,
+      finalizationTurn
+        ? FINALIZATION_TURN_MAX_DURATION_MS
+        : MODEL_TURN_MAX_DURATION_MS,
     );
   const json = JSON.parse(await readResponseText(response, signal)) as any;
   if (protocol === "openai-chat") {
@@ -5522,7 +5511,18 @@ function buildPausedCompletionResult({
 
 function isFinalizationReasoningFailure(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
-  return /收尾阶段持续只有思考内容|连续只输出思考内容|持续没有正文或工具调用/.test(
+  return /收尾阶段持续只有思考内容|连续只输出思考内容|持续没有正文或工具调用|模型单轮响应超过安全时限/.test(
+    message,
+  );
+}
+
+function isModelTurnTimeout(error: unknown) {
+  if (error instanceof SseStreamTimeoutError)
+    return (
+      error.timeoutKind === "meaningful" || error.timeoutKind === "absolute"
+    );
+  const message = error instanceof Error ? error.message : String(error);
+  return /连续只输出思考内容|持续只有思考内容|模型单轮响应超过安全时限/.test(
     message,
   );
 }
@@ -5534,6 +5534,13 @@ function hasRecoverableToolEvidence(history: HistoryItem[]) {
 }
 
 function streamFailurePauseMessage(error: unknown) {
+  if (
+    error instanceof SseStreamTimeoutError &&
+    error.timeoutKind === "absolute"
+  )
+    return `模型单轮响应超过 ${Math.round(error.timeoutMs / 1_000)} 秒安全时限，已暂停等待。已有工具结果和实际文件修改均已保留；点击“继续”后会从当前状态恢复。`;
+  if (isModelTurnTimeout(error))
+    return "模型本轮持续思考但没有形成新的正文或工具调用，已达到单轮安全边界并暂停。已有工具结果和实际文件修改均已保留；点击“继续”后会从当前状态恢复。";
   const cause =
     error instanceof UpstreamHttpError
       ? `上游返回 ${error.status}`
@@ -5683,6 +5690,7 @@ export async function* runAgent(
     completionRetries: 0,
     autoContinues: 0,
     emptyTurns: 0,
+    reasoningOnlyTurns: 0,
   };
   // Previous-round context, grouped as a run-state slice: the last activity and
   // any failure carried into the next round's narrative, plus the last tool
@@ -5722,6 +5730,7 @@ export async function* runAgent(
       budgets.completionRetries = 0;
       budgets.autoContinues = 0;
       budgets.emptyTurns = 0;
+      budgets.reasoningOnlyTurns = 0;
       stalledRounds = 0;
       noProgressFingerprints.clear();
       repetitionFinalizationPending = undefined;
@@ -6010,7 +6019,7 @@ export async function* runAgent(
           // structured checkpoint instead of restarting the whole task.
           if (
             !signal.aborted &&
-            isRetryableStreamError(error) &&
+            (isRetryableStreamError(error) || isModelTurnTimeout(error)) &&
             hasRecoverableToolEvidence(evidenceHistory)
           ) {
             const pausedCompletionResult = buildPausedCompletionResult({
@@ -6055,7 +6064,70 @@ export async function* runAgent(
       // the latest round's prompt size, i.e. the real current context occupancy.
       yield { type: "usage", ...usage, promptTokens: lastPromptTokens };
     }
+    if (!turn.text.trim() && !turn.calls.length && finalizationMode) {
+      usedRuntimeFinalizationFallback = true;
+      if (streamedReasoning.trim() || turn.reasoningContent?.trim()) {
+        streamedReasoning = "";
+        yield { type: "reasoning_reset" };
+      }
+      yield {
+        type: "progress",
+        message:
+          "收尾模型没有返回正文，已停止重复请求，正在根据已确认的工具记录生成结论…",
+      };
+      turn = {
+        text: runtimeFinalizationFallback(
+          evidenceHistory,
+          evidenceComplete,
+          prevRound.activity,
+        ),
+        calls: [],
+        rawCalls: [],
+        usage: { input: 0, output: 0, cached: 0 },
+        finishReason: "runtime_finalization",
+      };
+    }
     if (!turn.text.trim() && !turn.calls.length) {
+      if (turn.reasoningContent?.trim()) {
+        if (budgets.reasoningOnlyTurns < 1) {
+          budgets.reasoningOnlyTurns += 1;
+          yield {
+            type: "progress",
+            message:
+              "上游本轮只返回内部思考，正在要求它结束本轮并输出正文或调用工具（仅自动重试一次）…",
+          };
+          history.push({
+            kind: "message",
+            role: "user",
+            content:
+              "<runtime_verification>上一轮只返回了内部思考，没有正文，也没有工具调用。不要继续输出思考过程；请立即基于现有历史给出普通正文，或直接调用下一项具体工具。</runtime_verification>",
+          });
+          continue;
+        }
+        if (hasRecoverableToolEvidence(evidenceHistory)) {
+          const pausedCompletionResult = buildPausedCompletionResult({
+            evidenceHistory,
+            baselineCodingEvidence,
+            requestedCodingEvidenceOps,
+            requestedBrowserOps,
+            requestedGitOps,
+            plannerExecutionPending,
+          });
+          for (const pausedEvent of blockedVerificationEvents(
+            timelineTextLength,
+            "模型连续只返回内部思考，已安全暂停；已有工具结果和实际文件修改均已保留。点击“继续”后会从当前状态恢复。",
+            pausedCompletionResult,
+          ))
+            yield pausedEvent;
+          return;
+        }
+        yield {
+          type: "error",
+          message:
+            "模型连续只返回内部思考，已停止继续请求。请重试或切换模型通道。",
+        };
+        return;
+      }
       if (budgets.emptyTurns < 2) {
         budgets.emptyTurns += 1;
         yield {
@@ -6078,6 +6150,7 @@ export async function* runAgent(
       return;
     }
     budgets.emptyTurns = 0;
+    budgets.reasoningOnlyTurns = 0;
     const requestedUserInput = hasRequestedUserInputEvidence(evidenceHistory);
     const browserEvidence = successfulBrowserEvidence(evidenceHistory);
     const missingBrowserEvidence = missingRequestedBrowserOperations(

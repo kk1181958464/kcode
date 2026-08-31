@@ -95,6 +95,11 @@ test("treats a typed SSE idle timeout as retryable but leaves reasoning-only rec
     name: "SseStreamTimeoutError",
     timeoutKind: "meaningful",
   });
+  const absolute = Object.assign(new Error("单轮超过安全时限"), {
+    name: "SseStreamTimeoutError",
+    timeoutKind: "absolute",
+  });
   assert.equal(isRetryableStreamError(idle), true);
   assert.equal(isRetryableStreamError(meaningful), false);
+  assert.equal(isRetryableStreamError(absolute), false);
 });

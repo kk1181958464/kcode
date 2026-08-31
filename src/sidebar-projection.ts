@@ -125,6 +125,9 @@ export function projectSidebarWorkspaceGroups(
               ? taskWorkspaceName(conversations[0])
               : "工作区",
           conversations,
+          runningCount: conversations.filter(
+            (task) => task.runningId || task.runStatus === "running",
+          ).length,
           remote: Boolean(remote),
           unassigned,
         };

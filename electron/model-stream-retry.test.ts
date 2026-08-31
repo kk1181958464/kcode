@@ -48,4 +48,8 @@ test("limits expensive timeout retries separately from immediate failures", () =
     modelStreamMaxAttempts(new SseStreamTimeoutError("idle", 120_000)),
     3,
   );
+  assert.equal(
+    modelStreamMaxAttempts(new SseStreamTimeoutError("absolute", 480_000)),
+    1,
+  );
 });

@@ -3,6 +3,11 @@ import { SseStreamTimeoutError } from "./sse-stream";
 
 export const MODEL_STREAM_MAX_ATTEMPTS = 6;
 export const MODEL_TURN_HTTP_ATTEMPTS = 10;
+// A single model sampling request must have a wall-clock boundary even when a
+// relay keeps sending heartbeats or duplicate chunks. Tool execution happens
+// in separate turns and is not limited by these values.
+export const MODEL_TURN_MAX_DURATION_MS = 8 * 60_000;
+export const FINALIZATION_TURN_MAX_DURATION_MS = 2 * 60_000;
 const INITIAL_STREAM_RETRY_DELAY_MS = 5_000;
 const MAX_STREAM_RETRY_DELAY_MS = 60_000;
 
@@ -13,6 +18,11 @@ const MAX_STREAM_RETRY_DELAY_MS = 60_000;
  */
 export function modelStreamMaxAttempts(error: unknown) {
   if (error instanceof FirstByteTimeoutError) return 2;
+  if (
+    error instanceof SseStreamTimeoutError &&
+    error.timeoutKind === "absolute"
+  )
+    return 1;
   if (error instanceof SseStreamTimeoutError && error.timeoutKind === "idle")
     return 3;
   return MODEL_STREAM_MAX_ATTEMPTS;

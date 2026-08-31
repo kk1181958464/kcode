@@ -1,17 +1,16 @@
-import {
-  readStreamChunk,
-  StreamReadTimeoutError,
-} from "./request-guard";
+import { readStreamChunk, StreamReadTimeoutError } from "./request-guard";
 
 export class SseStreamTimeoutError extends Error {
   constructor(
-    public readonly timeoutKind: "idle" | "meaningful",
+    public readonly timeoutKind: "idle" | "meaningful" | "absolute",
     public readonly timeoutMs: number,
   ) {
     super(
       timeoutKind === "meaningful"
         ? `模型响应流持续没有正文或工具调用（${Math.round(timeoutMs / 1_000)} 秒）`
-        : `模型响应流长时间没有有效事件（${Math.round(timeoutMs / 1_000)} 秒）`,
+        : timeoutKind === "absolute"
+          ? `模型单轮响应超过安全时限（${Math.round(timeoutMs / 1_000)} 秒）`
+          : `模型响应流长时间没有有效事件（${Math.round(timeoutMs / 1_000)} 秒）`,
     );
     this.name = "SseStreamTimeoutError";
   }
@@ -26,7 +25,15 @@ type SseOptions = {
    * not reset this separate watchdog.
    */
   meaningfulEvent?: (event: any) => boolean;
+  /**
+   * Processes an event before it is yielded and returns whether it produced
+   * meaningful output. This takes precedence over meaningfulEvent so parsers
+   * can ignore inline reasoning and cumulative duplicate chunks.
+   */
+  processEvent?: (event: any) => boolean;
   meaningfulIdleTimeoutMs?: number;
+  /** Absolute ceiling for one model sampling response. */
+  maxDurationMs?: number;
   onProgress?: (message: string) => void;
   terminalGraceMs?: number;
 };
@@ -87,26 +94,48 @@ export async function* readSseJson(
   let lastEventAt = Date.now();
   let lastMeaningfulEventAt = lastEventAt;
   let lastProgressAt = lastEventAt;
+  let hasReceivedEvent = false;
   let softTerminalRemainingMs: number | undefined;
   const terminalGraceMs = options.terminalGraceMs ?? DEFAULT_TERMINAL_GRACE_MS;
   const idleTimeoutMs =
     options.idleTimeoutMs ?? DEFAULT_SEMANTIC_IDLE_TIMEOUT_MS;
-  const meaningfulIdleTimeoutMs = options.meaningfulEvent
+  const meaningfulEvent = options.processEvent ?? options.meaningfulEvent;
+  const meaningfulIdleTimeoutMs = meaningfulEvent
     ? (options.meaningfulIdleTimeoutMs ?? idleTimeoutMs)
     : undefined;
+  const maxDurationMs =
+    options.maxDurationMs === undefined
+      ? undefined
+      : Math.max(1, options.maxDurationMs);
+  const startedAt = Date.now();
   const semanticTimeoutError = () =>
     new SseStreamTimeoutError("idle", idleTimeoutMs);
   const meaningfulTimeoutError = () =>
     new SseStreamTimeoutError("meaningful", meaningfulIdleTimeoutMs ?? 0);
+  const absoluteTimeoutError = () =>
+    new SseStreamTimeoutError("absolute", maxDurationMs ?? 0);
+  const markEvent = (event: any) => {
+    const kind = terminalKind(event);
+    const processedMeaningful = options.processEvent
+      ? options.processEvent(event)
+      : (options.meaningfulEvent?.(event) ?? false);
+    if (kind || processedMeaningful) lastMeaningfulEventAt = Date.now();
+    return kind;
+  };
   try {
     while (!terminal) {
       const now = Date.now();
       if (softTerminalRemainingMs !== undefined && softTerminalRemainingMs <= 0)
         break;
+      const absoluteRemaining =
+        maxDurationMs === undefined
+          ? Number.POSITIVE_INFINITY
+          : maxDurationMs - (now - startedAt);
+      if (absoluteRemaining <= 0) throw absoluteTimeoutError();
       const semanticRemaining = idleTimeoutMs - (now - lastEventAt);
       if (semanticRemaining <= 0) throw semanticTimeoutError();
       const meaningfulRemaining =
-        meaningfulIdleTimeoutMs === undefined
+        meaningfulIdleTimeoutMs === undefined || !hasReceivedEvent
           ? Number.POSITIVE_INFINITY
           : meaningfulIdleTimeoutMs - (now - lastMeaningfulEventAt);
       if (meaningfulRemaining <= 0) throw meaningfulTimeoutError();
@@ -114,14 +143,19 @@ export async function* readSseJson(
       const meaningfulDeadlineSelected =
         meaningfulIdleTimeoutMs !== undefined &&
         meaningfulRemaining <= semanticRemaining &&
-        meaningfulRemaining <=
-          (terminalRemaining ?? Number.POSITIVE_INFINITY);
+        meaningfulRemaining <= (terminalRemaining ?? Number.POSITIVE_INFINITY);
+      const absoluteDeadlineSelected =
+        maxDurationMs !== undefined &&
+        absoluteRemaining <= semanticRemaining &&
+        absoluteRemaining <= meaningfulRemaining &&
+        absoluteRemaining <= (terminalRemaining ?? Number.POSITIVE_INFINITY);
       const readTimeout = Math.max(
         1,
         Math.min(
           semanticRemaining ?? Number.POSITIVE_INFINITY,
           meaningfulRemaining,
           terminalRemaining ?? Number.POSITIVE_INFINITY,
+          absoluteRemaining,
           idleTimeoutMs,
         ),
       );
@@ -136,7 +170,15 @@ export async function* readSseJson(
         );
       } catch (error) {
         if (softTerminalRemainingMs !== undefined) break;
+        if (options.signal.aborted) throw error;
         const failedAt = Date.now();
+        if (
+          maxDurationMs !== undefined &&
+          ((error instanceof StreamReadTimeoutError &&
+            absoluteDeadlineSelected) ||
+            failedAt - startedAt >= maxDurationMs)
+        )
+          throw absoluteTimeoutError();
         if (
           meaningfulIdleTimeoutMs !== undefined &&
           ((error instanceof StreamReadTimeoutError &&
@@ -156,11 +198,14 @@ export async function* readSseJson(
       buffer = blocks.pop() ?? "";
       for (const block of blocks) {
         const events = parseBlock(block);
-        if (events.length) lastEventAt = Date.now();
+        if (events.length) {
+          const receivedAt = Date.now();
+          lastEventAt = receivedAt;
+          if (!hasReceivedEvent) lastMeaningfulEventAt = receivedAt;
+          hasReceivedEvent = true;
+        }
         for (const event of events) {
-          const kind = terminalKind(event);
-          if (kind || options.meaningfulEvent?.(event))
-            lastMeaningfulEventAt = Date.now();
+          const kind = markEvent(event);
           yield event;
           if (kind === "hard") {
             terminal = true;
@@ -173,8 +218,10 @@ export async function* readSseJson(
       }
       const waitedMs = Date.now() - lastEventAt;
       const meaningfulWaitedMs = Date.now() - lastMeaningfulEventAt;
+      const elapsedMs = Date.now() - startedAt;
       if (
         !terminal &&
+        hasReceivedEvent &&
         meaningfulIdleTimeoutMs !== undefined &&
         meaningfulWaitedMs >= PROGRESS_INTERVAL_MS &&
         Date.now() - lastProgressAt >= PROGRESS_INTERVAL_MS
@@ -182,6 +229,16 @@ export async function* readSseJson(
         lastProgressAt = Date.now();
         options.onProgress?.(
           `模型正在推理，尚未输出正文或工具调用，已等待 ${Math.round(meaningfulWaitedMs / 1_000)} 秒…`,
+        );
+      } else if (
+        !terminal &&
+        maxDurationMs !== undefined &&
+        elapsedMs >= PROGRESS_INTERVAL_MS &&
+        Date.now() - lastProgressAt >= PROGRESS_INTERVAL_MS
+      ) {
+        lastProgressAt = Date.now();
+        options.onProgress?.(
+          `模型正在生成本轮响应，已运行 ${Math.round(elapsedMs / 1_000)} 秒…`,
         );
       } else if (
         !terminal &&
@@ -196,12 +253,16 @@ export async function* readSseJson(
       if (done) {
         if (buffer.trim()) {
           const events = parseBlock(buffer);
-          if (events.length) lastEventAt = Date.now();
+          if (events.length) {
+            const receivedAt = Date.now();
+            lastEventAt = receivedAt;
+            if (!hasReceivedEvent) lastMeaningfulEventAt = receivedAt;
+            hasReceivedEvent = true;
+          }
           for (const event of events) {
-            if (terminalKind(event) || options.meaningfulEvent?.(event))
-              lastMeaningfulEventAt = Date.now();
+            const kind = markEvent(event);
             yield event;
-            if (terminalKind(event)) {
+            if (kind) {
               terminal = true;
               break;
             }

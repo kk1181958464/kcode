@@ -59,6 +59,10 @@ export class AgentStreamAssembler {
   private anthropicBlocks: any[] = [];
   private completed = false;
   private finishReason = "";
+  // Only visible answer text and tool-call data count as meaningful progress.
+  // Reasoning-only and cumulative duplicate chunks keep the transport alive,
+  // but must not keep a model turn alive forever.
+  private meaningfulOutputVersion = 0;
   constructor(
     private protocol: Protocol,
     private onText?: (delta: string) => void,
@@ -66,6 +70,7 @@ export class AgentStreamAssembler {
     private options: AgentStreamAssemblerOptions = {},
   ) {}
   consume(event: any) {
+    const meaningfulOutputBefore = this.meaningfulOutputVersion;
     if (
       event.error?.message ||
       event.type === "error" ||
@@ -89,12 +94,16 @@ export class AgentStreamAssembler {
       this.addText(delta.content);
       this.addReasoning(delta.reasoning_content ?? delta.reasoning);
       for (const part of delta.tool_calls ?? []) {
-        const index = part.index ?? 0,
-          current = this.calls.get(index) ?? {
-            id: part.id || randomUUID(),
-            name: "",
-            args: "",
-          };
+        const index = part.index ?? 0;
+        const existing = this.calls.get(index);
+        const current = existing ?? {
+          id: part.id || randomUUID(),
+          name: "",
+          args: "",
+        };
+        const previousId = current.id;
+        const previousName = current.name;
+        const previousArgs = current.args;
         if (part.id) current.id = part.id;
         current.name = this.appendToolName(current.name, part.function?.name);
         current.args += this.normalizeChatChunk(
@@ -102,6 +111,13 @@ export class AgentStreamAssembler {
           part.function?.arguments,
         );
         this.calls.set(index, current);
+        if (
+          !existing ||
+          current.id !== previousId ||
+          current.name !== previousName ||
+          current.args !== previousArgs
+        )
+          this.markMeaningfulOutput();
       }
       if (event.usage)
         this.usage = {
@@ -136,6 +152,7 @@ export class AgentStreamAssembler {
         event.type === "response.output_item.added" &&
         event.item?.type === "function_call"
       ) {
+        this.markMeaningfulOutput();
         const index = event.output_index ?? this.calls.size;
         this.calls.set(index, {
           id: event.item.call_id || event.item.id || randomUUID(),
@@ -151,8 +168,11 @@ export class AgentStreamAssembler {
             name: event.name || "",
             args: "",
           };
-        current.args += event.delta || "";
+        const delta = event.delta || "";
+        const existing = this.calls.get(index);
+        current.args += delta;
         this.calls.set(index, current);
+        if (!existing || delta) this.markMeaningfulOutput();
       }
       if (event.type === "response.output_item.done" && event.item)
         this.responseItems.push(event.item);
@@ -175,13 +195,15 @@ export class AgentStreamAssembler {
           event.message?.usage?.input_tokens ?? this.usage.input;
       if (event.type === "content_block_start") {
         this.anthropicBlocks[event.index] = event.content_block;
-        if (event.content_block?.type === "tool_use")
+        if (event.content_block?.type === "tool_use") {
+          this.markMeaningfulOutput();
           this.calls.set(event.index, {
             id: event.content_block.id,
             name: event.content_block.name,
             args: "",
             raw: event.content_block,
           });
+        }
       }
       if (
         event.type === "content_block_delta" &&
@@ -198,7 +220,11 @@ export class AgentStreamAssembler {
         event.delta?.type === "input_json_delta"
       ) {
         const current = this.calls.get(event.index);
-        if (current) current.args += event.delta.partial_json || "";
+        const partialJson = event.delta.partial_json || "";
+        if (current && partialJson) {
+          current.args += partialJson;
+          this.markMeaningfulOutput();
+        }
       }
       if (event.type === "message_delta")
         this.usage.output = event.usage?.output_tokens ?? this.usage.output;
@@ -209,13 +235,15 @@ export class AgentStreamAssembler {
       }
       for (const part of event.candidates?.[0]?.content?.parts ?? []) {
         if (typeof part.text === "string") this.addText(part.text);
-        if (part.functionCall)
+        if (part.functionCall) {
+          this.markMeaningfulOutput();
           this.calls.set(this.calls.size, {
             id: randomUUID(),
             name: part.functionCall.name,
             args: JSON.stringify(part.functionCall.args ?? {}),
             raw: part,
           });
+        }
       }
       if (event.usageMetadata)
         this.usage = {
@@ -225,6 +253,7 @@ export class AgentStreamAssembler {
             event.usageMetadata.cachedContentTokenCount ?? this.usage.cached,
         };
     }
+    return this.meaningfulOutputVersion > meaningfulOutputBefore;
   }
   assertStreamComplete() {
     // Empty args are valid for no-arg tools; only broken JSON means the
@@ -321,12 +350,16 @@ export class AgentStreamAssembler {
   private appendVisibleText(value: string) {
     if (!value) return;
     this.text += value;
+    if (value.trim()) this.markMeaningfulOutput();
     this.onText?.(value);
   }
   private appendInlineReasoning(value: string) {
     if (!value) return;
     this.reasoningContent += value;
     this.onReasoning?.(value);
+  }
+  private markMeaningfulOutput() {
+    this.meaningfulOutputVersion += 1;
   }
   private consumeInlineText(value: string) {
     this.inlineTextBuffer += value;

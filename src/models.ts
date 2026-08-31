@@ -119,6 +119,7 @@ export type SidebarWorkspaceGroup = {
   localWorkspacePath?: string;
   name: string;
   conversations: SidebarTask[];
+  runningCount: number;
   remote?: boolean;
   unassigned?: boolean;
 };

@@ -357,7 +357,19 @@ export const Sidebar = memo(function Sidebar({
                   <span className="workspace-name unassigned-label">
                     {row.group.name}
                   </span>
-                  <small>{row.group.conversations.length}</small>
+                  <span className="workspace-meta">
+                    {row.group.runningCount > 0 && (
+                      <small
+                        className="task-running"
+                        title={`${row.group.runningCount} 个任务正在运行`}
+                      >
+                        运行中
+                      </small>
+                    )}
+                    <small className="workspace-task-count">
+                      {row.group.conversations.length}
+                    </small>
+                  </span>
                 </header>
               </div>
             ) : (
@@ -423,7 +435,19 @@ export const Sidebar = memo(function Sidebar({
                     <FolderOpen size={15} />
                   )}
                   <span className="workspace-name">{row.group.name}</span>
-                  <small>{row.group.conversations.length}</small>
+                  <span className="workspace-meta">
+                    {row.group.runningCount > 0 && (
+                      <small
+                        className="task-running"
+                        title={`${row.group.runningCount} 个任务正在运行`}
+                      >
+                        运行中
+                      </small>
+                    )}
+                    <small className="workspace-task-count">
+                      {row.group.conversations.length}
+                    </small>
+                  </span>
                   <button
                     type="button"
                     className={`workspace-create ${

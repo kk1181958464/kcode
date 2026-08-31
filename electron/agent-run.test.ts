@@ -98,6 +98,45 @@ test("runAgent emits text then a completed done for a plain-text turn", async ()
   assert.match(answer, /编码 Agent/);
 });
 
+test("bounds consecutive terminal reasoning-only turns", async () => {
+  const request = await makeRequest();
+  let rounds = 0;
+  const deps: RunAgentDeps = {
+    getProvider: fakeProvider("fake-model"),
+    async *streamTurn() {
+      rounds += 1;
+      yield { type: "reasoning", delta: "仍在内部思考" };
+      yield {
+        type: "complete",
+        turn: {
+          text: "",
+          reasoningContent: "仍在内部思考",
+          calls: [],
+          rawCalls: [],
+          usage: { input: 10, output: 4, cached: 0 },
+        },
+      };
+    },
+  };
+
+  const events = await collect(
+    runAgent(
+      "test-reasoning-only-boundary",
+      request,
+      new AbortController().signal,
+      deps,
+    ),
+  );
+
+  assert.equal(rounds, 2, "a reasoning-only response gets one recovery turn");
+  assert.ok(
+    events.some(
+      (event) =>
+        event.type === "error" && event.message.includes("连续只返回内部思考"),
+    ),
+  );
+});
+
 test("request_user_input blocks immediately without another model round", async () => {
   const request = await makeRequest();
   request.messages = [
@@ -240,7 +279,12 @@ test("runAgent publishes update_plan as structured activity state", async () => 
   };
 
   const events = await collect(
-    runAgent("test-structured-plan", request, new AbortController().signal, deps),
+    runAgent(
+      "test-structured-plan",
+      request,
+      new AbortController().signal,
+      deps,
+    ),
   );
   const planActivity = events.find(
     (event): event is Extract<AgentEvent, { type: "activity" }> =>
@@ -248,10 +292,7 @@ test("runAgent publishes update_plan as structured activity state", async () => 
   )?.activity;
   assert.deepEqual(planActivity?.planSteps, ["读取目标文件", "汇总检查结论"]);
   assert.deepEqual(planActivity?.planStatuses, ["in_progress", "pending"]);
-  assert.equal(
-    events.find((event) => event.type === "done")?.type,
-    "done",
-  );
+  assert.equal(events.find((event) => event.type === "done")?.type, "done");
 });
 
 test("runAgent answers the latest explanation instead of an older upload goal", async () => {
@@ -601,7 +642,9 @@ test("runAgent keeps an existing capability inventory as the final answer", asyn
     async *streamTurn() {
       rounds += 1;
       if (rounds > 1)
-        throw new Error("capability inventory incorrectly entered verification");
+        throw new Error(
+          "capability inventory incorrectly entered verification",
+        );
       yield { type: "text", delta: conclusion };
       yield {
         type: "complete",
@@ -636,7 +679,10 @@ test("runAgent keeps an existing capability inventory as the final answer", asyn
       event.type === "done",
   );
   assert.equal(done?.outcome, "completed");
-  assert.equal(events.some((event) => event.type === "error"), false);
+  assert.equal(
+    events.some((event) => event.type === "error"),
+    false,
+  );
 });
 
 test("runAgent never infers missing runtime evidence from user or model prose", async () => {
@@ -666,8 +712,14 @@ test("runAgent never infers missing runtime evidence from user or model prose", 
     runAgent("test-req-verify", request, new AbortController().signal, deps),
   );
   assert.equal(streamCalls, 1);
-  assert.equal(events.some((event) => event.type === "error"), false);
-  assert.equal(events.some((event) => event.type === "text_reset"), false);
+  assert.equal(
+    events.some((event) => event.type === "error"),
+    false,
+  );
+  assert.equal(
+    events.some((event) => event.type === "text_reset"),
+    false,
+  );
   assert.equal(
     events
       .filter((event) => event.type === "text")
@@ -724,7 +776,12 @@ test("runAgent retries a side effect after its actual tool call fails", async ()
   };
 
   const events = await collect(
-    runAgent("test-tool-evidence-retry", request, new AbortController().signal, deps),
+    runAgent(
+      "test-tool-evidence-retry",
+      request,
+      new AbortController().signal,
+      deps,
+    ),
   );
   assert.equal(streamCalls, 3);
   const done = events.find(

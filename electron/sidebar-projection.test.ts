@@ -56,6 +56,28 @@ test("publishes a new projection for sidebar-visible status changes", () => {
 
   assert.notEqual(next, first);
   assert.equal(next.workspaceGroups[0].conversations[0].runStatus, "running");
+  assert.equal(next.workspaceGroups[0].runningCount, 1);
+});
+
+test("aggregates running conversations on their workspace row", () => {
+  const projection = projectSidebarWorkspaceGroups(
+    [
+      {
+        ...task("task-a", "运行中的对话", "D:\\project\\alpha"),
+        runningId: "request-a",
+        runStatus: "running",
+      },
+      task("task-b", "空闲对话", "D:\\project\\alpha"),
+      {
+        ...task("task-c", "恢复中的对话", "D:\\project\\alpha"),
+        runStatus: "running",
+      },
+    ],
+    "",
+    false,
+  );
+
+  assert.equal(projection.workspaceGroups[0].runningCount, 2);
 });
 
 test("keeps the virtual row key stable across runtime status changes", () => {
