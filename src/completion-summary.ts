@@ -11,8 +11,6 @@ const mutationTools = new Set<AgentToolName>([
   "move_path",
   "delete_path",
   "ssh_write_file",
-  "ssh_upload_file",
-  "ssh_download_file",
 ]);
 
 const commandTools = new Set<AgentToolName>([
@@ -40,6 +38,14 @@ export function completionResultFromActivities(
   let additions = 0;
   let deletions = 0;
   const changedFiles = new Map<string, true>();
+  const transfers = new Map<
+    string,
+    {
+      direction: "download" | "upload";
+      source: string;
+      destination: string;
+    }
+  >();
   const operations = new Set<string>();
 
   for (const activity of activities) {
@@ -52,7 +58,32 @@ export function completionResultFromActivities(
       operations.add(`coding:${operation}`);
     for (const operation of activity.browserOperationEvidence ?? [])
       operations.add(`browser:${operation}`);
-    if (mutationTools.has(activity.tool)) operations.add("coding:modify");
+    if (activity.tool === "ssh_download_file") {
+      operations.add("coding:download");
+      const source = String(activity.input.remotePath ?? "").trim();
+      const destination = String(
+        activity.path ?? activity.input.localPath ?? "",
+      ).trim();
+      if (destination)
+        transfers.set(`download:${source}:${destination}`, {
+          direction: "download",
+          source,
+          destination,
+        });
+    } else if (activity.tool === "ssh_upload_file") {
+      operations.add("coding:upload");
+      const source = String(activity.input.localPath ?? "").trim();
+      const destination = String(
+        activity.path ?? activity.input.remotePath ?? "",
+      ).trim();
+      if (destination)
+        transfers.set(`upload:${source}:${destination}`, {
+          direction: "upload",
+          source,
+          destination,
+        });
+    } else if (mutationTools.has(activity.tool))
+      operations.add("coding:modify");
     if (commandTools.has(activity.tool)) operations.add("coding:execute");
 
     if (!mutationTools.has(activity.tool)) continue;
@@ -79,6 +110,7 @@ export function completionResultFromActivities(
     successfulTools,
     failedTools,
     changedFiles: [...changedFiles.keys()],
+    ...(transfers.size ? { transfers: [...transfers.values()] } : {}),
     additions,
     deletions,
     notice,
@@ -103,6 +135,24 @@ export function pausedCompletionNarrative(
     "",
     `已执行 ${result.toolCalls} 项工具记录，其中 ${result.successfulTools} 项成功${result.failedTools ? `，${result.failedTools} 项失败` : ""}。`,
   ];
+  const downloads = (result.transfers ?? []).filter(
+    (transfer) => transfer.direction === "download",
+  );
+  const uploads = (result.transfers ?? []).filter(
+    (transfer) => transfer.direction === "upload",
+  );
+  if (downloads.length) {
+    lines.push(
+      `已下载 ${downloads.length} 个文件到本地：`,
+      ...downloads.slice(0, 12).map((transfer) => `- ${transfer.destination}`),
+    );
+  }
+  if (uploads.length) {
+    lines.push(
+      `已上传 ${uploads.length} 个文件到远程：`,
+      ...uploads.slice(0, 12).map((transfer) => `- ${transfer.destination}`),
+    );
+  }
   if (result.changedFiles.length) {
     lines.push(
       `已检测到 ${result.changedFiles.length} 个文件有实际改动（+${result.additions} -${result.deletions}）：`,
@@ -110,7 +160,7 @@ export function pausedCompletionNarrative(
     );
     if (result.changedFiles.length > 12)
       lines.push(`- 还有 ${result.changedFiles.length - 12} 个文件未展开`);
-  } else {
+  } else if (!downloads.length && !uploads.length) {
     lines.push("尚未检测到结构化文件差异，已有命令和检查记录仍已保留。");
   }
   if (result.missingOperations.length) {

@@ -1,10 +1,6 @@
 import { z } from "zod";
 
-export const stateKeySchema = z.enum([
-  "tasks",
-  "mcpServers",
-  "scheduledTasks",
-]);
+export const stateKeySchema = z.enum(["tasks", "mcpServers", "scheduledTasks"]);
 export const idSchema = z.string().trim().min(1).max(256);
 export const taskNameSchema = z.string().trim().min(1).max(80);
 export const taskIdsSchema = z.array(idSchema).min(1).max(5_000);
@@ -124,6 +120,6 @@ export const modelRequestSchema = z.object({
   contextWindow: z.number().int().positive().optional(),
   agentRole: z.enum(["planner", "executor"]).optional(),
   collaboration: collaborationSchema.optional(),
-  agentDepth: z.number().int().min(0).max(2).optional(),
+  agentDepth: z.number().int().min(0).max(1).optional(),
   recoveryContext: z.string().max(20_000).optional(),
 });

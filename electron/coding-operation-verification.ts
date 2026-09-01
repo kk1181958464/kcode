@@ -243,21 +243,70 @@ export function successfulToolNames(history: CodingVerificationHistoryItem[]) {
 export function structuredToolEvidenceSummary(
   history: CodingVerificationHistoryItem[],
 ): ToolEvidenceSummary {
-  const calls = new Map<string, string>();
+  const calls = new Map<
+    string,
+    { name: string; input: Record<string, unknown> }
+  >();
   for (const item of history)
     if (item.kind === "calls")
-      for (const call of item.calls) calls.set(call.id, call.name);
+      for (const call of item.calls)
+        calls.set(call.id, { name: call.name, input: call.input ?? {} });
 
   let successfulTools = 0;
   let failedTools = 0;
   let additions = 0;
   let deletions = 0;
   const changedFiles = new Set<string>();
+  const transfers = new Map<
+    string,
+    {
+      direction: "download" | "upload";
+      source: string;
+      destination: string;
+    }
+  >();
   for (const [callId, result] of parsedResults(history)) {
-    if (!calls.has(callId)) continue;
+    const call = calls.get(callId);
+    if (!call) continue;
     if (result.success === true) successfulTools += 1;
     else failedTools += 1;
     const data = result.data;
+    if (result.success === true && call.name === "ssh_download_file") {
+      const source = String(call.input.remotePath ?? "").trim();
+      const destination = String(
+        data?.path ?? call.input.localPath ?? "",
+      ).trim();
+      if (destination) {
+        const transfer = {
+          direction: "download" as const,
+          source,
+          destination,
+        };
+        transfers.set(
+          `${transfer.direction}:${transfer.source}:${transfer.destination}`,
+          transfer,
+        );
+      }
+      continue;
+    }
+    if (result.success === true && call.name === "ssh_upload_file") {
+      const source = String(call.input.localPath ?? "").trim();
+      const destination = String(
+        data?.path ?? call.input.remotePath ?? "",
+      ).trim();
+      if (destination) {
+        const transfer = {
+          direction: "upload" as const,
+          source,
+          destination,
+        };
+        transfers.set(
+          `${transfer.direction}:${transfer.source}:${transfer.destination}`,
+          transfer,
+        );
+      }
+      continue;
+    }
     if (!data || !hasActualMutation(data)) continue;
     const fileChanges = Array.isArray(data.fileChanges)
       ? data.fileChanges.filter(
@@ -285,6 +334,7 @@ export function structuredToolEvidenceSummary(
     successfulTools,
     failedTools,
     changedFiles: [...changedFiles],
+    ...(transfers.size ? { transfers: [...transfers.values()] } : {}),
     additions,
     deletions,
   };

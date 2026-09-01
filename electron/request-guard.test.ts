@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   fetchWithRetry,
+  readResponseText,
   readStreamChunk,
   retryAfterMilliseconds,
 } from "./request-guard";
@@ -142,6 +143,23 @@ test("fails and cancels a model stream after an idle timeout", async () => {
     /响应流长时间没有新数据/,
   );
   assert.equal(cancelled, true);
+});
+
+test("bounds a non-SSE response body by the model turn deadline", async () => {
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode("partial"));
+    },
+  });
+  await assert.rejects(
+    readResponseText(
+      new Response(stream),
+      new AbortController().signal,
+      1_000,
+      20,
+    ),
+    /响应流长时间没有新数据/,
+  );
 });
 
 test("does not multiply retries across calls sharing one model budget", async () => {

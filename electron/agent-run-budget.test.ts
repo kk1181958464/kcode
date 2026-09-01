@@ -5,6 +5,8 @@ import {
   EXECUTOR_HARD_ROUND_LIMIT,
   EXECUTOR_SOFT_DURATION_MS,
   EXECUTOR_SOFT_ROUND_LIMIT,
+  SUBAGENT_HARD_ROUND_LIMIT,
+  SUBAGENT_SOFT_ROUND_LIMIT,
   PLANNER_HARD_ROUND_LIMIT,
   PLANNER_SOFT_ROUND_LIMIT,
   ROOT_HARD_DURATION_MS,
@@ -12,6 +14,7 @@ import {
   ROOT_SOFT_DURATION_MS,
   ROOT_SOFT_ROUND_LIMIT,
   agentFinalizationMode,
+  externalWaitLimitReached,
 } from "./agent-run-budget";
 
 test("bounds ordinary runs with an explicit root-task budget", () => {
@@ -116,6 +119,46 @@ test("allows incomplete work until the executor hard limit", () => {
       evidenceComplete: false,
     }),
     "limit-reached",
+  );
+});
+
+test("gives ordinary subagents a bounded independent budget", () => {
+  assert.equal(
+    agentFinalizationMode({
+      agentDepth: 1,
+      completedRounds: SUBAGENT_SOFT_ROUND_LIMIT,
+      elapsedMs: 1,
+      evidenceComplete: true,
+    }),
+    "evidence-complete",
+  );
+  assert.equal(
+    agentFinalizationMode({
+      agentDepth: 1,
+      completedRounds: SUBAGENT_HARD_ROUND_LIMIT,
+      elapsedMs: 1,
+      evidenceComplete: false,
+    }),
+    "limit-reached",
+  );
+});
+
+test("detects a child wait that has exceeded its no-progress guard", () => {
+  assert.equal(
+    externalWaitLimitReached({ stalledRounds: 3, startedAt: 100, now: 100 }),
+    false,
+  );
+  assert.equal(
+    externalWaitLimitReached({ stalledRounds: 4, startedAt: 100, now: 100 }),
+    true,
+  );
+  assert.equal(
+    externalWaitLimitReached({
+      stalledRounds: 0,
+      startedAt: 100,
+      now: 300_100,
+    }),
+    true,
   );
 });
 

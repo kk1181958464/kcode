@@ -11,12 +11,16 @@ import type {
 } from "../src/types";
 
 const MAX_ACTIVE_SUBAGENTS_PER_ROOT = 8;
+const MAX_TOTAL_SUBAGENTS_PER_ROOT = 12;
+// A child completes its assigned scope directly. Preventing nested trees keeps
+// a single parent task from expanding into an unbounded audit fan-out.
+export const MAX_SUBAGENT_DEPTH = 1;
 const MAX_TRANSCRIPT_CHARS = 10_000;
 const MAX_RETAINED_TRANSCRIPT_CHARS = 2_000;
 const MAX_RESULT_ACTIVITIES = 25;
 const STOP_GRACE_MS = 10_000;
-export const DEFAULT_SUBAGENT_WAIT_TIMEOUT_MS = 5 * 60_000;
-export const MAX_SUBAGENT_WAIT_TIMEOUT_MS = 60 * 60_000;
+export const DEFAULT_SUBAGENT_WAIT_TIMEOUT_MS = 60_000;
+export const MAX_SUBAGENT_WAIT_TIMEOUT_MS = 60_000;
 
 export type WaitForSubagentsOptions = {
   timeoutMs?: number;
@@ -41,6 +45,7 @@ type SubagentRecord = {
   requestId: string;
   parentRequestId: string;
   rootRequestId: string;
+  depth: number;
   name: string;
   task: string;
   status: SubagentStatus;
@@ -54,6 +59,7 @@ type SubagentRecord = {
   usage: { input: number; output: number; cached: number };
   usageReported: boolean;
   activities: Map<string, AgentActivity>;
+  progressVersion: number;
   instructions: string[];
   executionTarget?: SubagentExecutionTarget;
 };
@@ -167,6 +173,11 @@ export function spawnSubagent(
 ) {
   const parent = recordByRequestId(parentRequestId);
   const rootRequestId = parent?.rootRequestId ?? parentRequestId;
+  const depth = (parent?.depth ?? 0) + 1;
+  if (depth > MAX_SUBAGENT_DEPTH)
+    throw new Error(
+      "当前 Agent 已达到委派深度；请直接完成已分配范围，不要再创建下级 Agent。",
+    );
   const active = [...agents.values()].filter(
     (agent) =>
       agent.rootRequestId === rootRequestId &&
@@ -176,6 +187,13 @@ export function spawnSubagent(
     throw new Error(
       `当前任务已有 ${MAX_ACTIVE_SUBAGENTS_PER_ROOT} 个子 Agent 在运行，请先等待或停止部分任务。`,
     );
+  const total = [...agents.values()].filter(
+    (agent) => agent.rootRequestId === rootRequestId,
+  ).length;
+  if (total >= MAX_TOTAL_SUBAGENTS_PER_ROOT)
+    throw new Error(
+      `当前任务已创建 ${MAX_TOTAL_SUBAGENTS_PER_ROOT} 个子 Agent，请先合并已有结果再继续委派。`,
+    );
   const id = randomUUID();
   const requestId = `subagent:${id}`;
   const controller = new AbortController();
@@ -184,6 +202,7 @@ export function spawnSubagent(
     requestId,
     parentRequestId,
     rootRequestId,
+    depth,
     name:
       name.trim() || `子 Agent ${directChildren(parentRequestId).length + 1}`,
     task,
@@ -196,6 +215,7 @@ export function spawnSubagent(
     usage: { input: 0, output: 0, cached: 0 },
     usageReported: false,
     activities: new Map(),
+    progressVersion: 0,
     instructions: [],
     executionTarget,
   };
@@ -211,17 +231,19 @@ export function spawnSubagent(
   record.promise = (async () => {
     try {
       for await (const event of runner(requestId, id, controller.signal)) {
-        if (event.type === "text")
+        if (event.type === "text") {
+          if (event.delta.trim()) record.progressVersion += 1;
           record.transcript = (record.transcript + event.delta).slice(
             -MAX_TRANSCRIPT_CHARS,
           );
-        else if (event.type === "usage")
+        } else if (event.type === "usage")
           record.usage = {
             input: event.input,
             output: event.output,
             cached: event.cached ?? 0,
           };
         else if (event.type === "activity") {
+          record.progressVersion += 1;
           record.activities.set(event.activity.id, event.activity);
           eventSinks.get(record.rootRequestId)?.({
             type: "activity",
@@ -234,10 +256,28 @@ export function spawnSubagent(
               ...record.executionTarget,
             },
           });
-        } else if (event.type === "progress" && record.executionTarget) {
+        } else if (event.type === "progress") {
+          // Progress text is still forwarded for a live UI, but transport and
+          // reasoning heartbeats are not concrete child work. Only text,
+          // activities, and activity output advance the stall token.
+          if (!record.executionTarget) continue;
           eventSinks.get(record.rootRequestId)?.({
             type: "progress",
             message: `${record.executionTarget.modelDisplayName} · ${event.message}`,
+          });
+        } else if (event.type === "activity_output") {
+          record.progressVersion += 1;
+          const activity = record.activities.get(event.activityId);
+          if (activity)
+            activity.output =
+              event.mode === "append"
+                ? `${activity.output ?? ""}${event.value}`.slice(-100_000)
+                : event.value.slice(-100_000);
+          eventSinks.get(record.rootRequestId)?.({
+            type: "activity_output",
+            activityId: event.activityId,
+            mode: event.mode,
+            value: event.value,
           });
         } else if (event.type === "error") throw new Error(event.message);
       }
@@ -361,10 +401,26 @@ function collectSubagentResult(agent: SubagentRecord) {
   return result;
 }
 
+/** Collect finished children without opening another wait cycle. */
+export function collectFinishedSubagentResults(parentRequestId: string) {
+  return directChildren(parentRequestId)
+    .filter(
+      (agent) =>
+        !activeSubagent(agent) &&
+        !agent.usageReported &&
+        (agent.status === "completed" ||
+          agent.status === "failed" ||
+          agent.status === "stopped"),
+    )
+    .map(collectSubagentResult);
+}
+
 export type WaitForSubagentsResult = {
   message: string;
   timedOut: boolean;
   interrupted: boolean;
+  /** A child emitted concrete text, activity, or activity output during this wait. */
+  progressed: boolean;
   completed: Array<ReturnType<typeof collectSubagentResult>>;
   pending: Array<ReturnType<typeof publicState>>;
 };
@@ -399,6 +455,12 @@ export async function waitForSubagents(
   const pendingAgents = () => selected.filter(activeSubagent);
   const readyAgents = () => selected.filter((agent) => !activeSubagent(agent));
   const pendingAtStart = pendingAgents();
+  const progressAtStart = new Map(
+    selected.map((agent) => [agent.id, agent.progressVersion]),
+  );
+  const collectedAtStart = new Map(
+    selected.map((agent) => [agent.id, agent.usageReported]),
+  );
   const freshReadyAtStart = readyAgents().filter(
     (agent) => !agent.usageReported,
   );
@@ -472,6 +534,10 @@ export async function waitForSubagents(
   const pending = pendingAgents().map(publicState);
   const timedOut = outcome === "timeout";
   const interrupted = outcome === "aborted" || outcome === "steered";
+  const progressed =
+    selected.some(
+      (agent) => agent.progressVersion > (progressAtStart.get(agent.id) ?? 0),
+    ) || completed.some((agent) => !(collectedAtStart.get(agent.id) ?? false));
   const message = completed.length
     ? `已有 ${completed.length} 个子 Agent 返回结果。`
     : timedOut
@@ -479,7 +545,20 @@ export async function waitForSubagents(
       : interrupted
         ? `等待已被新指令或父任务状态变化打断；${pending.length} 个子 Agent 仍在后台运行。`
         : "所选子 Agent 的结果已收集。";
-  return { message, timedOut, interrupted, completed, pending };
+  return { message, timedOut, interrupted, progressed, completed, pending };
+}
+
+/**
+ * A cheap monotonic snapshot for the parent loop. It also notices a child
+ * finishing between two list_agents calls, even when wait_agent was not used.
+ */
+export function subagentProgressToken(parentRequestId: string) {
+  return directChildren(parentRequestId)
+    .map(
+      (agent) =>
+        `${agent.id}:${agent.status}:${agent.progressVersion}:${agent.completedAt ?? 0}`,
+    )
+    .join("|");
 }
 
 export async function stopSubagent(parentRequestId: string, agentId: string) {

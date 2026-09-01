@@ -12770,6 +12770,32 @@ select:focus-visible {
   white-space: nowrap;
 }
 
+.message-completion-file-link {
+  min-width: 0;
+  max-width: min(100%, 390px);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.message-completion-file-link svg {
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+.message-completion-file-link code {
+  min-width: 0;
+}
+
+.message-completion-file-link:hover code {
+  border-color: color-mix(in srgb, currentColor 45%, var(--ui-border));
+}
+
 .message-completion-files em {
   font-size: 10px;
   font-style: normal;

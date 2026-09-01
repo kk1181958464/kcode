@@ -253,19 +253,31 @@ export async function readResponseText(
   response: Response,
   signal: AbortSignal,
   idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS,
+  maxDurationMs?: number,
 ) {
   if (!response.body) return "";
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let text = "";
+  const startedAt = Date.now();
   while (true) {
+    const remainingMs =
+      maxDurationMs === undefined
+        ? undefined
+        : maxDurationMs - (Date.now() - startedAt);
+    if (remainingMs !== undefined && remainingMs <= 0)
+      throw new StreamReadTimeoutError(maxDurationMs!);
     const { done, value } = await readStreamChunk(
       reader,
       signal,
-      idleTimeoutMs,
+      remainingMs === undefined
+        ? idleTimeoutMs
+        : Math.max(1, Math.min(idleTimeoutMs, remainingMs)),
     );
     text += decoder.decode(value, { stream: !done });
     if (done) return text;
+    if (maxDurationMs !== undefined && Date.now() - startedAt >= maxDurationMs)
+      throw new StreamReadTimeoutError(maxDurationMs);
   }
 }
 // Mid-stream / proxy failures that are worth retrying: upstream overload, rate

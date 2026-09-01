@@ -8,11 +8,13 @@ import {
   drainSubagentMessages,
   listSubagents,
   messageSubagent,
+  MAX_SUBAGENT_DEPTH,
   permissionPolicyForSubagent,
   resetSubagentsForTests,
   setSubagentEventSink,
   spawnSubagent,
   stopSubagent,
+  subagentProgressToken,
   waitForSubagents,
 } from "./subagents";
 
@@ -90,16 +92,15 @@ test("runs multiple subagents in parallel and aggregates results", async () => {
   releases.get(first.id)?.();
   const firstWait = await waitForSubagents("parent", [first.id, second.id]);
   assert.equal(firstWait.completed.length, 1);
+  assert.equal(firstWait.progressed, true);
   assert.equal(firstWait.pending.length, 1);
   assert.equal(firstWait.completed[0].status, "completed");
   assert.equal(firstWait.completed[0].usage.input, 10);
   assert.match(firstWait.completed[0].activityRecords[0].title, /^代码 · /);
   let secondWaitSettled = false;
-  const secondWaitPromise = waitForSubagents(
-    "parent",
-    [first.id, second.id],
-    { timeoutMs: 1_000 },
-  ).then((result) => {
+  const secondWaitPromise = waitForSubagents("parent", [first.id, second.id], {
+    timeoutMs: 1_000,
+  }).then((result) => {
     secondWaitSettled = true;
     return result;
   });
@@ -112,9 +113,11 @@ test("runs multiple subagents in parallel and aggregates results", async () => {
   releases.get(second.id)?.();
   const secondWait = await secondWaitPromise;
   assert.equal(secondWait.completed.length, 1);
+  assert.equal(secondWait.progressed, true);
   assert.equal(secondWait.completed[0].id, second.id);
   assert.equal(secondWait.completed[0].status, "completed");
   const repeated = await waitForSubagents("parent", [first.id]);
+  assert.equal(repeated.progressed, false);
   assert.deepEqual(repeated.completed[0].usageDelta, {
     input: 0,
     output: 0,
@@ -204,6 +207,72 @@ test("forwards child permission activities to the root task", async () => {
     assert.equal(forwarded[0].activity.modelDisplayName, "GPT-5.6 Luna");
     assert.equal(forwarded[0].activity.reasoningEffort, "high");
   }
+});
+
+test("ignores child transport heartbeats but counts activity output", async () => {
+  let activityReady!: () => void;
+  let outputSeen!: () => void;
+  let releaseOutput!: () => void;
+  let heartbeatBefore = "";
+  let heartbeatAfter = "";
+  const activityReadyPromise = new Promise<void>(
+    (resolve) => (activityReady = resolve),
+  );
+  const outputSeenPromise = new Promise<void>(
+    (resolve) => (outputSeen = resolve),
+  );
+  const outputGate = new Promise<void>((resolve) => (releaseOutput = resolve));
+  const parent = new AbortController();
+  const child = spawnSubagent(
+    "progress-parent",
+    "进度审查",
+    "等待命令输出",
+    parent.signal,
+    async function* (requestId, _agentId, signal) {
+      heartbeatBefore = subagentProgressToken(requestId);
+      yield {
+        type: "progress",
+        message: "模型正在推理，尚未输出正文或工具调用，已等待 10 秒…",
+      };
+      heartbeatAfter = subagentProgressToken(requestId);
+      yield {
+        type: "activity",
+        activity: {
+          id: "running-command",
+          requestId,
+          tool: "run_command",
+          status: "running",
+          title: "运行命令",
+          startedAt: Date.now(),
+          input: { command: "long-command" },
+        },
+      };
+      activityReady();
+      await outputGate;
+      yield {
+        type: "activity_output",
+        activityId: "running-command",
+        mode: "append",
+        value: "命令仍在执行",
+      };
+      outputSeen();
+      await new Promise<void>((resolve) =>
+        signal.addEventListener("abort", () => resolve(), { once: true }),
+      );
+    },
+  );
+  await activityReadyPromise;
+  assert.equal(heartbeatBefore, heartbeatAfter);
+  const waitPromise = waitForSubagents("progress-parent", [child.id], {
+    timeoutMs: 100,
+  });
+  releaseOutput();
+  await outputSeenPromise;
+  const result = await waitPromise;
+  assert.equal(result.timedOut, true);
+  assert.equal(result.progressed, true);
+  parent.abort();
+  await stopSubagent("progress-parent", child.id);
 });
 
 test("rejects instructions after the child enters its final response", async () => {
@@ -391,17 +460,16 @@ test("wait timeout leaves a stuck subagent running and uncollected", async () =>
   );
   const progress: string[] = [];
   const startedAt = Date.now();
-  const result = await waitForSubagents(
-    "timeout-parent",
-    [child.id],
-    {
-      timeoutMs: 20,
-      onProgress: (message) => progress.push(message),
-    },
-  );
+  const result = await waitForSubagents("timeout-parent", [child.id], {
+    timeoutMs: 20,
+    onProgress: (message) => progress.push(message),
+  });
 
   assert.ok(Date.now() - startedAt < 2_000, "wait must be bounded");
   assert.equal(result.timedOut, true);
+  // The child emitted a bounded transcript before it became stuck, so the
+  // parent should be able to distinguish this from a completely silent child.
+  assert.equal(result.progressed, true);
   assert.equal(result.completed.length, 0);
   assert.equal(result.pending[0].status, "running");
   assert.equal(result.pending[0].collected, false);
@@ -410,6 +478,38 @@ test("wait timeout leaves a stuck subagent running and uncollected", async () =>
   const stopped = await stopSubagent("timeout-parent", child.id);
   assert.equal(stopped.status, "stopped");
   assert.equal(stopped.transcript, "partial");
+});
+
+test("limits delegation to one child level", async () => {
+  const parent = new AbortController();
+  const child = spawnSubagent(
+    "depth-parent",
+    "一级任务",
+    "等待",
+    parent.signal,
+    async function* (_requestId, _agentId, signal) {
+      await new Promise<void>((resolve) =>
+        signal.addEventListener("abort", () => resolve(), { once: true }),
+      );
+    },
+  );
+  assert.equal(MAX_SUBAGENT_DEPTH, 1);
+  assert.throws(
+    () =>
+      spawnSubagent(
+        `subagent:${child.id}`,
+        "二级任务",
+        "不应创建",
+        parent.signal,
+        async function* () {
+          yield { type: "done" };
+        },
+      ),
+    /达到委派深度/,
+  );
+  assert.equal(subagentProgressToken("depth-parent").includes(child.id), true);
+  parent.abort();
+  await waitForSubagents("depth-parent", [child.id]);
 });
 
 test("new steering input interrupts only the wait, not the subagent", async () => {

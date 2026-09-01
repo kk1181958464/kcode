@@ -49,3 +49,33 @@ test("pause summaries expose actual files and execution counts", () => {
   assert.match(narrative, /\+12 -4/);
   assert.match(narrative, /失败/);
 });
+
+test("pause summaries report downloads separately from source changes", () => {
+  const destination = "D:\\exports\\account-session.json";
+  const result = completionResultFromActivities([
+    activity({
+      tool: "ssh_download_file",
+      status: "success",
+      path: destination,
+      input: {
+        remotePath: "/tmp/account-session.json",
+        localPath: destination,
+      },
+      changed: true,
+    }),
+  ]);
+
+  assert.deepEqual(result.operations, ["coding:download"]);
+  assert.deepEqual(result.changedFiles, []);
+  assert.deepEqual(result.transfers, [
+    {
+      direction: "download",
+      source: "/tmp/account-session.json",
+      destination,
+    },
+  ]);
+  const narrative = pausedCompletionNarrative(result);
+  assert.match(narrative, /已下载 1 个文件到本地/);
+  assert.match(narrative, /D:\\exports\\account-session\.json/);
+  assert.doesNotMatch(narrative, /实际改动/);
+});

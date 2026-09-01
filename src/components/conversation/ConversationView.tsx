@@ -262,6 +262,46 @@ function MessageItem({
                       message.completionResult.deletions > 0) &&
                       ` · +${message.completionResult.additions} -${message.completionResult.deletions}`}
                   </small>
+                  {(message.completionResult.transfers?.length ?? 0) > 0 && (
+                    <span className="message-completion-files">
+                      <b>文件传输</b>
+                      {message.completionResult.transfers
+                        ?.slice(0, 8)
+                        .map((transfer) =>
+                          transfer.direction === "download" ? (
+                            <button
+                              key={`${transfer.direction}:${transfer.source}:${transfer.destination}`}
+                              type="button"
+                              className="message-completion-file-link"
+                              title={`在文件资源管理器中显示 ${transfer.destination}`}
+                              onClick={() =>
+                                void revealLocalPath(
+                                  transfer.destination,
+                                  workspacePath,
+                                )
+                              }
+                            >
+                              <FolderOpen size={11} />
+                              <code>{transfer.destination}</code>
+                            </button>
+                          ) : (
+                            <code
+                              key={`${transfer.direction}:${transfer.source}:${transfer.destination}`}
+                              title={`已上传到 ${transfer.destination}`}
+                            >
+                              {transfer.destination}
+                            </code>
+                          ),
+                        )}
+                      {(message.completionResult.transfers?.length ?? 0) >
+                        8 && (
+                        <em>
+                          还有 {message.completionResult.transfers!.length - 8}{" "}
+                          个
+                        </em>
+                      )}
+                    </span>
+                  )}
                   {message.completionResult.changedFiles.length > 0 && (
                     <span className="message-completion-files">
                       <b>实际改动文件</b>

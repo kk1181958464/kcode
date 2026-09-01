@@ -352,12 +352,13 @@ export type ChatMessage = {
 export type AgentMessagePhase = "unknown" | "commentary" | "final_answer";
 
 export type AgentCompletionKind =
-  | "answer"
-  | "changed"
-  | "executed"
-  | "no_change"
-  | "incomplete"
-  | "blocked";
+  "answer" | "changed" | "executed" | "no_change" | "incomplete" | "blocked";
+
+export type AgentFileTransfer = {
+  direction: "download" | "upload";
+  source: string;
+  destination: string;
+};
 
 export type AgentCompletionResult = {
   kind: AgentCompletionKind;
@@ -369,6 +370,8 @@ export type AgentCompletionResult = {
   successfulTools: number;
   failedTools: number;
   changedFiles: string[];
+  /** Successful file transfers, kept separate from source-code changes. */
+  transfers?: AgentFileTransfer[];
   additions: number;
   deletions: number;
   notice?: string;

@@ -89,7 +89,7 @@ test("does not infer validation from arguments or output-like prose", () => {
     "node -e \"console.log('validation success')\"",
     "node $scriptPath $root",
     'for f in app/*.php; do php -l "$f"; done',
-    'if php -l app/Controller.php; then echo valid; fi',
+    "if php -l app/Controller.php; then echo valid; fi",
   ])
     assert.equal(isValidationCommand(command), false, command);
 });
@@ -131,6 +131,45 @@ test("requires structured successful mutation evidence", () => {
     changedFiles: ["a.ts"],
     additions: 2,
     deletions: 1,
+  });
+});
+
+test("tracks transfers without counting them as source changes", () => {
+  const destination = "D:\\exports\\account-session.json";
+  const history: CodingVerificationHistoryItem[] = [
+    {
+      kind: "calls",
+      calls: [
+        {
+          id: "download",
+          name: "ssh_download_file",
+          input: {
+            remotePath: "/tmp/account-session.json",
+            localPath: destination,
+          },
+        },
+      ],
+    },
+    compactOperationEvidenceResult("download", "ssh_download_file", true, {
+      changed: true,
+      path: destination,
+    }),
+  ];
+
+  assert.deepEqual(structuredToolEvidenceSummary(history), {
+    toolCalls: 1,
+    successfulTools: 1,
+    failedTools: 0,
+    changedFiles: [],
+    transfers: [
+      {
+        direction: "download",
+        source: "/tmp/account-session.json",
+        destination,
+      },
+    ],
+    additions: 0,
+    deletions: 0,
   });
 });
 

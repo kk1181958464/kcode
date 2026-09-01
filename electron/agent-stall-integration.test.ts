@@ -5,6 +5,11 @@ import path from "node:path";
 import test from "node:test";
 import type { AgentEvent, ModelRequest } from "../src/types";
 import { runAgent, type RunAgentDeps } from "./agent";
+import {
+  listSubagents,
+  resetSubagentsForTests,
+  spawnSubagent,
+} from "./subagents";
 
 function fakeProvider(): RunAgentDeps["getProvider"] {
   return async () =>
@@ -141,6 +146,99 @@ test("finalizes repeated read-only checks even while the plan remains active", a
       event.type === "done",
   );
   assert.notEqual(done?.result?.kind, "incomplete");
+});
+
+test("stops a child that remains active without observable progress", async () => {
+  const workspacePath = await mkdtemp(
+    path.join(os.tmpdir(), "kcode-subagent-stall-"),
+  );
+  const requestId = "subagent-stall-integration";
+  const childController = new AbortController();
+  const child = spawnSubagent(
+    requestId,
+    "无进展审查",
+    "保持等待",
+    childController.signal,
+    async function* (_requestId, _agentId, signal) {
+      await new Promise<void>((resolve) =>
+        signal.addEventListener("abort", () => resolve(), { once: true }),
+      );
+    },
+  );
+  const request: ModelRequest = {
+    providerId: "fake",
+    modelId: "fake-model",
+    messages: [{ role: "user", content: "汇总子任务结果" }],
+    permissionMode: "full-access",
+    workspacePath,
+  };
+  let rounds = 0;
+  const events: AgentEvent[] = [];
+  let childState: ReturnType<typeof listSubagents>[number] | undefined;
+  try {
+    for await (const event of runAgent(
+      requestId,
+      request,
+      new AbortController().signal,
+      {
+        getProvider: fakeProvider(),
+        async *streamTurn(args) {
+          rounds += 1;
+          if (!args.toolsEnabled) {
+            yield {
+              type: "complete",
+              turn: {
+                text: "已汇总已收到的结果，未完成的子任务已停止。",
+                calls: [],
+                rawCalls: [],
+                usage: { input: 1, output: 1, cached: 0 },
+              },
+            };
+            return;
+          }
+          yield {
+            type: "complete",
+            turn: {
+              text: "继续检查子任务状态。",
+              calls: [
+                {
+                  id: `list-${rounds}`,
+                  name: "list_agents",
+                  input: {},
+                },
+              ],
+              rawCalls: [],
+              usage: { input: 1, output: 1, cached: 0 },
+            },
+          };
+        },
+      },
+    ))
+      events.push(event);
+    childState = listSubagents(requestId)[0];
+  } finally {
+    childController.abort();
+    await resetSubagentsForTests();
+  }
+
+  assert.equal(rounds, 5, "four stalled rounds plus one finalization turn");
+  assert.equal(childState?.id, child.id);
+  assert.equal(childState?.status, "stopped");
+  assert.equal(childState?.collected, true);
+  assert.ok(
+    events.some(
+      (event) =>
+        event.type === "progress" &&
+        event.message.includes("没有新进展") &&
+        event.message.includes("停止未完成"),
+    ),
+  );
+  const done = events.find(
+    (event): event is Extract<AgentEvent, { type: "done" }> =>
+      event.type === "done",
+  );
+  assert.equal(done?.outcome, "paused");
+  assert.equal(done?.result?.kind, "incomplete");
 });
 
 test("bounds changing read-only output instead of treating it as progress forever", async () => {
@@ -399,8 +497,15 @@ test("marks a reasoning-only finalization fallback as paused", async () => {
   assert.ok(
     events.some(
       (event) =>
-        event.type === "text" && event.delta.includes("未完整完成暂停"),
+        event.type === "text" && event.delta.includes("本轮已安全暂停"),
     ),
+  );
+  assert.equal(
+    events.some(
+      (event) =>
+        event.type === "text" && event.delta.includes("最近一次成功结果"),
+    ),
+    false,
   );
 });
 

@@ -266,6 +266,7 @@ import {
   beginSubagentCleanup,
   claimSubagentMutation,
   closeSubagentMessageQueue,
+  collectFinishedSubagentResults,
   collectedSubagentSummaries,
   drainSubagentMessages,
   listSubagents,
@@ -273,7 +274,10 @@ import {
   permissionPolicyForSubagent,
   spawnSubagent,
   stopSubagent,
+  stopSubagentsForParent,
+  subagentProgressToken,
   waitForSubagents,
+  MAX_SUBAGENT_DEPTH,
 } from "./subagents";
 import {
   executorModelOverrides,
@@ -284,6 +288,11 @@ import {
 } from "./collaboration";
 import {
   agentFinalizationMode,
+  EXTERNAL_WAIT_MAX_DURATION_MS,
+  EXTERNAL_WAIT_STALL_ROUNDS,
+  SUBAGENT_WAIT_MIN_MS,
+  SUBAGENT_WAIT_SLICE_MS,
+  externalWaitLimitReached,
   type AgentFinalizationMode,
 } from "./agent-run-budget";
 import {
@@ -345,6 +354,13 @@ type ToolResult = Partial<
   operationEvidence?: CodingOperation[];
   browserOperationEvidence?: BrowserOperation[];
   subagentUsage?: { input: number; output: number; cached: number };
+  subagentWait?: {
+    completed: number;
+    pending: number;
+    timedOut: boolean;
+    interrupted: boolean;
+    progressed: boolean;
+  };
   planUpdate?: {
     explanation?: string;
     plan: Array<{ step: string; status: AgentPlanStepStatus }>;
@@ -459,6 +475,8 @@ function compactEvidenceCall(call: ToolCall) {
     "processId",
     "operation",
     "reason",
+    "localPath",
+    "remotePath",
   ]) {
     if (call.input[key] !== undefined)
       input[key] = String(call.input[key]).slice(0, 4_000);
@@ -584,6 +602,42 @@ function codingEvidenceFromActivities(activities: AgentActivity[]) {
     });
   }
   return [...successfulCodingEvidence(evidence)];
+}
+
+function subagentActivityHistory(activity: AgentActivity): HistoryItem[] {
+  const input = {
+    ...(activity.input ?? {}),
+    ...(activity.command ? { command: activity.command } : {}),
+    ...(activity.path ? { path: activity.path } : {}),
+  };
+  return [
+    {
+      kind: "calls",
+      calls: [{ id: activity.id, name: activity.tool, input }],
+      rawCalls: [],
+    },
+    compactOperationEvidenceResult(
+      activity.id,
+      activity.tool,
+      activity.status === "success",
+      {
+        changed: activity.changed,
+        executed: activity.executed,
+        mutationAttempted: undefined,
+        noChangeReported: undefined,
+        userInputRequested: undefined,
+        operationEvidence: activity.operationEvidence,
+        browserOperationEvidence: activity.browserOperationEvidence,
+        exitCode: activity.exitCode,
+        path: activity.path,
+        additions: activity.additions,
+        deletions: activity.deletions,
+        fileChanges: activity.fileChanges,
+        diff: activity.diff,
+        output: activity.output,
+      },
+    ),
+  ];
 }
 
 function browserEvidenceFromActivities(activities: AgentActivity[]) {
@@ -1680,7 +1734,7 @@ const tools = [
   {
     name: "wait_agent",
     description:
-      "Wait for the first selected direct subagent final result, or any direct subagent when agentIds is omitted. A timeout only ends this wait call and never stops the subagent. Prefer waits measured in minutes to avoid busy polling. Completed results include final text, tool summaries, usage, and file changes.",
+      "Wait for the first selected direct subagent final result, or any direct subagent when agentIds is omitted. Pass every relevant agent id in one call; do not emit one wait call per child in the same turn. A timeout only ends this wait call and never stops the subagent. Completed results include final text, tool summaries, usage, and file changes.",
     parameters: {
       type: "object",
       properties: {
@@ -1688,7 +1742,7 @@ const tools = [
         timeoutMs: {
           type: "number",
           description:
-            "Wait timeout in milliseconds. Defaults to 300000 and is capped at 3600000. Timeout does not stop agents.",
+            "Wait timeout in milliseconds. Defaults to 60000 and is capped at 60000; all wait_agent calls in one model turn share that 60000 ms budget. Timeout does not stop agents.",
         },
       },
       additionalProperties: false,
@@ -2530,6 +2584,7 @@ async function execute(
   request: ModelRequest,
   signal: AbortSignal,
   onProgress: (output: string) => void = () => undefined,
+  waitTimeoutOverrideMs?: number,
 ): Promise<ToolResult> {
   const runtimeRemoteState = call.name.startsWith("ssh_")
     ? await sshRemoteState(browserSessionId).catch(() => undefined)
@@ -3850,8 +3905,10 @@ async function execute(
     };
   }
   if (call.name === "spawn_agent") {
-    if ((request.agentDepth ?? 0) >= 2)
-      throw new Error("当前子 Agent 已达到委派深度，不能继续创建下级 Agent。");
+    if ((request.agentDepth ?? 0) >= MAX_SUBAGENT_DEPTH)
+      throw new Error(
+        "当前 Agent 已达到委派深度；请直接完成已分配范围，不要再创建下级 Agent。",
+      );
     const task = String(call.input.task || "").trim();
     if (!task) throw new Error("缺少子 Agent 任务目标。");
     const name = String(call.input.name || "").trim();
@@ -3963,13 +4020,23 @@ async function execute(
       ? call.input.agentIds.map(String)
       : undefined;
     const requestedTimeout = Number(call.input.timeoutMs);
+    const requestedWaitTimeoutMs = Number.isFinite(requestedTimeout)
+      ? Math.min(
+          SUBAGENT_WAIT_SLICE_MS,
+          Math.max(SUBAGENT_WAIT_MIN_MS, Math.floor(requestedTimeout)),
+        )
+      : SUBAGENT_WAIT_SLICE_MS;
+    const waitTimeoutMs =
+      waitTimeoutOverrideMs !== undefined
+        ? Math.min(
+            requestedWaitTimeoutMs,
+            Math.max(1, Math.floor(waitTimeoutOverrideMs)),
+          )
+        : requestedWaitTimeoutMs;
     const waitResult = await waitForSubagents(requestId, agentIds, {
       signal,
       onProgress,
-      timeoutMs:
-        Number.isFinite(requestedTimeout) && requestedTimeout > 0
-          ? requestedTimeout
-          : undefined,
+      timeoutMs: waitTimeoutMs,
       subscribeToSteering: (listener) =>
         turnSteeringQueue.subscribe(requestId, listener),
     });
@@ -3986,6 +4053,7 @@ async function execute(
           message: waitResult.message,
           timedOut: waitResult.timedOut,
           interrupted: waitResult.interrupted,
+          progressed: waitResult.progressed,
           completed,
           pending: waitResult.pending,
         },
@@ -4025,6 +4093,13 @@ async function execute(
       ),
       operationEvidence: codingEvidenceFromActivities(childActivities),
       browserOperationEvidence: browserEvidenceFromActivities(childActivities),
+      subagentWait: {
+        completed: waitResult.completed.length,
+        pending: waitResult.pending.length,
+        timedOut: waitResult.timedOut,
+        interrupted: waitResult.interrupted,
+        progressed: waitResult.progressed,
+      },
     };
   }
   if (call.name === "stop_agent") {
@@ -4486,6 +4561,13 @@ async function* streamModelTurn(
   const queue = new AsyncQueue<TurnStreamEvent>();
   let turn: Turn | undefined;
   let reasoningOnlyRecoveryAttempted = false;
+  const turnMaxDurationMs = toolsEnabled
+    ? MODEL_TURN_MAX_DURATION_MS
+    : FINALIZATION_TURN_MAX_DURATION_MS;
+  const turnDeadlineAt = Date.now() + turnMaxDurationMs;
+  const remainingTurnMs = () => turnDeadlineAt - Date.now();
+  const turnTimeout = () =>
+    new SseStreamTimeoutError("absolute", turnMaxDurationMs);
   const reconciler = new RetryTextReconciler();
   const reasoningReconciler = new RetryTextReconciler();
   const enqueue = (event: TurnStreamEvent) => {
@@ -4540,6 +4622,7 @@ async function* streamModelTurn(
   // covers API-key and protocol fallbacks inside modelTurn.
   const run = async () => {
     for (let attempt = 1; ; attempt += 1) {
+      if (remainingTurnMs() <= 0) throw turnTimeout();
       reconciler.beginAttempt();
       reasoningReconciler.beginAttempt();
       try {
@@ -4557,18 +4640,25 @@ async function* streamModelTurn(
           undefined,
           runtime,
           attemptBudget,
+          turnDeadlineAt,
         );
         completeReasoningAttempt();
         completeTextAttempt();
         return;
       } catch (error) {
         const absoluteTurnLimitReached =
-          error instanceof SseStreamTimeoutError &&
-          error.timeoutKind === "absolute";
+          (error instanceof SseStreamTimeoutError &&
+            error.timeoutKind === "absolute") ||
+          remainingTurnMs() <= 0;
         if (absoluteTurnLimitReached) {
+          const timeout =
+            error instanceof SseStreamTimeoutError &&
+            error.timeoutKind === "absolute"
+              ? error
+              : turnTimeout();
           writeLog("warn", "model.stream.turn-timeout", {
             requestId,
-            timeoutMs: error.timeoutMs,
+            timeoutMs: timeout.timeoutMs,
             toolsEnabled,
           });
           pushProgress(
@@ -4576,7 +4666,7 @@ async function* streamModelTurn(
               ? "模型单轮响应超过安全时限，已停止继续等待；已有输出和工具结果会保留…"
               : "模型收尾单轮响应超过安全时限，已停止继续等待…",
           );
-          throw error;
+          throw timeout;
         }
         const reasoningOnlyStream =
           error instanceof SseStreamTimeoutError &&
@@ -4604,7 +4694,7 @@ async function* streamModelTurn(
           pushProgress(
             "模型持续只有思考内容，正在要求它直接收尾（仅自动重试一次）…",
           );
-          await sleep(1_500);
+          await sleep(Math.min(1_500, Math.max(1, remainingTurnMs())));
           if (signal.aborted) throw error;
           continue;
         }
@@ -4642,12 +4732,18 @@ async function* streamModelTurn(
           );
         // Keep already visible text. The next attempt is reconciled against
         // that prefix, so replayed output is suppressed without a visual reset.
-        const delay = modelStreamRetryDelayMs(error, attempt);
+        const remaining = remainingTurnMs();
+        if (remaining <= 0) throw turnTimeout();
+        const delay = Math.min(
+          modelStreamRetryDelayMs(error, attempt),
+          Math.max(1, remaining),
+        );
         pushProgress(
           `上游连接中断，正在重连（${attempt}/${Math.max(1, maxAttempts - 1)}），${Math.ceil(delay / 1_000)} 秒后继续；已有输出和工具结果会保留…`,
         );
         await sleep(delay);
         if (signal.aborted) throw error;
+        if (remainingTurnMs() <= 0) throw turnTimeout();
       }
     }
   };
@@ -4674,7 +4770,20 @@ async function modelTurn(
   protocolOverride?: Protocol,
   runtime?: ModelTurnRuntime,
   attemptBudget?: ModelAttemptBudget,
+  turnDeadlineAt?: number,
 ): Promise<Turn> {
+  const finalizationTurn = !toolsEnabled;
+  const turnMaxDurationMs = finalizationTurn
+    ? FINALIZATION_TURN_MAX_DURATION_MS
+    : MODEL_TURN_MAX_DURATION_MS;
+  // Key/protocol fallbacks are part of the same model turn. Reuse the original
+  // deadline so each recursive fallback cannot open another timeout window.
+  const effectiveTurnDeadlineAt =
+    turnDeadlineAt ?? Date.now() + turnMaxDurationMs;
+  const remainingTurnMs = () => effectiveTurnDeadlineAt - Date.now();
+  const turnTimeout = () =>
+    new SseStreamTimeoutError("absolute", turnMaxDurationMs);
+  if (remainingTurnMs() <= 0) throw turnTimeout();
   const provider =
     runtime?.provider ?? (await getProviderWithKey(request.providerId));
   const apiKeys = provider.apiKeys?.length
@@ -4745,7 +4854,10 @@ async function modelTurn(
   const runtimeTools = toolsEnabled
     ? tools.filter(
         (tool) =>
-          !((request.agentDepth ?? 0) >= 2 && tool.name === "spawn_agent") &&
+          !(
+            (request.agentDepth ?? 0) >= MAX_SUBAGENT_DEPTH &&
+            tool.name === "spawn_agent"
+          ) &&
           (hasBrowserCredentialScope ||
             ![
               "browser_list_credentials",
@@ -4768,7 +4880,8 @@ async function modelTurn(
       (await loadActiveSkillInstructions(latestUserRequest)),
     plannerCollaborationInstruction(request),
     "When a task has multiple independent phases, call update_plan with concise steps and structured statuses instead of writing a numbered plan in prose. Before every tool-call group, write no more than two concise user-facing progress sentences explaining which plan step you are executing and why; keep this preamble under 240 characters. Never dump a full implementation monologue, speculative patch, or repeated plan into the chat. A non-final turn must include a tool call instead of only describing what you will do. Update the plan as steps advance. After a failed tool result, briefly explain how you are adjusting the approach before the next tool call. Never claim success before a tool result confirms it.",
-    "wait_agent returns when the first selected child finishes. A wait timeout is a successful, non-destructive status update: the child remains running and uncollected, so call wait_agent again or use list_agents. Only call stop_agent when the child should actually be cancelled. New user steering may interrupt the wait without stopping the child.",
+    "Delegation is one level only: a subagent must complete its assigned scope directly and must not create another subagent. When a child wait times out, use the returned progress and pending status; do not busy-poll with repeated short waits. Repeated waits with no child progress are stopped automatically and the partial result is preserved.",
+    "wait_agent returns when the first selected child finishes. Put all relevant agent ids in one wait_agent call; never emit one wait call per child in the same model turn. Long waits are automatically sliced and all waits in one turn share a 60-second budget so the parent can observe real child progress. A timeout is a successful, non-destructive status update: the child remains running and uncollected, so wait again only when it is making progress; repeated no-progress waits are stopped automatically and the partial result is preserved. New user steering may interrupt the wait without stopping the child.",
     enabledMcpServers.length
       ? `KCode 已启用这些 MCP 服务：${enabledMcpServers.map((server) => `${server.name}（server=${server.id}）`).join("、")}。需要使用外部扩展能力时，先用对应 server ID 调用 mcp_list_tools 获取真实 schema，再调用 mcp_call_tool；不要凭空捏造 MCP 工具结果。MCP 工具活动和错误必须如实展示给用户。`
       : "当前没有启用 MCP 扩展；不要声称调用了 MCP 工具。",
@@ -5113,12 +5226,17 @@ async function modelTurn(
   // Reasoning models can spend minutes thinking before the first byte arrives,
   // especially behind a third-party proxy with a large context. Keep a shorter
   // bound for regular models while progress events make either wait observable.
-  const finalizationTurn = !toolsEnabled;
-  const firstByteTimeoutMs = finalizationTurn
+  const baseFirstByteTimeoutMs = finalizationTurn
     ? 90_000
     : reasoning.reasoningMode !== "none"
       ? 300_000
       : 90_000;
+  const remainingBeforeFetch = remainingTurnMs();
+  if (remainingBeforeFetch <= 0) throw turnTimeout();
+  const firstByteTimeoutMs = Math.max(
+    1,
+    Math.min(baseFirstByteTimeoutMs, remainingBeforeFetch),
+  );
   const serializedBody = JSON.stringify(body);
   const networkTransport = runtime?.networkTransport ?? "electron";
   const modelFetch =
@@ -5177,6 +5295,7 @@ async function modelTurn(
           networkTransport,
         },
         attemptBudget,
+        effectiveTurnDeadlineAt,
       );
     }
     throw error;
@@ -5198,13 +5317,18 @@ async function modelTurn(
       response.headers.get("request-id") ??
       undefined,
   });
+  const readBodyWithDeadline = () => {
+    const remaining = remainingTurnMs();
+    if (remaining <= 0) throw turnTimeout();
+    return readResponseText(response, signal, undefined, remaining);
+  };
   let responseErrorText: string | undefined;
   if (
     protocol === "openai-responses" &&
     !response.ok &&
     (response.status === 400 || response.status === 422)
   )
-    responseErrorText = await readResponseText(response, signal);
+    responseErrorText = await readBodyWithDeadline();
   if (
     protocol === "openai-responses" &&
     shouldFallbackResponses(
@@ -5247,6 +5371,7 @@ async function modelTurn(
       "openai-chat",
       runtime,
       attemptBudget,
+      effectiveTurnDeadlineAt,
     );
   }
   const retryableKeyStatus =
@@ -5282,12 +5407,14 @@ async function modelTurn(
           networkTransport,
         },
         attemptBudget,
+        effectiveTurnDeadlineAt,
       );
     }
   if (!response.ok) {
-    const detail = (
-      responseErrorText ?? (await readResponseText(response, signal))
-    ).slice(0, 500);
+    const detail = (responseErrorText ?? (await readBodyWithDeadline())).slice(
+      0,
+      500,
+    );
     throw new UpstreamHttpError(
       response.status,
       detail,
@@ -5295,7 +5422,9 @@ async function modelTurn(
     );
   }
   apiKeyCooldownPool.markHealthy(provider.id, keyIndex);
-  if (/text\/event-stream/i.test(response.headers.get("content-type") || ""))
+  if (/text\/event-stream/i.test(response.headers.get("content-type") || "")) {
+    const remainingForStream = remainingTurnMs();
+    if (remainingForStream <= 0) throw turnTimeout();
     return parseStreamedTurn(
       protocol,
       response,
@@ -5306,11 +5435,19 @@ async function modelTurn(
       reasoning.reasoningMode !== "none" ? 180_000 : undefined,
       compatibility.streamMode,
       finalizationTurn ? 45_000 : undefined,
-      finalizationTurn
-        ? FINALIZATION_TURN_MAX_DURATION_MS
-        : MODEL_TURN_MAX_DURATION_MS,
+      Math.max(
+        1,
+        Math.min(
+          finalizationTurn
+            ? FINALIZATION_TURN_MAX_DURATION_MS
+            : MODEL_TURN_MAX_DURATION_MS,
+          remainingForStream,
+        ),
+      ),
     );
-  const json = JSON.parse(await readResponseText(response, signal)) as any;
+  }
+  if (remainingTurnMs() <= 0) throw turnTimeout();
+  const json = JSON.parse(await readBodyWithDeadline()) as any;
   if (protocol === "openai-chat") {
     const message = json.choices?.[0]?.message ?? {};
     const calls = (message.tool_calls ?? []).map((c: any) => ({
@@ -5549,28 +5686,181 @@ function streamFailurePauseMessage(error: unknown) {
   return `${cause}，多次自动重连后仍未恢复。任务已安全暂停，已有工具结果均已保留，已经发生的实际文件修改不会丢失；点击“继续”后会从未完成的步骤恢复，不会重做已确认成功的步骤。`;
 }
 
-function runtimeFinalizationFallback(
+function evidencePathKey(value: string) {
+  return value.replace(/\\/g, "/").toLowerCase();
+}
+
+function markdownLocalFileLink(filePath: string) {
+  const normalized = filePath.replace(/\\/g, "/");
+  const href = normalized
+    .split("/")
+    .map((segment, index) =>
+      index === 0 && /^[a-z]:$/i.test(segment)
+        ? segment
+        : encodeURIComponent(segment),
+    )
+    .join("/");
+  const label = path.posix.basename(normalized).replace(/([\\[\]])/g, "\\$1");
+  return `[${label}](${href})`;
+}
+
+function markdownCodePath(filePath: string) {
+  return `\`${filePath.replace(/`/g, "'")}\``;
+}
+
+function finalizationEvidenceHighlights(history: HistoryItem[]) {
+  const calls = new Map<string, ToolCall>();
+  for (const item of history)
+    if (item.kind === "calls")
+      for (const call of item.calls) calls.set(call.id, call);
+  let validationCount = 0;
+  let commandCount = 0;
+  const validationTargets = new Set<string>();
+  const downloads = new Map<
+    string,
+    { localPath: string; remotePath?: string }
+  >();
+  const uploads = new Map<string, { remotePath: string; localPath?: string }>();
+  const transferPaths = new Set<string>();
+  for (const item of history) {
+    if (item.kind !== "result") continue;
+    let result: StructuredToolResult;
+    try {
+      result = JSON.parse(item.content) as StructuredToolResult;
+    } catch {
+      continue;
+    }
+    if (result.success !== true) continue;
+    const call = calls.get(item.callId);
+    if (!call) continue;
+    if (call.name === "ssh_download_file") {
+      const localPath = String(
+        result.data?.path ?? call.input.localPath ?? "",
+      ).trim();
+      const remotePath = String(call.input.remotePath ?? "").trim();
+      if (localPath) {
+        downloads.set(evidencePathKey(localPath), {
+          localPath,
+          remotePath: remotePath || undefined,
+        });
+        transferPaths.add(evidencePathKey(localPath));
+      }
+    } else if (call.name === "ssh_upload_file") {
+      const remotePath = String(
+        result.data?.path ?? call.input.remotePath ?? "",
+      ).trim();
+      const localPath = String(call.input.localPath ?? "").trim();
+      if (remotePath) {
+        uploads.set(evidencePathKey(remotePath), {
+          remotePath,
+          localPath: localPath || undefined,
+        });
+        transferPaths.add(evidencePathKey(remotePath));
+      }
+    }
+    if (["run_command", "ssh_run", "diagnostics"].includes(call.name))
+      commandCount += 1;
+    const operationEvidence = Array.isArray(result.data?.operationEvidence)
+      ? result.data.operationEvidence
+      : [];
+    if (
+      call.name === "diagnostics" ||
+      operationEvidence.includes("validate") ||
+      (call.name === "run_command" &&
+        isValidationCommand(String(call.input.command ?? ""))) ||
+      (call.name === "ssh_run" &&
+        isValidationCommand(String(call.input.command ?? "")))
+    ) {
+      validationCount += 1;
+      const target = String(
+        call.input.path ?? call.input.file_path ?? "",
+      ).trim();
+      if (target) validationTargets.add(target.slice(-180));
+    }
+  }
+  return {
+    commandCount,
+    validationCount,
+    validationTargets: [...validationTargets].slice(-6),
+    downloads: [...downloads.values()],
+    uploads: [...uploads.values()],
+    transferPaths,
+  };
+}
+
+export function runtimeFinalizationFallback(
   evidenceHistory: HistoryItem[],
   evidenceComplete: boolean,
-  latestActivity?: AgentActivity,
+  externalWorkAbandoned = false,
 ) {
   const summary = structuredToolEvidenceSummary(evidenceHistory);
-  const changedFiles = summary.changedFiles.slice(0, 5);
-  const fileDetail = changedFiles.length
-    ? `，记录到 ${summary.changedFiles.length} 个实际变更文件：${changedFiles.join("、")}${summary.changedFiles.length > changedFiles.length ? " 等" : ""}`
-    : "";
-  const failureDetail = summary.failedTools
-    ? `，另有 ${summary.failedTools} 项失败工具记录`
-    : "";
-  const latestDetail =
-    latestActivity?.status === "success" && latestActivity.output
-      ? ` 最近一次成功结果：${latestActivity.output.replace(/\s+/g, " ").trim().slice(0, 240)}。`
-      : "";
-  return `模型在收尾阶段持续只输出内部推理，KCode 已停止继续调用工具。当前保留 ${summary.successfulTools} 项成功工具记录${fileDetail}${failureDetail}。${latestDetail}${
-    evidenceComplete
-      ? "结构化工具证据已经收集，但模型没有返回最终正文；已根据执行记录完成本轮。"
-      : "仍有结构化操作证据缺口，本轮已按未完整完成暂停；以上方执行记录为准。"
-  }`;
+  const highlights = finalizationEvidenceHighlights(evidenceHistory);
+  const changedFiles = summary.changedFiles.filter(
+    (file) => !highlights.transferPaths.has(evidencePathKey(file)),
+  );
+  const visibleChangedFiles = changedFiles.slice(0, 5);
+  const lines = [
+    evidenceComplete && !externalWorkAbandoned
+      ? "本轮请求对应的执行证据已收集，以下摘要只依据实际工具记录。"
+      : "本轮已安全暂停，以下仅列出已经确认的执行结果。",
+    `执行记录：共 ${summary.toolCalls} 项工具，成功 ${summary.successfulTools} 项${summary.failedTools ? `，失败或停止 ${summary.failedTools} 项` : ""}。`,
+  ];
+  if (highlights.downloads.length) {
+    const visibleDownloads = highlights.downloads.slice(0, 5);
+    lines.push(
+      `下载完成：${highlights.downloads.length} 个文件已保存到本地。`,
+      ...visibleDownloads.map(
+        (download) =>
+          `- ${markdownLocalFileLink(download.localPath)}${download.remotePath ? `（来自 ${markdownCodePath(download.remotePath)}）` : ""}`,
+      ),
+    );
+    if (highlights.downloads.length > visibleDownloads.length)
+      lines.push(
+        `- 还有 ${highlights.downloads.length - visibleDownloads.length} 个下载文件`,
+      );
+  }
+  if (highlights.uploads.length) {
+    const visibleUploads = highlights.uploads.slice(0, 5);
+    lines.push(
+      `上传完成：${highlights.uploads.length} 个文件已发送到远程。`,
+      ...visibleUploads.map(
+        (upload) =>
+          `- ${markdownCodePath(upload.remotePath)}${upload.localPath ? `（来自 ${markdownLocalFileLink(upload.localPath)}）` : ""}`,
+      ),
+    );
+    if (highlights.uploads.length > visibleUploads.length)
+      lines.push(
+        `- 还有 ${highlights.uploads.length - visibleUploads.length} 个上传文件`,
+      );
+  }
+  if (changedFiles.length) {
+    lines.push(
+      `实际改动：${changedFiles.length} 个文件（+${summary.additions} -${summary.deletions}）。`,
+      ...visibleChangedFiles.map((file) => `- ${file}`),
+    );
+    if (changedFiles.length > visibleChangedFiles.length)
+      lines.push(
+        `- 还有 ${changedFiles.length - visibleChangedFiles.length} 个文件`,
+      );
+  } else if (!highlights.downloads.length && !highlights.uploads.length)
+    lines.push("实际改动：未检测到已确认的文件变更。");
+  if (highlights.commandCount)
+    lines.push(`命令与验证：已执行 ${highlights.commandCount} 项命令。`);
+  if (highlights.validationCount) {
+    lines.push(`已确认验证：${highlights.validationCount} 项。`);
+    for (const target of highlights.validationTargets)
+      lines.push(`- ${target}`);
+  }
+  if (externalWorkAbandoned)
+    lines.push(
+      "子任务：部分子 Agent 因连续等待没有新进展已停止；未收到的结果不会被视为成功。",
+    );
+  if (!evidenceComplete)
+    lines.push(
+      "尚未确认：本轮要求的全部成功执行证据。点击“继续”可从当前记录恢复。",
+    );
+  else lines.push("模型未返回额外说明，本轮结论已根据上述结构化执行记录生成。");
+  return lines.join("\n");
 }
 
 export async function* runAgent(
@@ -5711,6 +6001,39 @@ export async function* runAgent(
   };
   let imageFallbackNoticeSent = false;
   let repetitionFinalizationPending: AgentFinalizationMode | undefined;
+  let externalWaitStallRounds = 0;
+  let externalWaitStartedAt: number | undefined;
+  let externalWorkAbandoned = false;
+  let lastSubagentProgress = subagentProgressToken(requestId);
+  const collectStoppedSubagents = async () => {
+    await stopSubagentsForParent(requestId, false);
+    const results = collectFinishedSubagentResults(requestId);
+    const transcripts = results
+      .filter((result) => result.transcript.trim())
+      .map((result) => ({
+        name: result.name,
+        status: result.status,
+        transcript: result.transcript.slice(-2_000),
+      }));
+    if (transcripts.length)
+      history.push({
+        kind: "message",
+        role: "user",
+        content: `<subagent_partial_results>${JSON.stringify(transcripts)}</subagent_partial_results>`,
+      });
+    const activities = results.flatMap((result) => result.activityRecords);
+    for (const activity of activities)
+      evidenceHistory.push(...subagentActivityHistory(activity));
+    const usageDelta = results.reduce(
+      (total, result) => ({
+        input: total.input + result.usageDelta.input,
+        output: total.output + result.usageDelta.output,
+        cached: total.cached + result.usageDelta.cached,
+      }),
+      { input: 0, output: 0, cached: 0 },
+    );
+    return { activities, usageDelta };
+  };
   while (!signal.aborted) {
     const pendingParentInstructions = drainSubagentMessages(requestId);
     const pendingSteering = turnSteeringQueue.drain(requestId);
@@ -5737,6 +6060,10 @@ export async function* runAgent(
       semanticStallRounds = 0;
       noProgressFingerprints.clear();
       repetitionFinalizationPending = undefined;
+      externalWaitStallRounds = 0;
+      externalWaitStartedAt = undefined;
+      externalWorkAbandoned = false;
+      lastSubagentProgress = subagentProgressToken(requestId);
       plan.steps = [];
       plan.statuses = undefined;
       plan.cursor = 0;
@@ -5755,9 +6082,17 @@ export async function* runAgent(
       plannerCoordinator &&
       plan.steps.length >= 2 &&
       !successfulToolsAtRoundStart.has("spawn_agent");
-    const hasUncollectedAgentWork = listSubagents(requestId).some(
+    const currentSubagents = listSubagents(requestId);
+    const hasUncollectedAgentWork = currentSubagents.some(
       (agent) => !agent.collected,
     );
+    const hasActiveUncollectedAgentWork = currentSubagents.some(
+      (agent) =>
+        !agent.collected &&
+        (agent.status === "running" || agent.status === "stopping"),
+    );
+    const finalizationBlockedByAgents =
+      !externalWorkAbandoned && hasUncollectedAgentWork;
     const evidenceComplete =
       missingVerifiedCodingOperations(
         requestedCodingEvidenceOps,
@@ -5779,15 +6114,16 @@ export async function* runAgent(
     const finalizationMode: AgentFinalizationMode | undefined =
       repetitionFinalizationPending &&
       !hasPendingInstructions &&
-      !hasUncollectedAgentWork
+      !finalizationBlockedByAgents
         ? repetitionFinalizationPending
         : agentFinalizationMode({
             agentRole: request.agentRole,
+            agentDepth: request.agentDepth,
             completedRounds: round,
             elapsedMs: Date.now() - runStartedAt,
             evidenceComplete,
             hasPendingInstructions:
-              hasPendingInstructions || hasUncollectedAgentWork,
+              hasPendingInstructions || finalizationBlockedByAgents,
           });
     const currentPromptTokens = effectiveRuntimePromptTokens(
       history,
@@ -5898,7 +6234,7 @@ export async function* runAgent(
               ? "<runtime_finalization>执行模型已返回覆盖本次要求的成功工具证据，规划阶段现在进入收尾。不要再派发新的执行 Agent，也不要重复复核。请依据已收集的执行结果给出简洁最终总结：完成内容、修改文件、验证结果、可用地址和真实残留问题。不得声称未经执行模型证实的事项。</runtime_finalization>"
               : "<runtime_finalization>已有成功工具记录覆盖本次要求，执行预算现在进入收尾阶段。不要再调用工具、不要继续修改，也不要追加重复验证。请仅依据现有工具结果给出简洁最终总结：完成内容、修改文件、验证结果、可用地址和真实残留问题。不得声称未验证的事项。</runtime_finalization>"
             : finalizationMode === "repetition-stalled"
-              ? '<runtime_finalization reason="repeated_tool_results">同一组工具输入已经连续返回相同结果，运行时现已禁用后续工具调用。请立即依据已有结构化工具结果给出简洁结论；明确区分已确认事实、未完成事项和仍无法确认的内容。不得再次承诺复核，不得把未发生的修改或验证说成已完成。</runtime_finalization>'
+              ? `<runtime_finalization reason="repeated_tool_results">同一组工具输入已经连续返回相同结果，运行时现已禁用后续工具调用。${externalWorkAbandoned ? "部分子 Agent 已因连续无进展被停止；不得把未收到的子任务结果说成已完成，必须明确列出已收到的结果和未完成项。" : ""}请立即依据已有结构化工具结果给出简洁结论；明确区分已确认事实、未完成事项和仍无法确认的内容。不得再次承诺复核，不得把未发生的修改或验证说成已完成。</runtime_finalization>`
               : request.agentRole === "planner"
                 ? "<runtime_finalization>规划模型已达到运行预算上限。不要再派发或等待新的执行 Agent。请根据已收集的执行结果立即汇总：已完成内容、修改文件、成功和失败的验证、可用地址，以及尚未完成或无法确认的事项。必须如实区分完成项与残留项。</runtime_finalization>"
                 : request.agentRole === "executor"
@@ -6003,7 +6339,7 @@ export async function* runAgent(
             text: runtimeFinalizationFallback(
               evidenceHistory,
               evidenceComplete,
-              prevRound.activity,
+              externalWorkAbandoned,
             ),
             calls: [],
             rawCalls: [],
@@ -6090,7 +6426,7 @@ export async function* runAgent(
         text: runtimeFinalizationFallback(
           evidenceHistory,
           evidenceComplete,
-          prevRound.activity,
+          externalWorkAbandoned,
         ),
         calls: [],
         rawCalls: [],
@@ -6116,7 +6452,7 @@ export async function* runAgent(
         text: runtimeFinalizationFallback(
           evidenceHistory,
           evidenceComplete,
-          prevRound.activity,
+          externalWorkAbandoned,
         ),
         calls: [],
         rawCalls: [],
@@ -6139,6 +6475,34 @@ export async function* runAgent(
             content:
               "<runtime_verification>上一轮只返回了内部思考，没有正文，也没有工具调用。不要继续输出思考过程；请立即基于现有历史给出普通正文，或直接调用下一项具体工具。</runtime_verification>",
           });
+          continue;
+        }
+        if (hasUncollectedAgentWork && !externalWorkAbandoned) {
+          externalWorkAbandoned = hasActiveUncollectedAgentWork;
+          repetitionFinalizationPending = "repetition-stalled";
+          yield {
+            type: "progress",
+            message: hasActiveUncollectedAgentWork
+              ? "模型连续只返回内部思考，且子 Agent 没有新进展，已停止未完成的子任务并汇总已有结果…"
+              : "模型连续只返回内部思考，已先收集已完成子 Agent 的结果，正在生成结论…",
+          };
+          const stopped = await collectStoppedSubagents();
+          for (const childActivity of stopped.activities)
+            yield {
+              type: "activity",
+              activity: { ...childActivity, requestId, round },
+            };
+          if (
+            stopped.usageDelta.input ||
+            stopped.usageDelta.output ||
+            stopped.usageDelta.cached
+          ) {
+            usage.input += stopped.usageDelta.input;
+            usage.output += stopped.usageDelta.output;
+            usage.cached += stopped.usageDelta.cached;
+            yield { type: "usage", ...usage, promptTokens: lastPromptTokens };
+          }
+          lastSubagentProgress = subagentProgressToken(requestId);
           continue;
         }
         if (hasRecoverableToolEvidence(evidenceHistory)) {
@@ -6246,16 +6610,27 @@ export async function* runAgent(
     if (usedRuntimeFinalizationFallback)
       completionResult = {
         ...completionResult,
-        kind: evidenceComplete ? completionResult.kind : "incomplete",
-        notice: evidenceComplete
-          ? "模型没有返回最终正文，已根据结构化工具记录生成结论。"
-          : "模型没有返回最终正文，已停止重复请求；已有工具结果和实际文件修改已保留。本轮已暂停，可点击“继续”从当前状态恢复。",
+        kind:
+          evidenceComplete && !externalWorkAbandoned
+            ? completionResult.kind
+            : "incomplete",
+        notice:
+          evidenceComplete && !externalWorkAbandoned
+            ? "已根据实际工具记录生成本轮摘要。"
+            : "模型没有返回最终正文；已有工具结果和实际文件修改已保留。本轮已暂停，可点击“继续”从当前状态恢复。",
+      };
+    if (externalWorkAbandoned)
+      completionResult = {
+        ...completionResult,
+        kind: "incomplete",
+        notice:
+          "部分子 Agent 因连续等待没有新进展已停止；已有工具结果和实际文件修改已保留，本轮已暂停，可点击“继续”从当前状态恢复。",
       };
     if (!turn.calls.length) {
       const lateInstructions = drainSubagentMessages(requestId);
-      const uncollectedAgents = listSubagents(requestId).filter(
-        (agent) => !agent.collected,
-      );
+      const uncollectedAgents = finalizationBlockedByAgents
+        ? listSubagents(requestId).filter((agent) => !agent.collected)
+        : [];
       if (lateInstructions.length || uncollectedAgents.length) {
         if (turn.text)
           history.push({
@@ -6408,8 +6783,10 @@ export async function* runAgent(
     });
     const roundFingerprints: string[] = [];
     const turnRecords: ToolCallRecord[] = [];
+    const roundWaitDeadline = Date.now() + SUBAGENT_WAIT_SLICE_MS;
     let roundAdvanced = false;
     let roundWaitingOnExternalWork = false;
+    let roundExternalProgress = false;
     let roundPlanChanged = false;
     let roundLastActivity: AgentActivity | undefined;
     let roundFailedActivity: AgentActivity | undefined;
@@ -6846,6 +7223,9 @@ export async function* runAgent(
             request,
             signal,
             report,
+            call.name === "wait_agent"
+              ? Math.max(1, roundWaitDeadline - Date.now())
+              : undefined,
           ),
         );
         let result: ToolResult;
@@ -6892,10 +7272,12 @@ export async function* runAgent(
         );
         const childActivities = result.childActivities;
         const subagentUsage = result.subagentUsage;
+        const subagentWait = result.subagentWait;
         const planUpdate = result.planUpdate;
         const {
           childActivities: _children,
           subagentUsage: _subagentUsage,
+          subagentWait: _subagentWait,
           planUpdate: _planUpdate,
           ...activityResult
         } = result;
@@ -6938,6 +7320,9 @@ export async function* runAgent(
           operationEvidence: result.operationEvidence,
           browserOperationEvidence: result.browserOperationEvidence,
         };
+        if (subagentWait) {
+          roundExternalProgress ||= subagentWait.progressed;
+        }
         const cancelled =
           signal.aborted ||
           /命令已取消|操作已取消|任务已取消/i.test(result.output || "");
@@ -7091,11 +7476,9 @@ export async function* runAgent(
       });
       roundFingerprints.push(fingerprint);
       roundWaitingOnExternalWork ||=
-        (call.name === "process_output" &&
-          activity.status === "success" &&
-          activity.exitCode === undefined) ||
-        (call.name === "wait_agent" &&
-          listSubagents(requestId).some((agent) => !agent.collected));
+        call.name === "process_output" &&
+        activity.status === "success" &&
+        activity.exitCode === undefined;
       const advanced =
         resultEvidence.changed === true ||
         Boolean(activity.diff) ||
@@ -7230,6 +7613,58 @@ export async function* runAgent(
     }
     prevRound.activity = roundLastActivity;
     prevRound.failure = roundFailedActivity;
+    const nextSubagentProgress = subagentProgressToken(requestId);
+    roundExternalProgress ||= nextSubagentProgress !== lastSubagentProgress;
+    lastSubagentProgress = nextSubagentProgress;
+    const activeUncollectedSubagents = listSubagents(requestId).filter(
+      (agent) =>
+        !agent.collected &&
+        (agent.status === "running" || agent.status === "stopping"),
+    );
+    if (!activeUncollectedSubagents.length) {
+      externalWaitStallRounds = 0;
+      externalWaitStartedAt = undefined;
+    } else if (roundAdvanced || roundExternalProgress) {
+      externalWaitStallRounds = 0;
+      externalWaitStartedAt = undefined;
+    } else {
+      externalWaitStallRounds += 1;
+      externalWaitStartedAt ??= Date.now();
+    }
+    if (
+      activeUncollectedSubagents.length > 0 &&
+      !externalWorkAbandoned &&
+      !pendingUserInput &&
+      externalWaitLimitReached({
+        stalledRounds: externalWaitStallRounds,
+        startedAt: externalWaitStartedAt,
+      })
+    ) {
+      externalWorkAbandoned = true;
+      repetitionFinalizationPending = "repetition-stalled";
+      yield {
+        type: "progress",
+        message: `子 Agent 连续 ${EXTERNAL_WAIT_STALL_ROUNDS} 个等待周期（最长 ${Math.round(EXTERNAL_WAIT_MAX_DURATION_MS / 60_000)} 分钟）没有新进展，已停止未完成的子任务，正在汇总已收到的结果…`,
+      };
+      const stopped = await collectStoppedSubagents();
+      for (const childActivity of stopped.activities)
+        yield {
+          type: "activity",
+          activity: { ...childActivity, requestId, round },
+        };
+      if (
+        stopped.usageDelta.input ||
+        stopped.usageDelta.output ||
+        stopped.usageDelta.cached
+      ) {
+        usage.input += stopped.usageDelta.input;
+        usage.output += stopped.usageDelta.output;
+        usage.cached += stopped.usageDelta.cached;
+        yield { type: "usage", ...usage, promptTokens: lastPromptTokens };
+      }
+      lastSubagentProgress = subagentProgressToken(requestId);
+      continue;
+    }
     const roundFingerprint = roundFingerprints.join("|");
     const codingEvidenceAfterRound = codingEvidenceWithBaseline(
       evidenceHistory,
@@ -7356,13 +7791,17 @@ export async function* runAgent(
       !roundAdvanced && noProgressFingerprints.has(roundFingerprint);
     const madeProgress =
       roundAdvanced ||
+      roundExternalProgress ||
       roundWaitingOnExternalWork ||
       (!verificationOnlyRound && !repeatedNoProgressRound);
     if (roundAdvanced) noProgressFingerprints.clear();
     else noProgressFingerprints.add(roundFingerprint);
     stalledRounds = madeProgress ? 0 : stalledRounds + 1;
     semanticStallRounds =
-      roundAdvanced || roundWaitingOnExternalWork || roundPlanChanged
+      roundAdvanced ||
+      roundExternalProgress ||
+      roundWaitingOnExternalWork ||
+      roundPlanChanged
         ? 0
         : semanticStallRounds + 1;
     if (signal.aborted) {

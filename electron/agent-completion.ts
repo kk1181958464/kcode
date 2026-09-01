@@ -1,10 +1,11 @@
-import type { AgentCompletionResult } from "../src/types";
+import type { AgentCompletionResult, AgentFileTransfer } from "../src/types";
 
 export type ToolEvidenceSummary = {
   toolCalls: number;
   successfulTools: number;
   failedTools: number;
   changedFiles: string[];
+  transfers?: AgentFileTransfer[];
   additions: number;
   deletions: number;
 };
@@ -39,8 +40,19 @@ function uniqueSorted(values: Iterable<string>) {
   return [...new Set(values)].sort();
 }
 
+function uniqueTransfers(values: Iterable<AgentFileTransfer>) {
+  const transfers = new Map<string, AgentFileTransfer>();
+  for (const transfer of values) {
+    const key = `${transfer.direction}:${transfer.source}:${transfer.destination}`;
+    transfers.set(key, transfer);
+  }
+  return [...transfers.values()];
+}
+
 function missingEvidenceNotice(missing: readonly string[]) {
-  const labels = missing.map((operation) => operationLabels[operation] ?? operation);
+  const labels = missing.map(
+    (operation) => operationLabels[operation] ?? operation,
+  );
   return `未检测到${labels.join("、")}的成功运行记录。已保留模型回答，但没有把这些操作标记为完成。`;
 }
 
@@ -55,6 +67,7 @@ export function buildAgentCompletionResult(
   const requestedOperations = uniqueSorted(input.requestedOperations);
   const operations = uniqueSorted(input.observedOperations);
   const missingOperations = uniqueSorted(input.missingOperations);
+  const transfers = uniqueTransfers(input.evidence.transfers ?? []);
 
   let kind: AgentCompletionResult["kind"];
   if (input.waitingForUser) kind = "blocked";
@@ -76,6 +89,7 @@ export function buildAgentCompletionResult(
     successfulTools: input.evidence.successfulTools,
     failedTools: input.evidence.failedTools,
     changedFiles: uniqueSorted(input.evidence.changedFiles),
+    ...(transfers.length ? { transfers } : {}),
     additions: input.evidence.additions,
     deletions: input.evidence.deletions,
     notice:
