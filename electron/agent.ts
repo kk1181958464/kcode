@@ -4909,6 +4909,7 @@ async function modelTurn(
       ? `KCode 已启用这些 MCP 服务：${enabledMcpServers.map((server) => `${server.name}（server=${server.id}）`).join("、")}。需要使用外部扩展能力时，先用对应 server ID 调用 mcp_list_tools 获取真实 schema，再调用 mcp_call_tool；不要凭空捏造 MCP 工具结果。MCP 工具活动和错误必须如实展示给用户。`
       : "当前没有启用 MCP 扩展；不要声称调用了 MCP 工具。",
     "Past-tense claims about real workspace or external actions are checked against successful structured tool results. Do not say that a file was changed, a command ran, a test passed, a remote connection or transfer completed, a browser action happened, or a Git action completed unless the corresponding tool evidence exists in this run. Informational answers, explanations, planning, and content generation that require no real action may finish without calling a tool; do not invent an action claim merely to create evidence. If an earlier statement was wrong, retract it explicitly instead of inventing evidence.",
+    "When the latest user explicitly requests deployment, replacement, migration, restart, or another change to a known target, treat that request as authorization to carry out the action under the selected permission policy. Do not stop before the mutation solely because the service may briefly be affected: make the promised backup, use the least-disruptive or atomic switch available, and continue with native tools. Ask for another confirmation only when the permission system is waiting or a genuinely required target, credential, or rollback detail is missing.",
     "Saved credentials are local to this KCode installation and isolated by explicit tool scope. Never infer a credential category merely from words such as account, username, password, login, 账号, 密码, or 登录. SSH and database credentials belong only to their matching connect tools; call credential_list only after the target connection category is known. Website credentials belong only to the real origin currently open in the task browser: use browser_list_credentials, browser_save_credential, and browser_fill_credential there. If no target type or endpoint is known, call request_user_input for the target category and address instead of guessing website. A successful new SSH or database connection is remembered by default unless the user explicitly requests a temporary connection. Never invent an alias, put a decrypted secret in chat, send a secret to a subagent, or place one in a command when a native credential-aware tool can perform the action.",
     request.remoteWorkspace
       ? `This is a managed SSH Remote task with hybrid file access: the ssh_* tools act on the remote server, while the local file, git, and command tools act on THIS local machine. Use ssh_run for remote shell work; its shell and OS come from the remote server. For local commands, ${localShellInstruction} When the user points to local files by absolute path, read, edit, build, and inspect them with the local file and command tools, then use ssh_upload_file to deploy the results to the server and ssh_download_file to pull remote files down. Reuse the managed session while it is connected. If an SSH tool explicitly reports that the session was lost, call ssh_connect with credentials already supplied by the user; never ask the user to create another SSH Remote manually. Do not disconnect the managed session unless the user explicitly requests it.`
@@ -5610,6 +5611,50 @@ const ACTIONABLE_PLAN_REQUIREMENTS = new Set<AgentPlanRequirement>([
 ]);
 const MAX_PLAN_RECOVERY_NUDGES = 3;
 
+// A successful tool can advance a deployment without producing a local diff.
+// Keep those actions out of the read-only stall bucket so a build, transfer,
+// browser interaction, or process lifecycle change does not get mistaken for
+// another no-op inspection round.
+const OPERATIONAL_PROGRESS_TOOLS = new Set<AgentToolName>([
+  "ssh_upload_file",
+  "ssh_download_file",
+  "start_process",
+  "stop_process",
+  "browser_open",
+  "browser_click",
+  "browser_type",
+  "browser_fill_credential",
+  "browser_record_start",
+  "browser_record_stop",
+  "mcp_call_tool",
+]);
+
+function toolProducedOperationalProgress(
+  call: ToolCall,
+  activity: AgentActivity,
+  resultEvidence: Pick<
+    ToolResult,
+    "changed" | "mutationAttempted" | "operationEvidence"
+  >,
+) {
+  if (activity.status !== "success") return false;
+  if (
+    resultEvidence.changed === true ||
+    resultEvidence.mutationAttempted === true ||
+    Boolean(activity.diff) ||
+    Boolean(activity.additions) ||
+    Boolean(activity.deletions)
+  )
+    return true;
+  if (OPERATIONAL_PROGRESS_TOOLS.has(call.name)) return true;
+  if (call.name === "diagnostics") return true;
+  if (call.name === "run_command" || call.name === "ssh_run") {
+    const purpose = String(call.input.purpose ?? "").trim();
+    return purpose === "execute" || purpose === "validate";
+  }
+  return resultEvidence.operationEvidence?.includes("validate") === true;
+}
+
 function firstPendingRequiredPlanStep(
   steps: readonly string[],
   statuses: readonly AgentPlanStepStatus[] | undefined,
@@ -5621,6 +5666,27 @@ function firstPendingRequiredPlanStep(
       statuses[index] !== "completed" &&
       requirements[index]?.some((requirement) =>
         ACTIONABLE_PLAN_REQUIREMENTS.has(requirement),
+      ),
+  );
+}
+
+// A model can leave the cursor on a step after its required tool evidence has
+// already arrived. Use the missing evidence to choose the recovery target,
+// while keeping the authored status intact for final reporting.
+function firstPlanStepMissingEvidence(
+  steps: readonly string[],
+  statuses: readonly AgentPlanStepStatus[] | undefined,
+  requirements: readonly AgentPlanRequirement[][],
+  evidence: ReadonlySet<CodingOperation>,
+) {
+  if (!statuses || statuses.length !== steps.length) return -1;
+  return steps.findIndex(
+    (_, index) =>
+      statuses[index] !== "completed" &&
+      requirements[index]?.some(
+        (requirement) =>
+          ACTIONABLE_PLAN_REQUIREMENTS.has(requirement) &&
+          !evidence.has(requirement as CodingOperation),
       ),
   );
 }
@@ -6935,6 +7001,7 @@ export async function* runAgent(
     const turnRecords: ToolCallRecord[] = [];
     const roundWaitDeadline = Date.now() + SUBAGENT_WAIT_SLICE_MS;
     let roundAdvanced = false;
+    let roundOperationalProgress = false;
     let roundWaitingOnExternalWork = false;
     let roundExternalProgress = false;
     let roundPlanChanged = false;
@@ -7646,7 +7713,13 @@ export async function* runAgent(
         Boolean(activity.additions) ||
         Boolean(activity.deletions);
       roundAdvanced ||= advanced;
-      activity.progress = advanced ? "advanced" : "unchanged";
+      const operationalProgress = toolProducedOperationalProgress(
+        call,
+        activity,
+        resultEvidence,
+      );
+      roundOperationalProgress ||= operationalProgress;
+      activity.progress = operationalProgress ? "advanced" : "unchanged";
       yield { type: "activity", activity };
       roundLastActivity = activity;
       if (activity.status === "failed" || activity.status === "denied")
@@ -7785,7 +7858,11 @@ export async function* runAgent(
     if (!activeUncollectedSubagents.length) {
       externalWaitStallRounds = 0;
       externalWaitStartedAt = undefined;
-    } else if (roundAdvanced || roundExternalProgress) {
+    } else if (
+      roundAdvanced ||
+      roundOperationalProgress ||
+      roundExternalProgress
+    ) {
       externalWaitStallRounds = 0;
       externalWaitStartedAt = undefined;
     } else {
@@ -7844,6 +7921,12 @@ export async function* runAgent(
       plan.steps,
       plan.statuses,
       plan.requirements,
+    );
+    const nextRequiredPlanStepAfterRound = firstPlanStepMissingEvidence(
+      plan.steps,
+      plan.statuses,
+      plan.requirements,
+      codingEvidenceAfterRound,
     );
     const missingCodingAfterRound = missingVerifiedCodingOperations(
       requestedCodingEvidenceOps,
@@ -7969,20 +8052,28 @@ export async function* runAgent(
       !roundAdvanced && noProgressFingerprints.has(roundFingerprint);
     const madeProgress =
       roundAdvanced ||
+      roundOperationalProgress ||
       roundExternalProgress ||
       roundWaitingOnExternalWork ||
       (!verificationOnlyRound && !repeatedNoProgressRound);
-    if (roundAdvanced) noProgressFingerprints.clear();
+    if (roundAdvanced || roundOperationalProgress)
+      noProgressFingerprints.clear();
     else noProgressFingerprints.add(roundFingerprint);
     stalledRounds = madeProgress ? 0 : stalledRounds + 1;
     semanticStallRounds =
       roundAdvanced ||
+      roundOperationalProgress ||
       roundExternalProgress ||
       roundWaitingOnExternalWork ||
       roundPlanChanged
         ? 0
         : semanticStallRounds + 1;
-    if (roundAdvanced || roundExternalProgress || roundPlanChanged)
+    if (
+      roundAdvanced ||
+      roundOperationalProgress ||
+      roundExternalProgress ||
+      roundPlanChanged
+    )
       budgets.planRecoveryNudges = 0;
     if (signal.aborted) {
       yield {
@@ -8003,9 +8094,11 @@ export async function* runAgent(
       ) {
         budgets.planRecoveryNudges += 1;
         const pendingStep =
-          pendingRequiredPlanStepAfterRound >= 0
-            ? `第 ${pendingRequiredPlanStepAfterRound + 1} 步“${plan.steps[pendingRequiredPlanStepAfterRound]}”`
-            : "当前结构化计划";
+          nextRequiredPlanStepAfterRound >= 0
+            ? `第 ${nextRequiredPlanStepAfterRound + 1} 步“${plan.steps[nextRequiredPlanStepAfterRound]}”`
+            : pendingRequiredPlanStepAfterRound >= 0
+              ? `第 ${pendingRequiredPlanStepAfterRound + 1} 步“${plan.steps[pendingRequiredPlanStepAfterRound]}”`
+              : "当前结构化计划";
         const missing = missingCodingAfterRound.filter(
           (operation) => operation !== "inspect",
         );

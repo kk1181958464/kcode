@@ -964,3 +964,196 @@ test("resumed structured plans execute missing evidence even when old status say
   assert.equal(done?.outcome, "completed");
   assert.equal(done?.result?.kind, "changed");
 });
+
+test("keeps executing after a successful build resets semantic stall state", async () => {
+  const workspacePath = await mkdtemp(
+    path.join(os.tmpdir(), "kcode-operational-progress-"),
+  );
+  await writeFile(path.join(workspacePath, "target.txt"), "before\n", "utf8");
+  for (let index = 0; index < 16; index += 1)
+    await writeFile(
+      path.join(workspacePath, `check-${index}.txt`),
+      "same\n",
+      "utf8",
+    );
+
+  const request: ModelRequest = {
+    providerId: "fake",
+    modelId: "fake-model",
+    messages: [{ role: "user", content: "构建并部署 target.txt" }],
+    permissionMode: "full-access",
+    workspacePath,
+  };
+  let rounds = 0;
+  let recoveryCount = 0;
+  let buildSeen = false;
+  let finished = false;
+  let finalizationSeen = false;
+  const events: AgentEvent[] = [];
+  for await (const event of runAgent(
+    "operational-progress-integration",
+    request,
+    new AbortController().signal,
+    {
+      getProvider: fakeProvider(),
+      async *streamTurn(args) {
+        rounds += 1;
+        recoveryCount = args.history.filter(
+          (item) =>
+            item.kind === "message" &&
+            item.content.includes("<runtime_repetition_recovery>"),
+        ).length;
+        if (!args.toolsEnabled) {
+          finalizationSeen = true;
+          yield {
+            type: "complete",
+            turn: {
+              text: "已完成。",
+              calls: [],
+              rawCalls: [],
+              usage: { input: 10, output: 5, cached: 0 },
+            },
+          };
+          return;
+        }
+        if (finished) {
+          yield {
+            type: "complete",
+            turn: {
+              text: "构建、部署和验证均已完成。",
+              calls: [],
+              rawCalls: [],
+              usage: { input: 10, output: 5, cached: 0 },
+            },
+          };
+          return;
+        }
+        if (buildSeen) {
+          yield {
+            type: "complete",
+            turn: {
+              text: "已完成实际修改和验证。",
+              calls: [
+                {
+                  id: "finish-plan",
+                  name: "update_plan",
+                  input: {
+                    plan: [
+                      {
+                        step: "构建产物",
+                        status: "completed",
+                        requires: ["execute"],
+                      },
+                      {
+                        step: "修改并部署",
+                        status: "completed",
+                        requires: ["modify"],
+                      },
+                    ],
+                  },
+                },
+                {
+                  id: "real-modification",
+                  name: "write_file",
+                  input: { path: "target.txt", content: "after\n" },
+                },
+              ],
+              rawCalls: [],
+              usage: { input: 10, output: 5, cached: 0 },
+            },
+          };
+          finished = true;
+          buildSeen = false;
+          return;
+        }
+        if (rounds === 1) {
+          yield {
+            type: "complete",
+            turn: {
+              text: "先建立执行计划。",
+              calls: [
+                {
+                  id: "initial-plan",
+                  name: "update_plan",
+                  input: {
+                    plan: [
+                      {
+                        step: "构建产物",
+                        status: "in_progress",
+                        requires: ["execute"],
+                      },
+                      {
+                        step: "修改并部署",
+                        status: "pending",
+                        requires: ["modify"],
+                      },
+                    ],
+                  },
+                },
+                {
+                  id: "initial-check",
+                  name: "path_info",
+                  input: { path: "check-0.txt" },
+                },
+              ],
+              rawCalls: [],
+              usage: { input: 10, output: 5, cached: 0 },
+            },
+          };
+          return;
+        }
+        if (recoveryCount >= 3) {
+          buildSeen = true;
+          yield {
+            type: "complete",
+            turn: {
+              text: "构建已成功，继续部署。",
+              calls: [
+                {
+                  id: "successful-build",
+                  name: "run_command",
+                  input: {
+                    command: "Write-Output build-complete",
+                    purpose: "execute",
+                  },
+                },
+              ],
+              rawCalls: [],
+              usage: { input: 10, output: 5, cached: 0 },
+            },
+          };
+          return;
+        }
+        yield {
+          type: "complete",
+          turn: {
+            text: "继续检查。",
+            calls: [
+              {
+                id: `read-${rounds}`,
+                name: "path_info",
+                input: { path: `check-${rounds - 1}.txt` },
+              },
+            ],
+            rawCalls: [],
+            usage: { input: 10, output: 5, cached: 0 },
+          },
+        };
+      },
+    },
+  ))
+    events.push(event);
+
+  assert.equal(finalizationSeen, false);
+  assert.equal(
+    await readFile(path.join(workspacePath, "target.txt"), "utf8"),
+    "after\n",
+  );
+  const done = events.find(
+    (event): event is Extract<AgentEvent, { type: "done" }> =>
+      event.type === "done",
+  );
+  assert.equal(done?.outcome, "completed");
+  assert.equal(done?.result?.kind, "changed");
+  assert.ok(rounds <= 18, `expected bounded execution, received ${rounds}`);
+});
