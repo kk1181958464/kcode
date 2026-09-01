@@ -1113,7 +1113,7 @@ test("keeps executing after a successful build resets semantic stall state", asy
                   id: "successful-build",
                   name: "run_command",
                   input: {
-                    command: "Write-Output build-complete",
+                    command: "echo build-complete",
                     purpose: "execute",
                   },
                 },
