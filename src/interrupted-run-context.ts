@@ -1,6 +1,17 @@
 import { redactSensitiveText } from "./context";
 import { summarizeExecutionPlan } from "./execution-plan";
-import type { AgentActivity, ChatMessage } from "./types";
+import type {
+  AgentActivity,
+  AgentBrowserOperation,
+  AgentCompletionResult,
+  AgentEvent,
+  AgentGitOperation,
+  AgentPlanRequirement,
+  AgentPlanStepStatus,
+  AgentRecoveryEvidence,
+  AgentRecoveryPlan,
+  ChatMessage,
+} from "./types";
 
 const DEFAULT_MAX_CONTEXT_CHARS = 16_000;
 const MAX_EVIDENCE_ACTIVITIES = 30;
@@ -19,8 +30,6 @@ const MUTATION_TOOLS = new Set<AgentActivity["tool"]>([
   "move_path",
   "delete_path",
   "ssh_write_file",
-  "ssh_upload_file",
-  "ssh_download_file",
 ]);
 
 const COMMAND_TOOLS = new Set<AgentActivity["tool"]>([
@@ -30,6 +39,75 @@ const COMMAND_TOOLS = new Set<AgentActivity["tool"]>([
   "sqlserver_query",
   "mongodb_execute",
   "start_process",
+]);
+
+const RECOVERY_INSPECTION_TOOLS = new Set<AgentActivity["tool"]>([
+  "list_directory",
+  "glob_files",
+  "read_many_files",
+  "path_info",
+  "read_file",
+  "search_code",
+  "git_status",
+  "git_diff",
+  "git_log",
+  "git_show",
+  "browser_snapshot",
+  "browser_screenshot",
+  "ssh_list_directory",
+  "ssh_read_file",
+]);
+const RECOVERY_MUTATION_TOOLS = new Set<AgentActivity["tool"]>([
+  "apply_patch",
+  "write_file",
+  "make_directory",
+  "move_path",
+  "delete_path",
+  "ssh_write_file",
+]);
+const RECOVERY_EXECUTION_TOOLS = new Set<AgentActivity["tool"]>([
+  "run_command",
+  "start_process",
+  "process_output",
+  "stop_process",
+  "diagnostics",
+  "ssh_run",
+  "mysql_query",
+  "sqlserver_query",
+  "mongodb_execute",
+  "mcp_call_tool",
+]);
+const RECOVERY_CONNECTION_TOOLS = new Set<AgentActivity["tool"]>([
+  "ssh_connect",
+  "mysql_connect",
+  "mysql_connect_via_ssh",
+  "sqlserver_connect",
+  "sqlserver_connect_via_ssh",
+  "mongodb_connect",
+  "mongodb_connect_via_ssh",
+]);
+const RECOVERY_VALIDATION_COMMAND =
+  /(?:^|\s)(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|typecheck|lint|build)|\b(?:pytest|phpunit|cargo\s+test|go\s+test|dotnet\s+test|tsc\b|eslint\b|vitest\b|jest\b|php\s+-l\b)/i;
+
+const RECOVERY_CODING_REQUIREMENTS = new Set<AgentPlanRequirement>([
+  "inspect",
+  "modify",
+  "execute",
+  "validate",
+  "connect",
+  "upload",
+  "download",
+]);
+const RECOVERY_BROWSER_OPERATIONS = new Set<AgentBrowserOperation>([
+  "open",
+  "type",
+  "click",
+  "verify",
+]);
+const RECOVERY_GIT_OPERATIONS = new Set<AgentGitOperation>([
+  "commit",
+  "push",
+  "release",
 ]);
 
 function clipMiddle(value: string, max: number) {
@@ -114,6 +192,254 @@ function planStatusLabel(status: string) {
   return "待执行";
 }
 
+function planRequirementLabel(requirement: AgentPlanRequirement) {
+  const labels: Record<AgentPlanRequirement, string> = {
+    inspect: "检查",
+    modify: "修改",
+    execute: "执行",
+    validate: "验证",
+    connect: "连接",
+    upload: "上传",
+    download: "下载",
+  };
+  return labels[requirement] ?? requirement;
+}
+
+/** Restores the latest structured plan without asking a model to reconstruct it from prose. */
+export function recoveryPlanFromActivities(
+  activities: AgentActivity[],
+  requestId: string | undefined,
+): AgentRecoveryPlan | undefined {
+  if (!requestId) return undefined;
+  const matching = activities.filter(
+    (activity) => activity.requestId === requestId,
+  );
+  const source = [...matching]
+    .reverse()
+    .find((activity) => activity.planSteps && activity.planSteps.length > 0);
+  if (!source?.planSteps?.length) return undefined;
+  const summary = summarizeExecutionPlan(matching);
+  const steps = source.planSteps.map((step, index) => ({
+    step: redactSensitiveText(step).replace(/\s+/g, " ").trim().slice(0, 180),
+    status: (source.planStatuses?.[index] ??
+      (summary?.statuses[index] === "running"
+        ? "in_progress"
+        : summary?.statuses[index] === "completed"
+          ? "completed"
+          : "pending")) as AgentPlanStepStatus,
+    requires: source.planRequirements?.[index]
+      ? [...source.planRequirements[index]]
+      : [],
+  }));
+  const requirementsDeclared =
+    source.planRequirements?.length === source.planSteps.length;
+  return {
+    steps,
+    current: Math.min(
+      Math.max(0, source.planStep ?? summary?.current ?? 0),
+      steps.length - 1,
+    ),
+    requirementsDeclared,
+  };
+}
+
+/** Builds a small legacy recovery plan from runtime missing-operation facts. */
+export function recoveryPlanFromCompletionResult(
+  completionResult?: AgentCompletionResult,
+): AgentRecoveryPlan | undefined {
+  if (!completionResult?.missingOperations.length) return undefined;
+  const requirements = [
+    ...new Set(
+      completionResult.missingOperations
+        .map((operation) => operation.split(":", 2))
+        .filter(
+          ([family, value]) =>
+            family === "coding" &&
+            RECOVERY_CODING_REQUIREMENTS.has(value as AgentPlanRequirement),
+        )
+        .map(([, value]) => value as AgentPlanRequirement),
+    ),
+  ];
+  if (!requirements.length) return undefined;
+  const labels: Record<AgentPlanRequirement, string> = {
+    inspect: "检查当前状态",
+    modify: "完成实际修改",
+    execute: "执行目标命令",
+    validate: "完成修改后验证",
+    connect: "建立并确认连接",
+    upload: "上传并确认文件",
+    download: "下载并确认文件",
+  };
+  return {
+    steps: requirements.map((requirement) => ({
+      step: labels[requirement],
+      status: "pending",
+      requires: [requirement],
+    })),
+    current: 0,
+    requirementsDeclared: true,
+  };
+}
+
+/** Reads activity rows retained by a crash checkpoint when the task database is stale. */
+export function recoveryActivitiesFromCheckpoint(
+  events: AgentEvent[] | undefined,
+  requestId: string | undefined,
+) {
+  if (!requestId || !Array.isArray(events)) return [];
+  return events.flatMap((event) =>
+    event?.type === "activity" && event.activity?.requestId === requestId
+      ? [event.activity]
+      : [],
+  );
+}
+
+/** Returns the last structured terminal result retained by a crash checkpoint. */
+export function recoveryCompletionResultFromCheckpoint(
+  events: AgentEvent[] | undefined,
+  requestId: string | undefined,
+) {
+  if (!requestId || !Array.isArray(events)) return undefined;
+  const terminal = [...events]
+    .reverse()
+    .find(
+      (event): event is Extract<AgentEvent, { type: "done" }> =>
+        event?.type === "done" &&
+        (!event.requestId || event.requestId === requestId),
+    );
+  return terminal?.result;
+}
+
+function recoveryActivitySucceeded(activity: AgentActivity) {
+  return (
+    (activity.status === "success" || activity.status === "completed") &&
+    !activity.undone
+  );
+}
+
+function addRecoveryCodingEvidence(
+  target: Set<AgentPlanRequirement>,
+  activity: AgentActivity,
+) {
+  for (const operation of activity.operationEvidence ?? []) {
+    if (RECOVERY_CODING_REQUIREMENTS.has(operation as AgentPlanRequirement))
+      target.add(operation as AgentPlanRequirement);
+  }
+  if (RECOVERY_INSPECTION_TOOLS.has(activity.tool)) target.add("inspect");
+  if (
+    RECOVERY_MUTATION_TOOLS.has(activity.tool) &&
+    (activity.changed === true ||
+      Boolean(activity.diff) ||
+      Boolean(activity.additions) ||
+      Boolean(activity.deletions) ||
+      Boolean(activity.fileChanges?.length))
+  )
+    target.add("modify");
+  if (RECOVERY_EXECUTION_TOOLS.has(activity.tool) && activity.executed === true)
+    target.add("execute");
+  if (RECOVERY_CONNECTION_TOOLS.has(activity.tool)) target.add("connect");
+  if (activity.tool === "ssh_upload_file") target.add("upload");
+  if (activity.tool === "ssh_download_file") target.add("download");
+  if (activity.tool === "diagnostics" && activity.exitCode === 0)
+    target.add("validate");
+  const command = String(
+    activity.command ?? activity.input.command ?? "",
+  ).trim();
+  if (
+    (activity.input.purpose === "validate" ||
+      RECOVERY_VALIDATION_COMMAND.test(command)) &&
+    activity.exitCode === 0
+  )
+    target.add("validate");
+}
+
+/** Collects prior successful runtime facts without carrying secrets into a new request. */
+export function recoveryEvidenceFromActivities(
+  activities: AgentActivity[],
+  requestId: string | undefined,
+  completionResult?: AgentCompletionResult,
+): AgentRecoveryEvidence | undefined {
+  if (!requestId) return undefined;
+  const matching = activities.filter(
+    (activity) => activity.requestId === requestId,
+  );
+  if (!matching.length && !completionResult) return undefined;
+  const coding = new Set<AgentPlanRequirement>();
+  const browser = new Set<AgentBrowserOperation>();
+  const git = new Set<AgentGitOperation>();
+  let interactionSinceVerification = false;
+  let verifiedAfterInteraction = false;
+
+  const recordBrowserOperation = (operation: AgentBrowserOperation) => {
+    browser.add(operation);
+    if (operation === "open") {
+      // A new page invalidates verification from the previous page.
+      browser.delete("verify");
+      interactionSinceVerification = false;
+      verifiedAfterInteraction = false;
+    } else if (operation === "type" || operation === "click") {
+      interactionSinceVerification = true;
+      verifiedAfterInteraction = false;
+      browser.delete("verify");
+    } else if (operation === "verify" && interactionSinceVerification) {
+      verifiedAfterInteraction = true;
+    }
+  };
+
+  const visit = (activity: AgentActivity) => {
+    if (recoveryActivitySucceeded(activity)) {
+      addRecoveryCodingEvidence(coding, activity);
+      if (activity.tool === "browser_open") recordBrowserOperation("open");
+      if (
+        activity.tool === "browser_type" ||
+        activity.tool === "browser_fill_credential"
+      )
+        recordBrowserOperation("type");
+      if (activity.tool === "browser_click") recordBrowserOperation("click");
+      if (
+        activity.tool === "browser_snapshot" ||
+        activity.tool === "browser_screenshot"
+      )
+        recordBrowserOperation("verify");
+      for (const operation of activity.browserOperationEvidence ?? [])
+        if (RECOVERY_BROWSER_OPERATIONS.has(operation as AgentBrowserOperation))
+          recordBrowserOperation(operation as AgentBrowserOperation);
+    }
+    for (const child of activity.childActivities ?? []) visit(child);
+  };
+  for (const activity of matching) visit(activity);
+  if (interactionSinceVerification && !verifiedAfterInteraction)
+    browser.delete("verify");
+  for (const operation of completionResult?.operations ?? []) {
+    const [family, value] = operation.split(":", 2);
+    if (
+      family === "coding" &&
+      RECOVERY_CODING_REQUIREMENTS.has(value as AgentPlanRequirement)
+    )
+      coding.add(value as AgentPlanRequirement);
+    if (
+      family === "browser" &&
+      RECOVERY_BROWSER_OPERATIONS.has(value as AgentBrowserOperation)
+    )
+      browser.add(value as AgentBrowserOperation);
+    if (
+      family === "git" &&
+      RECOVERY_GIT_OPERATIONS.has(value as AgentGitOperation)
+    )
+      git.add(value as AgentGitOperation);
+  }
+  if (!coding.size && !browser.size && !git.size) return undefined;
+  return {
+    coding: [...RECOVERY_CODING_REQUIREMENTS].filter((operation) =>
+      coding.has(operation),
+    ),
+    browser: [...RECOVERY_BROWSER_OPERATIONS].filter((operation) =>
+      browser.has(operation),
+    ),
+    git: [...RECOVERY_GIT_OPERATIONS].filter((operation) => git.has(operation)),
+  };
+}
+
 function recoveryAggregate(activities: AgentActivity[]) {
   let successful = 0;
   let failed = 0;
@@ -195,10 +521,15 @@ function recoveryAggregate(activities: AgentActivity[]) {
   if (plan) {
     lines.push("最新结构化执行计划：");
     plan.steps.forEach((step, index) => {
+      const requirements = plan.requirements?.[index] ?? [];
       lines.push(
-        `${index + 1}. [${planStatusLabel(plan.statuses[index] ?? "pending")}] ${safeEvidence(step, 240)}`,
+        `${index + 1}. [${planStatusLabel(plan.statuses[index] ?? "pending")}] ${safeEvidence(step, 240)}${requirements.length ? `（要求：${requirements.map(planRequirementLabel).join("、")}）` : ""}`,
       );
     });
+    if (!plan.requirements)
+      lines.push(
+        "计划来自旧版本运行记录，继续执行前会先补齐每一步的结构化要求。",
+      );
   }
   if (unresolved.length) {
     lines.push("失败或尚未完成的活动：");

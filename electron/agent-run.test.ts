@@ -248,8 +248,12 @@ test("runAgent publishes update_plan as structured activity state", async () => 
                 input: {
                   explanation: "先读取，再总结",
                   plan: [
-                    { step: "读取目标文件", status: "in_progress" },
-                    { step: "汇总检查结论", status: "pending" },
+                    {
+                      step: "读取目标文件",
+                      status: "in_progress",
+                      requires: ["inspect"],
+                    },
+                    { step: "汇总检查结论", status: "pending", requires: [] },
                   ],
                 },
               },

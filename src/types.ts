@@ -437,6 +437,10 @@ export type ModelRequest = {
   agentRole?: AgentRole;
   collaboration?: AgentCollaborationConfig;
   recoveryContext?: string;
+  /** Structured state from an interrupted run; prose is only supplemental. */
+  recoveryPlan?: AgentRecoveryPlan;
+  /** Runtime evidence already confirmed before an interrupted run resumed. */
+  recoveryEvidence?: AgentRecoveryEvidence;
 };
 
 export type WorkspaceFolder = { name: string; path: string };
@@ -480,6 +484,35 @@ export type AgentFileChange = {
 
 export type AgentPlanStepStatus = "pending" | "in_progress" | "completed";
 
+/** Runtime obligations attached to a structured execution-plan step. */
+export type AgentPlanRequirement =
+  | "inspect"
+  | "modify"
+  | "execute"
+  | "validate"
+  | "connect"
+  | "upload"
+  | "download";
+
+export type AgentBrowserOperation = "open" | "type" | "click" | "verify";
+export type AgentGitOperation = "commit" | "push" | "release";
+
+export type AgentRecoveryEvidence = {
+  coding: AgentPlanRequirement[];
+  browser: AgentBrowserOperation[];
+  git: AgentGitOperation[];
+};
+
+export type AgentRecoveryPlan = {
+  steps: Array<{
+    step: string;
+    status: AgentPlanStepStatus;
+    requires: AgentPlanRequirement[];
+  }>;
+  current: number;
+  requirementsDeclared: boolean;
+};
+
 export type AgentActivity = {
   id: string;
   requestId: string;
@@ -498,6 +531,7 @@ export type AgentActivity = {
   /** Structured plan emitted through the native update_plan tool. */
   planSteps?: string[];
   planStatuses?: AgentPlanStepStatus[];
+  planRequirements?: AgentPlanRequirement[][];
   planStep?: number;
   output?: string;
   /** Full output/diff is stored separately and loaded only when expanded. */
@@ -581,6 +615,8 @@ export type AgentCheckpoint = {
   startedAt: number;
   status: "running" | "paused" | "done";
   request: ModelRequest;
+  /** Bounded runtime events retained for recovery if task persistence lags. */
+  events?: AgentEvent[];
   subagents?: SubagentCheckpoint[];
 };
 export type SubagentCheckpoint = {

@@ -34,6 +34,8 @@ const operationLabels: Record<string, string> = {
   "git:push": "Git 推送",
   "git:release": "触发发布",
   "agent:spawn_executor": "启动执行模型",
+  "plan:requirements": "补齐结构化计划要求",
+  "plan:pending": "完成结构化计划中的待办步骤",
 };
 
 function uniqueSorted(values: Iterable<string>) {

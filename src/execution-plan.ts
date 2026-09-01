@@ -1,11 +1,26 @@
 import type {
   AgentActivity,
+  AgentPlanRequirement,
   AgentPlanStepStatus,
 } from "./types";
 
+export const AGENT_PLAN_REQUIREMENTS: AgentPlanRequirement[] = [
+  "inspect",
+  "modify",
+  "execute",
+  "validate",
+  "connect",
+  "upload",
+  "download",
+];
+
 export type StructuredPlanUpdate = {
   explanation?: string;
-  plan: Array<{ step: string; status: AgentPlanStepStatus }>;
+  plan: Array<{
+    step: string;
+    status: AgentPlanStepStatus;
+    requires: AgentPlanRequirement[];
+  }>;
 };
 
 export function normalizePlanUpdate(input: {
@@ -18,13 +33,28 @@ export function normalizePlanUpdate(input: {
     if (!raw || typeof raw !== "object")
       throw new Error(`计划第 ${index + 1} 步格式无效`);
     const item = raw as Record<string, unknown>;
-    const step = String(item.step ?? "").replace(/\s+/g, " ").trim();
+    const step = String(item.step ?? "")
+      .replace(/\s+/g, " ")
+      .trim();
     const status = String(item.status ?? "") as AgentPlanStepStatus;
+    if (!Array.isArray(item.requires))
+      throw new Error(
+        `计划第 ${index + 1} 步必须声明 requires；纯说明步骤请传空数组`,
+      );
+    const requires = [
+      ...new Set(item.requires.map((value) => String(value))),
+    ] as AgentPlanRequirement[];
+    if (
+      requires.some(
+        (requirement) => !AGENT_PLAN_REQUIREMENTS.includes(requirement),
+      )
+    )
+      throw new Error(`计划第 ${index + 1} 步的 requires 包含无效操作`);
     if (step.length < 2) throw new Error(`计划第 ${index + 1} 步缺少具体内容`);
     if (step.length > 180) throw new Error(`计划第 ${index + 1} 步超过 180 字`);
     if (!["pending", "in_progress", "completed"].includes(status))
       throw new Error(`计划第 ${index + 1} 步状态无效`);
-    return { step, status };
+    return { step, status, requires };
   });
   if (new Set(plan.map((item) => item.step)).size !== plan.length)
     throw new Error("执行计划不能包含重复步骤");
@@ -44,6 +74,7 @@ export type ExecutionPlanSummary = {
   steps: string[];
   current: number;
   statuses: ExecutionPlanStepStatus[];
+  requirements?: AgentPlanRequirement[][];
 };
 
 const MUTATION_PLAN_TOOLS = new Set<AgentActivity["tool"]>([
@@ -129,6 +160,10 @@ export function summarizeExecutionPlan(
     source.planStatuses?.length === steps.length
       ? source.planStatuses
       : undefined;
+  const declaredRequirements =
+    source.planRequirements?.length === steps.length
+      ? source.planRequirements
+      : undefined;
   const statuses = steps.map<ExecutionPlanStepStatus>((_, index) => {
     const related = activities.filter(
       (activity) => activity.planStep === index,
@@ -148,5 +183,12 @@ export function summarizeExecutionPlan(
       return "completed";
     return "pending";
   });
-  return { steps, current, statuses };
+  return {
+    steps,
+    current,
+    statuses,
+    ...(declaredRequirements
+      ? { requirements: declaredRequirements.map((item) => [...item]) }
+      : {}),
+  };
 }

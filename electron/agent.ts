@@ -57,6 +57,7 @@ import {
   inferReasoningConfig,
   type AgentActivity,
   type AgentCompletionResult,
+  type AgentPlanRequirement,
   type AgentEvent,
   type AgentPlanStepStatus,
   type AgentToolName,
@@ -363,7 +364,11 @@ type ToolResult = Partial<
   };
   planUpdate?: {
     explanation?: string;
-    plan: Array<{ step: string; status: AgentPlanStepStatus }>;
+    plan: Array<{
+      step: string;
+      status: AgentPlanStepStatus;
+      requires: AgentPlanRequirement[];
+    }>;
   };
 };
 
@@ -1671,7 +1676,7 @@ const tools = [
   {
     name: "update_plan",
     description:
-      "Update the task checklist using structured step statuses. Use this for multi-step work instead of writing a numbered plan in prose. At most one step may be in_progress.",
+      "Update the task checklist using structured step statuses. Use this for multi-step work instead of writing a numbered plan in prose. Every step must declare requires: use an empty array for explanation-only steps; use modify, execute, validate, connect, upload, or download for real runtime obligations. At most one step may be in_progress, and never mark an obligated step completed before its native tool result succeeds.",
     parameters: {
       type: "object",
       properties: {
@@ -1686,8 +1691,26 @@ const tools = [
                 type: "string",
                 enum: ["pending", "in_progress", "completed"],
               },
+              requires: {
+                type: "array",
+                items: {
+                  type: "string",
+                  enum: [
+                    "inspect",
+                    "modify",
+                    "execute",
+                    "validate",
+                    "connect",
+                    "upload",
+                    "download",
+                  ],
+                },
+                maxItems: 7,
+                description:
+                  "Native evidence required for this step. Use [] when no tool side effect is needed.",
+              },
             },
-            required: ["step", "status"],
+            required: ["step", "status", "requires"],
             additionalProperties: false,
           },
         },
@@ -4879,7 +4902,7 @@ async function modelTurn(
     runtime?.activeSkills ??
       (await loadActiveSkillInstructions(latestUserRequest)),
     plannerCollaborationInstruction(request),
-    "When a task has multiple independent phases, call update_plan with concise steps and structured statuses instead of writing a numbered plan in prose. Before every tool-call group, write no more than two concise user-facing progress sentences explaining which plan step you are executing and why; keep this preamble under 240 characters. Never dump a full implementation monologue, speculative patch, or repeated plan into the chat. A non-final turn must include a tool call instead of only describing what you will do. Update the plan as steps advance. After a failed tool result, briefly explain how you are adjusting the approach before the next tool call. Never claim success before a tool result confirms it.",
+    "When a task has multiple independent phases, call update_plan with concise steps and structured statuses instead of writing a numbered plan in prose. Every plan item must include requires with one or more native obligations (inspect, modify, execute, validate, connect, upload, download), or [] when the item is explanation-only. Keep a required step pending until its native tool result succeeds or a structured no-change/user-input result resolves it. Before every tool-call group, write no more than two concise user-facing progress sentences explaining which plan step you are executing and why; keep this preamble under 240 characters. Never dump a full implementation monologue, speculative patch, or repeated plan into the chat. A non-final turn must include a tool call instead of only describing what you will do. Update the plan as steps advance. After a failed tool result, briefly explain how you are adjusting the approach before the next tool call. Never claim success before a tool result confirms it.",
     "Delegation is one level only: a subagent must complete its assigned scope directly and must not create another subagent. When a child wait times out, use the returned progress and pending status; do not busy-poll with repeated short waits. Repeated waits with no child progress are stopped automatically and the partial result is preserved.",
     "wait_agent returns when the first selected child finishes. Put all relevant agent ids in one wait_agent call; never emit one wait call per child in the same model turn. Long waits are automatically sliced and all waits in one turn share a 60-second budget so the parent can observe real child progress. A timeout is a successful, non-destructive status update: the child remains running and uncollected, so wait again only when it is making progress; repeated no-progress waits are stopped automatically and the partial result is preserved. New user steering may interrupt the wait without stopping the child.",
     enabledMcpServers.length
@@ -4902,6 +4925,9 @@ async function modelTurn(
     requireToolCall && runtimeTools.length
       ? "\n\n<runtime_tool_requirement>This response must include at least one native tool call. Do not return a plan, progress narration, or completion summary without calling a tool. Use request_user_input only when a specific undiscoverable input is genuinely required, and use report_no_change only after successful read-only inspection proves that no edit is needed.</runtime_tool_requirement>"
       : "";
+  const recoveryPlanInstruction = request.recoveryPlan
+    ? `\n\n<structured_recovery_plan>${JSON.stringify(request.recoveryPlan)}</structured_recovery_plan>\nThis is authoritative runtime state from the interrupted request. Preserve successful evidence, refresh the plan with requires if requirementsDeclared is false, and begin with the first pending or failed step. Do not treat a prose summary as proof of completion.`
+    : "";
   const remoteWorkspaceInstruction = request.remoteWorkspace
     ? `\n\n<ssh_remote_workspace>\nThis task is attached to a managed SSH Remote workspace. Try the existing session first. If an SSH tool explicitly reports that the session was lost, ssh_connect is available for recovery. When the user already supplied the host, username, password, private-key content, or an absolute private-key path, reconnect yourself immediately with those values; use privateKeyPath for a user-supplied key path and do not send the user to the SSH Remote dialog. The project source of truth is on ${request.remoteWorkspace.username}@${request.remoteWorkspace.host}:${request.remoteWorkspace.port} under ${request.remoteWorkspace.rootPath}. Pass that rootPath when reconnecting. Use ssh_list_directory, ssh_read_file, ssh_write_file, ssh_run, ssh_upload_file, and ssh_download_file for work on the remote server. Relative SSH file paths are automatically resolved under the remote root. Every ssh_run command starts in the remote root. This is a hybrid task: you ALSO have the local file, git, and command tools, which act on THIS machine. When the user references local project sources by absolute path (for example D:\\\\project\\\\... on Windows), use the local tools to read, edit, build, and inspect them, then ssh_upload_file to deploy build artifacts to the server. Note ${root} itself is only KCode metadata/cache, not the user's local project — do not treat that cache directory as the source, but do freely use the local tools on the absolute paths the user points you to.\n</ssh_remote_workspace>`
     : "";
@@ -4919,7 +4945,7 @@ async function modelTurn(
   const projectInstructionsSection = projectInstructions
     ? `\n\n<project_instructions>\n${projectInstructions}\n</project_instructions>`
     : "";
-  const payloadSystem = `${system}${suppliedVerificationCodeNotice}${imageInputNotice}${projectInstructionsSection}${requiredToolInstruction}`;
+  const payloadSystem = `${system}${recoveryPlanInstruction}${suppliedVerificationCodeNotice}${imageInputNotice}${projectInstructionsSection}${requiredToolInstruction}`;
   // Track system prompt segment changes for cache optimization analytics
   worldStateTracker.recordRound(
     buildSegments([
@@ -5574,6 +5600,47 @@ function codingEvidenceWithBaseline(
   return evidence;
 }
 
+const ACTIONABLE_PLAN_REQUIREMENTS = new Set<AgentPlanRequirement>([
+  "modify",
+  "execute",
+  "validate",
+  "connect",
+  "upload",
+  "download",
+]);
+const MAX_PLAN_RECOVERY_NUDGES = 3;
+
+function firstPendingRequiredPlanStep(
+  steps: readonly string[],
+  statuses: readonly AgentPlanStepStatus[] | undefined,
+  requirements: readonly AgentPlanRequirement[][],
+) {
+  if (!statuses || statuses.length !== steps.length) return -1;
+  return steps.findIndex(
+    (_, index) =>
+      statuses[index] !== "completed" &&
+      requirements[index]?.some((requirement) =>
+        ACTIONABLE_PLAN_REQUIREMENTS.has(requirement),
+      ),
+  );
+}
+
+function hasActionablePlanRequirements(
+  requirements: readonly AgentPlanRequirement[][],
+) {
+  return requirements.some((step) =>
+    step.some((requirement) => ACTIONABLE_PLAN_REQUIREMENTS.has(requirement)),
+  );
+}
+
+function planRequirementRecoveryLabel(
+  missingOperations: readonly CodingOperation[],
+) {
+  return missingOperations.length
+    ? `仍缺少 ${missingOperations.join("、")} 的成功工具证据`
+    : "结构化计划中仍有需要执行的步骤";
+}
+
 function buildPausedCompletionResult({
   evidenceHistory,
   baselineCodingEvidence,
@@ -5581,6 +5648,8 @@ function buildPausedCompletionResult({
   requestedBrowserOps,
   requestedGitOps,
   plannerExecutionPending,
+  planRequirementsPending = false,
+  planPending = false,
 }: {
   evidenceHistory: HistoryItem[];
   baselineCodingEvidence: ReadonlySet<CodingOperation>;
@@ -5588,6 +5657,8 @@ function buildPausedCompletionResult({
   requestedBrowserOps: Set<BrowserOperation>;
   requestedGitOps: Set<GitOperation>;
   plannerExecutionPending: boolean;
+  planRequirementsPending?: boolean;
+  planPending?: boolean;
 }): AgentCompletionResult {
   const codingEvidence = codingEvidenceWithBaseline(
     evidenceHistory,
@@ -5608,6 +5679,8 @@ function buildPausedCompletionResult({
     ...[...requestedBrowserOps].map((operation) => `browser:${operation}`),
     ...[...requestedGitOps].map((operation) => `git:${operation}`),
     ...(plannerExecutionPending ? ["agent:spawn_executor"] : []),
+    ...(planRequirementsPending ? ["plan:requirements"] : []),
+    ...(planPending ? ["plan:pending"] : []),
   ];
   const observedOperations = [
     ...[...codingEvidence].map((operation) => `coding:${operation}`),
@@ -5629,6 +5702,8 @@ function buildPausedCompletionResult({
       .filter((operation) => !unavailableGitEvidence.has(operation))
       .map((operation) => `git:${operation}`),
     ...(plannerExecutionPending ? ["agent:spawn_executor"] : []),
+    ...(planRequirementsPending ? ["plan:requirements"] : []),
+    ...(planPending ? ["plan:pending"] : []),
   ];
   const result = buildAgentCompletionResult({
     requestedOperations,
@@ -5876,6 +5951,14 @@ export async function* runAgent(
   const browserSessionId =
     request.connectionSessionId || request.taskId || requestId;
   const baselineCodingEvidence = new Set<CodingOperation>();
+  for (const operation of request.recoveryEvidence?.coding ?? [])
+    baselineCodingEvidence.add(operation as CodingOperation);
+  const recoveredBrowserEvidence = new Set<BrowserOperation>(
+    request.recoveryEvidence?.browser ?? [],
+  );
+  const recoveredGitEvidence = new Set<GitOperation>(
+    request.recoveryEvidence?.git ?? [],
+  );
   if (request.remoteWorkspace && request.connectionSessionId) {
     try {
       const remoteState = await sshRemoteState(
@@ -5983,6 +6066,7 @@ export async function* runAgent(
     autoContinues: 0,
     emptyTurns: 0,
     reasoningOnlyTurns: 0,
+    planRecoveryNudges: 0,
   };
   // Previous-round context, grouped as a run-state slice: the last activity and
   // any failure carried into the next round's narrative, plus the last tool
@@ -5995,9 +6079,30 @@ export async function* runAgent(
   // Plans are model-authored structured state. KCode never synthesizes them
   // from keywords in the user's message.
   const plan = {
-    steps: [] as string[],
-    statuses: undefined as AgentPlanStepStatus[] | undefined,
-    cursor: 0,
+    steps: request.recoveryPlan?.steps.map((item) => item.step) ?? [],
+    statuses: request.recoveryPlan?.steps.map((item) => item.status) as
+      AgentPlanStepStatus[] | undefined,
+    requirements:
+      request.recoveryPlan?.steps.map((item) => [...item.requires]) ??
+      ([] as AgentPlanRequirement[][]),
+    cursor: request.recoveryPlan?.current ?? 0,
+    requirementsDeclared: request.recoveryPlan
+      ? request.recoveryPlan.requirementsDeclared
+      : true,
+  };
+  // A recovered plan is an obligation immediately, even when the previous
+  // model incorrectly marked every step as completed in prose.
+  for (const requirement of plan.requirements.flat())
+    requestedCodingEvidenceOps.add(requirement as CodingOperation);
+  const browserEvidenceWithRecovery = () => {
+    const evidence = successfulBrowserEvidence(evidenceHistory);
+    for (const operation of recoveredBrowserEvidence) evidence.add(operation);
+    return evidence;
+  };
+  const gitEvidenceWithRecovery = () => {
+    const evidence = successfulGitEvidence(evidenceHistory);
+    for (const operation of recoveredGitEvidence) evidence.add(operation);
+    return evidence;
   };
   let imageFallbackNoticeSent = false;
   let repetitionFinalizationPending: AgentFinalizationMode | undefined;
@@ -6056,6 +6161,7 @@ export async function* runAgent(
       budgets.autoContinues = 0;
       budgets.emptyTurns = 0;
       budgets.reasoningOnlyTurns = 0;
+      budgets.planRecoveryNudges = 0;
       stalledRounds = 0;
       semanticStallRounds = 0;
       noProgressFingerprints.clear();
@@ -6066,15 +6172,16 @@ export async function* runAgent(
       lastSubagentProgress = subagentProgressToken(requestId);
       plan.steps = [];
       plan.statuses = undefined;
+      plan.requirements = [];
       plan.cursor = 0;
+      plan.requirementsDeclared = true;
     }
     const codingEvidenceAtRoundStart = codingEvidenceWithBaseline(
       evidenceHistory,
       baselineCodingEvidence,
     );
-    const browserEvidenceAtRoundStart =
-      successfulBrowserEvidence(evidenceHistory);
-    const gitEvidenceAtRoundStart = successfulGitEvidence(evidenceHistory);
+    const browserEvidenceAtRoundStart = browserEvidenceWithRecovery();
+    const gitEvidenceAtRoundStart = gitEvidenceWithRecovery();
     const unavailableGitAtRoundStart =
       unavailableGitOperations(evidenceHistory);
     const successfulToolsAtRoundStart = successfulToolNames(evidenceHistory);
@@ -6082,6 +6189,25 @@ export async function* runAgent(
       plannerCoordinator &&
       plan.steps.length >= 2 &&
       !successfulToolsAtRoundStart.has("spawn_agent");
+    const planRequirementsPending =
+      plan.steps.length > 0 && !plan.requirementsDeclared;
+    const pendingRequiredPlanStep = firstPendingRequiredPlanStep(
+      plan.steps,
+      plan.statuses,
+      plan.requirements,
+    );
+    const missingPlanCodingOperations = missingVerifiedCodingOperations(
+      requestedCodingEvidenceOps,
+      codingEvidenceAtRoundStart,
+      evidenceHistory,
+    );
+    const actionablePlanPending =
+      planRequirementsPending ||
+      (hasActionablePlanRequirements(plan.requirements) &&
+        (missingPlanCodingOperations.some(
+          (operation) => operation !== "inspect",
+        ) ||
+          pendingRequiredPlanStep >= 0));
     const currentSubagents = listSubagents(requestId);
     const hasUncollectedAgentWork = currentSubagents.some(
       (agent) => !agent.collected,
@@ -6094,11 +6220,7 @@ export async function* runAgent(
     const finalizationBlockedByAgents =
       !externalWorkAbandoned && hasUncollectedAgentWork;
     const evidenceComplete =
-      missingVerifiedCodingOperations(
-        requestedCodingEvidenceOps,
-        codingEvidenceAtRoundStart,
-        evidenceHistory,
-      ).length === 0 &&
+      missingPlanCodingOperations.length === 0 &&
       missingRequestedBrowserOperations(
         requestedBrowserOps,
         browserEvidenceAtRoundStart,
@@ -6108,6 +6230,7 @@ export async function* runAgent(
         gitEvidenceAtRoundStart,
       ).every((operation) => unavailableGitAtRoundStart.has(operation)) &&
       !plannerExecutionPending &&
+      !actionablePlanPending &&
       !hasUncollectedAgentWork;
     const hasPendingInstructions =
       pendingParentInstructions.length > 0 || pendingSteering.length > 0;
@@ -6373,6 +6496,8 @@ export async function* runAgent(
               requestedBrowserOps,
               requestedGitOps,
               plannerExecutionPending,
+              planRequirementsPending,
+              planPending: pendingRequiredPlanStep >= 0,
             });
             for (const pausedEvent of blockedVerificationEvents(
               timelineTextLength,
@@ -6513,6 +6638,8 @@ export async function* runAgent(
             requestedBrowserOps,
             requestedGitOps,
             plannerExecutionPending,
+            planRequirementsPending,
+            planPending: pendingRequiredPlanStep >= 0,
           });
           for (const pausedEvent of blockedVerificationEvents(
             timelineTextLength,
@@ -6553,12 +6680,12 @@ export async function* runAgent(
     budgets.emptyTurns = 0;
     budgets.reasoningOnlyTurns = 0;
     const requestedUserInput = hasRequestedUserInputEvidence(evidenceHistory);
-    const browserEvidence = successfulBrowserEvidence(evidenceHistory);
+    const browserEvidence = browserEvidenceWithRecovery();
     const missingBrowserEvidence = missingRequestedBrowserOperations(
       requestedBrowserOps,
       browserEvidence,
     );
-    const gitEvidence = successfulGitEvidence(evidenceHistory);
+    const gitEvidence = gitEvidenceWithRecovery();
     const unavailableGitEvidence = unavailableGitOperations(evidenceHistory);
     const missingGitEvidence = missingRequestedGitOperations(
       requestedGitOps,
@@ -6583,6 +6710,8 @@ export async function* runAgent(
       ...[...requestedBrowserOps].map((operation) => `browser:${operation}`),
       ...[...requestedGitOps].map((operation) => `git:${operation}`),
       ...(plannerExecutionPending ? ["agent:spawn_executor"] : []),
+      ...(planRequirementsPending ? ["plan:requirements"] : []),
+      ...(pendingRequiredPlanStep >= 0 ? ["plan:pending"] : []),
     ];
     const observedOperationKeys = [
       ...[...codingEvidence].map((operation) => `coding:${operation}`),
@@ -6597,6 +6726,8 @@ export async function* runAgent(
       ...missingBrowserEvidence.map((operation) => `browser:${operation}`),
       ...missingGitEvidence.map((operation) => `git:${operation}`),
       ...(plannerExecutionPending ? ["agent:spawn_executor"] : []),
+      ...(planRequirementsPending ? ["plan:requirements"] : []),
+      ...(pendingRequiredPlanStep >= 0 ? ["plan:pending"] : []),
     ];
     const waitingForUser = requestedUserInput;
     let completionResult = buildAgentCompletionResult({
@@ -6673,9 +6804,11 @@ export async function* runAgent(
       !finalizationMode &&
       !turn.calls.length &&
       plannerExecutionPending;
+    const executionPlanPending =
+      !finalizationMode && !requestedUserInput && actionablePlanPending;
     const willAutoContinue =
       !turn.calls.length &&
-      (truncated || collaborationPlanPending) &&
+      (truncated || collaborationPlanPending || executionPlanPending) &&
       budgets.autoContinues < 4;
     const stopHookResult =
       !finalizationMode && !turn.calls.length && !willAutoContinue
@@ -6745,12 +6878,14 @@ export async function* runAgent(
             ? "上游说明被截断且未产生工具调用，正在要求模型直接继续执行…"
             : collaborationPlanPending
               ? "协作规划已生成，正在要求规划模型启动执行模型…"
-              : "响应被截断，正在要求模型立即继续执行…",
+              : executionPlanPending
+                ? `结构化计划尚未取得${planRequirementsPending ? "完整要求声明或" : ""}实际执行证据，正在回到待办步骤继续…`
+                : "响应被截断，正在要求模型立即继续执行…",
         };
         history.push({
           kind: "message",
           role: "user",
-          content: `<runtime_verification>${truncated ? "上一轮响应被截断，未收到完整的工具调用。" : "协作规划已经生成，但还没有启动执行 Agent。"}请立即调用相应工具继续执行。</runtime_verification>`,
+          content: `<runtime_verification>${truncated ? "上一轮响应被截断，未收到完整的工具调用。" : collaborationPlanPending ? "协作规划已经生成，但还没有启动执行 Agent。" : planRequirementsPending ? "恢复的结构化计划缺少每一步的 requires 声明。请先调用 update_plan，为每一步补齐 requires；不需要副作用的步骤传空数组，然后从第一个未完成步骤继续。" : `结构化计划仍缺少${planRequirementRecoveryLabel(missingActionCodingEvidence)}。`}请立即调用相应工具继续执行，不要只输出总结。</runtime_verification>`,
         });
         continue;
       }
@@ -6770,12 +6905,27 @@ export async function* runAgent(
     // A productive round refreshes the auto-continue budget.
     budgets.autoContinues = 0;
     history.push({ kind: "calls", calls: turn.calls, rawCalls: turn.rawCalls });
-    for (const operation of codingOperationsRequiredByCalls(turn.calls))
+    for (const operation of codingOperationsRequiredByCalls(turn.calls)) {
       requestedCodingEvidenceOps.add(operation);
-    for (const operation of browserOperationsRequiredByCalls(turn.calls))
+      // A new attempt must be proven by this request. Keep a recovered
+      // connection fact, but do not let an old mutation/command/transfer
+      // satisfy a newly attempted operation that later fails.
+      if (operation !== "connect") baselineCodingEvidence.delete(operation);
+    }
+    for (const operation of browserOperationsRequiredByCalls(turn.calls)) {
       requestedBrowserOps.add(operation);
-    for (const operation of gitOperationsRequiredByCalls(turn.calls))
+      if (operation === "open") {
+        recoveredBrowserEvidence.delete("open");
+        recoveredBrowserEvidence.delete("verify");
+      } else if (operation === "type" || operation === "click") {
+        recoveredBrowserEvidence.delete(operation);
+        recoveredBrowserEvidence.delete("verify");
+      }
+    }
+    for (const operation of gitOperationsRequiredByCalls(turn.calls)) {
       requestedGitOps.add(operation);
+      recoveredGitEvidence.delete(operation);
+    }
     evidenceHistory.push({
       kind: "calls",
       calls: turn.calls.map(compactEvidenceCall),
@@ -6896,6 +7046,7 @@ export async function* runAgent(
         narrative: roundNarrative || undefined,
         planSteps,
         planStatuses: plan.statuses,
+        planRequirements: plan.requirements,
         planStep: planStep,
         path:
           typeof call.input.path === "string"
@@ -7285,9 +7436,14 @@ export async function* runAgent(
           const previousPlan = JSON.stringify({
             steps: plan.steps,
             statuses: plan.statuses,
+            requirements: plan.requirements,
           });
           plan.steps = planUpdate.plan.map((item) => item.step);
           plan.statuses = planUpdate.plan.map((item) => item.status);
+          plan.requirements = planUpdate.plan.map((item) => [...item.requires]);
+          plan.requirementsDeclared = true;
+          for (const requirement of plan.requirements.flat())
+            requestedCodingEvidenceOps.add(requirement as CodingOperation);
           const activeStep = planUpdate.plan.findIndex(
             (item) => item.status === "in_progress",
           );
@@ -7306,10 +7462,15 @@ export async function* runAgent(
             : undefined;
           activity.planSteps = planSteps;
           activity.planStatuses = plan.statuses;
+          activity.planRequirements = plan.requirements;
           activity.planStep = planStep;
           roundPlanChanged ||=
             previousPlan !==
-            JSON.stringify({ steps: plan.steps, statuses: plan.statuses });
+            JSON.stringify({
+              steps: plan.steps,
+              statuses: plan.statuses,
+              requirements: plan.requirements,
+            });
         }
         resultEvidence = {
           changed: result.changed,
@@ -7670,20 +7831,32 @@ export async function* runAgent(
       evidenceHistory,
       baselineCodingEvidence,
     );
-    const browserEvidenceAfterRound =
-      successfulBrowserEvidence(evidenceHistory);
-    const gitEvidenceAfterRound = successfulGitEvidence(evidenceHistory);
+    const browserEvidenceAfterRound = browserEvidenceWithRecovery();
+    const gitEvidenceAfterRound = gitEvidenceWithRecovery();
     const unavailableGitAfterRound = unavailableGitOperations(evidenceHistory);
     const plannerExecutionPendingAfterRound =
       plannerCoordinator &&
       plan.steps.length >= 2 &&
       !successfulToolNames(evidenceHistory).has("spawn_agent");
+    const planRequirementsPendingAfterRound =
+      plan.steps.length > 0 && !plan.requirementsDeclared;
+    const pendingRequiredPlanStepAfterRound = firstPendingRequiredPlanStep(
+      plan.steps,
+      plan.statuses,
+      plan.requirements,
+    );
+    const missingCodingAfterRound = missingVerifiedCodingOperations(
+      requestedCodingEvidenceOps,
+      codingEvidenceAfterRound,
+      evidenceHistory,
+    );
+    const actionablePlanPendingAfterRound =
+      planRequirementsPendingAfterRound ||
+      (hasActionablePlanRequirements(plan.requirements) &&
+        (missingCodingAfterRound.some((operation) => operation !== "inspect") ||
+          pendingRequiredPlanStepAfterRound >= 0));
     const evidenceCompleteAfterRound =
-      missingVerifiedCodingOperations(
-        requestedCodingEvidenceOps,
-        codingEvidenceAfterRound,
-        evidenceHistory,
-      ).length === 0 &&
+      missingCodingAfterRound.length === 0 &&
       missingRequestedBrowserOperations(
         requestedBrowserOps,
         browserEvidenceAfterRound,
@@ -7693,6 +7866,7 @@ export async function* runAgent(
         gitEvidenceAfterRound,
       ).every((operation) => unavailableGitAfterRound.has(operation)) &&
       !plannerExecutionPendingAfterRound &&
+      !actionablePlanPendingAfterRound &&
       !listSubagents(requestId).some((agent) => !agent.collected);
     if (pendingUserInput) {
       const missingCodingAfterRound = missingVerifiedCodingOperations(
@@ -7720,6 +7894,8 @@ export async function* runAgent(
           ...(plannerExecutionPendingAfterRound
             ? ["agent:spawn_executor"]
             : []),
+          ...(planRequirementsPendingAfterRound ? ["plan:requirements"] : []),
+          ...(pendingRequiredPlanStepAfterRound >= 0 ? ["plan:pending"] : []),
         ],
         observedOperations: [
           ...[...codingEvidenceAfterRound].map(
@@ -7742,6 +7918,8 @@ export async function* runAgent(
           ...(plannerExecutionPendingAfterRound
             ? ["agent:spawn_executor"]
             : []),
+          ...(planRequirementsPendingAfterRound ? ["plan:requirements"] : []),
+          ...(pendingRequiredPlanStepAfterRound >= 0 ? ["plan:pending"] : []),
         ],
         evidence: structuredToolEvidenceSummary(evidenceHistory),
         waitingForUser: true,
@@ -7804,6 +7982,8 @@ export async function* runAgent(
       roundPlanChanged
         ? 0
         : semanticStallRounds + 1;
+    if (roundAdvanced || roundExternalProgress || roundPlanChanged)
+      budgets.planRecoveryNudges = 0;
     if (signal.aborted) {
       yield {
         type: "error",
@@ -7816,6 +7996,30 @@ export async function* runAgent(
       ? "finalize"
       : stallAction(stalledRounds);
     if (currentStallAction !== "continue") {
+      if (
+        currentStallAction === "finalize" &&
+        actionablePlanPendingAfterRound &&
+        budgets.planRecoveryNudges < MAX_PLAN_RECOVERY_NUDGES
+      ) {
+        budgets.planRecoveryNudges += 1;
+        const pendingStep =
+          pendingRequiredPlanStepAfterRound >= 0
+            ? `第 ${pendingRequiredPlanStepAfterRound + 1} 步“${plan.steps[pendingRequiredPlanStepAfterRound]}”`
+            : "当前结构化计划";
+        const missing = missingCodingAfterRound.filter(
+          (operation) => operation !== "inspect",
+        );
+        yield {
+          type: "progress",
+          message: `${pendingStep}仍未取得真实执行结果，正在停止重复检查并要求模型立即执行（第 ${budgets.planRecoveryNudges}/${MAX_PLAN_RECOVERY_NUDGES} 次）…`,
+        };
+        history.push({
+          kind: "message",
+          role: "user",
+          content: `<runtime_repetition_recovery><runtime_execution_recovery>${pendingStep}尚未完成。${planRequirementsPendingAfterRound ? "请先用 update_plan 为每一步补齐 requires（纯说明步骤用 []）。" : planRequirementRecoveryLabel(missing)}不要再次读取同一内容，不要只输出“已完成”；现在必须调用对应的原生工具。若外部环境确实不可用，调用 request_user_input 说明需要的具体信息，或在确认无需修改后调用 report_no_change。</runtime_execution_recovery></runtime_repetition_recovery>`,
+        });
+        continue;
+      }
       const shouldFinalizeAvailableResult =
         evidenceCompleteAfterRound && !roundFailedActivity;
       const shouldFinalizeNow =

@@ -21,7 +21,9 @@ test("finalization fallback prioritizes a successful download destination", () =
           id: "plan",
           name: "update_plan" as const,
           input: {
-            plan: [{ step: "下载文件", status: "completed" }],
+            plan: [
+              { step: "下载文件", status: "completed", requires: ["download"] },
+            ],
           },
         },
       ],

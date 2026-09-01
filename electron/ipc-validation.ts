@@ -78,6 +78,36 @@ const collaborationSchema = z.object({
   }),
 });
 
+const planRequirementSchema = z.enum([
+  "inspect",
+  "modify",
+  "execute",
+  "validate",
+  "connect",
+  "upload",
+  "download",
+]);
+
+const recoveryPlanSchema = z.object({
+  steps: z
+    .array(
+      z.object({
+        step: z.string().trim().min(2).max(180),
+        status: z.enum(["pending", "in_progress", "completed"]),
+        requires: z.array(planRequirementSchema).max(7),
+      }),
+    )
+    .max(12),
+  current: z.number().int().min(0).max(11),
+  requirementsDeclared: z.boolean(),
+});
+
+const recoveryEvidenceSchema = z.object({
+  coding: z.array(planRequirementSchema).max(8),
+  browser: z.array(z.enum(["open", "type", "click", "verify"])).max(8),
+  git: z.array(z.enum(["commit", "push", "release"])).max(3),
+});
+
 export const modelRequestSchema = z.object({
   requestId: idSchema.optional(),
   taskId: idSchema.optional(),
@@ -122,4 +152,6 @@ export const modelRequestSchema = z.object({
   collaboration: collaborationSchema.optional(),
   agentDepth: z.number().int().min(0).max(1).optional(),
   recoveryContext: z.string().max(20_000).optional(),
+  recoveryPlan: recoveryPlanSchema.optional(),
+  recoveryEvidence: recoveryEvidenceSchema.optional(),
 });

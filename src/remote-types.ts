@@ -1,5 +1,7 @@
 import type {
   AgentCompletionResult,
+  AgentPlanRequirement,
+  AgentPlanStepStatus,
   ImageAttachment,
   ProviderConfig,
 } from "./types";
@@ -111,7 +113,8 @@ export type RemoteTaskSnapshot = {
     recoverable?: boolean;
     liveStatus?: string;
     planSteps?: string[];
-    planStatuses?: Array<"pending" | "in_progress" | "completed">;
+    planStatuses?: AgentPlanStepStatus[];
+    planRequirements?: AgentPlanRequirement[][];
     planStep?: number;
     startedAt: number;
     completedAt?: number;

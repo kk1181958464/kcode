@@ -123,6 +123,8 @@ const operationLabels: Record<string, string> = {
   "coding:validate": "验证",
   "coding:upload": "上传文件",
   "coding:download": "下载文件",
+  "plan:requirements": "补齐结构化计划要求",
+  "plan:pending": "完成结构化计划中的待办步骤",
 };
 
 /** Formats a compact, visible conclusion for a paused run. */

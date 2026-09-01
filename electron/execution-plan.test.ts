@@ -28,17 +28,17 @@ test("validates structured plan updates", () => {
     normalizePlanUpdate({
       explanation: "开始实现",
       plan: [
-        { step: "检查当前实现", status: "completed" },
-        { step: "修改相关文件", status: "in_progress" },
-        { step: "运行测试", status: "pending" },
+        { step: "检查当前实现", status: "completed", requires: ["inspect"] },
+        { step: "修改相关文件", status: "in_progress", requires: ["modify"] },
+        { step: "运行测试", status: "pending", requires: ["validate"] },
       ],
     }),
     {
       explanation: "开始实现",
       plan: [
-        { step: "检查当前实现", status: "completed" },
-        { step: "修改相关文件", status: "in_progress" },
-        { step: "运行测试", status: "pending" },
+        { step: "检查当前实现", status: "completed", requires: ["inspect"] },
+        { step: "修改相关文件", status: "in_progress", requires: ["modify"] },
+        { step: "运行测试", status: "pending", requires: ["validate"] },
       ],
     },
   );
@@ -46,8 +46,8 @@ test("validates structured plan updates", () => {
     () =>
       normalizePlanUpdate({
         plan: [
-          { step: "检查", status: "in_progress" },
-          { step: "修改", status: "in_progress" },
+          { step: "检查", status: "in_progress", requires: [] },
+          { step: "修改", status: "in_progress", requires: ["modify"] },
         ],
       }),
     /最多只能有一个/,

@@ -80,8 +80,12 @@ test("finalizes repeated read-only checks even while the plan remains active", a
                   name: "update_plan" as const,
                   input: {
                     plan: [
-                      { step: "读取文件", status: "completed" },
-                      { step: "汇总结论", status: "in_progress" },
+                      {
+                        step: "读取文件",
+                        status: "completed",
+                        requires: ["inspect"],
+                      },
+                      { step: "汇总结论", status: "in_progress", requires: [] },
                     ],
                   },
                 },
@@ -682,8 +686,12 @@ test("reopens execution after a completed plan lacks mutation evidence", async (
                   name: "update_plan" as const,
                   input: {
                     plan: [
-                      { step: "修改目标", status: "completed" },
-                      { step: "验证结果", status: "completed" },
+                      {
+                        step: "修改目标",
+                        status: "completed",
+                        requires: ["modify"],
+                      },
+                      { step: "整理结果", status: "completed", requires: [] },
                     ],
                   },
                 },
@@ -740,4 +748,219 @@ test("reopens execution after a completed plan lacks mutation evidence", async (
     events.some((event) => event.type === "error"),
     false,
   );
+});
+
+test("does not finish a required plan step from prose without tool evidence", async () => {
+  const workspacePath = await mkdtemp(
+    path.join(os.tmpdir(), "kcode-plan-evidence-"),
+  );
+  await writeFile(path.join(workspacePath, "target.txt"), "before\n", "utf8");
+  const request: ModelRequest = {
+    providerId: "fake",
+    modelId: "fake-model",
+    messages: [{ role: "user", content: "修改 target.txt" }],
+    permissionMode: "full-access",
+    workspacePath,
+  };
+  let rounds = 0;
+  let recoveryInstructionSeen = false;
+  let wrote = false;
+  const events: AgentEvent[] = [];
+  for await (const event of runAgent(
+    "plan-evidence-integration",
+    request,
+    new AbortController().signal,
+    {
+      getProvider: fakeProvider(),
+      async *streamTurn(args) {
+        rounds += 1;
+        recoveryInstructionSeen ||= args.history.some(
+          (item) =>
+            item.kind === "message" &&
+            item.content.includes("<runtime_execution_recovery>"),
+        );
+        if (wrote) {
+          yield {
+            type: "complete",
+            turn: {
+              text: "已根据实际工具结果完成修改。",
+              calls: [],
+              rawCalls: [],
+              usage: { input: 10, output: 5, cached: 0 },
+            },
+          };
+          return;
+        }
+        const calls =
+          rounds === 1
+            ? [
+                {
+                  id: "plan-with-obligation",
+                  name: "update_plan" as const,
+                  input: {
+                    plan: [
+                      {
+                        step: "修改目标文件",
+                        status: "completed",
+                        requires: ["modify"],
+                      },
+                      { step: "整理结果", status: "completed", requires: [] },
+                    ],
+                  },
+                },
+                {
+                  id: "initial-check",
+                  name: "read_file" as const,
+                  input: { path: "target.txt" },
+                },
+              ]
+            : recoveryInstructionSeen
+              ? [
+                  {
+                    id: "real-modification",
+                    name: "write_file" as const,
+                    input: { path: "target.txt", content: "after\n" },
+                  },
+                ]
+              : [
+                  {
+                    id: `repeat-check-${rounds}`,
+                    name: "path_info" as const,
+                    input: {
+                      path: rounds % 2 === 0 ? "target.txt" : "missing.txt",
+                    },
+                  },
+                ];
+        if (recoveryInstructionSeen) wrote = true;
+        yield {
+          type: "complete",
+          turn: {
+            text: "我再检查一下。",
+            calls,
+            rawCalls: [],
+            usage: { input: 10, output: 5, cached: 0 },
+          },
+        };
+      },
+    },
+  ))
+    events.push(event);
+
+  assert.equal(recoveryInstructionSeen, true);
+  assert.equal(
+    await readFile(path.join(workspacePath, "target.txt"), "utf8"),
+    "after\n",
+  );
+  assert.ok(rounds <= 12, `expected bounded recovery, received ${rounds}`);
+  assert.ok(
+    events.some(
+      (event) =>
+        event.type === "progress" && event.message.includes("真实执行结果"),
+    ),
+  );
+  const done = events.find(
+    (event): event is Extract<AgentEvent, { type: "done" }> =>
+      event.type === "done",
+  );
+  assert.equal(done?.outcome, "completed");
+  assert.equal(done?.result?.kind, "changed");
+});
+
+test("resumed structured plans execute missing evidence even when old status says completed", async () => {
+  const workspacePath = await mkdtemp(
+    path.join(os.tmpdir(), "kcode-recovery-plan-start-"),
+  );
+  await writeFile(path.join(workspacePath, "target.txt"), "before\n", "utf8");
+  const request: ModelRequest = {
+    providerId: "fake",
+    modelId: "fake-model",
+    messages: [{ role: "user", content: "继续完成 target.txt 的修改" }],
+    permissionMode: "full-access",
+    workspacePath,
+    recoveryPlan: {
+      steps: [
+        {
+          step: "修改目标文件",
+          status: "completed",
+          requires: ["modify"],
+        },
+      ],
+      current: 0,
+      requirementsDeclared: true,
+    },
+  };
+  let rounds = 0;
+  let recoveryInstructionSeen = false;
+  let wrote = false;
+  const events: AgentEvent[] = [];
+  for await (const event of runAgent(
+    "recovery-plan-start-integration",
+    request,
+    new AbortController().signal,
+    {
+      getProvider: fakeProvider(),
+      async *streamTurn(args) {
+        rounds += 1;
+        recoveryInstructionSeen ||= args.history.some(
+          (item) =>
+            item.kind === "message" &&
+            item.content.includes("<runtime_verification>"),
+        );
+        if (wrote) {
+          yield {
+            type: "complete",
+            turn: {
+              text: "已根据实际工具结果完成修改。",
+              calls: [],
+              rawCalls: [],
+              usage: { input: 10, output: 5, cached: 0 },
+            },
+          };
+          return;
+        }
+        if (recoveryInstructionSeen) {
+          wrote = true;
+          yield {
+            type: "complete",
+            turn: {
+              text: "现在执行缺少的修改。",
+              calls: [
+                {
+                  id: "recovered-write",
+                  name: "write_file" as const,
+                  input: { path: "target.txt", content: "after\n" },
+                },
+              ],
+              rawCalls: [],
+              usage: { input: 10, output: 5, cached: 0 },
+            },
+          };
+          return;
+        }
+        yield {
+          type: "complete",
+          turn: {
+            text: "旧计划已经完成，我先整理结果。",
+            calls: [],
+            rawCalls: [],
+            usage: { input: 10, output: 5, cached: 0 },
+          },
+        };
+      },
+    },
+  ))
+    events.push(event);
+
+  assert.equal(recoveryInstructionSeen, true);
+  assert.equal(
+    await readFile(path.join(workspacePath, "target.txt"), "utf8"),
+    "after\n",
+  );
+  assert.ok(rounds <= 6, `expected bounded resume, received ${rounds} rounds`);
+  const done = events.find(
+    (event): event is Extract<AgentEvent, { type: "done" }> =>
+      event.type === "done",
+  );
+  assert.equal(done?.outcome, "completed");
+  assert.equal(done?.result?.kind, "changed");
 });

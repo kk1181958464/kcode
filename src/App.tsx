@@ -116,6 +116,11 @@ import type { ContextLedger } from "./context";
 import {
   assistantRequestId,
   buildInterruptedRunRecoveryContext,
+  recoveryActivitiesFromCheckpoint,
+  recoveryCompletionResultFromCheckpoint,
+  recoveryEvidenceFromActivities,
+  recoveryPlanFromCompletionResult,
+  recoveryPlanFromActivities,
 } from "./interrupted-run-context";
 import {
   markContextCompacted,
@@ -1027,7 +1032,11 @@ export default function App() {
             runtime.turnStatus === "in_progress" &&
             (runtime.status === "running" || runtime.status === "waiting")
           ) {
-            taskRuntimeStore.ensureRunning(task.id, runtime.requestId, runtime.updatedAt);
+            taskRuntimeStore.ensureRunning(
+              task.id,
+              runtime.requestId,
+              runtime.updatedAt,
+            );
             return {
               ...task,
               runningId: runtime.requestId,
@@ -2179,8 +2188,7 @@ export default function App() {
       applyComposerHeight(height, true);
       cleanup();
     };
-    const stop = (upEvent: PointerEvent) =>
-      finish(heightAt(upEvent.clientY));
+    const stop = (upEvent: PointerEvent) => finish(heightAt(upEvent.clientY));
     const cancel = () => finish(pendingHeight);
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", stop);
@@ -3741,9 +3749,7 @@ export default function App() {
     if (creatingConversationPathsRef.current.has(workspaceKey)) return;
     const feedbackStartedAt = performance.now();
     creatingConversationPathsRef.current.add(workspaceKey);
-    setCreatingConversationPaths(
-      new Set(creatingConversationPathsRef.current),
-    );
+    setCreatingConversationPaths(new Set(creatingConversationPathsRef.current));
     try {
       const sourceTask = tasksRef.current.find(
         (task) => sidebarWorkspaceKey(task) === workspaceKey,
@@ -3893,7 +3899,9 @@ export default function App() {
   async function exportActiveTask(format: "md" | "json") {
     if (!activeTask) return;
     try {
-      const source = await ensureFullTaskHistory(await ensureTaskLoaded(activeTask));
+      const source = await ensureFullTaskHistory(
+        await ensureTaskLoaded(activeTask),
+      );
       const stamp = new Date().toISOString().replace(/[:.]/g, "-");
       const baseName = `${source.name || "kcode-session"}-${stamp}`;
       const content =
@@ -3921,7 +3929,11 @@ export default function App() {
               "",
             ].join("\n");
       if (window.kcode?.files?.saveText) {
-        const saved = await window.kcode.files.saveText(baseName, content, format);
+        const saved = await window.kcode.files.saveText(
+          baseName,
+          content,
+          format,
+        );
         if (saved) flashAppToast(`已导出到 ${saved}`);
         return;
       }
@@ -4126,7 +4138,10 @@ export default function App() {
         continue;
       }
       const binaryDocument = isBinaryContextFile(file.name);
-      if (file.size > (binaryDocument ? MAX_CONTEXT_SOURCE_BYTES : MAX_CONTEXT_FILE_BYTES)) {
+      if (
+        file.size >
+        (binaryDocument ? MAX_CONTEXT_SOURCE_BYTES : MAX_CONTEXT_FILE_BYTES)
+      ) {
         errors.push(
           binaryDocument
             ? `${file.name} 超过 ${Math.round(MAX_CONTEXT_SOURCE_BYTES / 1024 / 1024)} MB，无法解析`
@@ -4317,8 +4332,7 @@ export default function App() {
       calibrationFactor,
       retainedContext: retainedCompactionContext(
         task.messages,
-        finalCompacted.compactedMessageCount ??
-          compacted.compactedMessageCount,
+        finalCompacted.compactedMessageCount ?? compacted.compactedMessageCount,
         selectedContextWindow,
       ),
     });
@@ -4562,7 +4576,9 @@ export default function App() {
         task.id === activeTask.id
           ? {
               ...task,
-              messages: task.messages.filter((message) => message.id !== messageId),
+              messages: task.messages.filter(
+                (message) => message.id !== messageId,
+              ),
               updatedAt: Date.now(),
             }
           : task,
@@ -4627,7 +4643,8 @@ export default function App() {
         ...all.filter(
           (message) =>
             message.id !== messageId &&
-            message.role === "user" && (message as QueuedChatMessage).queued,
+            message.role === "user" &&
+            (message as QueuedChatMessage).queued,
         ),
       ];
     };
@@ -4635,7 +4652,11 @@ export default function App() {
     setTasks((all) =>
       all.map((task) =>
         task.id === activeTask.id
-          ? { ...task, messages: moveFirst(task.messages), updatedAt: Date.now() }
+          ? {
+              ...task,
+              messages: moveFirst(task.messages),
+              updatedAt: Date.now(),
+            }
           : task,
       ),
     );
@@ -4728,10 +4749,9 @@ export default function App() {
       } catch (error) {
         if (taskIsCurrent()) {
           const credentialsRequired = isSshRemoteCredentialsRequired(error);
-          const message =
-            credentialsRequired
-              ? "SSH Remote 暂未连接；消息仍会发送，远程操作时将使用本轮提供的凭据重连。"
-              : `SSH Remote 暂未连接：${errorMessage(error)}；消息仍会发送。`;
+          const message = credentialsRequired
+            ? "SSH Remote 暂未连接；消息仍会发送，远程操作时将使用本轮提供的凭据重连。"
+            : `SSH Remote 暂未连接：${errorMessage(error)}；消息仍会发送。`;
           const disconnected = await window.kcode.sshRemote
             .state(taskId, requestRemoteWorkspace.id)
             .catch(() => undefined);
@@ -4740,8 +4760,7 @@ export default function App() {
             connected: false,
             connecting: false,
             ...disconnected,
-            profile:
-              disconnected?.profile ?? requestRemoteWorkspace,
+            profile: disconnected?.profile ?? requestRemoteWorkspace,
             cachePath: disconnected?.cachePath ?? requestTask.workspacePath,
             error: errorMessage(error),
           });
@@ -4820,15 +4839,32 @@ export default function App() {
       .find((message) => message.role === "assistant");
     const resumingInterruptedRun = Boolean(
       latestAssistant &&
-        (latestAssistant.error ||
-          ["cancelled", "paused", "failed"].includes(
-            requestTask.runStatus ?? "",
-          )),
+      (latestAssistant.error ||
+        latestAssistant.completionResult?.kind === "incomplete" ||
+        latestAssistant.completionResult?.kind === "blocked" ||
+        ["cancelled", "paused", "failed"].includes(
+          requestTask.runStatus ?? "",
+        )),
     );
+    const interruptedRequestId = assistantRequestId(latestAssistant);
+    const interruptedRecoveryPlan = resumingInterruptedRun
+      ? (recoveryPlanFromActivities(
+          requestTask.activities,
+          interruptedRequestId,
+        ) ??
+        recoveryPlanFromCompletionResult(latestAssistant?.completionResult))
+      : undefined;
+    const interruptedRecoveryEvidence = resumingInterruptedRun
+      ? recoveryEvidenceFromActivities(
+          requestTask.activities,
+          interruptedRequestId,
+          latestAssistant?.completionResult,
+        )
+      : undefined;
     const interruptedRecoveryContext = resumingInterruptedRun
       ? buildInterruptedRunRecoveryContext(
           requestTask.activities,
-          assistantRequestId(latestAssistant),
+          interruptedRequestId,
         )
       : undefined;
     const cleanMessages = sourceMessages.filter((message) => {
@@ -4947,19 +4983,27 @@ export default function App() {
           true,
         );
       if (compacted) {
-        setSummarizingTasks((current) => new Set(current).add(taskId));
+        const summarizeWithModel = !resumingInterruptedRun;
+        if (summarizeWithModel)
+          setSummarizingTasks((current) => new Set(current).add(taskId));
         let finalCompacted = compacted;
         try {
-          finalCompacted = await improveSummaryWithModel(
-            { ...requestTaskWithSelection, messages: nextMessages },
-            compacted,
-          );
+          // A resumed run already has a structured recovery checkpoint. A
+          // second model summarizer can turn that checkpoint into prose and
+          // delay the first real tool call, so use the deterministic local
+          // compactor for this request.
+          if (summarizeWithModel)
+            finalCompacted = await improveSummaryWithModel(
+              { ...requestTaskWithSelection, messages: nextMessages },
+              compacted,
+            );
         } finally {
-          setSummarizingTasks((current) => {
-            const next = new Set(current);
-            next.delete(taskId);
-            return next;
-          });
+          if (summarizeWithModel)
+            setSummarizingTasks((current) => {
+              const next = new Set(current);
+              next.delete(taskId);
+              return next;
+            });
         }
         requestSummary = finalCompacted.contextSummary;
         requestLedger = finalCompacted.contextLedger;
@@ -5218,6 +5262,8 @@ export default function App() {
         agentRole: collaboration ? "planner" : undefined,
         collaboration,
         recoveryContext: interruptedRecoveryContext,
+        recoveryPlan: interruptedRecoveryPlan,
+        recoveryEvidence: interruptedRecoveryEvidence,
       });
     } catch (error) {
       taskRuntimeStore.finish(taskId, id);
@@ -5394,8 +5440,7 @@ export default function App() {
         ids.has(item.id)
           ? {
               ...item,
-              nextRunAt:
-                now + Math.max(1, item.intervalMinutes) * 60_000,
+              nextRunAt: now + Math.max(1, item.intervalMinutes) * 60_000,
             }
           : item,
       );
@@ -5438,7 +5483,7 @@ export default function App() {
             : activity,
         );
       const stoppedActivities = stopActivities(
-        activities.length ? activities : activeTask?.activities ?? [],
+        activities.length ? activities : (activeTask?.activities ?? []),
       );
       const pausedResult = completionResultFromActivities(
         stoppedActivities.filter(
@@ -5646,6 +5691,38 @@ export default function App() {
       return;
     }
     const taskId = task.id;
+    const checkpointRequestId = checkpoint.request.requestId ?? checkpoint.id;
+    const checkpointAssistant = [...task.messages]
+      .reverse()
+      .find((message) => assistantRequestId(message) === checkpointRequestId);
+    const checkpointActivities = [
+      ...new Map(
+        [
+          ...task.activities,
+          ...recoveryActivitiesFromCheckpoint(
+            checkpoint.events,
+            checkpointRequestId,
+          ),
+        ].map((activity) => [activity.id, activity] as const),
+      ).values(),
+    ];
+    const checkpointCompletionResult =
+      checkpointAssistant?.completionResult ??
+      recoveryCompletionResultFromCheckpoint(
+        checkpoint.events,
+        checkpointRequestId,
+      );
+    const checkpointRecoveryPlan =
+      checkpoint.request.recoveryPlan ??
+      recoveryPlanFromActivities(checkpointActivities, checkpointRequestId) ??
+      recoveryPlanFromCompletionResult(checkpointCompletionResult);
+    const checkpointRecoveryEvidence =
+      checkpoint.request.recoveryEvidence ??
+      recoveryEvidenceFromActivities(
+        checkpointActivities,
+        checkpointRequestId,
+        checkpointCompletionResult,
+      );
     await window.kcode.chat.removeCheckpoint(checkpoint.id);
     const id = await window.kcode.chat.start({
       ...checkpoint.request,
@@ -5668,6 +5745,8 @@ export default function App() {
       permissionPolicy,
       contextWindow: selectedContextWindow,
       remoteWorkspace: task.remoteWorkspace,
+      recoveryPlan: checkpointRecoveryPlan,
+      recoveryEvidence: checkpointRecoveryEvidence,
     });
     requestTasksRef.current.set(id, taskId);
     const startedAt = Date.now();
@@ -5852,7 +5931,8 @@ export default function App() {
     () =>
       messages.filter(
         (message): message is QueuedChatMessage =>
-          message.role === "user" && Boolean((message as QueuedChatMessage).queued),
+          message.role === "user" &&
+          Boolean((message as QueuedChatMessage).queued),
       ),
     [messages],
   );
@@ -6155,18 +6235,20 @@ export default function App() {
             endRef={endRef}
             agentReasoning=""
           />
-          {activeTask && !activeTask.workspacePath && !activeTask.remoteWorkspace && (
-            <div className="no-workspace-banner">
-              <FolderSearch size={14} />
-              <span>此任务尚未关联工作区，Agent 无法访问本地文件</span>
-              <button
-                className="no-workspace-assign"
-                onClick={() => void pickFolderAndAssign(activeTask)}
-              >
-                选择文件夹
-              </button>
-            </div>
-          )}
+          {activeTask &&
+            !activeTask.workspacePath &&
+            !activeTask.remoteWorkspace && (
+              <div className="no-workspace-banner">
+                <FolderSearch size={14} />
+                <span>此任务尚未关联工作区，Agent 无法访问本地文件</span>
+                <button
+                  className="no-workspace-assign"
+                  onClick={() => void pickFolderAndAssign(activeTask)}
+                >
+                  选择文件夹
+                </button>
+              </div>
+            )}
           <div className="composer-wrap">
             {(showScrollToBottom || scrollingToBottom) && (
               <button
@@ -6294,7 +6376,9 @@ export default function App() {
               {queuedMessages.length > 0 && (
                 <div className="queued-message-panel" aria-label="发送队列">
                   <header>
-                    <span><ListOrdered size={14} /> 发送队列</span>
+                    <span>
+                      <ListOrdered size={14} /> 发送队列
+                    </span>
                     <small>{queuedMessages.length} 条</small>
                   </header>
                   {queuedMessages.map((message, index) => (

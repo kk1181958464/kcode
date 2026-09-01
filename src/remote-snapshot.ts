@@ -29,6 +29,9 @@ function snapshotActivity(
       ?.slice(0, 12)
       .map((step) => step.slice(0, 300)),
     planStatuses: activity.planStatuses?.slice(0, 12),
+    planRequirements: activity.planRequirements
+      ?.slice(0, 12)
+      .map((requirements) => requirements.slice(0, 7)),
     planStep: activity.planStep,
     startedAt: activity.startedAt,
     completedAt: activity.completedAt,
