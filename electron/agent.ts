@@ -5646,13 +5646,20 @@ function toolProducedOperationalProgress(
     Boolean(activity.deletions)
   )
     return true;
-  if (OPERATIONAL_PROGRESS_TOOLS.has(call.name)) return true;
-  if (call.name === "diagnostics") return true;
   if (call.name === "run_command" || call.name === "ssh_run") {
     const purpose = String(call.input.purpose ?? "").trim();
-    return purpose === "execute" || purpose === "validate";
+    // A validation result is evidence, but it does not change the world. It
+    // must not keep an unchanged polling loop alive indefinitely.
+    if (purpose === "inspect" || purpose === "validate") return false;
+    // Explicit execute intent covers builds, deployments, and other commands
+    // whose success may not produce a local diff.
+    if (purpose === "execute") return true;
+    const command = String(call.input.command ?? "");
+    return !isInspectionCommand(command) && !isValidationCommand(command);
   }
-  return resultEvidence.operationEvidence?.includes("validate") === true;
+  if (call.name === "diagnostics") return false;
+  if (OPERATIONAL_PROGRESS_TOOLS.has(call.name)) return true;
+  return false;
 }
 
 function firstPendingRequiredPlanStep(
@@ -8050,19 +8057,23 @@ export async function* runAgent(
     );
     const repeatedNoProgressRound =
       !roundAdvanced && noProgressFingerprints.has(roundFingerprint);
+    // A successful operational call only counts once for a given result. If
+    // the model repeats the same command after a prior action, feed it back
+    // into the no-progress guard instead of resetting the stall counters.
+    const distinctOperationalProgress =
+      roundOperationalProgress && !repeatedNoProgressRound;
     const madeProgress =
       roundAdvanced ||
-      roundOperationalProgress ||
+      distinctOperationalProgress ||
       roundExternalProgress ||
       roundWaitingOnExternalWork ||
       (!verificationOnlyRound && !repeatedNoProgressRound);
-    if (roundAdvanced || roundOperationalProgress)
-      noProgressFingerprints.clear();
-    else noProgressFingerprints.add(roundFingerprint);
+    if (roundAdvanced) noProgressFingerprints.clear();
+    noProgressFingerprints.add(roundFingerprint);
     stalledRounds = madeProgress ? 0 : stalledRounds + 1;
     semanticStallRounds =
       roundAdvanced ||
-      roundOperationalProgress ||
+      distinctOperationalProgress ||
       roundExternalProgress ||
       roundWaitingOnExternalWork ||
       roundPlanChanged
@@ -8070,7 +8081,7 @@ export async function* runAgent(
         : semanticStallRounds + 1;
     if (
       roundAdvanced ||
-      roundOperationalProgress ||
+      distinctOperationalProgress ||
       roundExternalProgress ||
       roundPlanChanged
     )

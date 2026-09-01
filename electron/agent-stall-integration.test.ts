@@ -1157,3 +1157,82 @@ test("keeps executing after a successful build resets semantic stall state", asy
   assert.equal(done?.result?.kind, "changed");
   assert.ok(rounds <= 18, `expected bounded execution, received ${rounds}`);
 });
+
+test("bounds repeated successful validation commands", async () => {
+  const workspacePath = await mkdtemp(
+    path.join(os.tmpdir(), "kcode-validation-stall-"),
+  );
+  const request: ModelRequest = {
+    providerId: "fake",
+    modelId: "fake-model",
+    messages: [{ role: "user", content: "验证远程服务状态" }],
+    permissionMode: "full-access",
+    workspacePath,
+  };
+  let rounds = 0;
+  let finalizationSeen = false;
+  const events: AgentEvent[] = [];
+  for await (const event of runAgent(
+    "repeated-validation-integration",
+    request,
+    new AbortController().signal,
+    {
+      getProvider: fakeProvider(),
+      async *streamTurn(args) {
+        rounds += 1;
+        if (!args.toolsEnabled) {
+          finalizationSeen = true;
+          yield {
+            type: "complete",
+            turn: {
+              text: "服务状态已确认，未发现新的变化。",
+              calls: [],
+              rawCalls: [],
+              usage: { input: 10, output: 5, cached: 0 },
+            },
+          };
+          return;
+        }
+        yield {
+          type: "complete",
+          turn: {
+            text: "继续确认服务状态。",
+            calls: [
+              {
+                id: `validation-${rounds}`,
+                name: "run_command",
+                input: {
+                  command: "echo stable-check",
+                  purpose: "validate",
+                },
+              },
+            ],
+            rawCalls: [],
+            usage: { input: 10, output: 5, cached: 0 },
+          },
+        };
+      },
+    },
+  ))
+    events.push(event);
+
+  assert.equal(finalizationSeen, true);
+  assert.ok(
+    rounds <= 7,
+    `expected bounded validation loop, received ${rounds}`,
+  );
+  assert.ok(
+    events.some(
+      (event) =>
+        event.type === "progress" &&
+        (event.message.includes("重复") ||
+          event.message.includes("没有产生实际状态变化")),
+    ),
+  );
+  const done = events.find(
+    (event): event is Extract<AgentEvent, { type: "done" }> =>
+      event.type === "done",
+  );
+  assert.equal(done?.outcome, "completed");
+  assert.notEqual(done?.result?.kind, "incomplete");
+});
