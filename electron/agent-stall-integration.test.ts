@@ -1236,3 +1236,186 @@ test("bounds repeated successful validation commands", async () => {
   assert.equal(done?.outcome, "completed");
   assert.notEqual(done?.result?.kind, "incomplete");
 });
+
+test("finalizes a recovered completed plan without another tool loop", async () => {
+  const workspacePath = await mkdtemp(
+    path.join(os.tmpdir(), "kcode-completed-plan-finalization-"),
+  );
+  const plan = [
+    {
+      step: "确认当前状态",
+      status: "completed" as const,
+      requires: ["inspect" as const],
+    },
+    {
+      step: "执行目标操作",
+      status: "completed" as const,
+      requires: ["modify" as const],
+    },
+    {
+      step: "验证最终结果",
+      status: "completed" as const,
+      requires: ["validate" as const],
+    },
+  ];
+  const request: ModelRequest = {
+    providerId: "fake",
+    modelId: "fake-model",
+    messages: [{ role: "user", content: "汇总已完成的任务" }],
+    permissionMode: "full-access",
+    workspacePath,
+    recoveryPlan: { steps: plan, current: 2, requirementsDeclared: true },
+    recoveryEvidence: {
+      coding: ["inspect", "modify", "execute", "validate"],
+      browser: [],
+      git: [],
+    },
+  };
+  let rounds = 0;
+  let finalizationSeen = false;
+  const events: AgentEvent[] = [];
+  for await (const event of runAgent(
+    "completed-plan-finalization-integration",
+    request,
+    new AbortController().signal,
+    {
+      getProvider: fakeProvider(),
+      async *streamTurn(args) {
+        rounds += 1;
+        finalizationSeen ||= !args.toolsEnabled;
+        if (!args.toolsEnabled) {
+          yield {
+            type: "complete",
+            turn: {
+              text: "已根据实际工具记录完成汇总。",
+              calls: [],
+              rawCalls: [],
+              usage: { input: 10, output: 5, cached: 0 },
+            },
+          };
+          return;
+        }
+        yield {
+          type: "complete",
+          turn: {
+            text: "整理已完成计划。",
+            calls: [
+              {
+                id: "repeat-completed-plan",
+                name: "update_plan",
+                input: { plan },
+              },
+            ],
+            rawCalls: [],
+            usage: { input: 10, output: 5, cached: 0 },
+          },
+        };
+      },
+    },
+  ))
+    events.push(event);
+
+  assert.equal(rounds, 2);
+  assert.equal(finalizationSeen, true);
+  assert.ok(
+    events.some(
+      (event) =>
+        event.type === "progress" &&
+        event.message.includes("结构化计划和工具证据均已完成"),
+    ),
+  );
+  assert.ok(
+    events.some(
+      (event) => event.type === "done" && event.outcome === "completed",
+    ),
+  );
+});
+
+test("bounds changing explanations on an unchanged recovery plan", async () => {
+  const workspacePath = await mkdtemp(
+    path.join(os.tmpdir(), "kcode-plan-maintenance-stall-"),
+  );
+  const plan = [
+    {
+      step: "确认当前状态",
+      status: "completed" as const,
+      requires: ["inspect" as const],
+    },
+    {
+      step: "执行目标操作",
+      status: "completed" as const,
+      requires: ["modify" as const],
+    },
+  ];
+  const request: ModelRequest = {
+    providerId: "fake",
+    modelId: "fake-model",
+    messages: [{ role: "user", content: "继续完成任务" }],
+    permissionMode: "full-access",
+    workspacePath,
+    recoveryPlan: { steps: plan, current: 1, requirementsDeclared: true },
+    recoveryEvidence: { coding: ["inspect"], browser: [], git: [] },
+  };
+  let rounds = 0;
+  let finalizationSeen = false;
+  const events: AgentEvent[] = [];
+  for await (const event of runAgent(
+    "plan-maintenance-stall-integration",
+    request,
+    new AbortController().signal,
+    {
+      getProvider: fakeProvider(),
+      async *streamTurn(args) {
+        rounds += 1;
+        finalizationSeen ||= !args.toolsEnabled;
+        if (!args.toolsEnabled) {
+          yield {
+            type: "complete",
+            turn: {
+              text: "已保留现有结果，并明确列出尚未取得的修改证据。",
+              calls: [],
+              rawCalls: [],
+              usage: { input: 10, output: 5, cached: 0 },
+            },
+          };
+          return;
+        }
+        yield {
+          type: "complete",
+          turn: {
+            text: "继续整理。",
+            calls: [
+              {
+                id: `plan-maintenance-${rounds}`,
+                name: "update_plan",
+                input: {
+                  explanation: `第 ${rounds} 次说明`,
+                  plan,
+                },
+              },
+            ],
+            rawCalls: [],
+            usage: { input: 10, output: 5, cached: 0 },
+          },
+        };
+      },
+    },
+  ))
+    events.push(event);
+
+  assert.ok(
+    rounds <= 9,
+    `expected bounded plan-maintenance recovery, received ${rounds} rounds`,
+  );
+  assert.equal(finalizationSeen, true);
+  const done = events.find(
+    (event): event is Extract<AgentEvent, { type: "done" }> =>
+      event.type === "done",
+  );
+  assert.equal(done?.outcome, "paused");
+  assert.equal(done?.result?.kind, "incomplete");
+  assert.equal(
+    events.some((event) => event.type === "error"),
+    false,
+  );
+});

@@ -8045,6 +8045,15 @@ export async function* runAgent(
     const planUpdatedThisRound = turn.calls.some(
       (call) => call.name === "update_plan",
     );
+    // A plan-maintenance turn is not progress when the structured plan is
+    // unchanged. Explanations are deliberately excluded: models often
+    // rewrite the explanation while repeating the same completed plan, which
+    // otherwise keeps resetting the no-progress guard indefinitely.
+    const unchangedPlanMaintenanceRound = Boolean(
+      turn.calls.length &&
+      !roundPlanChanged &&
+      turn.calls.every((call) => call.name === "update_plan"),
+    );
     // A repeated fingerprint remains a repeat even when the model alternates
     // between two identical checks. Real mutations clear the set because they
     // can invalidate earlier read-only results.
@@ -8055,6 +8064,8 @@ export async function* runAgent(
       ((planCompleted && !planUpdatedThisRound) ||
         (evidenceCompleteAfterRound && hasMutationEvidenceAfterRound)),
     );
+    const nonProgressRound =
+      verificationOnlyRound || unchangedPlanMaintenanceRound;
     const repeatedNoProgressRound =
       !roundAdvanced && noProgressFingerprints.has(roundFingerprint);
     // A successful operational call only counts once for a given result. If
@@ -8067,7 +8078,7 @@ export async function* runAgent(
       distinctOperationalProgress ||
       roundExternalProgress ||
       roundWaitingOnExternalWork ||
-      (!verificationOnlyRound && !repeatedNoProgressRound);
+      (!nonProgressRound && !repeatedNoProgressRound);
     if (roundAdvanced) noProgressFingerprints.clear();
     noProgressFingerprints.add(roundFingerprint);
     stalledRounds = madeProgress ? 0 : stalledRounds + 1;
@@ -8093,6 +8104,26 @@ export async function* runAgent(
       };
       return;
     }
+    // Once a structured plan is complete and every declared obligation has a
+    // successful proof, do one bounded no-tool finalization turn immediately.
+    // Waiting for the generic stall counter here wastes model turns and is
+    // especially costly after resuming a long-running SSH task.
+    const completedPlanReadyToFinalize = Boolean(
+      planCompleted &&
+      evidenceCompleteAfterRound &&
+      unchangedPlanMaintenanceRound &&
+      !roundFailedActivity &&
+      !pendingUserInput &&
+      !listSubagents(requestId).some((agent) => !agent.collected),
+    );
+    if (completedPlanReadyToFinalize) {
+      repetitionFinalizationPending = "evidence-complete";
+      yield {
+        type: "progress",
+        message: "结构化计划和工具证据均已完成，正在生成最终结论…",
+      };
+      continue;
+    }
     const semanticStallReached = semanticStallRounds >= SEMANTIC_STALL_ROUNDS;
     const currentStallAction = semanticStallReached
       ? "finalize"
@@ -8101,7 +8132,11 @@ export async function* runAgent(
       if (
         currentStallAction === "finalize" &&
         actionablePlanPendingAfterRound &&
-        budgets.planRecoveryNudges < MAX_PLAN_RECOVERY_NUDGES
+        budgets.planRecoveryNudges < MAX_PLAN_RECOVERY_NUDGES &&
+        // Give the model one opportunity to execute the missing obligation.
+        // If it answers with the same plan-only turn again, stop and preserve
+        // the incomplete evidence instead of spending two more nudges on it.
+        !(unchangedPlanMaintenanceRound && budgets.planRecoveryNudges > 0)
       ) {
         budgets.planRecoveryNudges += 1;
         const pendingStep =
