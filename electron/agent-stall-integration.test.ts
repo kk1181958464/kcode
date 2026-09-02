@@ -1419,3 +1419,197 @@ test("bounds changing explanations on an unchanged recovery plan", async () => {
     false,
   );
 });
+
+test("removes stale image payloads when compacting a long run", async () => {
+  const workspacePath = await mkdtemp(
+    path.join(os.tmpdir(), "kcode-image-compaction-"),
+  );
+  const image = {
+    id: "stale-image",
+    name: "old-screenshot.png",
+    mediaType: "image/png" as const,
+    dataUrl: `data:image/png;base64,${"A".repeat(120_000)}`,
+    size: 90_000,
+  };
+  const messages: ModelRequest["messages"] = [
+    {
+      role: "user",
+      content: "请根据这些截图检查项目。",
+      images: Array.from({ length: 8 }, (_, index) => ({
+        ...image,
+        id: `stale-image-${index}`,
+      })),
+    },
+    ...Array.from({ length: 10 }, (_, index) => ({
+      role: index % 2 ? ("assistant" as const) : ("user" as const),
+      content: `历史记录 ${index + 1}`,
+    })),
+  ];
+  const request: ModelRequest = {
+    providerId: "fake",
+    modelId: "fake-model",
+    messages,
+    permissionMode: "full-access",
+    workspacePath,
+    contextWindow: 100_000,
+  };
+  let observedHistory: Array<{
+    kind: string;
+    images?: unknown[];
+    content?: string;
+  }> = [];
+  const events: AgentEvent[] = [];
+  for await (const event of runAgent(
+    "image-compaction-integration",
+    request,
+    new AbortController().signal,
+    {
+      getProvider: fakeProvider(),
+      async *streamTurn(args) {
+        observedHistory = args.history.map((item) => ({
+          kind: item.kind,
+          images: item.kind === "message" ? item.images : undefined,
+          content: item.kind === "message" ? item.content : undefined,
+        }));
+        yield {
+          type: "complete",
+          turn: {
+            text: "已根据现有记录完成检查。",
+            calls: [],
+            rawCalls: [],
+            usage: { input: 10, output: 5, cached: 0 },
+          },
+        };
+      },
+    },
+  ))
+    events.push(event);
+
+  assert.ok(
+    events.some(
+      (event) =>
+        event.type === "context_compaction" &&
+        event.phase === "completed" &&
+        event.changed,
+    ),
+  );
+  assert.equal(
+    observedHistory.some((item) => Boolean(item.images?.length)),
+    false,
+  );
+  assert.ok(
+    observedHistory.some((item) =>
+      item.content?.includes("runtime_image_context_removed"),
+    ),
+  );
+  assert.ok(events.some((event) => event.type === "done"));
+});
+
+test("context compaction does not reset the semantic stall guard", async () => {
+  const workspacePath = await mkdtemp(
+    path.join(os.tmpdir(), "kcode-compaction-stall-"),
+  );
+  await writeFile(
+    path.join(workspacePath, "probe.txt"),
+    Array.from({ length: 24 }, (_, index) => `line-${index + 1}`).join("\n"),
+    "utf8",
+  );
+  const image = {
+    id: "loop-image",
+    name: "loop.png",
+    mediaType: "image/png" as const,
+    dataUrl: `data:image/png;base64,${"A".repeat(120_000)}`,
+    size: 90_000,
+  };
+  const request: ModelRequest = {
+    providerId: "fake",
+    modelId: "fake-model",
+    messages: [
+      {
+        role: "user",
+        content: "请持续检查 probe.txt 的内容。",
+        images: Array.from({ length: 8 }, (_, index) => ({
+          ...image,
+          id: `loop-image-${index}`,
+        })),
+      },
+      ...Array.from({ length: 10 }, (_, index) => ({
+        role: "assistant" as const,
+        content: `此前检查记录 ${index + 1}`,
+      })),
+    ],
+    permissionMode: "full-access",
+    workspacePath,
+    // The runtime overhead intentionally keeps compaction active every round.
+    contextWindow: 50_000,
+  };
+  let rounds = 0;
+  let compactions = 0;
+  let finalizationSeen = false;
+  const events: AgentEvent[] = [];
+  for await (const event of runAgent(
+    "compaction-stall-integration",
+    request,
+    new AbortController().signal,
+    {
+      getProvider: fakeProvider(),
+      async *streamTurn(args) {
+        rounds += 1;
+        if (rounds > 16)
+          throw new Error("semantic stall guard did not stop the loop");
+        finalizationSeen ||= !args.toolsEnabled;
+        if (!args.toolsEnabled) {
+          yield {
+            type: "complete",
+            turn: {
+              text: "已停止重复检查，并根据已有记录汇总。",
+              calls: [],
+              rawCalls: [],
+              usage: { input: 10, output: 5, cached: 0 },
+            },
+          };
+          return;
+        }
+        yield {
+          type: "complete",
+          turn: {
+            text: "继续检查下一段。",
+            calls: [
+              {
+                id: `compaction-read-${rounds}`,
+                name: "read_file",
+                input: {
+                  path: "probe.txt",
+                  startLine: rounds,
+                  endLine: rounds,
+                },
+              },
+            ],
+            rawCalls: [],
+            usage: { input: 10, output: 5, cached: 0 },
+          },
+        };
+      },
+    },
+  )) {
+    events.push(event);
+    if (event.type === "context_compaction" && event.phase === "completed")
+      compactions += 1;
+  }
+
+  assert.ok(compactions > 0);
+  assert.ok(rounds <= 11, `expected bounded rounds, received ${rounds}`);
+  assert.equal(finalizationSeen, true);
+  assert.ok(
+    events.some(
+      (event) =>
+        event.type === "progress" &&
+        event.message.includes("没有产生实际状态变化"),
+    ),
+  );
+  const done = events.find(
+    (event): event is Extract<AgentEvent, { type: "done" }> =>
+      event.type === "done",
+  );
+  assert.equal(done?.outcome, "completed");
+});

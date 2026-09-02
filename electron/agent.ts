@@ -61,6 +61,7 @@ import {
   type AgentEvent,
   type AgentPlanStepStatus,
   type AgentToolName,
+  type ImageAttachment,
   type ModelRequest,
   type PermissionPolicy,
   type Protocol,
@@ -469,6 +470,30 @@ function historyWithoutImages(history: HistoryItem[]): HistoryItem[] {
   );
 }
 
+const MAX_RETAINED_RUNTIME_IMAGE_BYTES = 1_000_000;
+const RUNTIME_IMAGE_REMOVED_MARKER = "<runtime_image_context_removed>";
+
+function runtimeImageBytes(image: ImageAttachment) {
+  if (Number.isFinite(image.size) && image.size > 0) return image.size;
+  const comma = image.dataUrl.indexOf(",");
+  const base64Length = comma >= 0 ? image.dataUrl.length - comma - 1 : 0;
+  return Math.ceil(base64Length * 0.75);
+}
+
+function withoutRuntimeImages(
+  item: Extract<HistoryItem, { kind: "message" }>,
+): Extract<HistoryItem, { kind: "message" }> {
+  if (!item.images?.length) return item;
+  if (item.content.includes(RUNTIME_IMAGE_REMOVED_MARKER))
+    return { ...item, images: undefined };
+  const count = item.images.length;
+  return {
+    ...item,
+    images: undefined,
+    content: `${item.content}\n\n${RUNTIME_IMAGE_REMOVED_MARKER} ${count} 张较早图片附件已从运行上下文移除；保留文字上下文和附件计数，不再在后续每轮重复发送图片数据。`,
+  };
+}
+
 function compactEvidenceCall(call: ToolCall) {
   const input: Record<string, unknown> = {};
   for (const key of [
@@ -499,7 +524,28 @@ function compactRuntimeHistory(
     (item): item is Extract<HistoryItem, { kind: "message" }> =>
       item.kind === "message",
   );
-  const recent = history.slice(-8).map((item): HistoryItem => {
+  const recentStart = Math.max(0, history.length - 8);
+  const recentSource = history.slice(recentStart);
+  const retainedImageIndexes = new Set<number>();
+  if (!force) {
+    let remainingImageBytes = MAX_RETAINED_RUNTIME_IMAGE_BYTES;
+    for (let index = recentSource.length - 1; index >= 0; index -= 1) {
+      const item = recentSource[index];
+      if (item.kind !== "message" || !item.images?.length) continue;
+      const imageBytes = item.images.reduce(
+        (total, image) => total + runtimeImageBytes(image),
+        0,
+      );
+      if (imageBytes > remainingImageBytes) continue;
+      retainedImageIndexes.add(index);
+      remainingImageBytes -= imageBytes;
+    }
+  }
+  const recent = recentSource.map((item, index): HistoryItem => {
+    if (item.kind === "message" && item.images?.length) {
+      if (retainedImageIndexes.has(index)) return item;
+      return withoutRuntimeImages(item);
+    }
     if (!force || item.kind !== "result") return item;
     try {
       const result = JSON.parse(item.content) as StructuredToolResult;
@@ -563,13 +609,22 @@ function compactRuntimeHistory(
     role: "user",
     content: `<runtime_compaction>较早的 Agent 工具循环已压缩。${connectionBlock}关键状态：\n${facts.slice(-80).join("\n")}</runtime_compaction>`,
   };
-  history.splice(
-    0,
-    history.length,
-    ...(firstMessage ? [firstMessage] : []),
-    summary,
-    ...recent.filter((item) => item !== firstMessage),
-  );
+  const compactedFirstMessage = firstMessage
+    ? withoutRuntimeImages(firstMessage)
+    : undefined;
+  const firstMessageIndex = firstMessage ? history.indexOf(firstMessage) : -1;
+  const nextHistory = [
+    ...(compactedFirstMessage ? [compactedFirstMessage] : []),
+    ...(older.length ? [summary] : []),
+    ...recent.filter(
+      (_item, index) => recentStart + index !== firstMessageIndex,
+    ),
+  ];
+  const changed =
+    nextHistory.length !== history.length ||
+    nextHistory.some((item, index) => item !== history[index]);
+  if (!changed) return false;
+  history.splice(0, history.length, ...nextHistory);
   return true;
 }
 
@@ -6411,7 +6466,6 @@ export async function* runAgent(
         );
         yield { type: "activity", activity };
         lastPromptTokens = 0;
-        semanticStallRounds = 0;
       }
     }
     for (const message of pendingParentInstructions)
