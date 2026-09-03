@@ -82,12 +82,14 @@ export type TaskRecord = {
     ledger: ContextLedger;
     compactedMessageCount?: number;
     modelGenerated: boolean;
+    modelId?: string;
     durationMs?: number;
     usage?: { input: number; output: number };
   }[];
   imageSemantics?: Record<string, string>;
   summaryMeta?: {
     modelGenerated: boolean;
+    modelId?: string;
     durationMs: number;
     usage?: { input: number; output: number };
   };

@@ -766,6 +766,9 @@ export function StatusPanel({
                   ? "模型摘要"
                   : "本地摘要"}
               </span>
+              {activeTask.summaryMeta?.modelId ? (
+                <span>{activeTask.summaryMeta.modelId}</span>
+              ) : null}
               {activeTask.summaryMeta?.durationMs ? (
                 <span>{formatDuration(activeTask.summaryMeta.durationMs)}</span>
               ) : null}

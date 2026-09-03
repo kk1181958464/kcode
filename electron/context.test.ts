@@ -5,6 +5,7 @@ import {
   boundedContextSource,
   compactConversation,
   containsDurableConnectionDetails,
+  containsDurableProtocolDetails,
   contextSummarySource,
   estimateMessageTokens,
   retainedCompactedUserMessages,
@@ -253,6 +254,54 @@ test("does not treat generic login UI copy as connection credentials", () => {
   );
 });
 
+test("retains only complete API protocol contracts", () => {
+  assert.equal(
+    containsDurableProtocolDetails(
+      "请打开 https://example.com/docs，提交一段 JSON 配置并告诉我页面内容。",
+    ),
+    false,
+  );
+  assert.equal(
+    containsDurableProtocolDetails(
+      [
+        "Base URL: https://ai-studio.example/v1",
+        "请求头 Authorization: Bearer <API_KEY>，请求体使用 JSON",
+        "POST /videos/generations 返回 processing，GET /videos/{id} 查询状态",
+        "成功响应示例：status=succeeded，data.url 为结果地址",
+      ].join("\n"),
+    ),
+    true,
+  );
+});
+
+test("keeps protocol tail fields in the retained compaction context", () => {
+  const protocol = [
+    "接口协议：Base URL https://ai-studio.example/v1",
+    "Authorization: Bearer <API_KEY>; Content-Type: application/json",
+    "POST /videos/generations，返回 status=processing 和任务 id",
+    "GET /videos/{JOB_ID} 查询任务状态，成功响应 status=succeeded",
+    "POLL_SUCCESS_STATUS=succeeded; VIDEO_RESULT_URL_FIELD=data.video.url",
+  ].join("\n");
+  const messages = [
+    message("user", protocol, 1),
+    ...Array.from({ length: 12 }, (_, index) =>
+      message(
+        "assistant",
+        `中间执行记录 ${index} ${"x".repeat(900)}`,
+        index + 2,
+      ),
+    ),
+    message("user", "继续执行", 99),
+  ];
+  const retained = retainedCompactionContext(
+    messages,
+    messages.length - 1,
+    8_000,
+  );
+  assert.match(retained, /POLL_SUCCESS_STATUS=succeeded/);
+  assert.match(retained, /VIDEO_RESULT_URL_FIELD=data\.video\.url/);
+});
+
 test("builds the model summary source from original messages", () => {
   const messages = [
     message("user", "保留最开始的真实需求", 1),
@@ -277,6 +326,21 @@ test("bounded summary source retains both ends", () => {
   assert.ok(bounded.startsWith("HEAD-"));
   assert.ok(bounded.endsWith("-TAIL"));
   assert.match(bounded, /中间较早内容/);
+});
+
+test("bounded context source never exceeds a tiny budget", () => {
+  const source = "0123456789".repeat(20);
+  for (const limit of [0, 1, 8, 32])
+    assert.ok(boundedContextSource(source, limit).length <= limit);
+});
+
+test("model summary source keeps middle records instead of one global clip", () => {
+  const messages = Array.from({ length: 7 }, (_, index) =>
+    message("assistant", `record-${index} ${"x".repeat(12_000)}`, index),
+  );
+  const source = contextSummarySource({ messages, activities: [] }, 7, 8_000);
+  for (let index = 0; index < messages.length; index += 1)
+    assert.match(source, new RegExp(`record-${index}`));
 });
 
 test("rejects repeated or excessively bloated model summaries", () => {
@@ -323,6 +387,7 @@ test("rejects repeated or excessively bloated model summaries", () => {
   assert.deepEqual(accepted.ledger.validations, []);
   assert.deepEqual(accepted.ledger.failures, []);
   assert.deepEqual(accepted.ledger.connections, []);
+  assert.match(accepted.summary, /清晰的新摘要/);
   assert.doesNotMatch(accepted.summary, /hallucinated|模型声称/);
 });
 

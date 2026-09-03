@@ -61,11 +61,14 @@ import {
   type AgentEvent,
   type AgentPlanStepStatus,
   type AgentToolName,
+  type ContextLedger,
+  type ContextSummaryResult,
   type ImageAttachment,
   type ModelRequest,
   type PermissionPolicy,
   type Protocol,
   type ReasoningEffort,
+  resolveModelContextWindow,
 } from "../src/types";
 import {
   imageInputSupport,
@@ -178,9 +181,19 @@ import { agentHooks } from "./agent-hooks";
 import { turnSteeringQueue } from "./turn-steering";
 import { providerApiEndpoint } from "./provider-url";
 import { mutationChangedFromOutput } from "./mutation-evidence";
+import {
+  boundedContextSource,
+  containsDurableProtocolDetails,
+  redactSensitiveText,
+} from "../src/context";
 import { hasUserSuppliedVerificationCode } from "./browser-cdp";
 import { applyUpdatePatch, normalizeLineEndings } from "./text-patch";
 import { getProviderWithKey, updateModelCapabilities } from "./store";
+import {
+  summarizeContextWithProvider,
+  summaryModelForProvider,
+  type ProviderWithKey,
+} from "./gateway";
 import { callMcpTool, listMcpServerConfigs, listMcpTools } from "./mcp";
 import {
   bindBrowserRequest,
@@ -445,7 +458,7 @@ type ModelTurnRuntime = {
   triedKeyIndexes?: number[];
   networkTransport?: ModelNetworkTransport;
 };
-type HistoryItem =
+export type HistoryItem =
   | {
       kind: "message";
       role: "user" | "assistant";
@@ -472,6 +485,112 @@ function historyWithoutImages(history: HistoryItem[]): HistoryItem[] {
 
 const MAX_RETAINED_RUNTIME_IMAGE_BYTES = 1_000_000;
 const RUNTIME_IMAGE_REMOVED_MARKER = "<runtime_image_context_removed>";
+const MAX_RETAINED_RUNTIME_PROTOCOL_CHARS = 96_000;
+const MAX_RETAINED_RUNTIME_PROTOCOL_MESSAGES = 8;
+const RUNTIME_RETAINED_PROTOCOL_CONTEXT_MARKER =
+  "<runtime_retained_protocol_context>";
+const RUNTIME_RETAINED_PROTOCOL_CONTEXT_END =
+  "</runtime_retained_protocol_context>";
+
+/**
+ * A protocol document is evidence, not ordinary progress narration. Runtime
+ * compaction must keep it intact because endpoints, payload fields and status
+ * paths are often located well after the first few hundred characters.
+ */
+export const isRuntimeProtocolMessage = containsDurableProtocolDetails;
+
+function boundedRuntimeProtocolText(source: string, maxChars: number) {
+  if (maxChars <= 0) return "";
+  if (source.length <= maxChars) return source;
+  const marker =
+    "\n\n[协议正文中间部分因运行时预算限制省略，首尾字段仍保留]\n\n";
+  if (maxChars <= marker.length) return source.slice(0, maxChars);
+  const available = Math.max(0, maxChars - marker.length);
+  const headLength = Math.floor(available * 0.45);
+  return `${source.slice(0, headLength)}${marker}${source.slice(-(
+    available - headLength
+  ))}`;
+}
+
+function runtimeProtocolBody(content: string) {
+  const start = content.indexOf(RUNTIME_RETAINED_PROTOCOL_CONTEXT_MARKER);
+  if (start < 0) return content;
+  const bodyStart =
+    start + RUNTIME_RETAINED_PROTOCOL_CONTEXT_MARKER.length;
+  const end = content.lastIndexOf(RUNTIME_RETAINED_PROTOCOL_CONTEXT_END);
+  if (end <= bodyStart) return content;
+  return content.slice(bodyStart, end).trim();
+}
+
+function runtimeProtocolKey(content: string) {
+  return runtimeProtocolBody(content).replace(/\s+/g, " ").trim();
+}
+
+function isRetainedRuntimeProtocolBlock(content: string) {
+  return (
+    content.includes(RUNTIME_RETAINED_PROTOCOL_CONTEXT_MARKER) &&
+    content.includes(RUNTIME_RETAINED_PROTOCOL_CONTEXT_END)
+  );
+}
+
+function retainedRuntimeProtocolMessages(
+  older: HistoryItem[],
+  firstMessage?: Extract<HistoryItem, { kind: "message" }>,
+) {
+  const candidates: {
+    item: Extract<HistoryItem, { kind: "message" }>;
+    index: number;
+  }[] = older.flatMap((item, index) =>
+    item.kind === "message" &&
+    item !== firstMessage &&
+    item.role === "user" &&
+    isRuntimeProtocolMessage(item.content)
+      ? [{ item, index }]
+      : [],
+  );
+  if (!candidates.length) return [];
+
+  const selected: {
+    item: Extract<HistoryItem, { kind: "message" }>;
+    index: number;
+  }[] = [];
+  const selectedProtocolKeys = new Set<string>();
+  let remaining = MAX_RETAINED_RUNTIME_PROTOCOL_CHARS;
+  for (const candidate of [...candidates].reverse()) {
+    if (
+      selected.length >= MAX_RETAINED_RUNTIME_PROTOCOL_MESSAGES ||
+      remaining <= 0
+    )
+      break;
+    const source = candidate.item.content;
+    const key = runtimeProtocolKey(source);
+    if (!key || selectedProtocolKeys.has(key)) continue;
+    selectedProtocolKeys.add(key);
+    const sourceBody = runtimeProtocolBody(source);
+    const maxBodyChars = Math.min(32_000, remaining);
+    const body = boundedRuntimeProtocolText(sourceBody, maxBodyChars);
+    if (!body.trim()) continue;
+    const content =
+      isRetainedRuntimeProtocolBlock(source) &&
+      sourceBody.length <= maxBodyChars
+        ? source
+        : `${RUNTIME_RETAINED_PROTOCOL_CONTEXT_MARKER}\n${body.replace(
+            new RegExp(RUNTIME_RETAINED_PROTOCOL_CONTEXT_END, "gi"),
+            "<\\/runtime_retained_protocol_context>",
+          )}\n${RUNTIME_RETAINED_PROTOCOL_CONTEXT_END}`;
+    selected.push({
+      item: {
+        ...candidate.item,
+        images: undefined,
+        content,
+      },
+      index: candidate.index,
+    });
+    remaining -= body.length;
+  }
+  return selected
+    .sort((left, right) => left.index - right.index);
+}
 
 function runtimeImageBytes(image: ImageAttachment) {
   if (Number.isFinite(image.size) && image.size > 0) return image.size;
@@ -514,17 +633,22 @@ function compactEvidenceCall(call: ToolCall) {
   return { id: call.id, name: call.name, input };
 }
 
-function compactRuntimeHistory(
+export function compactRuntimeHistory(
   history: HistoryItem[],
   force = false,
   activeConnections: Iterable<string> = [],
+  recentItemCount = RUNTIME_COMPACTION_RECENT_ITEMS,
 ) {
-  if (history.length <= 8 && !force) return false;
+  const retainedRecentCount = Math.max(
+    1,
+    Math.min(history.length, Math.floor(recentItemCount)),
+  );
+  if (history.length <= retainedRecentCount && !force) return false;
   const firstMessage = history.find(
     (item): item is Extract<HistoryItem, { kind: "message" }> =>
       item.kind === "message",
   );
-  const recentStart = Math.max(0, history.length - 8);
+  const recentStart = Math.max(0, history.length - retainedRecentCount);
   const recentSource = history.slice(recentStart);
   const retainedImageIndexes = new Set<number>();
   if (!force) {
@@ -568,13 +692,25 @@ function compactRuntimeHistory(
       return { ...item, content: item.content.slice(0, 2_000) };
     }
   });
-  const older = history.slice(0, -8);
+  const older = history.slice(0, recentStart);
+  const retainedProtocolEntries = retainedRuntimeProtocolMessages(
+    older,
+    firstMessage,
+  );
+  const retainedProtocolMessages = retainedProtocolEntries.map(
+    ({ item }) => item,
+  );
+  const retainedProtocolIndexes = new Set(
+    retainedProtocolEntries.map(({ index }) => index),
+  );
   const facts: string[] = [];
-  for (const item of older) {
-    if (item.kind === "message" && item !== firstMessage)
+  for (const [index, item] of older.entries()) {
+    if (item.kind === "message" && item !== firstMessage) {
+      if (retainedProtocolIndexes.has(index)) continue;
       facts.push(
         `${item.role}: ${item.content.replace(/\s+/g, " ").slice(0, 500)}`,
       );
+    }
     if (item.kind === "result") {
       try {
         const result = JSON.parse(item.content) as StructuredToolResult;
@@ -616,6 +752,7 @@ function compactRuntimeHistory(
   const nextHistory = [
     ...(compactedFirstMessage ? [compactedFirstMessage] : []),
     ...(older.length ? [summary] : []),
+    ...retainedProtocolMessages,
     ...recent.filter(
       (_item, index) => recentStart + index !== firstMessageIndex,
     ),
@@ -626,6 +763,501 @@ function compactRuntimeHistory(
   if (!changed) return false;
   history.splice(0, history.length, ...nextHistory);
   return true;
+}
+
+const RUNTIME_COMPACTION_RECENT_ITEMS = 8;
+const RUNTIME_COMPACTION_MIN_RECENT_ITEMS = 2;
+const RUNTIME_COMPACTION_SOURCE_MAX_CHARS = 480_000;
+const RUNTIME_COMPACTION_ITEM_MAX_CHARS = 48_000;
+const RUNTIME_COMPACTION_TIMEOUT_MS = 45_000;
+const RUNTIME_MODEL_COMPACTION_MARKER = "<runtime_model_compaction>";
+const RUNTIME_MODEL_COMPACTION_END = "</runtime_model_compaction>";
+const RUNTIME_VERIFIED_EVIDENCE_MARKER = "<runtime_verified_evidence>";
+const RUNTIME_VERIFIED_EVIDENCE_END = "</runtime_verified_evidence>";
+
+function runtimeCompactionJson(value: unknown) {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function runtimeCompactionMessageText(content: string) {
+  const withoutInternalBlocks = content
+    .replace(/<runtime_(?:model_)?compaction>[\s\S]*?<\/runtime_(?:model_)?compaction>/gi, "")
+    .replace(/<runtime_retained_protocol_context>[\s\S]*?<\/runtime_retained_protocol_context>/gi, "")
+    .trim();
+  return redactSensitiveText(withoutInternalBlocks);
+}
+
+function runtimeCompactionItemSource(item: HistoryItem) {
+  if (item.kind === "message") {
+    const images = item.images?.length
+      ? `\n[图片附件：${item.images.length} 个，仅保留名称：${item.images
+          .map((image) => image.name)
+          .join("、")}]`
+      : "";
+    return `### ${item.role === "user" ? "用户" : "模型"}\n${redactSensitiveText(item.content)}${images}`;
+  }
+  if (item.kind === "calls") {
+    return `### 工具调用\n${redactSensitiveText(
+      boundedContextSource(
+        runtimeCompactionJson(
+          item.calls.map((call) => ({
+            id: call.id,
+            name: call.name,
+            input: redactedToolInput(call),
+          })),
+        ),
+        RUNTIME_COMPACTION_ITEM_MAX_CHARS,
+      ),
+    )}`;
+  }
+  return `### 工具结果 (${item.callId})\n${boundedContextSource(
+    redactSensitiveText(item.content),
+    RUNTIME_COMPACTION_ITEM_MAX_CHARS,
+  )}`;
+}
+
+function boundedRuntimeSourcePart(source: string, maxChars: number) {
+  if (source.length <= maxChars) return source;
+  // Keep the record boundary readable even when the available budget is very
+  // small. The normal path uses a head/tail marker; this branch is only for a
+  // pathological number of records where every record must get a small slot.
+  if (maxChars < 160) return source.slice(0, Math.max(0, maxChars));
+  return boundedContextSource(source, maxChars);
+}
+
+/**
+ * Pack records independently instead of clipping one giant concatenated
+ * transcript. This lets the summarizer see the beginning and end of every
+ * older turn, while the structured evidence block below remains authoritative
+ * for exact tool outcomes.
+ */
+function packRuntimeCompactionRecords(records: string[], maxChars: number) {
+  if (!records.length || maxChars <= 0) return "";
+  const separator = "\n\n";
+  const separatorBudget = Math.max(0, records.length - 1) * separator.length;
+  const available = Math.max(0, maxChars - separatorBudget);
+  const perRecord = Math.floor(available / records.length);
+  if (perRecord <= 0) return "";
+  return records
+    .map((record) => boundedRuntimeSourcePart(record, perRecord))
+    .join(separator);
+}
+
+function runtimeCompactionSourceLimit(
+  request: ModelRequest,
+  provider: ProviderWithKey,
+) {
+  const selectedModel = provider.models.find(
+    (model) => model.modelId === request.modelId,
+  );
+  const summaryProtocol =
+    provider.protocol === "openai-responses" &&
+    (selectedModel?.supportsResponses === false ||
+      effectiveOpenAiProtocol(provider.id, provider.protocol, request.modelId) ===
+        "openai-chat")
+      ? "openai-chat"
+      : provider.protocol;
+  const summaryModel = summaryModelForProvider(
+    provider,
+    request.modelId,
+    summaryProtocol,
+  );
+  const summaryConfig = provider.models.find(
+    (model) => model.modelId === summaryModel,
+  );
+  const taskWindow = request.contextWindow ?? 128_000;
+  const summaryWindow = resolveModelContextWindow(
+    summaryModel,
+    summaryConfig?.contextWindow,
+  );
+  // Leave room for the handoff instructions and the generated JSON response.
+  // The upper bound avoids sending an unexpectedly huge compaction request to
+  // a small third-party relay, while still allowing large-context providers to
+  // receive substantially more than the old fixed 120k-character slice.
+  return Math.max(
+    12_000,
+    Math.min(
+      RUNTIME_COMPACTION_SOURCE_MAX_CHARS,
+      Math.floor(Math.min(taskWindow, summaryWindow) * 0.22 * 3),
+    ),
+  );
+}
+
+/**
+ * Build the input for the semantic compactor. This is a transport guard only:
+ * the model receives all older records until the provider-safe limit, packed at
+ * record boundaries rather than by clipping one concatenated string. Verified
+ * tool evidence is appended separately so a long narrative cannot hide a
+ * mutation, failure, or transfer.
+ */
+export function buildRuntimeCompactionSource(
+  history: HistoryItem[],
+  activeConnections: Iterable<string> = [],
+  maxChars = RUNTIME_COMPACTION_SOURCE_MAX_CHARS,
+  recentItemCount = RUNTIME_COMPACTION_RECENT_ITEMS,
+) {
+  const retainedRecentCount = Math.max(
+    1,
+    Math.min(history.length, Math.floor(recentItemCount)),
+  );
+  const older = history.slice(0, Math.max(0, history.length - retainedRecentCount));
+  const records = older.map(runtimeCompactionItemSource);
+  const evidence = structuredToolEvidenceSummary(older);
+  const connections = [...new Set([...activeConnections].map((item) => redactSensitiveText(item)))]
+    .filter(Boolean);
+  const safeMaxChars = Math.max(
+    12_000,
+    Math.min(RUNTIME_COMPACTION_SOURCE_MAX_CHARS, Math.floor(maxChars)),
+  );
+  const prefix = [
+    "<runtime_compaction_source>",
+    "以下是即将从运行上下文移出的较早记录。请用模型生成可继续执行的语义交接摘要，不要只截取开头或机械拼接句子。工具结果中的成功、失败、文件和传输信息是事实；没有工具证据的模型描述必须标记为未验证。",
+  ].join("\n\n");
+  const closing = "</runtime_compaction_source>";
+  const separator = "\n\n";
+  const wrapperBudget =
+    prefix.length + closing.length + separator.length * 3;
+  const contentBudget = Math.max(0, safeMaxChars - wrapperBudget);
+  const evidenceBudget = Math.max(160, Math.floor(contentBudget * 0.38));
+  const evidenceBlock = boundedRuntimeSourcePart(
+    `${RUNTIME_VERIFIED_EVIDENCE_MARKER}\n${runtimeCompactionJson(evidence)}\n${RUNTIME_VERIFIED_EVIDENCE_END}`,
+    evidenceBudget,
+  );
+  const connectionLabel = "已建立连接（不含秘密）：\n";
+  const connectionBudget = Math.max(160, Math.floor(contentBudget * 0.18));
+  const connectionPayload = packRuntimeCompactionRecords(
+    connections.map((item) => `- ${item}`),
+    Math.max(0, connectionBudget - connectionLabel.length),
+  );
+  const connectionBlock = connectionPayload
+    ? `${connectionLabel}${connectionPayload}`
+    : "";
+  const fixedLength = [prefix, evidenceBlock, connectionBlock, closing]
+    .filter(Boolean)
+    .join(separator).length;
+  const transcriptBudget = Math.max(
+    0,
+    safeMaxChars - fixedLength - (records.length ? separator.length : 0),
+  );
+  const transcript = packRuntimeCompactionRecords(records, transcriptBudget);
+  const source = [
+    prefix,
+    transcript,
+    evidenceBlock,
+    connectionBlock,
+    closing,
+  ]
+    .filter(Boolean)
+    .join(separator);
+  return redactSensitiveText(
+    source.length <= safeMaxChars
+      ? source
+      : `${prefix}${separator}${evidenceBlock}${separator}${connectionBlock}${separator}${closing}`,
+  );
+}
+
+function runtimeCompactionUserText(content: string) {
+  return runtimeCompactionMessageText(content)
+    .replace(/<[^>]+>[\s\S]*?<\/[^>]+>/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** Runtime-owned facts passed to the model as a non-authoritative fallback ledger. */
+export function buildRuntimeCompactionLedger(
+  history: HistoryItem[],
+  evidenceHistory: HistoryItem[] = history,
+  activeConnections: Iterable<string> = [],
+): ContextLedger {
+  const evidence = structuredToolEvidenceSummary(evidenceHistory);
+  const goals = history
+    .filter(
+      (item): item is Extract<HistoryItem, { kind: "message" }> =>
+        item.kind === "message" &&
+        item.role === "user" &&
+        !item.content.includes("<runtime_"),
+    )
+    .map((item) => runtimeCompactionUserText(item.content))
+    .filter(Boolean)
+    .map((item) => item.slice(-4_000));
+  const validations: string[] = [];
+  const failures: string[] = [];
+  for (const item of evidenceHistory) {
+    if (item.kind !== "result") continue;
+    try {
+      const result = JSON.parse(item.content) as StructuredToolResult;
+      const data = result.data ?? {};
+      const operationEvidence = Array.isArray(data.operationEvidence)
+        ? data.operationEvidence.map(String)
+        : [String(data.operationEvidence ?? "")];
+      if (operationEvidence.includes("validate"))
+        validations.push(result.summary || "已执行验证");
+      if (!result.success)
+        failures.push(result.error?.message || result.summary || "工具执行失败");
+    } catch {
+      // Legacy unstructured results are still present in the source transcript.
+    }
+  }
+  const unique = (items: string[], limit: number) =>
+    [...new Set(items.map((item) => redactSensitiveText(item).trim()).filter(Boolean))].slice(-limit);
+  return {
+    goals: unique(goals, 16),
+    decisions: [],
+    changedFiles: unique(evidence.changedFiles, 64),
+    validations: unique(validations, 32),
+    failures: unique(failures, 32),
+    pending: [],
+    connections: unique([...activeConnections], 16),
+  };
+}
+
+function runtimeCompactionSummaryContent(
+  result: ContextSummaryResult,
+  evidenceHistory: HistoryItem[],
+) {
+  const summary = redactSensitiveText(result.summary.trim()).replace(
+    new RegExp(RUNTIME_MODEL_COMPACTION_END, "gi"),
+    "<\\/runtime_model_compaction>",
+  );
+  const evidence = structuredToolEvidenceSummary(evidenceHistory);
+  return [
+    RUNTIME_MODEL_COMPACTION_MARKER,
+    "以下为模型生成的语义交接摘要。它用于延续上下文；真实执行事实以紧随其后的结构化工具证据为准。",
+    summary,
+    RUNTIME_VERIFIED_EVIDENCE_MARKER,
+    runtimeCompactionJson(evidence),
+    RUNTIME_VERIFIED_EVIDENCE_END,
+    RUNTIME_MODEL_COMPACTION_END,
+  ].join("\n");
+}
+
+function replaceRuntimeCompactionSummary(
+  history: HistoryItem[],
+  result: ContextSummaryResult,
+  evidenceHistory: HistoryItem[],
+) {
+  const index = history.findIndex(
+    (item) =>
+      item.kind === "message" && item.content.includes("<runtime_compaction>"),
+  );
+  if (index < 0) return false;
+  const item = history[index];
+  if (item.kind !== "message") return false;
+  history[index] = {
+    ...item,
+    content: runtimeCompactionSummaryContent(result, evidenceHistory),
+    images: undefined,
+  };
+  return true;
+}
+
+export type RuntimeCompactionStrategy = "model" | "fallback" | "none";
+export type RuntimeContextSummaryArgs = {
+  requestId: string;
+  taskId: string;
+  request: ModelRequest;
+  provider: ProviderWithKey;
+  source: string;
+  ledger: ContextLedger;
+  signal: AbortSignal;
+};
+export type RuntimeContextSummarizer = (
+  args: RuntimeContextSummaryArgs,
+) => Promise<ContextSummaryResult>;
+export type RuntimeCompactionResult = {
+  changed: boolean;
+  strategy: RuntimeCompactionStrategy;
+  modelId?: string;
+  summary?: string;
+  usage?: { input: number; output: number };
+  error?: string;
+};
+
+function boundedRuntimeModelSummary(
+  result: ContextSummaryResult,
+  contextWindow?: number,
+) {
+  const maxChars = Math.min(
+    40_000,
+    Math.max(6_000, Math.floor((contextWindow ?? 128_000) * 0.12 * 3)),
+  );
+  return {
+    ...result,
+    summary: boundedContextSource(redactSensitiveText(result.summary), maxChars),
+  };
+}
+
+function runtimeSummaryLooksUsable(
+  summary: unknown,
+  contextWindow?: number,
+): summary is string {
+  if (typeof summary !== "string") return false;
+  const normalized = summary.trim();
+  const maxChars = Math.min(
+    80_000,
+    Math.max(6_000, Math.floor((contextWindow ?? 128_000) * 0.18 * 3)),
+  );
+  if (!normalized || normalized.length > maxChars) return false;
+  const lines = normalized
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length >= 12);
+  if (lines.length < 8) return true;
+  return 1 - new Set(lines).size / lines.length <= 0.45;
+}
+
+async function defaultRuntimeContextSummarizer(
+  args: RuntimeContextSummaryArgs,
+): Promise<ContextSummaryResult> {
+  return summarizeContextWithProvider(
+    {
+      taskId: args.taskId,
+      providerId: args.provider.id,
+      modelId: args.request.modelId,
+      source: args.source,
+      ledger: args.ledger,
+    },
+    args.provider,
+    { signal: args.signal, timeoutMs: RUNTIME_COMPACTION_TIMEOUT_MS },
+  );
+}
+
+function runtimeCompactionRecentItemCount(
+  history: HistoryItem[],
+  contextWindow: number | undefined,
+  force: boolean,
+) {
+  const maximum = Math.min(
+    RUNTIME_COMPACTION_RECENT_ITEMS,
+    Math.max(1, history.length),
+  );
+  if (
+    !contextWindow ||
+    history.length <= RUNTIME_COMPACTION_MIN_RECENT_ITEMS ||
+    effectiveRuntimePromptTokens(history, 0) <
+      contextWindow * (force ? 0.9 : 0.92)
+  )
+    return maximum;
+  // Under pressure, keep the latest two to three protocol items and let the
+  // model summarize the rest. This also handles a short history containing one
+  // unusually large tool result, which the old fixed-eight rule skipped.
+  return Math.max(
+    RUNTIME_COMPACTION_MIN_RECENT_ITEMS,
+    Math.min(maximum, Math.ceil(maximum * 0.35)),
+  );
+}
+
+/**
+ * Compact runtime history with a model-generated handoff first. The local
+ * compactor is deliberately kept as an emergency path for provider errors,
+ * malformed summaries, cancellation, and hard context pressure.
+ */
+export async function compactRuntimeHistoryWithModel(
+  history: HistoryItem[],
+  options: {
+    requestId: string;
+    request: ModelRequest;
+    provider: ProviderWithKey;
+    evidenceHistory?: HistoryItem[];
+    force?: boolean;
+    activeConnections?: Iterable<string>;
+    signal?: AbortSignal;
+    summarize?: RuntimeContextSummarizer;
+  },
+): Promise<RuntimeCompactionResult> {
+  const force = options.force ?? false;
+  const activeConnections = [...(options.activeConnections ?? [])];
+  const recentItemCount = runtimeCompactionRecentItemCount(
+    history,
+    options.request.contextWindow,
+    force,
+  );
+  if (history.length <= recentItemCount && !force)
+    return { changed: false, strategy: "none" };
+  const evidenceHistory = options.evidenceHistory ?? history;
+  const source = buildRuntimeCompactionSource(
+    history,
+    activeConnections,
+    runtimeCompactionSourceLimit(options.request, options.provider),
+    recentItemCount,
+  );
+  const ledger = buildRuntimeCompactionLedger(
+    history,
+    evidenceHistory,
+    activeConnections,
+  );
+  // A custom provider resolver is commonly used by embedders/tests without a
+  // network-capable provider. In that case the caller must explicitly opt in
+  // to a summarizer; the production path below always supplies one.
+  const summarizer = options.summarize;
+  if (!summarizer) {
+    const fallbackChanged = compactRuntimeHistory(
+      history,
+      force,
+      activeConnections,
+      recentItemCount,
+    );
+    return {
+      changed: fallbackChanged,
+      strategy: fallbackChanged ? "fallback" : "none",
+    };
+  }
+  try {
+    if (options.signal?.aborted) throw new Error("上下文压缩已取消");
+    const result = await summarizer({
+      requestId: options.requestId,
+      taskId: options.request.taskId ?? options.requestId,
+      request: options.request,
+      provider: options.provider,
+      source,
+      ledger,
+      signal: options.signal ?? new AbortController().signal,
+    });
+    if (
+      !result.modelGenerated ||
+      !runtimeSummaryLooksUsable(result.summary, options.request.contextWindow)
+    )
+      throw new Error("模型未返回有效的上下文摘要");
+    const boundedResult = boundedRuntimeModelSummary(
+      result,
+      options.request.contextWindow,
+    );
+    const nextHistory = [...history];
+    if (
+      !compactRuntimeHistory(
+        nextHistory,
+        force,
+        activeConnections,
+        recentItemCount,
+      ) ||
+      !replaceRuntimeCompactionSummary(nextHistory, boundedResult, evidenceHistory)
+    )
+      return { changed: false, strategy: "none" };
+    history.splice(0, history.length, ...nextHistory);
+    return {
+      changed: true,
+      strategy: "model",
+      modelId: boundedResult.modelId ?? options.request.modelId,
+      summary: boundedResult.summary,
+      usage: boundedResult.usage,
+    };
+  } catch (error) {
+    const fallbackChanged = compactRuntimeHistory(
+      history,
+      force,
+      activeConnections,
+      recentItemCount,
+    );
+    return {
+      changed: fallbackChanged,
+      strategy: fallbackChanged ? "fallback" : "none",
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 
 function codingEvidenceFromActivities(activities: AgentActivity[]) {
@@ -4598,6 +5230,8 @@ export type ProviderResolver = (
 export interface RunAgentDeps {
   streamTurn?: ModelStreamFn;
   getProvider?: ProviderResolver;
+  /** Optional model-compaction override used by tests and embedded hosts. */
+  summarizeRuntimeContext?: RuntimeContextSummarizer;
 }
 
 /** Default model-turn implementation: flattens the injected args onto streamModelTurn. */
@@ -4964,6 +5598,7 @@ async function modelTurn(
       ? `KCode 已启用这些 MCP 服务：${enabledMcpServers.map((server) => `${server.name}（server=${server.id}）`).join("、")}。需要使用外部扩展能力时，先用对应 server ID 调用 mcp_list_tools 获取真实 schema，再调用 mcp_call_tool；不要凭空捏造 MCP 工具结果。MCP 工具活动和错误必须如实展示给用户。`
       : "当前没有启用 MCP 扩展；不要声称调用了 MCP 工具。",
     "Past-tense claims about real workspace or external actions are checked against successful structured tool results. Do not say that a file was changed, a command ran, a test passed, a remote connection or transfer completed, a browser action happened, or a Git action completed unless the corresponding tool evidence exists in this run. Informational answers, explanations, planning, and content generation that require no real action may finish without calling a tool; do not invent an action claim merely to create evidence. If an earlier statement was wrong, retract it explicitly instead of inventing evidence.",
+    "When <runtime_retained_protocol_context> is present, it contains protocol details the user already supplied earlier in this task. Reuse those endpoint, authentication, request, response, and polling details; do not call request_user_input to ask for the same protocol again. Ask only for a specific field that is still absent after checking the retained block.",
     "When the latest user explicitly requests deployment, replacement, migration, restart, or another change to a known target, treat that request as authorization to carry out the action under the selected permission policy. Do not stop before the mutation solely because the service may briefly be affected: make the promised backup, use the least-disruptive or atomic switch available, and continue with native tools. Ask for another confirmation only when the permission system is waiting or a genuinely required target, credential, or rollback detail is missing.",
     "Saved credentials are local to this KCode installation and isolated by explicit tool scope. Never infer a credential category merely from words such as account, username, password, login, 账号, 密码, or 登录. SSH and database credentials belong only to their matching connect tools; call credential_list only after the target connection category is known. Website credentials belong only to the real origin currently open in the task browser: use browser_list_credentials, browser_save_credential, and browser_fill_credential there. If no target type or endpoint is known, call request_user_input for the target category and address instead of guessing website. A successful new SSH or database connection is remembered by default unless the user explicitly requests a temporary connection. Never invent an alias, put a decrypted secret in chat, send a secret to a subagent, or place one in a command when a native credential-aware tool can perform the action.",
     request.remoteWorkspace
@@ -6159,6 +6794,9 @@ export async function* runAgent(
     provider: await getProvider(request.providerId),
     activeSkills: runtimeSkillInstructions(),
   };
+  const runtimeContextSummarizer =
+    deps.summarizeRuntimeContext ??
+    (!deps.getProvider ? defaultRuntimeContextSummarizer : undefined);
   await agentHooks.run(
     "SessionStart",
     { requestId, taskId: request.taskId },
@@ -6183,6 +6821,10 @@ export async function* runAgent(
     modelRuntime.omitImageInputs = true;
   const usage = { input: 0, output: 0, cached: 0 };
   let lastPromptTokens = 0;
+  // Avoid immediately re-summarizing the same compacted checkpoint. A new
+  // round must add meaningful context before another model compaction starts;
+  // hard-pressure compaction can still run once the history has grown again.
+  let lastRuntimeCompactionTokens = 0;
   let round = 0,
     stalledRounds = 0,
     semanticStallRounds = 0;
@@ -6398,10 +7040,20 @@ export async function* runAgent(
               ? `${finalizationRoleLabel}已达到运行上限，正在汇总已有结果和未完成项…`
               : nextExecutionNarrative(prevRound.activity, prevRound.failure),
     };
-    if (
+    const runtimeCompactionForced = Boolean(
       request.contextWindow &&
-      currentPromptTokens >= request.contextWindow * 0.92
-    ) {
+        currentPromptTokens >= request.contextWindow * 0.99,
+    );
+    const runtimeCompactionGrowth =
+      currentPromptTokens - lastRuntimeCompactionTokens;
+    const shouldCompactRuntime = Boolean(
+      request.contextWindow &&
+        currentPromptTokens >= request.contextWindow * 0.92 &&
+        (lastRuntimeCompactionTokens === 0 ||
+          runtimeCompactionGrowth >= 3_000 ||
+          (runtimeCompactionForced && runtimeCompactionGrowth >= 1_000)),
+    );
+    if (shouldCompactRuntime) {
       const before = history.length;
       const compactionWindowId = `${requestId}:context:${round}`;
       yield {
@@ -6410,6 +7062,7 @@ export async function* runAgent(
         windowId: compactionWindowId,
         beforeItems: before,
         promptTokens: currentPromptTokens,
+        strategy: runtimeContextSummarizer ? "model" : "fallback",
       };
       await agentHooks.run(
         "BeforeCompact",
@@ -6420,37 +7073,70 @@ export async function* runAgent(
         },
         signal,
       );
-      const contextCompacted = compactRuntimeHistory(
-        history,
-        currentPromptTokens >= request.contextWindow * 0.99,
-        activeConnectionFacts.values(),
-      );
+      const compactionResult = await compactRuntimeHistoryWithModel(history, {
+        requestId,
+        request,
+        provider: modelRuntime.provider,
+        evidenceHistory,
+        force: runtimeCompactionForced,
+        activeConnections: activeConnectionFacts.values(),
+        signal,
+        summarize: runtimeContextSummarizer,
+      });
+      const compactedPromptTokens = effectiveRuntimePromptTokens(history, 0);
       yield {
         type: "context_compaction",
         phase: "completed",
         windowId: compactionWindowId,
         beforeItems: before,
         afterItems: history.length,
-        promptTokens: currentPromptTokens,
-        changed: contextCompacted,
+        promptTokens: compactedPromptTokens,
+        changed: compactionResult.changed,
+        strategy: compactionResult.strategy,
+        modelId: compactionResult.modelId,
       };
-      if (contextCompacted) {
+      if (compactionResult.usage) {
+        usage.input += compactionResult.usage.input;
+        usage.output += compactionResult.usage.output;
+        yield {
+          type: "usage",
+          ...usage,
+          promptTokens: compactedPromptTokens,
+        };
+      }
+      lastRuntimeCompactionTokens = compactedPromptTokens;
+      if (compactionResult.changed) {
+        const modelCompacted = compactionResult.strategy === "model";
         const activity: AgentActivity = {
           id: randomUUID(),
           requestId,
           tool: "read_many_files",
           status: "success",
-          title: "压缩运行上下文",
+          title: modelCompacted ? "模型整理上下文" : "整理运行上下文",
           startedAt: Date.now(),
           completedAt: Date.now(),
           input: {},
           textOffset: timelineTextLength,
-          narrative:
-            "上下文接近预算，先压缩较早的运行记录，保留当前任务所需事实后继续执行。",
-          output: `已将 ${before} 条运行记录压缩为 ${history.length} 条，Agent 将继续执行`,
+          narrative: modelCompacted
+            ? "上下文接近预算，已让模型整理较早的对话和工具结果，并保留结构化执行证据后继续执行。"
+            : "模型整理不可用，已使用安全兜底整理较早的运行记录，并保留结构化执行证据后继续执行。",
+          output: modelCompacted
+            ? `已由模型${compactionResult.modelId ? `（${compactionResult.modelId}）` : ""}生成交接摘要，并将 ${before} 条运行记录整理为 ${history.length} 条，Agent 将继续执行\n\n交接摘要：\n${compactionResult.summary?.slice(0, 12_000) ?? ""}`
+            : `模型整理未成功（${(compactionResult.error ?? "未知原因").slice(0, 180)}），已将 ${before} 条运行记录安全整理为 ${history.length} 条，Agent 将继续执行`,
           round,
           progress: "advanced",
         };
+        if (modelCompacted && compactionResult.summary)
+          conversationWriter.systemInjection(
+            "context_compaction",
+            compactionResult.summary,
+            40_000,
+          );
+        conversationWriter.compact(
+          modelCompacted ? "model" : "fallback",
+          Math.max(0, currentPromptTokens - compactedPromptTokens),
+          compactedPromptTokens,
+        );
         await agentHooks.run(
           "AfterCompact",
           {
@@ -6460,6 +7146,7 @@ export async function* runAgent(
               beforeItems: before,
               afterItems: history.length,
               promptTokens: currentPromptTokens,
+              strategy: compactionResult.strategy,
             },
           },
           signal,

@@ -2859,9 +2859,13 @@ export default function App() {
           replaceStreamingText(
             streamingProgressKey(id),
             event.phase === "started"
-              ? "上下文接近预算，正在压缩较早运行记录…"
+                ? event.strategy === "model"
+                ? "上下文接近预算，正在让模型整理较早运行记录…"
+                : "上下文接近预算，正在准备安全整理…"
               : event.changed
-                ? `上下文已压缩：${event.beforeItems} → ${event.afterItems ?? event.beforeItems} 条，继续执行…`
+                ? event.strategy === "model"
+                  ? `模型已整理上下文${event.modelId ? `（${event.modelId}）` : ""}：${event.beforeItems} → ${event.afterItems ?? event.beforeItems} 条，继续执行…`
+                  : `已安全整理上下文：${event.beforeItems} → ${event.afterItems ?? event.beforeItems} 条，继续执行…`
                 : "上下文仍在预算内，继续执行…",
           );
           scheduleRemoteStreamSync(id);
@@ -4306,21 +4310,20 @@ export default function App() {
       });
     }
     setTasks((all) =>
-      all.map((item) =>
-        item.id === task.id
-          ? {
-              ...item,
-              ...finalCompacted,
-              usage: clearPromptTokenSnapshot(item.usage),
-              summarySnapshots: summarySnapshot(task),
-              summaryMeta:
-                "summaryMeta" in finalCompacted
-                  ? (finalCompacted.summaryMeta as TaskRecord["summaryMeta"])
-                  : { modelGenerated: false, durationMs: 0 },
-              updatedAt: Date.now(),
-            }
-          : item,
-      ),
+      all.map((item) => {
+        if (item.id !== task.id) return item;
+        const nextTask: TaskRecord = {
+          ...item,
+          ...finalCompacted,
+          usage: clearPromptTokenSnapshot(item.usage),
+          summaryMeta:
+            "summaryMeta" in finalCompacted
+              ? (finalCompacted.summaryMeta as TaskRecord["summaryMeta"])
+              : { modelGenerated: false, durationMs: 0 },
+          updatedAt: Date.now(),
+        };
+        return { ...nextTask, summarySnapshots: summarySnapshot(nextTask) };
+      }),
     );
     const afterTokens = estimateRequestContextTokens({
       messages: task.messages,
@@ -4389,6 +4392,7 @@ export default function App() {
         contextLedger: accepted.ledger,
         summaryMeta: {
           modelGenerated: true,
+          modelId: result.modelId,
           durationMs: result.durationMs,
           usage: result.usage,
         },
@@ -4416,6 +4420,7 @@ export default function App() {
         },
         compactedMessageCount: task.compactedMessageCount ?? 0,
         modelGenerated: task.summaryMeta?.modelGenerated ?? false,
+        modelId: task.summaryMeta?.modelId,
         durationMs: task.summaryMeta?.durationMs,
         usage: task.summaryMeta?.usage,
       },
@@ -4448,21 +4453,20 @@ export default function App() {
     try {
       const compacted = await improveSummaryWithModel(task, local);
       setTasks((all) =>
-        all.map((task) =>
-          task.id === taskId
-            ? {
-                ...task,
-                ...compacted,
-                usage: clearPromptTokenSnapshot(task.usage),
-                summarySnapshots: summarySnapshot(task),
-                summaryMeta:
-                  "summaryMeta" in compacted
-                    ? (compacted.summaryMeta as TaskRecord["summaryMeta"])
-                    : { modelGenerated: false, durationMs: 0 },
-                updatedAt: Date.now(),
-              }
-            : task,
-        ),
+        all.map((task) => {
+          if (task.id !== taskId) return task;
+          const nextTask: TaskRecord = {
+            ...task,
+            ...compacted,
+            usage: clearPromptTokenSnapshot(task.usage),
+            summaryMeta:
+              "summaryMeta" in compacted
+                ? (compacted.summaryMeta as TaskRecord["summaryMeta"])
+                : { modelGenerated: false, durationMs: 0 },
+            updatedAt: Date.now(),
+          };
+          return { ...nextTask, summarySnapshots: summarySnapshot(nextTask) };
+        }),
       );
       if (activeTaskIdRef.current === taskId)
         setContextError(
@@ -4514,6 +4518,7 @@ export default function App() {
               usage: clearPromptTokenSnapshot(task.usage),
               summaryMeta: {
                 modelGenerated: snapshot.modelGenerated,
+                modelId: snapshot.modelId,
                 durationMs: snapshot.durationMs ?? 0,
                 usage: snapshot.usage,
               },
@@ -4983,15 +4988,14 @@ export default function App() {
           true,
         );
       if (compacted) {
-        const summarizeWithModel = !resumingInterruptedRun;
+        // Recovery checkpoints are also compacted semantically. The runtime
+        // ledger remains authoritative, so a resumed task does not need to
+        // fall back to a lossy local outline just to start its next turn.
+        const summarizeWithModel = Boolean(window.kcode?.chat.summarize);
         if (summarizeWithModel)
           setSummarizingTasks((current) => new Set(current).add(taskId));
         let finalCompacted = compacted;
         try {
-          // A resumed run already has a structured recovery checkpoint. A
-          // second model summarizer can turn that checkpoint into prose and
-          // delay the first real tool call, so use the deterministic local
-          // compactor for this request.
           if (summarizeWithModel)
             finalCompacted = await improveSummaryWithModel(
               { ...requestTaskWithSelection, messages: nextMessages },
@@ -5026,27 +5030,26 @@ export default function App() {
           rawEstimatedTokens * requestCalibrationFactor,
         );
         setTasks((all) =>
-          all.map((task) =>
-            task.id === taskId
-              ? {
-                  ...task,
-                  ...finalCompacted,
-                  contextWindowState: markContextCompacted(
-                    task.contextWindowState,
-                    task.id,
-                    afterEstimatedTokens,
-                    requestContextWindow,
-                  ),
-                  usage: clearPromptTokenSnapshot(task.usage),
-                  summarySnapshots: summarySnapshot(task),
-                  summaryMeta:
-                    "summaryMeta" in finalCompacted
-                      ? (finalCompacted.summaryMeta as TaskRecord["summaryMeta"])
-                      : { modelGenerated: false, durationMs: 0 },
-                  updatedAt: Date.now(),
-                }
-              : task,
-          ),
+          all.map((task) => {
+            if (task.id !== taskId) return task;
+            const nextTask: TaskRecord = {
+              ...task,
+              ...finalCompacted,
+              contextWindowState: markContextCompacted(
+                task.contextWindowState,
+                task.id,
+                afterEstimatedTokens,
+                requestContextWindow,
+              ),
+              usage: clearPromptTokenSnapshot(task.usage),
+              summaryMeta:
+                "summaryMeta" in finalCompacted
+                  ? (finalCompacted.summaryMeta as TaskRecord["summaryMeta"])
+                  : { modelGenerated: false, durationMs: 0 },
+              updatedAt: Date.now(),
+            };
+            return { ...nextTask, summarySnapshots: summarySnapshot(nextTask) };
+          }),
         );
         contextNotice = `上下文 ${formatContextPercent(estimatedTokens, requestContextWindow)} → ${formatContextPercent(afterEstimatedTokens, requestContextWindow)}，已自动压缩 ${compactedCount} 条较早消息`;
       }

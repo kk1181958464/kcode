@@ -607,6 +607,8 @@ export type ContextSummaryResult = {
   ledger: ContextLedger;
   modelGenerated: boolean;
   durationMs: number;
+  /** The model actually used for semantic compaction, when known. */
+  modelId?: string;
   usage?: { input: number; output: number };
 };
 export type AgentCheckpoint = {
@@ -685,6 +687,8 @@ export type ModelEvent =
       afterItems?: number;
       promptTokens: number;
       changed?: boolean;
+      strategy?: "model" | "fallback" | "none";
+      modelId?: string;
     }
   | {
       type: "usage";

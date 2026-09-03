@@ -67,19 +67,22 @@ Rules for accuracy:
 - Never include passwords, tokens, private keys, or auth headers
 - Preserve connection coordinates (host, port, user, database) without secrets
 - Keep total summary under 3000 tokens
-- Remove redundant context that won't help continuation`;
+- Remove redundant context that won't help continuation
+- When the input contains <runtime_compaction_source>, summarize the whole source semantically; do not merely copy its first or last section
+- Preserve the exact next action, unresolved blocker, and any user constraint needed to continue the task
+- Treat <runtime_verified_evidence> as authoritative for execution claims, while keeping the surrounding conversation as context rather than proof`;
 
 /**
  * Context compaction thresholds.
  * These define when different levels of compaction kick in.
  */
 export const COMPACTION_THRESHOLDS = {
-  /** First compaction: rule-based summary of older messages */
+  /** Early warning: allow the caller to prepare a model handoff */
   INITIAL: 0.75,
-  /** Model-enhanced: use cheap model to improve summary quality */
+  /** Normal compaction: use a model-generated handoff */
   MODEL_ENHANCED: 0.85,
-  /** Aggressive: re-compact including previous summary */
+  /** Aggressive: re-compact including the previous handoff */
   AGGRESSIVE: 0.92,
-  /** Emergency: hard truncation fallback */
+  /** Emergency: deterministic safety fallback when the model is unavailable */
   EMERGENCY: 0.99,
 } as const;

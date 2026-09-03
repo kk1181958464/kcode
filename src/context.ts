@@ -59,6 +59,7 @@ export const estimateMessageTokens = (items: ChatMessage[]) =>
 export const COMPACTION_RETAINED_USER_MAX_TOKENS = 20_000;
 const COMPACTION_RETAINED_USER_MIN_TOKENS = 2_000;
 const COMPACTION_CONNECTION_MAX_TOKENS = 8_000;
+const COMPACTION_PROTOCOL_MAX_TOKENS = 12_000;
 
 const concreteCredentialAssignment =
   /(?:用户名|账号|密码|口令|密钥|私钥|访问令牌|令牌|username|password|passphrase|private[ _-]?key|api[ _-]?key|access[ _-]?token|token)\s*(?:[:：=]|是|为)\s*(?:"[^"\r\n]+"|'[^'\r\n]+'|`[^`\r\n]+`|[^\s,，;；]+)/i;
@@ -70,6 +71,12 @@ const sshTarget =
   /\b(?:ssh|sftp)\b[^\r\n]{0,120}(?:[\w.-]+@)?(?:\d{1,3}\.){3}\d{1,3}/i;
 const privateKeyBlock =
   /-----BEGIN [^-\r\n]*PRIVATE KEY-----[\s\S]*?-----END [^-\r\n]*PRIVATE KEY-----/i;
+const protocolEndpoint =
+  /https?:\/\/[^\s"'`<>]+|(?:base\s*url|提交\s*(?:地址|url)|查询\s*(?:地址|url)|轮询\s*(?:地址|url))/i;
+const protocolRequestShape =
+  /\bcurl\b|\b(?:GET|POST|PUT|PATCH|DELETE)\b|content-type|authorization|bearer|请求(?:头|体|方式)|请求参数|json/i;
+const protocolLifecycleShape =
+  /\b(?:status|processing|succeeded|completed|failed|task|job|poll)\b|轮询|任务(?:状态|结果)|查询结果|响应示例|返回结果|成功响应/i;
 
 export function containsDurableConnectionDetails(text: string) {
   return (
@@ -79,6 +86,17 @@ export function containsDurableConnectionDetails(text: string) {
     sshTarget.test(text) ||
     privateKeyBlock.test(text)
   );
+}
+
+/**
+ * Recognize a user-supplied executable API protocol so compaction can retain
+ * the full request and polling contract instead of only its first paragraph.
+ */
+export function containsDurableProtocolDetails(text: string) {
+  const value = text.trim();
+  if (value.includes("<runtime_retained_protocol_context>")) return true;
+  if (value.length < 120 || !protocolEndpoint.test(value)) return false;
+  return protocolRequestShape.test(value) && protocolLifecycleShape.test(value);
 }
 
 function retainedUserTokenBudget(contextWindow?: number) {
@@ -132,7 +150,33 @@ export function retainedCompactedUserMessages(
   >();
   let connectionRemaining = connectionBudget;
 
+  // Keep protocol documents in a separate budget. Their polling and result
+  // fields are frequently at the end of a long message.
+  const protocolBudget = Math.min(
+    COMPACTION_PROTOCOL_MAX_TOKENS,
+    Math.max(1_000, Math.floor(totalBudget * 0.45)),
+  );
+  let protocolRemaining = protocolBudget;
   for (const item of [...candidates].reverse()) {
+    if (selected.has(item.message.id) || protocolRemaining <= 0) continue;
+    if (!containsDurableProtocolDetails(item.message.content)) continue;
+    const tokens = estimateMessageTokens([item.message]);
+    if (tokens <= protocolRemaining) {
+      selected.set(item.message.id, { ...item, tokens });
+      protocolRemaining -= tokens;
+      continue;
+    }
+    const message = truncateRetainedMessage(item.message, protocolRemaining);
+    selected.set(item.message.id, {
+      message,
+      index: item.index,
+      tokens: estimateMessageTokens([message]),
+    });
+    protocolRemaining = 0;
+  }
+
+  for (const item of [...candidates].reverse()) {
+    if (selected.has(item.message.id)) continue;
     if (!containsDurableConnectionDetails(item.message.content)) continue;
     const tokens = estimateMessageTokens([item.message]);
     if (tokens <= connectionRemaining) {
@@ -252,11 +296,33 @@ function redactConnectionValue(value: unknown, key = ""): unknown {
 }
 
 export function boundedContextSource(source: string, maxChars = 120_000) {
-  if (source.length <= maxChars) return source;
+  const limit = Math.max(0, Math.floor(maxChars));
+  if (limit === 0) return "";
+  if (source.length <= limit) return source;
   const marker = "\n\n[中间较早内容因长度限制已省略]\n\n";
-  const available = Math.max(0, maxChars - marker.length);
+  if (limit <= marker.length) return source.slice(0, limit);
+  const available = limit - marker.length;
   const headLength = Math.floor(available * 0.4);
   return `${source.slice(0, headLength)}${marker}${source.slice(-(available - headLength))}`;
+}
+
+/**
+ * Bound a transcript at record boundaries. A single global head/tail clip can
+ * hide an entire middle turn, while this keeps every record represented and
+ * lets boundedContextSource preserve both ends of an individual record.
+ */
+function packContextSourceRecords(records: string[], maxChars: number) {
+  const limit = Math.max(0, Math.floor(maxChars));
+  if (!records.length || limit === 0) return "";
+  const separator = "\n\n";
+  const joined = records.join(separator);
+  if (joined.length <= limit) return joined;
+  const available = limit - separator.length * Math.max(0, records.length - 1);
+  if (available <= 0) return "";
+  const perRecord = Math.max(1, Math.floor(available / records.length));
+  return records
+    .map((record) => boundedContextSource(record, perRecord))
+    .join(separator);
 }
 
 export function contextSummarySource(
@@ -265,7 +331,7 @@ export function contextSummarySource(
   contextWindow: number,
 ) {
   const alreadyCompacted = task.compactedMessageCount ?? 0;
-  const transcript = task.messages
+  const transcriptRecords = task.messages
     .slice(alreadyCompacted, compactUntil)
     .map((message) => {
       const role = message.role === "user" ? "用户" : "模型";
@@ -280,21 +346,89 @@ export function contextSummarySource(
       ]
         .filter(Boolean)
         .join("\n");
-    })
-    .join("\n\n");
-  const source = [
-    task.contextSummary?.trim()
-      ? `## 既有压缩摘要\n${redactSensitiveText(task.contextSummary.trim())}`
-      : "",
-    transcript ? `## 本次待压缩原始对话\n${transcript}` : "",
-  ]
-    .filter(Boolean)
-    .join("\n\n");
+    });
+  // Tool records are a separate source of truth from assistant prose. Include
+  // their structured fields in the model prompt so semantic compaction can
+  // explain what actually happened without inferring it from a narrative.
+  const activityRecords = task.activities
+    .filter((activity) => activity.completedAt)
+    .slice(-80)
+    .map((activity) => {
+      const payload = {
+        tool: activity.tool,
+        status: activity.status,
+        title: activity.title,
+        path: activity.path,
+        command: activity.command,
+        additions: activity.additions,
+        deletions: activity.deletions,
+        fileChanges: activity.fileChanges,
+        error: activity.errorSummary,
+        output: activity.output
+          ? boundedContextSource(activity.output, 6_000)
+          : undefined,
+        diff: activity.diff
+          ? boundedContextSource(activity.diff, 12_000)
+          : undefined,
+      };
+      return redactSensitiveText(JSON.stringify(payload));
+    });
   const sourceLimit = Math.min(
-    120_000,
-    Math.max(24_000, summaryTokenLimit(contextWindow) * 12),
+    480_000,
+    Math.max(
+      24_000,
+      summaryTokenLimit(contextWindow) * 12,
+      Math.floor(contextWindow * 0.22 * 3),
+    ),
   );
-  return boundedContextSource(redactSensitiveText(source), sourceLimit);
+  const sections = [
+    task.contextSummary?.trim()
+      ? {
+          heading: "## 既有压缩摘要",
+          records: [redactSensitiveText(task.contextSummary.trim())],
+          weight: 0.2,
+        }
+      : undefined,
+    transcriptRecords.length
+      ? {
+          heading: "## 本次待压缩原始对话",
+          records: transcriptRecords,
+          weight: 0.55,
+        }
+      : undefined,
+    activityRecords.length
+      ? {
+          heading: "## 已验证工具记录",
+          records: activityRecords,
+          weight: 0.25,
+        }
+      : undefined,
+  ].filter(
+    (section): section is {
+      heading: string;
+      records: string[];
+      weight: number;
+    } => Boolean(section),
+  );
+  if (!sections.length) return "";
+  const separator = "\n\n";
+  const headingBudget = sections.reduce(
+    (total, section) => total + section.heading.length,
+    0,
+  ) + separator.length * Math.max(0, sections.length - 1);
+  let contentBudget = Math.max(0, sourceLimit - headingBudget);
+  const totalWeight = sections.reduce((total, section) => total + section.weight, 0);
+  const renderedSections: string[] = [];
+  sections.forEach((section, index) => {
+    const budget =
+      index === sections.length - 1
+        ? contentBudget
+        : Math.floor((contentBudget * section.weight) / totalWeight);
+    contentBudget = Math.max(0, contentBudget - budget);
+    const packed = packContextSourceRecords(section.records, budget);
+    if (packed) renderedSections.push(`${section.heading}\n${packed}`);
+  });
+  return redactSensitiveText(renderedSections.join(separator));
 }
 
 function repeatedLineRatio(text: string) {
@@ -319,7 +453,13 @@ export function acceptModelContextSummary<
 ) {
   const summary = redactSensitiveText(model.summary.trim());
   const hardLimit = summaryTokenLimit(contextWindow) * 3;
-  const growthLimit = Math.max(12_000, local.contextSummary.length * 2.5);
+  // A model summary is allowed to be richer than the old local outline. Keep
+  // a bounded growth guard for malformed responses, but do not reject useful
+  // semantic detail merely because the fallback outline was short.
+  const growthLimit = Math.min(
+    hardLimit,
+    Math.max(12_000, local.contextSummary.length * 4 + 4_000),
+  );
   if (
     !summary ||
     summary.length > hardLimit ||
@@ -368,9 +508,18 @@ export function acceptModelContextSummary<
   ]
     .filter(Boolean)
     .join("\n\n");
+  // The model summary is the semantic compression. The ledger is an
+  // independent, runtime-owned fact section appended alongside it so a model
+  // cannot turn an unverified claim into proof by rewriting the summary.
+  const mergedSummary = [
+    summary ? `## 模型整理的上下文\n${summary}` : "",
+    authoritativeSummary ? `## 已验证运行事实\n${authoritativeSummary}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
   return {
     ...model,
-    summary: trimSummary(authoritativeSummary || local.contextSummary, contextWindow),
+    summary: trimSummary(mergedSummary || local.contextSummary, contextWindow),
     ledger,
   };
 }

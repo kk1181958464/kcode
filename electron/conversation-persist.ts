@@ -149,10 +149,10 @@ export class ConversationWriter {
   /**
    * Record a system injection (context compression, hook output, etc.).
    */
-  systemInjection(source: string, content: string): void {
+  systemInjection(source: string, content: string, maxChars = 2_000): void {
     this.append({
       type: "system_injection",
-      data: { source, content: content.slice(0, 2000) },
+      data: { source, content: content.slice(0, maxChars) },
     });
   }
 
