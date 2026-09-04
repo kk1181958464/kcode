@@ -76,7 +76,7 @@ function isSshCachePath(task: TaskWorkspaceIdentity, value: string) {
 export function localWorkspacePath(task: TaskWorkspaceIdentity) {
   const saved = task.localWorkspacePath?.trim();
   if (saved) return saved;
-  const path = task.workspacePath.trim();
+  const path = task.workspacePath?.trim() || "";
   if (task.remoteWorkspace && (!path || isSshCachePath(task, path)))
     return undefined;
   return path || undefined;
