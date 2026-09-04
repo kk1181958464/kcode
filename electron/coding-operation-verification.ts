@@ -146,6 +146,10 @@ function userIntentContent(content: string) {
     .replace(/<runtime_verification>[\s\S]*?<\/runtime_verification>/gi, "")
     .replace(/<runtime_finalization>[\s\S]*?<\/runtime_finalization>/gi, "")
     .replace(/<runtime_hook>[\s\S]*?<\/runtime_hook>/gi, "")
+    .replace(
+      /<runtime_workspace_binding>[\s\S]*?<\/runtime_workspace_binding>/gi,
+      "",
+    )
     .replace(/<parent_instruction>[\s\S]*?<\/parent_instruction>/gi, "")
     .replace(/<context_file\b[^>]*>[\s\S]*?<\/context_file>/gi, "")
     .replace(/<conversation_summary>[\s\S]*?<\/conversation_summary>/gi, "")

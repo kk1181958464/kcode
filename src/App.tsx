@@ -92,6 +92,7 @@ import { sshWorkspaceRootFromActivity } from "./ssh-workspace-activity";
 import {
   attachSshWorkspace,
   defaultRemoteWorkspaceName,
+  localWorkspacePath,
   taskWorkspaceName,
   workspaceNameFromPath,
 } from "./task-workspace";
@@ -356,7 +357,13 @@ function resolveWorkspaceView(task: TaskRecord): "chat" | "editor" {
   const saved = task.workspaceView;
   const fallback = task.remoteWorkspace ? "editor" : "chat";
   const desired = saved ?? fallback;
-  if (desired === "editor" && !task.workspacePath) return "chat";
+  if (
+    desired === "editor" &&
+    !task.workspacePath &&
+    !task.localWorkspacePath &&
+    !task.remoteWorkspace
+  )
+    return "chat";
   return desired;
 }
 
@@ -1792,10 +1799,13 @@ export default function App() {
     sidebarProjectionRef.current = projection;
     return projection.workspaceGroups;
   }, [tasks, deferredTaskQuery, showArchived, taskRuntimeRevision]);
+  const activeLocalProjectPath = activeTask
+    ? localWorkspacePath(activeTask)
+    : undefined;
 
   async function refreshGitState(includeDiff = gitDiffOpen) {
-    if (!window.kcode?.workspace.gitState || !activeTask?.workspacePath) return;
-    if (activeTask.remoteWorkspace) {
+    if (!window.kcode?.workspace.gitState || !activeTask) return;
+    if (!activeLocalProjectPath) {
       setGitState({
         available: false,
         files: 0,
@@ -1803,7 +1813,9 @@ export default function App() {
         deletions: 0,
         summary: "",
         diff: "",
-        error: "SSH Remote 工作区",
+        error: activeTask.remoteWorkspace
+          ? "未关联本地项目；SSH 远程 Git 请在执行记录中查看"
+          : "未关联本地项目",
       });
       setGitRefreshing(false);
       return;
@@ -1812,7 +1824,7 @@ export default function App() {
     try {
       setGitState(
         await window.kcode.workspace.gitState(
-          activeTask.workspacePath,
+          activeLocalProjectPath,
           includeDiff,
         ),
       );
@@ -1833,7 +1845,7 @@ export default function App() {
   useEffect(() => {
     void refreshGitState(false);
     setGitDiffOpen(false);
-  }, [activeTaskId]);
+  }, [activeTaskId, activeLocalProjectPath]);
   useEffect(() => {
     window.kcode?.chat
       .checkpoints?.()
@@ -3787,8 +3799,13 @@ export default function App() {
         id: taskId,
         name: "新对话",
         workspaceName: sourceTask ? taskWorkspaceName(sourceTask) : undefined,
-        localWorkspacePath: sourceTask?.localWorkspacePath,
-        workspacePath: targetWorkspacePath,
+        localWorkspacePath: sourceTask
+          ? localWorkspacePath(sourceTask)
+          : undefined,
+        workspacePath:
+          targetWorkspacePath ||
+          (sourceTask ? localWorkspacePath(sourceTask) : undefined) ||
+          "",
         remoteWorkspace,
         createdAt: now,
         updatedAt: now,
@@ -4732,7 +4749,11 @@ export default function App() {
     )
       return;
     const requestRemoteWorkspace = requestTask.remoteWorkspace;
-    if (!requestTask.workspacePath && !requestRemoteWorkspace) {
+    if (
+      !requestTask.workspacePath &&
+      !localWorkspacePath(requestTask) &&
+      !requestRemoteWorkspace
+    ) {
       setAssignFolderForTask(requestTask);
       return;
     }
@@ -5259,7 +5280,9 @@ export default function App() {
         reasoningEffort: requestReasoningEffort,
         permissionMode,
         permissionPolicy,
-        workspacePath: requestTask.workspacePath,
+        workspacePath:
+          requestTask.workspacePath || localWorkspacePath(requestTask) || "",
+        localWorkspacePath: localWorkspacePath(requestTask),
         remoteWorkspace: requestTask.remoteWorkspace,
         contextWindow: requestContextWindow,
         agentRole: collaboration ? "planner" : undefined,
@@ -5739,6 +5762,10 @@ export default function App() {
         : checkpoint.request.recoveryContext,
       taskId,
       connectionSessionId: task.remoteWorkspace ? taskId : undefined,
+      workspacePath:
+        task.workspacePath ||
+        localWorkspacePath(task) ||
+        checkpoint.request.workspacePath,
       messages: task.messages.map(({ role, content, images }) => ({
         role,
         content,
@@ -5747,6 +5774,7 @@ export default function App() {
       permissionMode,
       permissionPolicy,
       contextWindow: selectedContextWindow,
+      localWorkspacePath: localWorkspacePath(task),
       remoteWorkspace: task.remoteWorkspace,
       recoveryPlan: checkpointRecoveryPlan,
       recoveryEvidence: checkpointRecoveryEvidence,
@@ -6156,7 +6184,9 @@ export default function App() {
                 ? sshRemoteState
                 : undefined
             }
-            editorAvailable={Boolean(activeTask?.workspacePath)}
+            editorAvailable={Boolean(
+              activeTask?.workspacePath || activeLocalProjectPath,
+            )}
             workspaceView={workspaceView}
             setWorkspaceView={onWorkspaceViewChange}
             forkTask={() => void forkTask()}
@@ -6185,8 +6215,8 @@ export default function App() {
             </Suspense>
           )}
           {workspaceView === "editor" &&
-            activeTask?.workspacePath &&
-            !activeTask.remoteWorkspace && (
+            activeLocalProjectPath &&
+            !activeTask?.remoteWorkspace && (
               <Suspense
                 fallback={
                   <div className="ssh-editor-loading">
@@ -6195,9 +6225,9 @@ export default function App() {
                 }
               >
                 <LocalWorkspaceEditor
-                  key={`${activeTask.id}:${activeTask.workspacePath}`}
+                  key={`${activeTask.id}:${activeLocalProjectPath}`}
                   taskId={activeTask.id}
-                  root={activeTask.workspacePath}
+                  root={activeLocalProjectPath}
                 />
               </Suspense>
             )}
@@ -6229,7 +6259,9 @@ export default function App() {
             openSettings={openSettings}
             activitiesByRequest={activitiesByRequest}
             runningId={runningId}
-            activeTaskWorkspacePath={activeTask?.workspacePath || ""}
+            activeTaskWorkspacePath={
+              activeLocalProjectPath || activeTask?.workspacePath || ""
+            }
             contextByMessage={contextByMessageRef.current}
             retryContent={lastUserMessage?.content}
             retryMessage={retryMessage}
@@ -6240,6 +6272,7 @@ export default function App() {
           />
           {activeTask &&
             !activeTask.workspacePath &&
+            !activeTask.localWorkspacePath &&
             !activeTask.remoteWorkspace && (
               <div className="no-workspace-banner">
                 <FolderSearch size={14} />

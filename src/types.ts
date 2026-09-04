@@ -431,6 +431,8 @@ export type ModelRequest = {
   permissionMode: PermissionMode;
   permissionPolicy?: PermissionPolicy;
   workspacePath: string;
+  /** The user's local source path, kept separate from an SSH-managed cache. */
+  localWorkspacePath?: string;
   remoteWorkspace?: SshRemoteWorkspace;
   contextWindow?: number;
   agentDepth?: number;

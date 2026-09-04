@@ -557,6 +557,76 @@ test("runAgent runs a tool call through the real tool loop", async () => {
   assert.deepEqual(requiredToolCalls, [false, false]);
 });
 
+test("hybrid workspace routes local tool calls to the associated local project", async () => {
+  const request = await makeRequest();
+  const localWorkspacePath = await mkdtemp(
+    path.join(os.tmpdir(), "kcode-local-project-"),
+  );
+  request.localWorkspacePath = localWorkspacePath;
+  request.remoteWorkspace = {
+    id: "remote-hybrid-test",
+    name: "测试远程",
+    host: "203.0.113.8",
+    port: 22,
+    username: "deploy",
+    rootPath: "/srv/payment",
+    authType: "private-key",
+    remembered: false,
+  };
+  const roots: string[] = [];
+  let round = 0;
+  const deps: RunAgentDeps = {
+    getProvider: fakeProvider("fake-model"),
+    async *streamTurn(args) {
+      roots.push(args.root);
+      round += 1;
+      if (round === 1) {
+        yield {
+          type: "complete",
+          turn: {
+            text: "",
+            calls: [
+              {
+                id: "local-write",
+                name: "write_file",
+                input: { path: "local.txt", content: "写入本地项目\n" },
+              },
+            ],
+            rawCalls: [],
+            usage: { input: 12, output: 4, cached: 0 },
+          },
+        };
+      } else {
+        yield { type: "text", delta: "已写入本地项目。" };
+        yield {
+          type: "complete",
+          turn: {
+            text: "已写入本地项目。",
+            calls: [],
+            rawCalls: [],
+            usage: { input: 20, output: 6, cached: 0 },
+          },
+        };
+      }
+    },
+  };
+
+  const events = await collect(
+    runAgent("test-hybrid-local-root", request, new AbortController().signal, deps),
+  );
+
+  assert.deepEqual(roots, [localWorkspacePath, localWorkspacePath]);
+  assert.equal(
+    await readFile(path.join(localWorkspacePath, "local.txt"), "utf8"),
+    "写入本地项目\n",
+  );
+  await assert.rejects(readFile(path.join(request.workspacePath, "local.txt")));
+  assert.equal(
+    events.find((event) => event.type === "done")?.outcome,
+    "completed",
+  );
+});
+
 test("runAgent accepts backend query conclusions without Git or browser correction loops", async () => {
   const request = await makeRequest();
   request.messages = [

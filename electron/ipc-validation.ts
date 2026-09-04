@@ -134,6 +134,7 @@ export const modelRequestSchema = z.object({
     })
     .optional(),
   workspacePath: workspacePathSchema,
+  localWorkspacePath: localPathSchema.optional(),
   remoteWorkspace: z
     .object({
       id: idSchema,

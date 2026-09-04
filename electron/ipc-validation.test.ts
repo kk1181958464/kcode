@@ -79,6 +79,7 @@ test("preserves SSH Remote routing metadata through IPC validation", () => {
     permissionMode: "full-access",
     workspacePath:
       "C:\\Users\\test\\AppData\\Local\\KCode\\ssh-workspaces\\profile",
+    localWorkspacePath: "D:\\projects\\payment",
     remoteWorkspace: {
       id: "profile-1",
       name: "生产服务器",
@@ -94,6 +95,7 @@ test("preserves SSH Remote routing metadata through IPC validation", () => {
   assert.equal(parsed.connectionSessionId, "task-remote");
   assert.equal(parsed.remoteWorkspace?.rootPath, "/srv/app");
   assert.equal(parsed.remoteWorkspace?.host, "203.0.113.8");
+  assert.equal(parsed.localWorkspacePath, "D:\\projects\\payment");
 });
 
 test("distinguishes a new SSH Remote file from an unchecked overwrite", () => {

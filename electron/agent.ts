@@ -119,6 +119,11 @@ import {
   localShellToolDescription,
 } from "./local-shell";
 import {
+  buildRuntimeWorkspaceBindingInstruction,
+  buildWorkspaceLocationInstruction,
+  effectiveLocalWorkspacePath,
+} from "./workspace-prompt";
+import {
   fetchWithRetry,
   retryAfterMilliseconds,
   UpstreamHttpError,
@@ -453,6 +458,7 @@ type Turn = {
 type ModelTurnRuntime = {
   provider: Awaited<ReturnType<typeof getProviderWithKey>>;
   activeSkills: string;
+  workspaceBinding?: string;
   omitImageInputs?: boolean;
   keyIndex?: number;
   triedKeyIndexes?: number[];
@@ -1553,7 +1559,7 @@ const tools = [
   {
     name: "list_directory",
     description:
-      "List files and directories in a workspace directory. Use this instead of shell dir/Get-ChildItem.",
+      "List files and directories on this computer in the local project workspace. Use this instead of shell dir/Get-ChildItem.",
     parameters: {
       type: "object",
       properties: { path: { type: "string" }, recursive: { type: "boolean" } },
@@ -1563,7 +1569,8 @@ const tools = [
   },
   {
     name: "glob_files",
-    description: "Find workspace files using a glob such as **/*.ts.",
+    description:
+      "Find files on this computer in the local project workspace using a glob such as **/*.ts.",
     parameters: {
       type: "object",
       properties: { pattern: { type: "string" }, path: { type: "string" } },
@@ -1573,7 +1580,8 @@ const tools = [
   },
   {
     name: "read_many_files",
-    description: "Read up to 20 UTF-8 workspace files in one call.",
+    description:
+      "Read up to 20 UTF-8 files from the local project workspace on this computer in one call.",
     parameters: {
       type: "object",
       properties: {
@@ -1585,7 +1593,8 @@ const tools = [
   },
   {
     name: "path_info",
-    description: "Get type, size, and timestamps for a workspace path.",
+    description:
+      "Get type, size, and timestamps for a path in the local project workspace on this computer.",
     parameters: {
       type: "object",
       properties: { path: { type: "string" } },
@@ -1595,7 +1604,7 @@ const tools = [
   },
   {
     name: "read_file",
-    description: "Read a UTF-8 text file in the workspace.",
+    description: "Read a UTF-8 text file in the local project workspace on this computer.",
     parameters: {
       type: "object",
       properties: {
@@ -1609,7 +1618,7 @@ const tools = [
   },
   {
     name: "search_code",
-    description: "Search text in workspace files.",
+    description: "Search text in files in the local project workspace on this computer.",
     parameters: {
       type: "object",
       properties: { query: { type: "string" }, glob: { type: "string" } },
@@ -1630,7 +1639,8 @@ const tools = [
   },
   {
     name: "write_file",
-    description: "Create or replace a UTF-8 file in the workspace.",
+    description:
+      "Create or replace a UTF-8 file in the local project workspace on this computer.",
     parameters: {
       type: "object",
       properties: { path: { type: "string" }, content: { type: "string" } },
@@ -1640,7 +1650,8 @@ const tools = [
   },
   {
     name: "make_directory",
-    description: "Create a directory and missing parents in the workspace.",
+    description:
+      "Create a directory and missing parents in the local project workspace on this computer.",
     parameters: {
       type: "object",
       properties: { path: { type: "string" } },
@@ -1650,7 +1661,8 @@ const tools = [
   },
   {
     name: "move_path",
-    description: "Move or rename a file or directory inside the workspace.",
+    description:
+      "Move or rename a file or directory inside the local project workspace on this computer.",
     parameters: {
       type: "object",
       properties: { from: { type: "string" }, to: { type: "string" } },
@@ -1660,7 +1672,8 @@ const tools = [
   },
   {
     name: "delete_path",
-    description: "Delete a file or directory inside the workspace.",
+    description:
+      "Delete a file or directory inside the local project workspace on this computer.",
     parameters: {
       type: "object",
       properties: { path: { type: "string" }, recursive: { type: "boolean" } },
@@ -1670,7 +1683,7 @@ const tools = [
   },
   {
     name: "git_status",
-    description: "Show concise Git working tree status.",
+    description: "Show concise Git working tree status for the local project on this computer.",
     parameters: { type: "object", properties: {}, additionalProperties: false },
   },
   {
@@ -1688,7 +1701,7 @@ const tools = [
   },
   {
     name: "git_diff",
-    description: "Show Git diff for the workspace or one path.",
+    description: "Show Git diff for the local project workspace or one path.",
     parameters: {
       type: "object",
       properties: { path: { type: "string" }, staged: { type: "boolean" } },
@@ -1697,7 +1710,7 @@ const tools = [
   },
   {
     name: "git_log",
-    description: "Show recent Git commits.",
+    description: "Show recent Git commits for the local project workspace.",
     parameters: {
       type: "object",
       properties: { limit: { type: "number" } },
@@ -1706,7 +1719,7 @@ const tools = [
   },
   {
     name: "git_show",
-    description: "Show a Git revision or file at a revision.",
+    description: "Show a Git revision or file at a revision in the local project workspace.",
     parameters: {
       type: "object",
       properties: { revision: { type: "string" }, path: { type: "string" } },
@@ -1983,7 +1996,7 @@ const tools = [
   {
     name: "ssh_connect",
     description:
-      "Connect this task to SSH. To reuse a local credential, pass credentialName alone after credential_list. For a new connection, pass host/username plus password or private key and optionally name; after a successful connection it is stored with operating-system encryption by default. Never invent a credential alias. Set remember=false only when the user requests a temporary connection.",
+      "Connect this task to an SSH server without replacing the local project workspace. To reuse a local credential, pass credentialName alone after credential_list. For a new connection, pass host/username plus password or private key and optionally name; after a successful connection it is stored with operating-system encryption by default. Never invent a credential alias. Set remember=false only when the user requests a temporary connection.",
     parameters: {
       type: "object",
       properties: {
@@ -2022,7 +2035,7 @@ const tools = [
   {
     name: "ssh_set_workspace",
     description:
-      "Set or change the editable project root for the SSH server already connected to this task. Call this when the project directory becomes known after ssh_connect.",
+      "Set or change the editable project root on the SSH server already connected to this task. This changes only the remote root and never the local project workspace. Call this when the remote project directory becomes known after ssh_connect.",
     parameters: {
       type: "object",
       properties: { path: { type: "string" } },
@@ -4262,7 +4275,7 @@ async function execute(
     };
   }
   if (call.name === "ssh_upload_file") {
-    const localPath = path.resolve(String(call.input.localPath || ""));
+    const localPath = workspacePath(root, call.input.localPath);
     const remotePath = resolveRemoteToolPath(call.input.remotePath);
     const result = await uploadSshFile(
       browserSessionId,
@@ -4280,7 +4293,7 @@ async function execute(
   }
   if (call.name === "ssh_download_file") {
     const remotePath = resolveRemoteToolPath(call.input.remotePath);
-    const localPath = path.resolve(String(call.input.localPath || ""));
+    const localPath = workspacePath(root, call.input.localPath);
     const result = await downloadSshFile(
       browserSessionId,
       requestId,
@@ -5587,9 +5600,26 @@ async function modelTurn(
     (server) => server.enabled,
   );
   const localShellInstruction = localShellPromptInstruction();
+  const executionRoot = path.resolve(request.workspacePath);
+  const workspaceLocationInstruction = buildWorkspaceLocationInstruction({
+    executionRoot,
+    localWorkspacePath: request.remoteWorkspace
+      ? request.localWorkspacePath
+      : root,
+    remoteWorkspace: request.remoteWorkspace,
+  });
+  const localProjectAttached = Boolean(
+    effectiveLocalWorkspacePath({
+      executionRoot,
+      localWorkspacePath: request.localWorkspacePath,
+      remoteWorkspace: request.remoteWorkspace,
+    }),
+  );
   const activeSkills = [
     runtime?.activeSkills ??
       (await loadActiveSkillInstructions(latestUserRequest)),
+    workspaceLocationInstruction,
+    runtime?.workspaceBinding ?? "",
     plannerCollaborationInstruction(request),
     "When a task has multiple independent phases, call update_plan with concise steps and structured statuses instead of writing a numbered plan in prose. Every plan item must include requires with one or more native obligations (inspect, modify, execute, validate, connect, upload, download), or [] when the item is explanation-only. Keep a required step pending until its native tool result succeeds or a structured no-change/user-input result resolves it. Before every tool-call group, write no more than two concise user-facing progress sentences explaining which plan step you are executing and why; keep this preamble under 240 characters. Never dump a full implementation monologue, speculative patch, or repeated plan into the chat. A non-final turn must include a tool call instead of only describing what you will do. Update the plan as steps advance. After a failed tool result, briefly explain how you are adjusting the approach before the next tool call. Never claim success before a tool result confirms it.",
     "Delegation is one level only: a subagent must complete its assigned scope directly and must not create another subagent. When a child wait times out, use the returned progress and pending status; do not busy-poll with repeated short waits. Repeated waits with no child progress are stopped automatically and the partial result is preserved.",
@@ -5620,9 +5650,13 @@ async function modelTurn(
     ? `\n\n<structured_recovery_plan>${JSON.stringify(request.recoveryPlan)}</structured_recovery_plan>\nThis is authoritative runtime state from the interrupted request. Preserve successful evidence, refresh the plan with requires if requirementsDeclared is false, and begin with the first pending or failed step. Do not treat a prose summary as proof of completion.`
     : "";
   const remoteWorkspaceInstruction = request.remoteWorkspace
-    ? `\n\n<ssh_remote_workspace>\nThis task is attached to a managed SSH Remote workspace. Try the existing session first. If an SSH tool explicitly reports that the session was lost, ssh_connect is available for recovery. When the user already supplied the host, username, password, private-key content, or an absolute private-key path, reconnect yourself immediately with those values; use privateKeyPath for a user-supplied key path and do not send the user to the SSH Remote dialog. The project source of truth is on ${request.remoteWorkspace.username}@${request.remoteWorkspace.host}:${request.remoteWorkspace.port} under ${request.remoteWorkspace.rootPath}. Pass that rootPath when reconnecting. Use ssh_list_directory, ssh_read_file, ssh_write_file, ssh_run, ssh_upload_file, and ssh_download_file for work on the remote server. Relative SSH file paths are automatically resolved under the remote root. Every ssh_run command starts in the remote root. This is a hybrid task: you ALSO have the local file, git, and command tools, which act on THIS machine. When the user references local project sources by absolute path (for example D:\\\\project\\\\... on Windows), use the local tools to read, edit, build, and inspect them, then ssh_upload_file to deploy build artifacts to the server. Note ${root} itself is only KCode metadata/cache, not the user's local project — do not treat that cache directory as the source, but do freely use the local tools on the absolute paths the user points you to.\n</ssh_remote_workspace>`
+    ? `\n\n<ssh_remote_workspace>\nThis task is attached to a managed SSH Remote workspace. Try the existing session first. If an SSH tool explicitly reports that the session was lost, ssh_connect is available for recovery. When the user already supplied the host, username, password, private-key content, or an absolute private-key path, reconnect yourself immediately with those values; use privateKeyPath for a user-supplied key path and do not send the user to the SSH Remote dialog. The project source of truth is on ${request.remoteWorkspace.username}@${request.remoteWorkspace.host}:${request.remoteWorkspace.port} under ${request.remoteWorkspace.rootPath}. Pass that rootPath when reconnecting. Use ssh_list_directory, ssh_read_file, ssh_write_file, ssh_run, ssh_upload_file, and ssh_download_file for work on the remote server. Relative SSH file paths are automatically resolved under the remote root. Every ssh_run command starts in the remote root. This is a hybrid task: you ALSO have the local file, git, and command tools, which act on THIS machine. When the user references local project sources by absolute path (for example D:\\\\project\\\\... on Windows), use the local tools to read, edit, build, and inspect them, then ssh_upload_file to deploy build artifacts to the server. The app-managed SSH cache is ${executionRoot}; the local project root for local tools is ${root}. Do not treat the cache as local source code. Use local tools on the local root or on absolute paths the user provides, then use ssh_upload_file when remote deployment is requested.\n</ssh_remote_workspace>`
     : "";
-  const system = `${isolation.boundary}\nYou are a coding agent working in ${root}. Use the provided native tools to inspect and modify the project. Each run_command invocation uses a fresh local shell process, so environment variable changes do not persist to later commands; combine dependent setup and execution in one command. Prefer apply_patch for precise edits and write_file for new or complete files. Never invoke apply_patch, file deletion, file moves, or directory operations through run_command when a native tool exists. File tool paths accept absolute paths, including other drives (for example D:\\B on Windows); use them to read or write files the user explicitly points to outside ${root}, and resolve relative paths against ${root}. When you mention a file in your reply, always write its full workspace-relative path (for example src/views/Gooddetail.vue, not just Gooddetail.vue) so the user can tell exactly which file it is. Use web_search for current or externally verifiable information and fetch_url to inspect primary sources; preserve source URLs in the final answer. For interactive or authenticated sites use browser_open, browser_snapshot, browser_click, and browser_type. Credentials explicitly supplied by the user may be entered directly with browser_type. Browser recording is opt-in: call browser_record_start only after an explicit user request such as 开始录制, and call browser_record_stop when the user asks to stop or generate Python. Never record ordinary browsing by default. For independent work that can run concurrently, use spawn_agent with self-contained, non-overlapping tasks, then wait_agent before giving a final answer. Use list_agents, message_agent, and stop_agent to coordinate them. Subagents normally inherit this task's model; planner-executor collaboration routes executor agents to the configured execution model. Workspace and permissions remain shared. For remote servers, call ssh_connect with credentials explicitly supplied by the user, then use ssh_run and the SSH SFTP tools. Use ssh_upload_file to send a local file to the server and ssh_download_file to fetch a remote file to a local path; these transfer binary content directly, unlike ssh_write_file which only writes inline UTF-8 text. SSH exec sessions are non-interactive and may not load shell profiles; when a remote command depends on profile-defined PATH values, invoke the appropriate login shell explicitly. SSH host keys are not verified. Treat user credentials as secrets: pass them only to the matching credential-aware native tool, never echo them in narration, put them in a shell command, or send them to a subagent. For databases, use mysql_connect for direct MySQL access or mysql_connect_via_ssh for an SSH tunnel, then mysql_query; use ? placeholders and values for user-provided data when practical. Public direct MySQL connections use TLS by default and you must not retry with ssl=false unless the user explicitly approves. Never attempt to solve or bypass CAPTCHA, SMS, passkey, or two-factor verification. browser_snapshot waits while the user completes human verification in the visible browser and resumes automatically afterward, so do not end the task merely to ask the user to say continue. Do not claim an action succeeded until its tool result confirms it. Before finishing, compare every action requested by the user with successful tool results. A file task is complete only after a mutating tool produced an actual change; a validation is complete only after it really ran successfully after the latest change; a background service is started only after process_output confirms it is running. When the user explicitly requested a code or configuration change and successful inspection proves that change is unnecessary, call report_no_change with the specific evidence-based reason before the final response; do not manufacture a no-op edit. If the task cannot continue because the user must supply a URL, file, credential, repository target, requirement, permission, verification code, or another specific external input that cannot be discovered with the available tools, call request_user_input once with the exact question and required fields, then ask the user for them. Never use request_user_input to avoid work that the available tools can perform. For informational or status questions, answer from successful read-only evidence without calling report_no_change. If an action could not be completed, state that explicitly instead of saying it was done.${remoteWorkspaceInstruction}${activeSkills ? `\n\n${activeSkills}` : ""}${request.recoveryContext ? `\n\n<recovery_context>${request.recoveryContext}</recovery_context>\nThis task resumed after an interruption. Treat the recovery record as prior evidence. If the latest user asks only for a conclusion, status, or summary, answer directly from that evidence without repeating tool calls. If the user asks to continue execution, start with the first failed or incomplete structured plan step. Successful tools, recorded file changes, uploads, process starts, and commits are already facts; do not repeat them. Use only a minimal read-only check when it is necessary to confirm an external side effect before continuing interrupted work.` : ""}`;
+  const workspaceRoleInstruction =
+    request.remoteWorkspace && !localProjectAttached
+      ? `You are an SSH Remote agent. No local source project is attached. Treat ${executionRoot} as KCode's managed cache only; use ssh_* tools for remote source work and do not inspect or modify the cache as if it were the user's project.`
+      : `You are a coding agent working in ${root}. Use the provided native tools to inspect and modify the project.`;
+  const system = `${isolation.boundary}\n${workspaceRoleInstruction} Each run_command invocation uses a fresh local shell process, so environment variable changes do not persist to later commands; combine dependent setup and execution in one command. Prefer apply_patch for precise edits and write_file for new or complete files. Never invoke apply_patch, file deletion, file moves, or directory operations through run_command when a native tool exists. File tool paths accept absolute paths, including other drives (for example D:\\B on Windows); use them to read or write files the user explicitly points to outside ${root}, and resolve relative paths against ${root}. When you mention a file in your reply, always write its full workspace-relative path (for example src/views/Gooddetail.vue, not just Gooddetail.vue) so the user can tell exactly which file it is. Use web_search for current or externally verifiable information and fetch_url to inspect primary sources; preserve source URLs in the final answer. For interactive or authenticated sites use browser_open, browser_snapshot, browser_click, and browser_type. Credentials explicitly supplied by the user may be entered directly with browser_type. Browser recording is opt-in: call browser_record_start only after an explicit user request such as 开始录制, and call browser_record_stop when the user asks to stop or generate Python. Never record ordinary browsing by default. For independent work that can run concurrently, use spawn_agent with self-contained, non-overlapping tasks, then wait_agent before giving a final answer. Use list_agents, message_agent, and stop_agent to coordinate them. Subagents normally inherit this task's model; planner-executor collaboration routes executor agents to the configured execution model. Workspace and permissions remain shared. For remote servers, call ssh_connect with credentials explicitly supplied by the user, then use ssh_run and the SSH SFTP tools. Use ssh_upload_file to send a local file to the server and ssh_download_file to fetch a remote file to a local path; these transfer binary content directly, unlike ssh_write_file which only writes inline UTF-8 text. SSH exec sessions are non-interactive and may not load shell profiles; when a remote command depends on profile-defined PATH values, invoke the appropriate login shell explicitly. SSH host keys are not verified. Treat user credentials as secrets: pass them only to the matching credential-aware native tool, never echo them in narration, put them in a shell command, or send them to a subagent. For databases, use mysql_connect for direct MySQL access or mysql_connect_via_ssh for an SSH tunnel, then mysql_query; use ? placeholders and values for user-provided data when practical. Public direct MySQL connections use TLS by default and you must not retry with ssl=false unless the user explicitly approves. Never attempt to solve or bypass CAPTCHA, SMS, passkey, or two-factor verification. browser_snapshot waits while the user completes human verification in the visible browser and resumes automatically afterward, so do not end the task merely to ask the user to say continue. Do not claim an action succeeded until its tool result confirms it. Before finishing, compare every action requested by the user with successful tool results. A file task is complete only after a mutating tool produced an actual change; a validation is complete only after it really ran successfully after the latest change; a background service is started only after process_output confirms it is running. When the user explicitly requested a code or configuration change and successful inspection proves that change is unnecessary, call report_no_change with the specific evidence-based reason before the final response; do not manufacture a no-op edit. If the task cannot continue because the user must supply a URL, file, credential, repository target, requirement, permission, verification code, or another specific external input that cannot be discovered with the available tools, call request_user_input once with the exact question and required fields, then ask the user for them. Never use request_user_input to avoid work that the available tools can perform. For informational or status questions, answer from successful read-only evidence without calling report_no_change. If an action could not be completed, state that explicitly instead of saying it was done.${remoteWorkspaceInstruction}${activeSkills ? `\n\n${activeSkills}` : ""}${request.recoveryContext ? `\n\n<recovery_context>${request.recoveryContext}</recovery_context>\nThis task resumed after an interruption. Treat the recovery record as prior evidence. If the latest user asks only for a conclusion, status, or summary, answer directly from that evidence without repeating tool calls. If the user asks to continue execution, start with the first failed or incomplete structured plan step. Successful tools, recorded file changes, uploads, process starts, and commits are already facts; do not repeat them. Use only a minimal read-only check when it is necessary to confirm an external side effect before continuing interrupted work.` : ""}`;
   const imageInputNotice =
     omitImageInputs && hasImageAttachments(history)
       ? "\n\n当前模型不支持图片输入，历史图片附件已被省略。请只依据文字、上下文文件和工作区继续，不要假装看到了图片。"
@@ -5632,11 +5666,20 @@ async function modelTurn(
   )
     ? "\n\nThe user explicitly supplied a numeric SMS, email, OTP, or 2FA code in this conversation. You may enter that supplied code with browser_type and submit it; this narrow exception is not permission to retrieve, guess, solve, or bypass any verification."
     : "";
-  const projectInstructions = loadProjectInstructions(root);
+  const localToolPathInstruction = localProjectAttached
+    ? `File tool paths accept absolute paths, including other drives (for example D:\\B on Windows); use them to read or write files the user explicitly points to outside ${root}, and resolve relative paths against ${root}.`
+    : `No local source is attached. Do not resolve relative local file paths against the managed SSH cache or use local tools to inspect it as source; use ssh_* tools for remote paths, and use a local absolute path only when the user explicitly supplies one.`;
+  const adjustedSystem = system.replace(
+    `File tool paths accept absolute paths, including other drives (for example D:\\B on Windows); use them to read or write files the user explicitly points to outside ${root}, and resolve relative paths against ${root}.`,
+    localToolPathInstruction,
+  );
+  const projectInstructions = localProjectAttached
+    ? loadProjectInstructions(root)
+    : "";
   const projectInstructionsSection = projectInstructions
     ? `\n\n<project_instructions>\n${projectInstructions}\n</project_instructions>`
     : "";
-  const payloadSystem = `${system}${recoveryPlanInstruction}${suppliedVerificationCodeNotice}${imageInputNotice}${projectInstructionsSection}${requiredToolInstruction}`;
+  const payloadSystem = `${adjustedSystem}${recoveryPlanInstruction}${suppliedVerificationCodeNotice}${imageInputNotice}${projectInstructionsSection}${requiredToolInstruction}`;
   // Track system prompt segment changes for cache optimization analytics
   worldStateTracker.recordRound(
     buildSegments([
@@ -6006,6 +6049,7 @@ async function modelTurn(
         {
           provider,
           activeSkills: runtime?.activeSkills ?? "",
+          workspaceBinding: runtime?.workspaceBinding,
           omitImageInputs: runtime?.omitImageInputs,
           keyIndex: nextKeyIndex,
           triedKeyIndexes: [...triedKeyIndexes],
@@ -6118,6 +6162,7 @@ async function modelTurn(
         {
           provider,
           activeSkills: runtime?.activeSkills ?? "",
+          workspaceBinding: runtime?.workspaceBinding,
           omitImageInputs: runtime?.omitImageInputs,
           keyIndex: nextKeyIndex,
           triedKeyIndexes: [...triedKeyIndexes],
@@ -6710,7 +6755,36 @@ export async function* runAgent(
   const streamTurn = deps.streamTurn ?? defaultStreamTurn;
   const getProvider = deps.getProvider ?? getProviderWithKey;
   const runStartedAt = Date.now();
-  const root = path.resolve(request.workspacePath);
+  const executionRoot = path.resolve(request.workspacePath);
+  if (!path.isAbsolute(request.workspacePath))
+    throw new Error("工作区路径必须是绝对路径");
+  const configuredLocalProjectPath = effectiveLocalWorkspacePath({
+    executionRoot,
+    localWorkspacePath: request.localWorkspacePath,
+    remoteWorkspace: request.remoteWorkspace,
+  });
+  let localProjectPath: string | undefined;
+  if (configuredLocalProjectPath) {
+    if (request.remoteWorkspace && !path.isAbsolute(configuredLocalProjectPath))
+      throw new Error("本地项目路径必须是绝对路径");
+    const candidate = path.resolve(configuredLocalProjectPath);
+    const localRootInfo = await stat(candidate).catch(() => undefined);
+    if (!localRootInfo?.isDirectory())
+      throw new Error(
+        request.remoteWorkspace && request.localWorkspacePath
+          ? `关联的本地项目目录不可用：${candidate}。请重新关联本地项目；SSH 远程目录仍可通过 ssh_* 工具访问。`
+          : "工作区路径不是有效文件夹",
+      );
+    localProjectPath = candidate;
+  }
+  if (!localProjectPath) {
+    const executionRootInfo = await stat(executionRoot).catch(() => undefined);
+    if (!executionRootInfo?.isDirectory())
+      throw new Error("工作区路径不是有效文件夹");
+  }
+  // A remote task keeps its app-managed cache in workspacePath, but local
+  // tools must operate on the explicitly associated source directory.
+  const root = localProjectPath ?? executionRoot;
   const browserSessionId =
     request.connectionSessionId || request.taskId || requestId;
   const baselineCodingEvidence = new Set<CodingOperation>();
@@ -6722,6 +6796,7 @@ export async function* runAgent(
   const recoveredGitEvidence = new Set<GitOperation>(
     request.recoveryEvidence?.git ?? [],
   );
+  let connectedRemoteWorkspace: ModelRequest["remoteWorkspace"];
   if (request.remoteWorkspace && request.connectionSessionId) {
     try {
       const remoteState = await sshRemoteState(
@@ -6731,16 +6806,24 @@ export async function* runAgent(
       // A managed SSH workspace is connected before the model turn starts.
       // Treat that runtime fact as connection evidence so a redundant or
       // failed reconnect call cannot invalidate otherwise verified work.
-      if (remoteState.connected) baselineCodingEvidence.add("connect");
+      if (remoteState.connected) {
+        baselineCodingEvidence.add("connect");
+        connectedRemoteWorkspace =
+          remoteState.profile ?? request.remoteWorkspace;
+      }
     } catch {
       // The normal SSH tools will report the concrete connection failure.
     }
+  } else if (!request.remoteWorkspace) {
+    const remoteState = await sshRemoteState(browserSessionId).catch(
+      () => undefined,
+    );
+    if (remoteState?.connected && remoteState.profile) {
+      baselineCodingEvidence.add("connect");
+      connectedRemoteWorkspace = remoteState.profile;
+    }
   }
   bindBrowserRequest(browserSessionId, requestId);
-  if (!path.isAbsolute(request.workspacePath))
-    throw new Error("工作区路径必须是绝对路径");
-  const rootInfo = await import("node:fs/promises").then((fs) => fs.stat(root));
-  if (!rootInfo.isDirectory()) throw new Error("工作区路径不是有效文件夹");
   if (
     Buffer.byteLength(JSON.stringify(request.messages), "utf8") >
     24 * 1024 * 1024
@@ -6772,6 +6855,11 @@ export async function* runAgent(
   // Tool stats tracking — reset per session
   const toolStats = resetToolStats();
   const activeConnectionFacts = new Map<string, string>();
+  if (connectedRemoteWorkspace)
+    activeConnectionFacts.set(
+      "ssh",
+      `ssh session ${connectedRemoteWorkspace.username}@${connectedRemoteWorkspace.host}:${connectedRemoteWorkspace.port}; remote project root ${connectedRemoteWorkspace.rootPath}; local project root ${localProjectPath ?? "none attached"}`,
+    );
   let requestedGitOps = new Set<GitOperation>();
   let requestedCodingEvidenceOps = new Set<CodingOperation>();
   let requestedBrowserOps = new Set<BrowserOperation>();
@@ -6793,6 +6881,39 @@ export async function* runAgent(
   const modelRuntime: ModelTurnRuntime = {
     provider: await getProvider(request.providerId),
     activeSkills: runtimeSkillInstructions(),
+    workspaceBinding: connectedRemoteWorkspace
+      ? buildRuntimeWorkspaceBindingInstruction(
+          localProjectPath,
+          connectedRemoteWorkspace,
+        )
+      : undefined,
+  };
+  const refreshRuntimeWorkspaceBinding = async (
+    call: ToolCall,
+    status: AgentActivity["status"],
+  ) => {
+    if (
+      status !== "success" ||
+      (call.name !== "ssh_connect" && call.name !== "ssh_set_workspace")
+    )
+      return;
+    const state = await sshRemoteState(browserSessionId).catch(() => undefined);
+    if (!state?.connected || !state.profile) return;
+    const binding = buildRuntimeWorkspaceBindingInstruction(
+      localProjectPath,
+      state.profile,
+    );
+    activeConnectionFacts.set(
+      "ssh",
+      `${call.name} ${JSON.stringify(redactedToolInput(call))}; remote project root ${state.profile.rootPath}; local project root ${localProjectPath ?? "none attached"}`,
+    );
+    if (binding === modelRuntime.workspaceBinding) return;
+    modelRuntime.workspaceBinding = binding;
+    history.push({
+      kind: "message",
+      role: "user",
+      content: binding,
+    });
   };
   const runtimeContextSummarizer =
     deps.summarizeRuntimeContext ??
@@ -8535,6 +8656,7 @@ export async function* runAgent(
         callId: call.id,
         content: JSON.stringify(structured),
       });
+      await refreshRuntimeWorkspaceBinding(call, activity.status);
       evidenceHistory.push(
         compactOperationEvidenceResult(
           call.id,

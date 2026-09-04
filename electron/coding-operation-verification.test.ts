@@ -58,7 +58,7 @@ test("uses only the latest real user payload without interpreting prose", () => 
       kind: "message",
       role: "user",
       content:
-        "<runtime_verification>internal</runtime_verification><user_steer>只回答当前状态</user_steer>",
+        "<runtime_workspace_binding>internal</runtime_workspace_binding><runtime_verification>internal</runtime_verification><user_steer>只回答当前状态</user_steer>",
     },
   ];
   assert.equal(latestUserRequestContent(history), "只回答当前状态");

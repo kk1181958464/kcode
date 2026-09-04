@@ -26,6 +26,7 @@ import {
   reasoningEffortsForModel,
 } from "../../lib/model-utils";
 import type { TaskRecord } from "../../models";
+import { localWorkspacePath } from "../../task-workspace";
 import {
   summarizeStatusActivities,
   statusOverviewTone,
@@ -188,6 +189,9 @@ export function StatusPanel({
   const [fileDiffError, setFileDiffError] = useState("");
   const [fileDiffLoading, setFileDiffLoading] = useState(false);
   const [wrapDiffLines, setWrapDiffLines] = useState(true);
+  const gitWorkspacePath = activeTask
+    ? localWorkspacePath(activeTask)
+    : undefined;
   useEffect(() => {
     if (!runningId || !activeTask?.startedAt) {
       setLiveDurationMs(durationMs);
@@ -277,14 +281,14 @@ export function StatusPanel({
       !selectedDiffPath ||
       selectedDiffChange?.diffs.length ||
       extractGitFileDiff(gitState.diff, selectedDiffPath) ||
-      !activeTask?.workspacePath ||
+      !gitWorkspacePath ||
       !window.kcode?.workspace.gitFileDiff
     )
       return;
     let cancelled = false;
     setFileDiffLoading(true);
     void window.kcode.workspace
-      .gitFileDiff(activeTask.workspacePath, selectedDiffPath)
+      .gitFileDiff(gitWorkspacePath, selectedDiffPath)
       .then((result) => {
         if (cancelled) return;
         setLoadedFileDiff(result.diff);
@@ -303,7 +307,7 @@ export function StatusPanel({
       cancelled = true;
     };
   }, [
-    activeTask?.workspacePath,
+    gitWorkspacePath,
     gitDiffOpen,
     gitState.diff,
     selectedDiffChange?.diffs.length,

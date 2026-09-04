@@ -34,8 +34,8 @@ export function localShellToolDescription(
 ) {
   const action = background ? "Start a long-running" : "Run a";
   if (platform === "win32")
-    return `${action} Windows PowerShell 5.1 command in the workspace. This is not Bash: do not use <<EOF heredocs or &&/|| chains.`;
-  return `${action} POSIX shell command in the workspace using /bin/sh -lc. This is not PowerShell: use POSIX paths, quoting, environment assignments, and command chaining.`;
+    return `${action} Windows PowerShell 5.1 command in the local project workspace on this computer. This is not Bash: do not use <<EOF heredocs or &&/|| chains.`;
+  return `${action} POSIX shell command in the local project workspace on this computer using /bin/sh -lc. This is not PowerShell: use POSIX paths, quoting, environment assignments, and command chaining.`;
 }
 
 export function localShellPromptInstruction(
