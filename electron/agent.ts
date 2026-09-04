@@ -467,6 +467,7 @@ type ModelTurnRuntime = {
 export type HistoryItem =
   | {
       kind: "message";
+      id?: string;
       role: "user" | "assistant";
       content: string;
       reasoningContent?: string;
@@ -644,6 +645,7 @@ export function compactRuntimeHistory(
   force = false,
   activeConnections: Iterable<string> = [],
   recentItemCount = RUNTIME_COMPACTION_RECENT_ITEMS,
+  preserveImageMessageId?: string,
 ) {
   const retainedRecentCount = Math.max(
     1,
@@ -656,7 +658,36 @@ export function compactRuntimeHistory(
   );
   const recentStart = Math.max(0, history.length - retainedRecentCount);
   const recentSource = history.slice(recentStart);
+  const firstMessageIndex = firstMessage ? history.indexOf(firstMessage) : -1;
+  // Only the image attached to the request currently being sent is protected.
+  // Guessing from recency would keep stale screenshots and eventually exhaust
+  // the context window during long conversations.
+  const preservedImageIndex = preserveImageMessageId
+    ? history.findIndex(
+        (item) =>
+          item.kind === "message" &&
+          item.id === preserveImageMessageId &&
+          Boolean(item.images?.length),
+      )
+    : -1;
+  const preservedImageMessage =
+    preservedImageIndex >= 0 && history[preservedImageIndex]?.kind === "message"
+      ? (history[preservedImageIndex] as Extract<HistoryItem, { kind: "message" }>)
+      : undefined;
   const retainedImageIndexes = new Set<number>();
+  const retainedOlderImageEntries: {
+    item: Extract<HistoryItem, { kind: "message" }>;
+    index: number;
+  }[] = [];
+  if (preservedImageMessage) {
+    if (preservedImageIndex >= recentStart)
+      retainedImageIndexes.add(preservedImageIndex - recentStart);
+    else if (preservedImageIndex !== firstMessageIndex)
+      retainedOlderImageEntries.push({
+        item: preservedImageMessage,
+        index: preservedImageIndex,
+      });
+  }
   if (!force) {
     let remainingImageBytes = MAX_RETAINED_RUNTIME_IMAGE_BYTES;
     for (let index = recentSource.length - 1; index >= 0; index -= 1) {
@@ -666,6 +697,10 @@ export function compactRuntimeHistory(
         (total, image) => total + runtimeImageBytes(image),
         0,
       );
+      if (retainedImageIndexes.has(index)) {
+        remainingImageBytes = Math.max(0, remainingImageBytes - imageBytes);
+        continue;
+      }
       if (imageBytes > remainingImageBytes) continue;
       retainedImageIndexes.add(index);
       remainingImageBytes -= imageBytes;
@@ -702,9 +737,6 @@ export function compactRuntimeHistory(
   const retainedProtocolEntries = retainedRuntimeProtocolMessages(
     older,
     firstMessage,
-  );
-  const retainedProtocolMessages = retainedProtocolEntries.map(
-    ({ item }) => item,
   );
   const retainedProtocolIndexes = new Set(
     retainedProtocolEntries.map(({ index }) => index),
@@ -751,14 +783,22 @@ export function compactRuntimeHistory(
     role: "user",
     content: `<runtime_compaction>较早的 Agent 工具循环已压缩。${connectionBlock}关键状态：\n${facts.slice(-80).join("\n")}</runtime_compaction>`,
   };
+  const retainedSpecialByIndex = new Map<number, HistoryItem>(
+    retainedProtocolEntries.map(({ index, item }) => [index, item]),
+  );
+  for (const { index, item } of retainedOlderImageEntries)
+    retainedSpecialByIndex.set(index, item);
   const compactedFirstMessage = firstMessage
-    ? withoutRuntimeImages(firstMessage)
+    ? firstMessageIndex === preservedImageIndex
+      ? firstMessage
+      : withoutRuntimeImages(firstMessage)
     : undefined;
-  const firstMessageIndex = firstMessage ? history.indexOf(firstMessage) : -1;
   const nextHistory = [
     ...(compactedFirstMessage ? [compactedFirstMessage] : []),
     ...(older.length ? [summary] : []),
-    ...retainedProtocolMessages,
+    ...[...retainedSpecialByIndex.entries()]
+      .sort(([left], [right]) => left - right)
+      .map(([, item]) => item),
     ...recent.filter(
       (_item, index) => recentStart + index !== firstMessageIndex,
     ),
@@ -1171,6 +1211,7 @@ export async function compactRuntimeHistoryWithModel(
     evidenceHistory?: HistoryItem[];
     force?: boolean;
     activeConnections?: Iterable<string>;
+    preserveImageMessageId?: string;
     signal?: AbortSignal;
     summarize?: RuntimeContextSummarizer;
   },
@@ -1206,6 +1247,7 @@ export async function compactRuntimeHistoryWithModel(
       force,
       activeConnections,
       recentItemCount,
+      options.preserveImageMessageId,
     );
     return {
       changed: fallbackChanged,
@@ -1239,6 +1281,7 @@ export async function compactRuntimeHistoryWithModel(
         force,
         activeConnections,
         recentItemCount,
+        options.preserveImageMessageId,
       ) ||
       !replaceRuntimeCompactionSummary(nextHistory, boundedResult, evidenceHistory)
     )
@@ -1257,6 +1300,7 @@ export async function compactRuntimeHistoryWithModel(
       force,
       activeConnections,
       recentItemCount,
+      options.preserveImageMessageId,
     );
     return {
       changed: fallbackChanged,
@@ -6829,9 +6873,17 @@ export async function* runAgent(
     24 * 1024 * 1024
   )
     throw new Error("对话、上下文与图片总大小超过 24 MB");
-  const history: HistoryItem[] = request.messages.map((m) => ({
+  const lastUserMessageIndex = request.messages.reduce(
+    (latest, message, index) =>
+      message.role === "user" ? index : latest,
+    -1,
+  );
+  const history: HistoryItem[] = request.messages.map((m, index) => ({
     kind: "message",
     ...m,
+    ...(request.currentMessageId && index === lastUserMessageIndex
+      ? { id: request.currentMessageId }
+      : {}),
   }));
   let timelineTextLength = 0;
   // Keep a compact, request-local proof ledger outside the model context.
@@ -7201,6 +7253,7 @@ export async function* runAgent(
         evidenceHistory,
         force: runtimeCompactionForced,
         activeConnections: activeConnectionFacts.values(),
+        preserveImageMessageId: request.currentMessageId,
         signal,
         summarize: runtimeContextSummarizer,
       });

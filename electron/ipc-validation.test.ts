@@ -14,6 +14,7 @@ test("preserves planner-executor routing through IPC validation", () => {
   const parsed = modelRequestSchema.parse({
     requestId: "request-1",
     taskId: "task-1",
+    currentMessageId: "message-1",
     providerId: "kaka",
     modelId: "gpt-5.6-sol",
     messages: [{ role: "user", content: "实现功能" }],
@@ -35,6 +36,7 @@ test("preserves planner-executor routing through IPC validation", () => {
   }) as ModelRequest;
 
   assert.equal(isPlannerCoordinator(parsed), true);
+  assert.equal(parsed.currentMessageId, "message-1");
   assert.deepEqual(executorModelOverrides(parsed), {
     providerId: "kaka",
     modelId: "gpt-5.6-luna",

@@ -112,6 +112,7 @@ export const modelRequestSchema = z.object({
   requestId: idSchema.optional(),
   taskId: idSchema.optional(),
   connectionSessionId: idSchema.optional(),
+  currentMessageId: idSchema.optional(),
   providerId: idSchema,
   modelId: idSchema,
   messages: z.array(

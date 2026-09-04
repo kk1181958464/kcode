@@ -98,6 +98,55 @@ test("runAgent emits text then a completed done for a plain-text turn", async ()
   assert.match(answer, /编码 Agent/);
 });
 
+test("marks the current request message for image-safe runtime compaction", async () => {
+  const request = await makeRequest();
+  request.currentMessageId = "current-image-message";
+  request.messages = [
+    {
+      role: "user",
+      content: "请分析这张图片",
+      images: [
+        {
+          id: "image-1",
+          name: "screenshot.png",
+          mediaType: "image/png",
+          dataUrl: "data:image/png;base64,AA==",
+          size: 1,
+        },
+      ],
+    },
+  ];
+  let currentMessage: { id?: string; images?: unknown[] } | undefined;
+  const deps: RunAgentDeps = {
+    getProvider: fakeProvider("fake-model"),
+    async *streamTurn(args) {
+      currentMessage = args.history.find(
+        (item) => item.kind === "message" && item.images?.length,
+      ) as typeof currentMessage;
+      yield {
+        type: "complete",
+        turn: {
+          text: "图片已收到。",
+          calls: [],
+          rawCalls: [],
+          usage: { input: 1, output: 1, cached: 0 },
+        },
+      };
+    },
+  };
+
+  await collect(
+    runAgent(
+      "test-current-image-message",
+      request,
+      new AbortController().signal,
+      deps,
+    ),
+  );
+  assert.equal(currentMessage?.id, "current-image-message");
+  assert.equal(currentMessage?.images?.length, 1);
+});
+
 test("bounds consecutive terminal reasoning-only turns", async () => {
   const request = await makeRequest();
   let rounds = 0;

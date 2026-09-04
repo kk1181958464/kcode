@@ -54,6 +54,37 @@ test("compacts older messages while retaining the latest turn", () => {
   assert.ok(result.contextLedger.goals.length > 0);
 });
 
+test("keeps the current image outside the conversation compaction prefix", () => {
+  const messages: ChatMessage[] = [
+    message("user", "较早目标", 0),
+    message("assistant", "较早回答", 1),
+    {
+      ...message("user", "请分析这张图片", 2),
+      images: [
+        {
+          id: "current-image",
+          name: "current.png",
+          mediaType: "image/png",
+          dataUrl: "data:image/png;base64,AA==",
+          size: 1,
+        },
+      ],
+    },
+    ...Array.from({ length: 6 }, (_, index) =>
+      message("assistant", `后续记录 ${index + 1}`, index + 3),
+    ),
+  ];
+  const result = compactConversation(
+    { messages, activities: [] },
+    8_000,
+    true,
+    "2",
+  );
+  assert.ok(result);
+  assert.ok(result.compactedMessageCount <= 2);
+  assert.equal(messages[2].images?.[0]?.id, "current-image");
+});
+
 test("deduplicates repeated tool state in the fact ledger", () => {
   const activities: AgentActivity[] = [1, 2].map((index) => ({
     id: String(index),

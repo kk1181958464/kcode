@@ -97,6 +97,87 @@ test("keeps the full protocol document when runtime history is compacted", () =>
   assert.match(retainedBlocks[0].content, /VIDEO_RESULT_URL_FIELD=video\.url/);
 });
 
+test("keeps only the explicitly current user image during forced runtime compaction", () => {
+  const image = (id: string) => ({
+    id,
+    name: `${id}.png`,
+    mediaType: "image/png" as const,
+    dataUrl: "data:image/png;base64,AA==",
+    size: 1,
+  });
+  const history: HistoryItem[] = [
+    {
+      kind: "message",
+      id: "old-message",
+      role: "user",
+      content: "较早的截图",
+      images: [image("old")],
+    },
+    ...Array.from({ length: 8 }, (_, index) => ({
+      kind: "message" as const,
+      role: index % 2 ? ("assistant" as const) : ("user" as const),
+      content: `历史记录 ${index + 1}`,
+    })),
+    {
+      kind: "message",
+      id: "current-message",
+      role: "user",
+      content: "请分析最新截图",
+      images: [image("latest")],
+    },
+  ];
+
+  assert.equal(
+    compactRuntimeHistory(history, true, [], 8, "current-message"),
+    true,
+  );
+  const latest = history.find(
+    (item) => item.kind === "message" && item.content === "请分析最新截图",
+  );
+  assert.equal(latest?.kind, "message");
+  assert.equal(latest?.images?.[0]?.id, "latest");
+  assert.equal(
+    history.some(
+      (item) => item.kind === "message" && item.images?.[0]?.id === "old",
+    ),
+    false,
+  );
+});
+
+test("keeps the current image when it is the first runtime message", () => {
+  const history: HistoryItem[] = [
+    {
+      kind: "message",
+      id: "current-message",
+      role: "user",
+      content: "请分析这张图片",
+      images: [
+        {
+          id: "current",
+          name: "current.png",
+          mediaType: "image/png",
+          dataUrl: "data:image/png;base64,AA==",
+          size: 1,
+        },
+      ],
+    },
+    ...Array.from({ length: 10 }, (_, index) => ({
+      kind: "message" as const,
+      role: "assistant" as const,
+      content: `后续记录 ${index + 1}`,
+    })),
+  ];
+
+  assert.equal(
+    compactRuntimeHistory(history, true, [], 8, "current-message"),
+    true,
+  );
+  const first = history[0];
+  assert.equal(first.kind, "message");
+  assert.equal(first.images?.[0]?.id, "current");
+  assert.doesNotMatch(first.content, /runtime_image_context_removed/);
+});
+
 const fakeProvider = {
   id: "fake",
   name: "Fake",

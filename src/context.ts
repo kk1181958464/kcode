@@ -528,6 +528,7 @@ export function compactConversation(
   task: CompactableContext,
   contextWindow: number,
   force = false,
+  preserveImageMessageId?: string,
 ) {
   const alreadyCompacted = task.compactedMessageCount ?? 0;
   const recentBudget = Math.max(
@@ -550,12 +551,24 @@ export function compactConversation(
     compactUntil,
     Math.max(alreadyCompacted, task.messages.length - 2),
   );
+  const preservedImageIndex = preserveImageMessageId
+    ? task.messages.findIndex(
+        (message) =>
+          message.id === preserveImageMessageId &&
+          Boolean(message.images?.length),
+      )
+    : -1;
+  if (preservedImageIndex >= alreadyCompacted)
+    compactUntil = Math.min(compactUntil, preservedImageIndex);
   if (
     force &&
     compactUntil <= alreadyCompacted &&
     task.messages.length - alreadyCompacted > 2
   )
-    compactUntil = task.messages.length - 2;
+    compactUntil =
+      preservedImageIndex >= alreadyCompacted
+        ? Math.min(task.messages.length - 2, preservedImageIndex)
+        : task.messages.length - 2;
   if (compactUntil <= alreadyCompacted) return undefined;
 
   const older = task.messages.slice(alreadyCompacted, compactUntil);

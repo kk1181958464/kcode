@@ -424,6 +424,8 @@ export type ModelRequest = {
   requestId?: string;
   taskId?: string;
   connectionSessionId?: string;
+  /** Internal identity of the user message that started this model turn. */
+  currentMessageId?: string;
   providerId: string;
   modelId: string;
   messages: Pick<ChatMessage, "role" | "content" | "images">[];

@@ -5001,12 +5001,15 @@ export default function App() {
       let compacted = compactConversation(
         { ...requestTask, messages: nextMessages },
         requestContextWindow,
+        false,
+        user.images?.length ? user.id : undefined,
       );
       if (contextRatio >= CONTEXT_FORCE_COMPACT_RATIO && !compacted)
         compacted = compactConversation(
           { ...requestTask, messages: nextMessages },
           requestContextWindow,
           true,
+          user.images?.length ? user.id : undefined,
         );
       if (compacted) {
         // Recovery checkpoints are also compacted semantically. The runtime
@@ -5074,6 +5077,24 @@ export default function App() {
         );
         contextNotice = `上下文 ${formatContextPercent(estimatedTokens, requestContextWindow)} → ${formatContextPercent(afterEstimatedTokens, requestContextWindow)}，已自动压缩 ${compactedCount} 条较早消息`;
       }
+    }
+    const currentUserIndex = nextMessages.findIndex(
+      (message) => message.id === user.id,
+    );
+    if (
+      user.images?.length &&
+      currentUserIndex >= 0 &&
+      currentUserIndex < compactedCount
+    ) {
+      // A stale compactedMessageCount must never hide the image attached to
+      // the request being sent. Reopen the request window at that message and
+      // rebuild the retained checkpoint alongside it.
+      compactedCount = currentUserIndex;
+      retainedContext = retainedCompactionContext(
+        nextMessages,
+        compactedCount,
+        requestContextWindow,
+      );
     }
     const requestMessages = nextMessages.slice(compactedCount);
     const history = requestMessages.map(({ id, role, content, images }) => {
@@ -5273,6 +5294,7 @@ export default function App() {
       await window.kcode.chat.start({
         requestId: id,
         taskId,
+        currentMessageId: user.id,
         connectionSessionId: requestTask.remoteWorkspace ? taskId : undefined,
         providerId: target.provider.id,
         modelId: target.model.modelId,
@@ -5761,6 +5783,12 @@ export default function App() {
             .join("\n")}`
         : checkpoint.request.recoveryContext,
       taskId,
+      currentMessageId:
+        checkpoint.request.currentMessageId ??
+        [...task.messages]
+          .reverse()
+          .find((message) => message.role === "user" && message.images?.length)
+          ?.id,
       connectionSessionId: task.remoteWorkspace ? taskId : undefined,
       workspacePath:
         task.workspacePath ||
