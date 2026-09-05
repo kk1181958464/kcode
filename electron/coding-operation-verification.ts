@@ -71,6 +71,11 @@ export function codingOperationsRequiredByCalls(
       call.input?.purpose === "validate"
     )
       operations.add("validate");
+    if (
+      ["run_command", "ssh_run"].includes(call.name) &&
+      call.input?.purpose === "modify"
+    )
+      operations.add("modify");
     if (CONNECTION_CALL_TOOLS.has(call.name)) operations.add("connect");
     if (call.name === "ssh_upload_file") operations.add("upload");
     if (call.name === "ssh_download_file") operations.add("download");
@@ -428,7 +433,11 @@ function verifiedNoChangeEvidence(history: CodingVerificationHistoryItem[]) {
         isInspectionCommand(command))
     )
       inspected = true;
-    if (hasActualMutation(data)) {
+    if (
+      hasActualMutation(data) ||
+      (Array.isArray(data?.operationEvidence) &&
+        data.operationEvidence.includes("modify"))
+    ) {
       mutated = true;
       explicitReport = false;
     }
@@ -713,10 +722,12 @@ export function successfulCodingEvidence(
             ].includes(String(operation)),
         )
       : [];
-    for (const operation of childEvidence)
-      if (operation !== "validate") operations.add(operation);
-    if (childEvidence.includes("modify")) lastMutation = sequence;
-    if (childEvidence.includes("validate")) lastValidation = sequence + 0.5;
+    if (successful) {
+      for (const operation of childEvidence)
+        if (operation !== "validate") operations.add(operation);
+      if (childEvidence.includes("modify")) lastMutation = sequence;
+      if (childEvidence.includes("validate")) lastValidation = sequence + 0.5;
+    }
 
     const command = ["run_command", "ssh_run"].includes(call.name)
       ? String(call.input.command ?? "")

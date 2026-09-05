@@ -2090,16 +2090,16 @@ const tools = [
   {
     name: "ssh_run",
     description:
-      "Run a command on the SSH server connected to this task. Defaults to a 180 second timeout and stops when the task is cancelled. Set purpose to validate only when exit code 0 deterministically proves the check passed; set it to inspect for read-only queries. Set pty and stdin only for commands that require controlled interactive input.",
+      "Run a command on the SSH server connected to this task. Defaults to a 180 second timeout and stops when the task is cancelled. Set purpose to modify whenever the command intentionally changes remote files, database records, configuration, deployments, services, caches, or other durable state. Set it to validate only for a separate deterministic post-change check whose exit code proves the result, and inspect for read-only queries. Set pty and stdin only for commands that require controlled interactive input.",
     parameters: {
       type: "object",
       properties: {
         command: { type: "string" },
         purpose: {
           type: "string",
-          enum: ["execute", "inspect", "validate"],
+          enum: ["execute", "inspect", "modify", "validate"],
           description:
-            "Structured command purpose. Use validate only for a deterministic pass/fail check whose exit code proves the result.",
+            "Structured command purpose. Use modify for an intentional state change, validate only for a separate deterministic pass/fail check, inspect for read-only work, and execute for other commands.",
         },
         stdin: { type: "string" },
         pty: { type: "boolean" },
@@ -2111,7 +2111,7 @@ const tools = [
             "Optional timeout in milliseconds. Defaults to 300000 for build/test/install commands and 180000 otherwise.",
         },
       },
-      required: ["command"],
+      required: ["command", "purpose"],
       additionalProperties: false,
     },
   },
@@ -2554,16 +2554,16 @@ const tools = [
   },
   {
     name: "run_command",
-    description: `${localShellToolDescription()} Set purpose to validate only when exit code 0 deterministically proves the check passed; set it to inspect for read-only queries. Prefer browser tools for page interaction, responsive screenshots, and DOM inspection; do not launch a browser from this tool. Use start_process for background services.`,
+    description: `${localShellToolDescription()} Set purpose to modify whenever the command intentionally changes files, database records, configuration, deployments, services, caches, or other durable state. Set it to validate only for a separate deterministic post-change check whose exit code proves the result, and inspect for read-only queries. Prefer browser tools for page interaction, responsive screenshots, and DOM inspection; do not launch a browser from this tool. Use start_process for background services.`,
     parameters: {
       type: "object",
       properties: {
         command: { type: "string" },
         purpose: {
           type: "string",
-          enum: ["execute", "inspect", "validate"],
+          enum: ["execute", "inspect", "modify", "validate"],
           description:
-            "Structured command purpose. Use validate only for a deterministic pass/fail check whose exit code proves the result.",
+            "Structured command purpose. Use modify for an intentional state change, validate only for a separate deterministic pass/fail check, inspect for read-only work, and execute for other commands.",
         },
         timeoutMs: {
           type: "number",
@@ -2573,7 +2573,7 @@ const tools = [
             "Optional timeout in milliseconds. Defaults to 300000 for build/test/install commands and 120000 otherwise.",
         },
       },
-      required: ["command"],
+      required: ["command", "purpose"],
       additionalProperties: false,
     },
   },
@@ -4255,13 +4255,17 @@ async function execute(
     );
     const operationEvidence: CodingOperation[] = ["execute"];
     const purpose = String(call.input.purpose || "");
+    if (result.exitCode === 0 && purpose === "modify")
+      operationEvidence.push("modify");
     if (
       (result.exitCode === 0 || result.exitCode === 1) &&
+      purpose !== "modify" &&
       (purpose === "inspect" || isInspectionCommand(requestedCommand))
     )
       operationEvidence.push("inspect");
     if (
       result.exitCode === 0 &&
+      purpose !== "modify" &&
       (purpose === "validate" || isValidationCommand(requestedCommand))
     )
       operationEvidence.push("validate");
@@ -4269,6 +4273,7 @@ async function execute(
       ...result,
       command: remoteCommand,
       executed: true,
+      mutationAttempted: purpose === "modify",
       operationEvidence,
     };
   }
@@ -5009,18 +5014,26 @@ async function execute(
   const exitCode = effectiveCommandExitCode(result.exitCode, result.output);
   const operationEvidence: CodingOperation[] = ["execute"];
   const purpose = String(call.input.purpose || "");
+  if (exitCode === 0 && purpose === "modify")
+    operationEvidence.push("modify");
   if (
     (exitCode === 0 || exitCode === 1) &&
+    purpose !== "modify" &&
     (purpose === "inspect" || isInspectionCommand(script))
   )
     operationEvidence.push("inspect");
-  if (exitCode === 0 && (purpose === "validate" || isValidationCommand(script)))
+  if (
+    exitCode === 0 &&
+    purpose !== "modify" &&
+    (purpose === "validate" || isValidationCommand(script))
+  )
     operationEvidence.push("validate");
   return {
     output: result.output || "命令未产生输出",
     command: script,
     exitCode,
     executed: true,
+    mutationAttempted: purpose === "modify",
     operationEvidence,
   };
 }
@@ -5700,7 +5713,9 @@ async function modelTurn(
     request.remoteWorkspace && !localProjectAttached
       ? `You are an SSH Remote agent. No local source project is attached. Treat ${executionRoot} as KCode's managed cache only; use ssh_* tools for remote source work and do not inspect or modify the cache as if it were the user's project.`
       : `You are a coding agent working in ${root}. Use the provided native tools to inspect and modify the project.`;
-  const system = `${isolation.boundary}\n${workspaceRoleInstruction} Each run_command invocation uses a fresh local shell process, so environment variable changes do not persist to later commands; combine dependent setup and execution in one command. Prefer apply_patch for precise edits and write_file for new or complete files. Never invoke apply_patch, file deletion, file moves, or directory operations through run_command when a native tool exists. File tool paths accept absolute paths, including other drives (for example D:\\B on Windows); use them to read or write files the user explicitly points to outside ${root}, and resolve relative paths against ${root}. When you mention a file in your reply, always write its full workspace-relative path (for example src/views/Gooddetail.vue, not just Gooddetail.vue) so the user can tell exactly which file it is. Use web_search for current or externally verifiable information and fetch_url to inspect primary sources; preserve source URLs in the final answer. For interactive or authenticated sites use browser_open, browser_snapshot, browser_click, and browser_type. Credentials explicitly supplied by the user may be entered directly with browser_type. Browser recording is opt-in: call browser_record_start only after an explicit user request such as 开始录制, and call browser_record_stop when the user asks to stop or generate Python. Never record ordinary browsing by default. For independent work that can run concurrently, use spawn_agent with self-contained, non-overlapping tasks, then wait_agent before giving a final answer. Use list_agents, message_agent, and stop_agent to coordinate them. Subagents normally inherit this task's model; planner-executor collaboration routes executor agents to the configured execution model. Workspace and permissions remain shared. For remote servers, call ssh_connect with credentials explicitly supplied by the user, then use ssh_run and the SSH SFTP tools. Use ssh_upload_file to send a local file to the server and ssh_download_file to fetch a remote file to a local path; these transfer binary content directly, unlike ssh_write_file which only writes inline UTF-8 text. SSH exec sessions are non-interactive and may not load shell profiles; when a remote command depends on profile-defined PATH values, invoke the appropriate login shell explicitly. SSH host keys are not verified. Treat user credentials as secrets: pass them only to the matching credential-aware native tool, never echo them in narration, put them in a shell command, or send them to a subagent. For databases, use mysql_connect for direct MySQL access or mysql_connect_via_ssh for an SSH tunnel, then mysql_query; use ? placeholders and values for user-provided data when practical. Public direct MySQL connections use TLS by default and you must not retry with ssl=false unless the user explicitly approves. Never attempt to solve or bypass CAPTCHA, SMS, passkey, or two-factor verification. browser_snapshot waits while the user completes human verification in the visible browser and resumes automatically afterward, so do not end the task merely to ask the user to say continue. Do not claim an action succeeded until its tool result confirms it. Before finishing, compare every action requested by the user with successful tool results. A file task is complete only after a mutating tool produced an actual change; a validation is complete only after it really ran successfully after the latest change; a background service is started only after process_output confirms it is running. When the user explicitly requested a code or configuration change and successful inspection proves that change is unnecessary, call report_no_change with the specific evidence-based reason before the final response; do not manufacture a no-op edit. If the task cannot continue because the user must supply a URL, file, credential, repository target, requirement, permission, verification code, or another specific external input that cannot be discovered with the available tools, call request_user_input once with the exact question and required fields, then ask the user for them. Never use request_user_input to avoid work that the available tools can perform. For informational or status questions, answer from successful read-only evidence without calling report_no_change. If an action could not be completed, state that explicitly instead of saying it was done.${remoteWorkspaceInstruction}${activeSkills ? `\n\n${activeSkills}` : ""}${request.recoveryContext ? `\n\n<recovery_context>${request.recoveryContext}</recovery_context>\nThis task resumed after an interruption. Treat the recovery record as prior evidence. If the latest user asks only for a conclusion, status, or summary, answer directly from that evidence without repeating tool calls. If the user asks to continue execution, start with the first failed or incomplete structured plan step. Successful tools, recorded file changes, uploads, process starts, and commits are already facts; do not repeat them. Use only a minimal read-only check when it is necessary to confirm an external side effect before continuing interrupted work.` : ""}`;
+  const commandPurposeInstruction =
+    "For run_command and ssh_run, set purpose to inspect for read-only work, modify for any intentional state change, validate only for a separate deterministic post-change check, and execute for other commands. Do not hide a mutation inside an inspect or validate call.";
+  const system = `${isolation.boundary}\n${workspaceRoleInstruction} ${commandPurposeInstruction} Each run_command invocation uses a fresh local shell process, so environment variable changes do not persist to later commands; combine dependent setup and execution in one command. Prefer apply_patch for precise edits and write_file for new or complete files. Never invoke apply_patch, file deletion, file moves, or directory operations through run_command when a native tool exists. File tool paths accept absolute paths, including other drives (for example D:\\B on Windows); use them to read or write files the user explicitly points to outside ${root}, and resolve relative paths against ${root}. When you mention a file in your reply, always write its full workspace-relative path (for example src/views/Gooddetail.vue, not just Gooddetail.vue) so the user can tell exactly which file it is. Use web_search for current or externally verifiable information and fetch_url to inspect primary sources; preserve source URLs in the final answer. For interactive or authenticated sites use browser_open, browser_snapshot, browser_click, and browser_type. Credentials explicitly supplied by the user may be entered directly with browser_type. Browser recording is opt-in: call browser_record_start only after an explicit user request such as 开始录制, and call browser_record_stop when the user asks to stop or generate Python. Never record ordinary browsing by default. For independent work that can run concurrently, use spawn_agent with self-contained, non-overlapping tasks, then wait_agent before giving a final answer. Use list_agents, message_agent, and stop_agent to coordinate them. Subagents normally inherit this task's model; planner-executor collaboration routes executor agents to the configured execution model. Workspace and permissions remain shared. For remote servers, call ssh_connect with credentials explicitly supplied by the user, then use ssh_run and the SSH SFTP tools. Use ssh_upload_file to send a local file to the server and ssh_download_file to fetch a remote file to a local path; these transfer binary content directly, unlike ssh_write_file which only writes inline UTF-8 text. SSH exec sessions are non-interactive and may not load shell profiles; when a remote command depends on profile-defined PATH values, invoke the appropriate login shell explicitly. SSH host keys are not verified. Treat user credentials as secrets: pass them only to the matching credential-aware native tool, never echo them in narration, put them in a shell command, or send them to a subagent. For databases, use mysql_connect for direct MySQL access or mysql_connect_via_ssh for an SSH tunnel, then mysql_query; use ? placeholders and values for user-provided data when practical. Public direct MySQL connections use TLS by default and you must not retry with ssl=false unless the user explicitly approves. Never attempt to solve or bypass CAPTCHA, SMS, passkey, or two-factor verification. browser_snapshot waits while the user completes human verification in the visible browser and resumes automatically afterward, so do not end the task merely to ask the user to say continue. Do not claim an action succeeded until its tool result confirms it. Before finishing, compare every action requested by the user with successful tool results. A file task is complete only after a mutating tool produced an actual change; a validation is complete only after it really ran successfully after the latest change; a background service is started only after process_output confirms it is running. When the user explicitly requested a code or configuration change and successful inspection proves that change is unnecessary, call report_no_change with the specific evidence-based reason before the final response; do not manufacture a no-op edit. If the task cannot continue because the user must supply a URL, file, credential, repository target, requirement, permission, verification code, or another specific external input that cannot be discovered with the available tools, call request_user_input once with the exact question and required fields, then ask the user for them. Never use request_user_input to avoid work that the available tools can perform. For informational or status questions, answer from successful read-only evidence without calling report_no_change. If an action could not be completed, state that explicitly instead of saying it was done.${remoteWorkspaceInstruction}${activeSkills ? `\n\n${activeSkills}` : ""}${request.recoveryContext ? `\n\n<recovery_context>${request.recoveryContext}</recovery_context>\nThis task resumed after an interruption. Treat the recovery record as prior evidence. If the latest user asks only for a conclusion, status, or summary, answer directly from that evidence without repeating tool calls. If the user asks to continue execution, start with the first failed or incomplete structured plan step. Successful tools, recorded file changes, uploads, process starts, and commits are already facts; do not repeat them. Use only a minimal read-only check when it is necessary to confirm an external side effect before continuing interrupted work.` : ""}`;
   const imageInputNotice =
     omitImageInputs && hasImageAttachments(history)
       ? "\n\n当前模型不支持图片输入，历史图片附件已被省略。请只依据文字、上下文文件和工作区继续，不要假装看到了图片。"
@@ -6430,6 +6445,7 @@ function toolProducedOperationalProgress(
     // A validation result is evidence, but it does not change the world. It
     // must not keep an unchanged polling loop alive indefinitely.
     if (purpose === "inspect" || purpose === "validate") return false;
+    if (purpose === "modify") return true;
     // Explicit execute intent covers builds, deployments, and other commands
     // whose success may not produce a local diff.
     if (purpose === "execute") return true;

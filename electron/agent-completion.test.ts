@@ -2,8 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { buildAgentCompletionResult } from "./agent-completion";
 import {
+  codingOperationsRequiredByCalls,
   compactOperationEvidenceResult,
+  missingVerifiedCodingOperations,
   structuredToolEvidenceSummary,
+  successfulCodingEvidence,
   type CodingVerificationHistoryItem,
 } from "./coding-operation-verification";
 import { requiredEvidenceHook } from "./stop-hooks";
@@ -65,6 +68,66 @@ test("accepts an already-connected managed SSH session as connection evidence", 
 
   assert.equal(result.kind, "changed");
   assert.deepEqual(result.missingOperations, []);
+});
+
+test("a later successful check completes a remote modification despite an earlier failed check", () => {
+  const calls = [
+    {
+      id: "update",
+      name: "ssh_run",
+      input: { command: "update-menu", purpose: "modify" },
+    },
+    {
+      id: "stale-check",
+      name: "ssh_run",
+      input: { command: "check-old-path", purpose: "validate" },
+    },
+    {
+      id: "current-check",
+      name: "ssh_run",
+      input: { command: "check-current-state", purpose: "validate" },
+    },
+  ];
+  const history: CodingVerificationHistoryItem[] = [
+    { kind: "calls", calls },
+    compactOperationEvidenceResult("update", "ssh_run", true, {
+      executed: true,
+      mutationAttempted: true,
+      exitCode: 0,
+      operationEvidence: ["execute", "modify"],
+    }),
+    compactOperationEvidenceResult("stale-check", "ssh_run", false, {
+      executed: true,
+      exitCode: 1,
+      operationEvidence: ["execute"],
+    }),
+    compactOperationEvidenceResult("current-check", "ssh_run", true, {
+      executed: true,
+      exitCode: 0,
+      operationEvidence: ["execute", "validate"],
+    }),
+  ];
+  const required = codingOperationsRequiredByCalls(calls);
+  const evidence = successfulCodingEvidence(history);
+  const missing = missingVerifiedCodingOperations(
+    required,
+    evidence,
+    history,
+  );
+  const summary = structuredToolEvidenceSummary(history);
+  const result = buildAgentCompletionResult({
+    requestedOperations: [...required].map((item) => `coding:${item}`),
+    observedOperations: [...evidence].map((item) => `coding:${item}`),
+    missingOperations: missing.map((item) => `coding:${item}`),
+    evidence: summary,
+    waitingForUser: false,
+    verifiedNoChange: false,
+  });
+
+  assert.deepEqual(missing, []);
+  assert.equal(summary.failedTools, 1);
+  assert.equal(result.kind, "changed");
+  assert.equal(result.notice, undefined);
 });
 
 test("completion evidence is derived from successful structured tool results", () => {

@@ -50,6 +50,20 @@ test("requires successful evidence for explicitly classified validation commands
   );
 });
 
+test("requires successful evidence for explicitly classified modifying commands", () => {
+  assert.deepEqual(
+    [
+      ...codingOperationsRequiredByCalls([
+        {
+          name: "ssh_run",
+          input: { command: "deploy-release", purpose: "modify" },
+        },
+      ]),
+    ],
+    ["execute", "modify"],
+  );
+});
+
 test("uses only the latest real user payload without interpreting prose", () => {
   const history: CodingVerificationHistoryItem[] = [
     { kind: "message", role: "user", content: "修改并测试项目" },
@@ -222,6 +236,98 @@ test("accepts explicit operation evidence emitted by a successful command", () =
     [...successfulCodingEvidence(history)],
     ["execute", "validate"],
   );
+});
+
+test("accepts successful remote mutation evidence without inventing file diffs", () => {
+  const history: CodingVerificationHistoryItem[] = [
+    {
+      kind: "calls",
+      calls: [
+        {
+          id: "remote-update",
+          name: "ssh_run",
+          input: { command: "deploy-release", purpose: "modify" },
+        },
+      ],
+    },
+    compactOperationEvidenceResult("remote-update", "ssh_run", true, {
+      executed: true,
+      mutationAttempted: true,
+      exitCode: 0,
+      operationEvidence: ["execute", "modify"],
+    }),
+  ];
+
+  const evidence = successfulCodingEvidence(history);
+  assert.deepEqual([...evidence], ["execute", "modify"]);
+  assert.deepEqual(structuredToolEvidenceSummary(history).changedFiles, []);
+  assert.deepEqual(
+    missingVerifiedCodingOperations(
+      new Set<CodingOperation>(["execute", "modify"]),
+      evidence,
+      history,
+    ),
+    [],
+  );
+});
+
+test("rejects mutation operation evidence from a failed command", () => {
+  const history: CodingVerificationHistoryItem[] = [
+    {
+      kind: "calls",
+      calls: [
+        {
+          id: "failed-update",
+          name: "ssh_run",
+          input: { command: "deploy-release", purpose: "modify" },
+        },
+      ],
+    },
+    compactOperationEvidenceResult("failed-update", "ssh_run", false, {
+      executed: true,
+      mutationAttempted: true,
+      exitCode: 1,
+      operationEvidence: ["execute", "modify"],
+    }),
+  ];
+
+  const evidence = successfulCodingEvidence(history);
+  assert.equal(evidence.has("modify"), false);
+  assert.equal(evidence.has("execute"), true);
+});
+
+test("does not replace a successful remote mutation with a later no-change report", () => {
+  const history: CodingVerificationHistoryItem[] = [
+    {
+      kind: "calls",
+      calls: [
+        {
+          id: "remote-update",
+          name: "ssh_run",
+          input: { command: "deploy-release", purpose: "modify" },
+        },
+        { id: "read-back", name: "ssh_read_file", input: { path: "a.php" } },
+        {
+          id: "no-change",
+          name: "report_no_change",
+          input: { reason: "远端状态已经满足要求，无需再次修改。" },
+        },
+      ],
+    },
+    compactOperationEvidenceResult("remote-update", "ssh_run", true, {
+      executed: true,
+      mutationAttempted: true,
+      exitCode: 0,
+      operationEvidence: ["execute", "modify"],
+    }),
+    compactOperationEvidenceResult("read-back", "ssh_read_file", true, {}),
+    compactOperationEvidenceResult("no-change", "report_no_change", true, {
+      noChangeReported: true,
+    }),
+  ];
+
+  assert.equal(hasVerifiedNoChangeReport(history), false);
+  assert.equal(successfulCodingEvidence(history).has("modify"), true);
 });
 
 test("only accepts validation after the latest mutation", () => {
