@@ -122,7 +122,7 @@ const baseMarkdownComponents: Components = {
 // blocks (``` / ~~~) intact. Live output stays in an append-only text node;
 // once a segment settles, block memoization keeps later structural updates
 // from re-parsing the complete message.
-function splitMarkdownBlocks(src: string): string[] {
+export function splitMarkdownBlocks(src: string): string[] {
   const lines = src.split("\n");
   const blocks: string[] = [];
   let current: string[] = [];
@@ -147,6 +147,68 @@ function splitMarkdownBlocks(src: string): string[] {
   }
   flush();
   return blocks;
+}
+
+/**
+ * While streaming: promote only sealed top-level blocks to Markdown.
+ * The open fence / unfinished last block stays in the append-only text leaf
+ * so bottom-follow does not bounce on every token.
+ */
+export function partitionStreamingMarkdown(src: string): {
+  sealedContent: string;
+  sealedEnd: number;
+} {
+  if (!src) return { sealedContent: "", sealedEnd: 0 };
+  // Same flush rules as splitMarkdownBlocks: a blank line outside a fence
+  // seals the preceding block. The unfinished last block (and any open fence)
+  // stays in the append-only text leaf.
+  const lines = src.split("\n");
+  let fence: string | null = null;
+  let sealedEnd = 0;
+  let cursor = 0;
+  let hasContent = false;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const lineLen = line.length + (i < lines.length - 1 ? 1 : 0);
+    const marker = /^\s*(```+|~~~+)/.exec(line);
+    if (marker) {
+      const kind = marker[1][0];
+      if (!fence) fence = kind;
+      else if (fence === kind) fence = null;
+      hasContent = true;
+      cursor += lineLen;
+      continue;
+    }
+    if (!fence && line.trim() === "") {
+      if (hasContent) {
+        sealedEnd = cursor + lineLen;
+        hasContent = false;
+      } else if (sealedEnd > 0) {
+        sealedEnd = cursor + lineLen;
+      }
+      cursor += lineLen;
+      continue;
+    }
+    hasContent = true;
+    cursor += lineLen;
+  }
+  if (sealedEnd <= 0) return { sealedContent: "", sealedEnd: 0 };
+  const sealedContent = src.slice(0, sealedEnd);
+  return { sealedContent, sealedEnd };
+}
+
+/** True when `src` has an unclosed ``` / ~~~ fence (streaming code tail). */
+export function isOpenMarkdownFence(src: string): boolean {
+  if (!src) return false;
+  let fence: string | null = null;
+  for (const line of src.split("\n")) {
+    const marker = /^\s*(```+|~~~+)/.exec(line);
+    if (!marker) continue;
+    const kind = marker[1][0];
+    if (!fence) fence = kind;
+    else if (fence === kind) fence = null;
+  }
+  return fence !== null;
 }
 
 const MarkdownBlock = memo(function MarkdownBlock({

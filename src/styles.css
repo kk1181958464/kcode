@@ -1,115 +1,3 @@
-:root {
-  /* Neutral zinc scale — cool, flat, Linear/Vercel-grade. */
-  /* Default accent (Indigo). Overridden per [data-accent] palette below. */
-  /* Minimal elevation — borders do the work, shadows only for floats. */
-}
-
-:root[data-theme="dark"] {
-  /* Near-black neutral surfaces; brightness reserved for accent + status. */
-}
-.sidebar {
-  border-right: 1px solid var(--line);
-}
-.brand small {
-  color: var(--muted);
-}
-.sidebar-footer {
-  background: var(--sidebar-surface);
-}
-
-.main {
-  /* Shift content left so the floating status cards don't cover it */
-}
-.topbar {
-  border-bottom: 1px solid var(--line);
-}
-@keyframes turn-rail-cue-up {
-}
-@keyframes turn-rail-cue-down {
-}
-@keyframes turn-preview-in {
-}
-@keyframes history-loader-pulse {
-}
-.completed-process-trigger span {
-  font-weight: 560;
-}
-.completed-process-trigger svg {
-  flex: none;
-  transition: transform 160ms ease;
-}
-.completed-process.expanded .completed-process-trigger svg {
-  transform: rotate(90deg);
-}
-.completed-process.failed .completed-process-trigger span {
-  color: var(--danger);
-}
-@keyframes pulse {
-}
-.code-block {
-  background: var(--code-surface);
-}
-@keyframes thinking-dot {
-}
-@keyframes context-toast-in {
-}
-@keyframes menu-in {
-}
-@keyframes submenu-in {
-}
-@media (max-width: 760px) {
-}
-
-.status-panel {
-  /* Transparent scrollable wrapper — cards do their own floating */
-  border: none;
-}
-
-.status-panel > header {
-  /* No inner border-bottom — header is now its own card */
-}
-.status-panel section {
-  /* Each section is its own floating card, no shared bottom divider */
-}
-.progress i {
-  background: var(--accent);
-}
-@keyframes slide-in {
-}
-@keyframes overlay-in {
-}
-
-@media (max-width: 900px) {
-}
-@keyframes modal-in {
-}
-@keyframes spin {
-}
-
-/* Surface depth: restrained on persistent UI, stronger only for overlays. */
-
-@media (max-width: 1100px) {
-}
-@media (max-width: 860px) {
-}
-@media (max-width: 620px) {
-}
-@media (max-height: 700px) {
-}
-@media (prefers-reduced-motion: reduce) {
-}
-
-/* Skill installation controls added after the original store UI. */
-
-@media (max-width: 620px) {
-}
-
-/* Dark mode keeps persistent surfaces close in luminance and reserves brighter
-   colors for interaction and status, reducing glare during long sessions. */
-@keyframes app-toast-in {
-}
-
-/* ========================================================================== */
 /* KCODE UI 2026 — final visual layer                                        */
 /* ========================================================================== */
 
@@ -457,10 +345,6 @@
   min-height: 120px;
   resize: vertical;
 }
-.field-hint {
-  color: var(--muted);
-  font-size: 11px;
-}
 
 .runtime-settings-grid {
   display: grid;
@@ -571,33 +455,12 @@
   background: var(--surface-raised);
 }
 
-.composer textarea {
-  /* The global control transition is useful for buttons, but makes every IME
-     style invalidation involve animation bookkeeping inside the editor. */
-}
-
 /* Menus and overlays */
 
 /* Settings workspace */
 
 .settings-nav button.active {
   background: var(--surface-selected);
-}
-
-/* Feedback */
-
-/* Dark theme is a full surface system, not a filter. */
-
-@keyframes kcode-overlay-in {
-}
-
-@keyframes kcode-dialog-in {
-}
-
-@keyframes kcode-menu-in {
-}
-
-@media (max-width: 620px) {
 }
 
 /* KCODE UI 2026 — secondary surfaces and settings details */
@@ -612,32 +475,6 @@
 .status-panel section {
   border: 1px solid var(--line);
   box-shadow: var(--shadow-card);
-}
-
-/* Permission choices */
-
-/* Provider and model settings */
-
-/* Update, modal and empty states */
-
-@media (max-width: 620px) {
-}
-
-/* Final interaction and accessibility polish. */
-/* Dark surfaces (black message bubble, code blocks, diffs): use a light,
-   translucent highlight so the selection region stays visible and text stays
-   bright — never dark-on-dark. */
-
-@media (max-width: 860px) {
-}
-
-@media (max-width: 620px) {
-}
-
-@keyframes kcode-recording-pulse {
-}
-
-@media (prefers-reduced-motion: reduce) {
 }
 
 /* ========================================================================== */
@@ -778,68 +615,10 @@
   box-shadow: none;
 }
 
-@media (max-width: 1100px) {
-}
-
-@media (max-width: 860px) {
-}
-
-@media (max-width: 620px) {
-}
-
-/* Final status usage cleanup: no filled backgrounds behind metrics. */
-
-/* Live execution summary: current action first, concrete work one level down. */
-
-@keyframes execution-plan-spin {
-}
-
-@supports ((-webkit-background-clip: text) or (background-clip: text)) {
-}
-
-@keyframes execution-summary-sweep {
-}
-
-@keyframes streaming-progress-breathe {
-}
-
-@media (max-width: 620px) {
-}
-
-@media (prefers-reduced-motion: reduce) {
-}
-
 /* Right task rail: live work first, then concrete changes and verification. */
 
 .status-panel section {
   border-radius: 8px;
-}
-
-@media (max-width: 620px) {
-}
-
-@keyframes status-rail-sweep {
-}
-
-@media (prefers-reduced-motion: reduce) {
-}
-
-/* The browser takes the status rail's grid column, so the composer must size
-   its controls against the remaining main column rather than the viewport. */
-
-@container composer (max-width: 680px) {
-}
-
-@container composer (max-width: 520px) {
-}
-
-@container composer (max-width: 390px) {
-}
-
-/* Optional remote control stays contained in Settings and does not change the
-   local-first application shell when no account is configured. */
-
-@media (max-width: 620px) {
 }
 
 /* Recovery overlay: current uncommitted styles */
@@ -850,11 +629,11 @@
   font-synthesis: none;
   /* Neutral zinc scale — cool, flat, Linear/Vercel-grade. */
   /* Default accent (Indigo). Overridden per [data-accent] palette below. */
-  --accent: #2563eb;
-  --accent-hover: #1d4ed8;
-  --accent-soft: #e8f0fe;
-  --accent-ink: #ffffff;
-  --link: #1d4ed8;
+  --accent: #5c7fa3;
+  --accent-hover: #4f7194;
+  --accent-soft: color-mix(in srgb, #5c7fa3 12%, #f7f7f4);
+  --accent-ink: #fafaf7;
+  --link: #4f7194;
   --danger: #ef4444;
   --danger-soft: #fef2f2;
   --warning: #f59e0b;
@@ -4272,14 +4051,6 @@ button:not(:disabled) {
 .status-panel dd {
   margin: 0;
 }
-.git-diff-toggle {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 7px 8px;
-  font-size: 10px;
-}
 .run-metrics {
   display: grid;
   grid-template-columns: 1fr;
@@ -5747,8 +5518,6 @@ select:focus {
     margin-top: 18px;
   }
 }
-@media (prefers-reduced-motion: reduce) {
-}
 
 /* Skill installation controls added after the original store UI. */
 .skill-store-heading {
@@ -6853,10 +6622,6 @@ select:focus-visible {
   transition: width var(--motion-slow) var(--motion-ease);
 }
 
-.git-diff-toggle {
-  border-color: var(--line);
-}
-
 .resume-checkpoint {
   border-color: var(--line);
   border-radius: var(--radius-sm);
@@ -7289,9 +7054,6 @@ button[aria-busy="true"] {
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-}
-
 /* ========================================================================== */
 /* KCODE UI — Linear/Vercel normalization                                     */
 /* Neutralizes the warm greenish-grays and gradients left in the base layer   */
@@ -7490,17 +7252,6 @@ button[aria-busy="true"] {
 }
 .restore-dialog p b {
   color: var(--ink);
-}
-.selected-folder {
-  border-color: var(--line);
-  border-radius: var(--radius-sm);
-  background: var(--surface-muted);
-}
-.selected-folder > svg {
-  color: var(--muted);
-}
-.selected-folder small {
-  color: var(--muted);
 }
 /* --- Status panel residuals --- */
 .status-panel > header svg {
@@ -7732,22 +7483,24 @@ button[aria-busy="true"] {
 
 /* Indigo (default) */
 :root[data-accent="indigo"] {
-  --accent: #5b6cff;
-  --accent-hover: #4a59ec;
-  --accent-soft: #eef0ff;
-  --accent-ink: #fff;
-  --link: #4f5bd8;
-  --surface-selected: #eef0ff;
-  --focus-ring: rgb(91 108 255 / 26%);
+  /* Light: muted Anysphere blue on cream */
+  --accent: #5c7fa3;
+  --accent-hover: #4f7194;
+  --accent-soft: color-mix(in srgb, #5c7fa3 12%, #f7f7f4);
+  --accent-ink: #fafaf7;
+  --link: #4f7194;
+  --surface-selected: color-mix(in srgb, #26251e 6%, #f7f7f4);
+  --focus-ring: rgb(38 37 30 / 0.15);
 }
 :root[data-theme="dark"][data-accent="indigo"] {
-  --accent: #6e7bff;
-  --accent-hover: #8290ff;
-  --accent-soft: #21223a;
-  --accent-ink: #fff;
-  --link: #97a2ff;
-  --surface-selected: #21223a;
-  --focus-ring: rgb(110 123 255 / 34%);
+  /* Anysphere signal blue — muted, used sparingly */
+  --accent: #81a1c1;
+  --accent-hover: #87a6c4;
+  --accent-soft: color-mix(in srgb, #81a1c1 14%, transparent);
+  --accent-ink: #191c22;
+  --link: #81a1c1;
+  --surface-selected: color-mix(in srgb, #e4e4e4 12%, #181818);
+  --focus-ring: rgb(228 228 228 / 0.15);
 }
 
 /* Violet */
@@ -7792,22 +7545,22 @@ button[aria-busy="true"] {
 
 /* Blue */
 :root[data-accent="blue"] {
-  --accent: #2563eb;
-  --accent-hover: #1d4ed8;
-  --accent-soft: #e8f0fe;
-  --accent-ink: #fff;
-  --link: #1d4ed8;
-  --surface-selected: #e8f0fe;
-  --focus-ring: rgb(37 99 235 / 26%);
+  --accent: #5c7fa3;
+  --accent-hover: #4f7194;
+  --accent-soft: color-mix(in srgb, #5c7fa3 12%, #f7f7f4);
+  --accent-ink: #fafaf7;
+  --link: #4f7194;
+  --surface-selected: color-mix(in srgb, #26251e 6%, #f7f7f4);
+  --focus-ring: rgb(38 37 30 / 0.15);
 }
 :root[data-theme="dark"][data-accent="blue"] {
-  --accent: #4a9eff;
-  --accent-hover: #6bb0ff;
-  --accent-soft: #12233b;
-  --accent-ink: #041322;
-  --link: #7cbaff;
-  --surface-selected: #12233b;
-  --focus-ring: rgb(74 158 255 / 32%);
+  --accent: #81a1c1;
+  --accent-hover: #87a6c4;
+  --accent-soft: color-mix(in srgb, #81a1c1 14%, transparent);
+  --accent-ink: #191c22;
+  --link: #81a1c1;
+  --surface-selected: color-mix(in srgb, #e4e4e4 12%, #181818);
+  --focus-ring: rgb(228 228 228 / 0.15);
 }
 
 /* Orange (terracotta) */
@@ -10513,10 +10266,9 @@ button[aria-busy="true"] {
   }
 }
 
-/* Dark theme — "Deep Tech Blue" professional workspace.
-   Flat layered surfaces, low-saturation dark blues, high-contrast text,
-   3 accent colors (blue / green / red). Light mode uses the base minimal
-   palette in styles.css; this layer applies only to :root[data-theme="dark"]. */
+/* Dark theme — Cursor Dark Anysphere–inspired.
+   Near-black chrome (sidebar darker than canvas); text/borders/hover from
+   #E4E4E4 alpha. Light mode keeps the base minimal palette above. */
 
 :root[data-theme="dark"] {
   color: var(--ui-text-secondary);
@@ -10537,8 +10289,8 @@ button[aria-busy="true"] {
 /* Dark chrome stays on shared zinc tokens. Accent comes from data-accent. */
 
 :root[data-theme="dark"] {
-  --danger-hover: #ef4444;
-  --success-hover: #34d399;
+  --danger-hover: #e34671;
+  --success-hover: #3fa266;
 }
 :root[data-theme="dark"] body {
   background-attachment: initial;
@@ -10787,29 +10539,32 @@ button[aria-busy="true"] {
 
 /* KCode workspace design system. */
 
+/* Cursor light (brand/app cream): warm canvas, warm ink, hairline depth.
+   Sidebar is slightly recessed vs the main cream canvas — same hierarchy as dark. */
 :root {
   --ui-titlebar-height: 34px;
   --ui-topbar-height: 58px;
   --ui-status-width: 288px;
   --ui-reading-width: 920px;
-  --ui-sidebar: #f5f5f5;
-  --ui-canvas: #ffffff;
-  --ui-panel: #f5f5f5;
-  --ui-elevated: #ffffff;
-  --ui-inset: #f5f5f5;
-  --ui-hover: #e5e5e5;
-  --ui-border: #e5e5e5;
-  --ui-border-strong: #d4d4d4;
-  --ui-text: #171717;
-  --ui-text-secondary: #404040;
-  --ui-text-tertiary: #737373;
-  --ui-code: #0d1117;
-  --ui-code-toolbar: #171717;
-  --ui-code-text: #d4d4d4;
-  --ui-overlay: rgb(10 10 10 / 42%);
-  --ui-shadow-float: 0 18px 54px rgb(10 10 10 / 12%);
-  --ui-shadow-menu: 0 12px 34px rgb(10 10 10 / 10%);
-  --ui-shadow-input: 0 3px 14px rgb(10 10 10 / 6%);
+  --ui-base: #26251e;
+  --ui-sidebar: #ebeae5;
+  --ui-canvas: #f7f7f4;
+  --ui-panel: #f2f1ed;
+  --ui-elevated: #fafaf7;
+  --ui-inset: #efeee8;
+  --ui-hover: color-mix(in srgb, var(--ui-base) 6%, #f7f7f4);
+  --ui-border: rgb(38 37 30 / 0.1);
+  --ui-border-strong: rgb(38 37 30 / 0.2);
+  --ui-text: #26251e;
+  --ui-text-secondary: #5a5852;
+  --ui-text-tertiary: #807d72;
+  --ui-code: #181818;
+  --ui-code-toolbar: #141414;
+  --ui-code-text: rgb(228 228 228 / 0.82);
+  --ui-overlay: rgb(38 37 30 / 36%);
+  --ui-shadow-float: 0 16px 40px rgb(38 37 30 / 10%);
+  --ui-shadow-menu: 0 10px 28px rgb(38 37 30 / 8%);
+  --ui-shadow-input: none;
   --ui-radius-control: 6px;
   --ui-radius-panel: 8px;
   --ui-motion-fast: 110ms;
@@ -10825,14 +10580,15 @@ button[aria-busy="true"] {
   --surface-raised: var(--ui-elevated);
   --surface-muted: var(--ui-inset);
   --surface-hover: var(--ui-hover);
+  --surface-selected: color-mix(in srgb, var(--ui-base) 6%, #f7f7f4);
   --panel: var(--ui-panel);
   --sidebar-surface: var(--ui-sidebar);
   --code-surface: var(--ui-code);
   --code-toolbar: var(--ui-code-toolbar);
   --code-ink: var(--ui-code-text);
-  --shadow-soft: 0 1px 2px rgb(10 10 10 / 5%);
-  --shadow-raised: var(--ui-shadow-input);
-  --shadow-card: 0 2px 8px rgb(10 10 10 / 6%);
+  --shadow-soft: none;
+  --shadow-raised: none;
+  --shadow-card: none;
   --shadow-float: var(--ui-shadow-float);
   --radius-xs: 4px;
   --radius-sm: var(--ui-radius-control);
@@ -10842,6 +10598,13 @@ button[aria-busy="true"] {
   --motion-standard: var(--ui-motion);
   --motion-slow: var(--ui-motion-slow);
   --motion-ease: var(--ui-ease);
+  --success: #3fa266;
+  --success-soft: color-mix(in srgb, var(--success) 12%, transparent);
+  --warning: #d2943e;
+  --warning-soft: color-mix(in srgb, var(--warning) 12%, transparent);
+  --danger: #cf2d56;
+  --danger-soft: color-mix(in srgb, var(--danger) 12%, transparent);
+  --focus-ring: rgb(38 37 30 / 0.15);
 }
 
 /* Keep the remote-control status geometry stable while connection state changes. */
@@ -11832,35 +11595,38 @@ button[aria-busy="true"] {
   }
 }
 
+/* Cursor Dark Anysphere–inspired: few near-black opaques; chrome darker than
+   canvas; text/border/hover/selection from one base #E4E4E4 at low alpha. */
 :root[data-theme="dark"] {
-  --ui-sidebar: #0b0f14;
-  --ui-canvas: #0b0f14;
-  --ui-panel: #121821;
-  --ui-elevated: #1a222d;
-  --ui-inset: #121821;
-  --ui-hover: #243041;
-  --ui-border: #273445;
-  --ui-border-strong: #3a4b5f;
-  --ui-text: #e8eef7;
-  --ui-text-secondary: #c2cede;
-  --ui-text-tertiary: #9aa8b8;
-  --ui-code: #0d1117;
-  --ui-code-toolbar: #171717;
-  --ui-code-text: #d4d4d4;
-  --ui-overlay: rgb(0 0 0 / 68%);
-  --ui-shadow-float: 0 20px 58px rgb(0 0 0 / 48%);
-  --ui-shadow-menu: 0 14px 38px rgb(0 0 0 / 42%);
-  --ui-shadow-input: 0 4px 18px rgb(0 0 0 / 24%);
+  --ui-base: #e4e4e4;
+  --ui-sidebar: #141414;
+  --ui-canvas: #181818;
+  --ui-panel: #181818;
+  --ui-elevated: color-mix(in srgb, var(--ui-base) 4%, #181818);
+  --ui-inset: color-mix(in srgb, var(--ui-base) 4%, #181818);
+  --ui-hover: color-mix(in srgb, var(--ui-base) 7%, #181818);
+  --ui-border: rgb(228 228 228 / 0.07);
+  --ui-border-strong: rgb(228 228 228 / 0.15);
+  --ui-text: rgb(228 228 228 / 0.92);
+  --ui-text-secondary: rgb(228 228 228 / 0.55);
+  --ui-text-tertiary: rgb(228 228 228 / 0.37);
+  --ui-code: #141414;
+  --ui-code-toolbar: color-mix(in srgb, var(--ui-base) 4%, #141414);
+  --ui-code-text: rgb(228 228 228 / 0.82);
+  --ui-overlay: rgb(0 0 0 / 55%);
+  --ui-shadow-float: 0 16px 40px rgb(0 0 0 / 40%);
+  --ui-shadow-menu: 0 10px 28px rgb(0 0 0 / 36%);
+  --ui-shadow-input: none;
 
   --g-sidebar: var(--ui-sidebar);
   --g-main: var(--ui-canvas);
   --g-panel: var(--ui-panel);
   --g-card: var(--ui-elevated);
   --g-card-hover: var(--ui-hover);
-  --g-selected: color-mix(in srgb, var(--accent) 14%, var(--ui-elevated));
+  --g-selected: color-mix(in srgb, var(--ui-base) 12%, #181818);
   --g-code: var(--ui-code);
   --g-line: var(--ui-border);
-  --g-line-soft: color-mix(in srgb, var(--ui-border) 72%, transparent);
+  --g-line-soft: rgb(228 228 228 / 0.05);
   --g-ink: var(--ui-text);
   --g-text: var(--ui-text-secondary);
   --g-muted: var(--ui-text-tertiary);
@@ -11878,24 +11644,24 @@ button[aria-busy="true"] {
   --surface-raised: var(--ui-elevated);
   --surface-muted: var(--ui-inset);
   --surface-hover: var(--ui-hover);
-  --surface-selected: color-mix(in srgb, var(--accent) 14%, var(--ui-elevated));
+  --surface-selected: color-mix(in srgb, var(--ui-base) 12%, #181818);
   --panel: var(--ui-panel);
   --sidebar-surface: var(--ui-sidebar);
-  --success: #34d399;
-  --success-soft: color-mix(in srgb, var(--success) 16%, transparent);
-  --warning: #facc15;
-  --warning-soft: color-mix(in srgb, var(--warning) 16%, transparent);
-  --danger: #f87171;
-  --danger-soft: color-mix(in srgb, var(--danger) 16%, transparent);
+  --success: #3fa266;
+  --success-soft: color-mix(in srgb, var(--success) 15%, transparent);
+  --warning: #f1b467;
+  --warning-soft: color-mix(in srgb, var(--warning) 15%, transparent);
+  --danger: #e34671;
+  --danger-soft: color-mix(in srgb, var(--danger) 15%, transparent);
   --code-surface: var(--ui-code);
   --code-toolbar: var(--ui-code-toolbar);
   --code-ink: var(--ui-code-text);
-  --shadow-soft: 0 1px 2px rgb(0 0 0 / 22%);
-  --shadow-raised: var(--ui-shadow-input);
-  --shadow-card: 0 2px 8px rgb(0 0 0 / 20%);
+  --shadow-soft: none;
+  --shadow-raised: none;
+  --shadow-card: none;
   --shadow-float: var(--ui-shadow-float);
-  --accent-soft: color-mix(in srgb, var(--accent) 18%, transparent);
-  --focus-ring: color-mix(in srgb, var(--accent) 32%, transparent);
+  --accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
+  --focus-ring: rgb(228 228 228 / 0.15);
 }
 
 html,
@@ -13509,21 +13275,6 @@ body.resizing-composer * {
   color: var(--ui-text);
 }
 
-.git-diff-toggle {
-  min-height: 31px;
-  margin-top: 8px;
-  border: 1px solid var(--ui-border);
-  border-radius: var(--ui-radius-control);
-  background: transparent;
-  color: var(--ui-text-secondary);
-}
-
-.git-diff-toggle:hover {
-  border-color: var(--ui-border-strong);
-  background: var(--ui-hover);
-  color: var(--ui-text);
-}
-
 .status-result-row {
   min-height: 38px;
   border-bottom-color: var(--ui-border);
@@ -13746,16 +13497,6 @@ body.resizing-composer * {
 .work-panel-heading-actions button.is-active {
   background: var(--ui-hover);
   color: var(--ui-text);
-}
-
-.work-panel-diff {
-  min-height: 180px;
-  max-height: 360px;
-  margin-top: 8px;
-  overflow: auto;
-  border: 1px solid var(--ui-border);
-  border-radius: var(--ui-radius-control);
-  background: var(--code-surface);
 }
 
 .work-panel-diff .diff-view {
@@ -14863,61 +14604,9 @@ body.resizing-composer * {
 
 /* ===== kCode workspace redesign (2026-09) ===== */
 
-:root {
-  --ui-sidebar: #f3f5f8;
-  --ui-canvas: #f7f8fa;
-  --ui-panel: #eef1f5;
-  --ui-elevated: #ffffff;
-  --ui-inset: #eef1f5;
-  --ui-hover: #e4e9f0;
-  --ui-border: #dde3ea;
-  --ui-border-strong: #c8d0da;
-  --ui-text: #15202b;
-  --ui-text-secondary: #3d4f61;
-  --ui-text-tertiary: #7a8b9c;
-  --ui-code: #0d1117;
-  --ui-code-toolbar: #161b22;
-  --ui-code-text: #d4d4d4;
-  --ui-overlay: rgb(15 23 32 / 40%);
-  --ui-shadow-float: 0 18px 48px rgb(15 23 32 / 12%);
-  --ui-shadow-menu: 0 12px 32px rgb(15 23 32 / 10%);
-  --ui-shadow-input: 0 4px 18px rgb(15 23 32 / 8%);
-  --ui-status-width: 300px;
-  --accent: #3b82f6;
-  --accent-hover: #2563eb;
-  --accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
-  --accent-ink: #ffffff;
-  --link: #2563eb;
-  --surface-selected: color-mix(in srgb, var(--accent) 12%, var(--ui-elevated));
-}
+/* Light --ui-* tokens live in the canonical :root cream block above. */
 
-:root[data-theme="dark"] {
-  --ui-sidebar: #0b0f14;
-  --ui-canvas: #0b0f14;
-  --ui-panel: #121821;
-  --ui-elevated: #1a222d;
-  --ui-inset: #121821;
-  --ui-hover: #243041;
-  --ui-border: #273445;
-  --ui-border-strong: #3a4b5f;
-  --ui-text: #e8eef7;
-  --ui-text-secondary: #c2cede;
-  --ui-text-tertiary: #9aa8b8;
-  --ui-code: #0d1117;
-  --ui-code-toolbar: #161b22;
-  --ui-code-text: #d4d4d4;
-  --ui-overlay: rgb(0 0 0 / 58%);
-  --ui-shadow-float: 0 22px 60px rgb(0 0 0 / 45%);
-  --ui-shadow-menu: 0 14px 36px rgb(0 0 0 / 38%);
-  --ui-shadow-input: 0 4px 18px rgb(0 0 0 / 28%);
-  --accent: #3b82f6;
-  --accent-hover: #60a5fa;
-  --accent-soft: color-mix(in srgb, var(--accent) 18%, transparent);
-  --surface-selected: color-mix(in srgb, var(--accent) 16%, var(--ui-elevated));
-  --success: #34d399;
-  --danger: #f87171;
-  --warning: #fbbf24;
-}
+/* Dark --ui-* tokens live in the canonical Anysphere :root[data-theme=dark] block above. */
 
 /* Mid column: quieter assistant cards, stronger user bubble */
 .message.assistant .message-content {

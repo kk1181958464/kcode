@@ -56,7 +56,8 @@ import {
 import { copyWithToast } from "../../lib/toast";
 import { revealLocalPath } from "../../lib/reveal-path";
 import { effortLabels } from "../../lib/model-utils";
-import { MarkdownMessage } from "../common/MarkdownMessage";
+import { MarkdownMessage, isOpenMarkdownFence, partitionStreamingMarkdown } from "../common/MarkdownMessage";
+import remend from "remend";
 import { DiffView } from "../common/DiffView";
 import {
   FileChangePreviewDialog,
@@ -1816,6 +1817,105 @@ const AssistantTimeline = memo(function AssistantTimeline({
   );
 });
 
+const STREAMING_REMEND_OPTIONS = { linkMode: "text-only" as const };
+
+const StreamingMarkdownTail = memo(function StreamingMarkdownTail({
+  requestId,
+  revision,
+  workspacePath,
+}: {
+  requestId: string;
+  revision: number;
+  workspacePath: string;
+}) {
+  const [sealed, setSealed] = useState<{ content: string; end: number }>({
+    content: "",
+    end: 0,
+  });
+  const [openText, setOpenText] = useState("");
+  const frameRef = React.useRef(0);
+  const latestTextRef = React.useRef("");
+  const sealedEndRef = React.useRef(0);
+
+  useLayoutEffect(() => {
+    sealedEndRef.current = 0;
+    const apply = (text: string) => {
+      latestTextRef.current = text;
+      if (!text) {
+        sealedEndRef.current = 0;
+        setSealed({ content: "", end: 0 });
+        setOpenText("");
+        return;
+      }
+      const next = partitionStreamingMarkdown(text);
+      const end =
+        next.sealedEnd > sealedEndRef.current
+          ? next.sealedEnd
+          : sealedEndRef.current;
+      if (end > sealedEndRef.current) {
+        sealedEndRef.current = end;
+        setSealed({ content: next.sealedContent, end });
+      }
+      setOpenText(text.slice(end));
+    };
+    const schedule = (text: string) => {
+      latestTextRef.current = text;
+      if (frameRef.current) return;
+      frameRef.current = window.requestAnimationFrame(() => {
+        frameRef.current = 0;
+        apply(latestTextRef.current);
+      });
+    };
+    apply(getStreamingText(requestId));
+    const unsubscribe = subscribeStreamingText(requestId, (change) => {
+      if (change.type === "reset") {
+        if (frameRef.current) {
+          window.cancelAnimationFrame(frameRef.current);
+          frameRef.current = 0;
+        }
+        apply("");
+        return;
+      }
+      schedule(getStreamingText(requestId));
+    });
+    return () => {
+      unsubscribe();
+      if (frameRef.current) {
+        window.cancelAnimationFrame(frameRef.current);
+        frameRef.current = 0;
+      }
+    };
+  }, [requestId, revision]);
+
+  const openFence = useMemo(
+    () => isOpenMarkdownFence(openText),
+    [openText],
+  );
+  const remendedOpen = useMemo(
+    () =>
+      openText && !openFence
+        ? remend(openText, STREAMING_REMEND_OPTIONS)
+        : "",
+    [openFence, openText],
+  );
+
+  return (
+    <>
+      {sealed.content ? (
+        <MarkdownMessage content={sealed.content} workspacePath={workspacePath} />
+      ) : null}
+      {openFence ? (
+        <StreamingTextLeaf
+          requestId={requestId}
+          offset={sealed.end}
+          revision={revision}
+        />
+      ) : remendedOpen ? (
+        <MarkdownMessage content={remendedOpen} workspacePath={workspacePath} />
+      ) : null}
+    </>
+  );
+});
 const StreamingTextLeaf = memo(function StreamingTextLeaf({
   requestId,
   offset,
@@ -1889,8 +1989,11 @@ const StreamingTextLeaf = memo(function StreamingTextLeaf({
     replaceText(initial);
     return subscribeStreamingText(requestId, (change) => {
       if (change.type === "reset") replaceText("");
-      else if (change.type === "replace") replaceText(change.value);
-      else appendText(change.delta);
+      else if (change.type === "replace") {
+        replaceText(
+          offset > 0 ? change.value.slice(offset) : change.value,
+        );
+      } else appendText(change.delta);
     });
   }, [offset, requestId, revision]);
   return <div ref={nodeRef} className="streaming-message-text" />;
@@ -2042,10 +2145,8 @@ const StreamingAssistantTimeline = memo(function StreamingAssistantTimeline({
   onActivityChange(activity: AgentActivity): void;
   reasoning?: string;
 }) {
-  // StreamingTextLeaf mutates one bounded text node. Do not periodically move
-  // that text into React/Markdown: doing so replaces the live DOM, changes its
-  // measured height, and makes bottom-follow visibly bounce. Tool boundaries
-  // and completion already persist the segment and render Markdown once.
+  // Promote sealed markdown blocks while streaming; only the open tail stays in
+  // an append-only text node so bottom-follow does not bounce on every token.
   const streamingRevision = running ? getStreamingTextRevision(requestId) : 0;
   return (
     <AssistantTimeline
@@ -2064,10 +2165,10 @@ const StreamingAssistantTimeline = memo(function StreamingAssistantTimeline({
       }
       streamingTail={
         running ? (
-          <StreamingTextLeaf
+          <StreamingMarkdownTail
             requestId={requestId}
-            offset={0}
             revision={streamingRevision}
+            workspacePath={workspacePath}
           />
         ) : undefined
       }
