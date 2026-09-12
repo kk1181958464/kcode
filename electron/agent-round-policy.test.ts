@@ -141,6 +141,7 @@ test("declared completed plan steps are not complete without tool evidence", () 
     }),
   );
   assert.equal(snapshot.planCompleted, false);
+  assert.equal(snapshot.planStatusesCompleted, true);
   assert.equal(snapshot.pendingRequiredPlanStep, 0);
   assert.equal(snapshot.nextRequiredPlanStep, 0);
   assert.equal(snapshot.actionablePlanPending, true);

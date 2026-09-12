@@ -48,6 +48,7 @@ export type RoundEvidenceSnapshot = {
   actionablePlanPending: boolean;
   evidenceComplete: boolean;
   planCompleted: boolean;
+  planStatusesCompleted: boolean;
   hasMutationEvidence: boolean;
 };
 
@@ -167,6 +168,11 @@ export function buildRoundEvidenceSnapshot(input: {
     !plannerExecutionPending &&
     !actionablePlanPending &&
     !input.hasUncollectedAgentWork;
+  const planStatusesCompleted = Boolean(
+    input.plan.steps.length > 0 &&
+    input.plan.statuses?.length === input.plan.steps.length &&
+    input.plan.statuses.every((status) => status === "completed"),
+  );
   const planCompleted =
     input.plan.steps.length > 0 &&
     input.plan.requirementsDeclared &&
@@ -187,6 +193,7 @@ export function buildRoundEvidenceSnapshot(input: {
     actionablePlanPending,
     evidenceComplete,
     planCompleted,
+    planStatusesCompleted,
     hasMutationEvidence,
   };
 }
@@ -460,6 +467,7 @@ export function classifyToolRoundProgress(input: {
   roundFingerprint: string;
   noProgressFingerprints: ReadonlySet<string>;
   planCompleted: boolean;
+  planStatusesCompleted?: boolean;
   evidenceComplete: boolean;
   hasMutationEvidence: boolean;
 }): ToolRoundProgress {
@@ -472,7 +480,7 @@ export function classifyToolRoundProgress(input: {
     input.calls.length &&
       !input.roundAdvanced &&
       !input.roundFailed &&
-      ((input.planCompleted &&
+      (((input.planCompleted || input.planStatusesCompleted) &&
         !input.calls.some((call) => call.name === "update_plan")) ||
         (input.evidenceComplete && input.hasMutationEvidence)),
   );

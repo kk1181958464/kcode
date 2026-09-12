@@ -57,7 +57,9 @@ test("finalizes repeated read-only checks even while the plan remains active", a
         finalizationInstructionSeen ||= args.history.some(
           (item) =>
             item.kind === "message" &&
-            item.content.includes('reason="repeated_tool_results"'),
+            (item.content.includes('reason="repeated_tool_results"') ||
+              (item.content.includes("<runtime_finalization>") &&
+                item.content.includes("执行预算现在进入收尾阶段"))),
         );
         if (!args.toolsEnabled) {
           finalTurnToolsEnabled = false;
@@ -275,7 +277,9 @@ test("bounds changing read-only output instead of treating it as progress foreve
         finalizationInstructionSeen ||= args.history.some(
           (item) =>
             item.kind === "message" &&
-            item.content.includes('reason="repeated_tool_results"'),
+            (item.content.includes('reason="repeated_tool_results"') ||
+              (item.content.includes("<runtime_finalization>") &&
+                item.content.includes("执行预算现在进入收尾阶段"))),
         );
         if (!args.toolsEnabled)
           throw new Error(

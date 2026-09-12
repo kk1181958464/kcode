@@ -57,7 +57,6 @@ import { copyWithToast } from "../../lib/toast";
 import { revealLocalPath } from "../../lib/reveal-path";
 import { effortLabels } from "../../lib/model-utils";
 import { MarkdownMessage, isOpenMarkdownFence, partitionStreamingMarkdown } from "../common/MarkdownMessage";
-import remend from "remend";
 import { DiffView } from "../common/DiffView";
 import {
   FileChangePreviewDialog,
@@ -1817,6 +1816,29 @@ const AssistantTimeline = memo(function AssistantTimeline({
   );
 });
 
+type RemendFn = (
+  markdown: string,
+  options?: { linkMode?: "text-only" | "autolink" },
+) => string;
+let remendHeal: RemendFn | null = null;
+let remendLoad: Promise<RemendFn | null> | null = null;
+
+function loadRemendHeal(): Promise<RemendFn | null> {
+  if (remendHeal) return Promise.resolve(remendHeal);
+  if (!remendLoad) {
+    remendLoad = import("remend")
+      .then((mod) => {
+        const fn =
+          (mod as { default?: RemendFn }).default ??
+          (mod as unknown as RemendFn);
+        remendHeal = typeof fn === "function" ? fn : null;
+        return remendHeal;
+      })
+      .catch(() => null);
+  }
+  return remendLoad;
+}
+
 const STREAMING_REMEND_OPTIONS = { linkMode: "text-only" as const };
 
 const StreamingMarkdownTail = memo(function StreamingMarkdownTail({
@@ -1833,9 +1855,21 @@ const StreamingMarkdownTail = memo(function StreamingMarkdownTail({
     end: 0,
   });
   const [openText, setOpenText] = useState("");
+  const [remendFn, setRemendFn] = useState<RemendFn | null>(() => remendHeal);
   const frameRef = React.useRef(0);
   const latestTextRef = React.useRef("");
   const sealedEndRef = React.useRef(0);
+
+  useEffect(() => {
+    if (remendFn) return;
+    let cancelled = false;
+    void loadRemendHeal().then((fn) => {
+      if (!cancelled && fn) setRemendFn(() => fn);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [remendFn]);
 
   useLayoutEffect(() => {
     sealedEndRef.current = 0;
@@ -1894,9 +1928,12 @@ const StreamingMarkdownTail = memo(function StreamingMarkdownTail({
   const remendedOpen = useMemo(
     () =>
       openText && !openFence
-        ? remend(openText, STREAMING_REMEND_OPTIONS)
+        ? (remendFn ?? ((markdown: string) => markdown))(
+            openText,
+            STREAMING_REMEND_OPTIONS,
+          )
         : "",
-    [openFence, openText],
+    [openFence, openText, remendFn],
   );
 
   return (

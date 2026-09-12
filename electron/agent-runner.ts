@@ -1831,6 +1831,7 @@ export async function* runAgent(
       roundFingerprint,
       noProgressFingerprints: run.noProgressFingerprints,
       planCompleted: afterRoundSnapshot.planCompleted,
+      planStatusesCompleted: afterRoundSnapshot.planStatusesCompleted,
       evidenceComplete: afterRoundSnapshot.evidenceComplete,
       hasMutationEvidence: afterRoundSnapshot.hasMutationEvidence,
     });

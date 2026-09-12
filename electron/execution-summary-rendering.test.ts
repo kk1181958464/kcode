@@ -441,9 +441,10 @@ test("right rail uses only the current request changes instead of Git totals", (
   assert.match(markup, /本轮改动/);
   assert.match(markup, /\+2/);
   assert.match(markup, /-1/);
-  assert.match(markup, /aria-label="本轮差异"/);
-  assert.match(markup, /diff --git a\/src\/current\.ts b\/src\/current\.ts/);
-  assert.doesNotMatch(markup, /查看本轮差异|git-diff-layer|查看文件更新/);
+  assert.match(markup, /status-file-row/);
+  assert.match(markup, /弹窗查看 src\/current\.ts/);
+  assert.doesNotMatch(markup, /aria-label="本轮差异"|git-diff-layer|查看文件更新/);
+  assert.doesNotMatch(markup, /diff --git a\/src\/current\.ts/);
   assert.doesNotMatch(markup, /工作区总计|src\/old\.ts|\+99|-55/);
   assert.match(markup, /规划 中 \/ 执行 中/);
 });
