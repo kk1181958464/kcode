@@ -70,7 +70,9 @@ Rules for accuracy:
 - Remove redundant context that won't help continuation
 - When the input contains <runtime_compaction_source>, summarize the whole source semantically; do not merely copy its first or last section
 - Preserve the exact next action, unresolved blocker, and any user constraint needed to continue the task
-- Treat <runtime_verified_evidence> as authoritative for execution claims, while keeping the surrounding conversation as context rather than proof`;
+- Treat <runtime_verified_evidence> as authoritative for execution claims, while keeping the surrounding conversation as context rather than proof
+- Treat runtime pending / 未完成义务 as authoritative. Copy those exact unfinished operations into "## Next Steps" and ledger.pending
+- Never mark a pending operation complete, and never invent completion from assistant prose`
 
 /**
  * Context compaction thresholds.

@@ -276,6 +276,7 @@ import { useEventCallback } from "./lib/use-event-callback";
 import {
   finishTaskRequest,
   isTaskViewCurrent,
+  isRetryableDisconnectError,
   nextQueuedMessageId,
   recoverOrphanedFailure,
   recoverInterruptedActivities,
@@ -509,13 +510,14 @@ export default function App() {
   );
   const [theme, setTheme] = useState<ThemePreference>(() => {
     const saved = localStorage.getItem("kcode.theme");
-    return saved === "light" || saved === "dark" ? saved : "system";
+    if (saved === "light" || saved === "dark" || saved === "system") return saved;
+    return "dark";
   });
   const [accent, setAccent] = useState<AccentPreference>(() => {
     const saved = localStorage.getItem("kcode.accent");
     return ACCENT_OPTIONS.some((o) => o.value === saved)
       ? (saved as AccentPreference)
-      : "indigo";
+      : "blue";
   });
   useEffect(() => {
     document.documentElement.dataset.accent = accent;
@@ -741,7 +743,6 @@ export default function App() {
     summary: "",
     diff: "",
   });
-  const [gitDiffOpen, setGitDiffOpen] = useState(false);
   const [gitRefreshing, setGitRefreshing] = useState(false);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [scrollingToBottom, setScrollingToBottom] = useState(false);
@@ -764,6 +765,9 @@ export default function App() {
   const reasoningFlushTimerRef = useRef<number | undefined>(undefined);
   const activeTaskIdRef = useRef(activeTaskId);
   const displayedTaskIdRef = useRef(activeTaskId);
+  const prevActiveTaskIdForAnimRef = useRef(activeTaskId);
+  const taskSwitchDirectionRef = useRef<1 | -1>(1);
+  const [taskSwitchPending, setTaskSwitchPending] = useState(false);
   const tasksRef = useRef(tasks);
   const remoteCommandHandlerRef = useRef<
     (envelope: RemoteCommandEnvelope) => void
@@ -952,10 +956,21 @@ export default function App() {
     activeTaskIdRef.current = taskId;
     displayedTaskIdRef.current = taskId;
   };
+
+
   const activeTask = useMemo(
     () => tasks.find((task) => task.id === activeTaskId) ?? tasks[0],
     [tasks, activeTaskId],
   );
+  if (prevActiveTaskIdForAnimRef.current !== activeTaskId) {
+    const order = tasks.map((task) => task.id);
+    const from = order.indexOf(prevActiveTaskIdForAnimRef.current);
+    const to = order.indexOf(activeTaskId);
+    if (from >= 0 && to >= 0 && from !== to) {
+      taskSwitchDirectionRef.current = to > from ? 1 : -1;
+    }
+    prevActiveTaskIdForAnimRef.current = activeTaskId;
+  }
   useEffect(() => {
     const remote = activeTask?.remoteWorkspace;
     const api = window.kcode?.sshRemote;
@@ -1803,7 +1818,7 @@ export default function App() {
     ? localWorkspacePath(activeTask)
     : undefined;
 
-  async function refreshGitState(includeDiff = gitDiffOpen) {
+  async function refreshGitState(includeDiff = false) {
     if (!window.kcode?.workspace.gitState || !activeTask) return;
     if (!activeLocalProjectPath) {
       setGitState({
@@ -1844,7 +1859,6 @@ export default function App() {
   }
   useEffect(() => {
     void refreshGitState(false);
-    setGitDiffOpen(false);
   }, [activeTaskId, activeLocalProjectPath]);
   useEffect(() => {
     window.kcode?.chat
@@ -3016,6 +3030,10 @@ export default function App() {
           const interrupted =
             event.code === "cancelled" ||
             event.eventKind === "turn_interrupted";
+          const retryableDisconnect =
+            !interrupted &&
+            (event.retryable === true ||
+              isRetryableDisconnectError(event.message));
           taskRuntimeStore.finish(taskId, id);
           clearStreamingProgress(id);
           clearPendingReasoning(id);
@@ -3027,13 +3045,28 @@ export default function App() {
           flushRemoteStreamSync(id);
           const finalText = consumeStreamingText(id, { emitReset: false });
           const completedAt = Date.now();
+          const pausedDisconnectResult = retryableDisconnect
+            ? completionResultFromActivities(
+                (
+                  tasksRef.current.find((task) => task.id === taskId)
+                    ?.activities ?? []
+                ).filter((activity) => activity.requestId === id),
+                event.message,
+              )
+            : undefined;
           const commitFinalText = (all: ChatMessage[]) =>
             all.map((message) =>
               message.id === `assistant:${id}`
                 ? {
                     ...message,
                     content: message.content + finalText,
-                    error: interrupted ? undefined : event.message,
+                    error:
+                      interrupted || retryableDisconnect
+                        ? undefined
+                        : event.message,
+                    ...(pausedDisconnectResult
+                      ? { completionResult: pausedDisconnectResult }
+                      : {}),
                     completedAt,
                   }
                 : message,
@@ -3050,14 +3083,18 @@ export default function App() {
                       id,
                       task.runStatus === "cancelled" || interrupted
                         ? "cancelled"
-                        : "failed",
+                        : retryableDisconnect
+                          ? "paused"
+                          : "failed",
                     ),
                     runtimeStatus:
                       task.runningId && task.runningId !== id
                         ? "running"
                         : task.runStatus === "cancelled" || interrupted
                           ? "interrupted"
-                          : "failed",
+                          : retryableDisconnect
+                            ? "completed"
+                            : "failed",
                     updatedAt: completedAt,
                   }
                 : task,
@@ -3552,9 +3589,13 @@ export default function App() {
   async function switchTask(task: TaskRecord) {
     if (task.id === activeTaskId) return;
     const switchSequence = ++taskSwitchSequenceRef.current;
+    setTaskSwitchPending(true);
     try {
       task = await ensureTaskLoaded(task);
     } catch (error) {
+      if (switchSequence === taskSwitchSequenceRef.current) {
+        setTaskSwitchPending(false);
+      }
       setContextError(`任务加载失败：${errorMessage(error)}`);
       return;
     }
@@ -3624,6 +3665,7 @@ export default function App() {
     autoFollowRef.current = targetScroll.atBottom;
     conversationScrollControllerRef.current.reset();
     setShowScrollToBottom(!targetScroll.atBottom);
+    setTaskSwitchPending(false);
   }
 
   async function openTaskEditor(taskId: string) {
@@ -3763,7 +3805,6 @@ export default function App() {
 
   async function createConversation(workspaceKey: string) {
     if (creatingConversationPathsRef.current.has(workspaceKey)) return;
-    const feedbackStartedAt = performance.now();
     creatingConversationPathsRef.current.add(workspaceKey);
     setCreatingConversationPaths(new Set(creatingConversationPathsRef.current));
     try {
@@ -3773,28 +3814,14 @@ export default function App() {
       if (!sourceTask) return;
       const now = Date.now();
       const taskId = uid();
-      let targetWorkspacePath = sourceTask.workspacePath;
-      let remoteWorkspace = sourceTask.remoteWorkspace;
-      if (remoteWorkspace && window.kcode?.sshRemote) {
-        try {
-          const state = await restoreSshRemoteConnection(
-            window.kcode.sshRemote,
-            taskId,
-            remoteWorkspace,
-          );
-          remoteWorkspace = state.profile ?? remoteWorkspace;
-          targetWorkspacePath = state.cachePath ?? targetWorkspacePath;
-        } catch (error) {
-          if (isSshRemoteCredentialsRequired(error) && sourceTask)
-            setSshRemoteDialogTaskId(sourceTask.id);
-          setContextError(
-            isSshRemoteCredentialsRequired(error)
-              ? "SSH Remote 凭据需要重新确认；连接信息已填入，重新连接后再创建会话。"
-              : `SSH Remote 连接失败：${errorMessage(error)}`,
-          );
-          return;
-        }
-      }
+      // Inherit the workspace identity immediately. Do not await SSH reconnect
+      // here — that made secondary tasks under an already-connected remote
+      // feel stuck, and activeTask's effect restores the session in background.
+      const remoteWorkspace = sourceTask.remoteWorkspace;
+      const targetWorkspacePath =
+        sourceTask.workspacePath ||
+        localWorkspacePath(sourceTask) ||
+        "";
       const task: TaskRecord = {
         id: taskId,
         name: "新对话",
@@ -3802,11 +3829,11 @@ export default function App() {
         localWorkspacePath: sourceTask
           ? localWorkspacePath(sourceTask)
           : undefined,
-        workspacePath:
-          targetWorkspacePath ||
-          (sourceTask ? localWorkspacePath(sourceTask) : undefined) ||
-          "",
+        workspacePath: targetWorkspacePath,
         remoteWorkspace,
+        // New conversations start in chat even for SSH workspaces; the user
+        // can switch to the editor explicitly.
+        workspaceView: "chat",
         createdAt: now,
         updatedAt: now,
         messages: [],
@@ -3827,7 +3854,7 @@ export default function App() {
       });
       claimTaskView(task.id);
       setActiveTaskId(task.id);
-      setWorkspaceView(remoteWorkspace ? "editor" : "chat");
+      setWorkspaceView("chat");
       setMessages([]);
       setActivities([]);
       setInput("");
@@ -3847,14 +3874,6 @@ export default function App() {
       setContextError(`新建对话失败：${errorMessage(error)}`);
       flashAppToast("新建对话失败", "error");
     } finally {
-      const feedbackDelay = Math.max(
-        0,
-        450 - (performance.now() - feedbackStartedAt),
-      );
-      if (feedbackDelay)
-        await new Promise<void>((resolve) =>
-          window.setTimeout(resolve, feedbackDelay),
-        );
       creatingConversationPathsRef.current.delete(workspaceKey);
       setCreatingConversationPaths(
         new Set(creatingConversationPathsRef.current),
@@ -3890,12 +3909,13 @@ export default function App() {
         usageResolved: false,
         parentTaskId: full.id,
         forkedFromMessageId: full.messages.at(-1)?.id,
+        workspaceView: "chat",
       };
       hydratedTaskIdsRef.current.add(fork.id);
       setTasks((all) => [fork, ...all]);
       claimTaskView(fork.id);
       setActiveTaskId(fork.id);
-      setWorkspaceView(fork.remoteWorkspace ? "editor" : "chat");
+      setWorkspaceView("chat");
       setMessages(fork.messages);
       setActivities([]);
       setInput(initialDrafts.current[fork.id] ?? "");
@@ -6197,7 +6217,7 @@ export default function App() {
           startSidebarResize={onStartSidebarResize}
         />
         <main
-          className={`main ${workspaceView === "editor" ? "workspace-editor-mode" : ""} ${workspaceView === "editor" && activeTask?.remoteWorkspace ? "remote-editor-mode" : ""}`}
+          className={`main ${workspaceView === "editor" ? "workspace-editor-mode" : ""} ${workspaceView === "editor" && activeTask?.remoteWorkspace ? "remote-editor-mode" : ""} ${taskSwitchPending ? "is-task-switch-pending" : ""}`}
         >
           <TopBar
             taskName={activeTask?.name || "新任务"}
@@ -6297,6 +6317,8 @@ export default function App() {
             registerTurn={registerTurn}
             endRef={endRef}
             agentReasoning=""
+            switchKey={activeTaskId}
+            switchDirection={taskSwitchDirectionRef.current}
           />
           {activeTask &&
             !activeTask.workspacePath &&
@@ -6561,37 +6583,40 @@ export default function App() {
                     <Paperclip size={15} />
                     {attachedFiles.length > 0 && <b>{attachedFiles.length}</b>}
                   </button>
-                  <div className="model-picker" ref={modelPickerRef}>
-                    <button
-                      ref={modelTriggerRef}
-                      className="model-trigger"
-                      aria-haspopup="listbox"
-                      aria-expanded={modelMenuOpen}
-                      onClick={() => {
-                        setModelMenuProvider(undefined);
-                        setModelMenuOpen((open) => !open);
-                      }}
-                      disabled={
-                        !models.length || Boolean(runningId) || summaryBusy
-                      }
-                      onKeyDown={handleModelMenuKeyDown}
-                    >
-                      <span
-                        className={`model-provider-dot ${selectedConnected ? "online" : ""}`}
-                      />
-                      <span className="model-trigger-label">
-                        {selectedTarget ? (
-                          <>
-                            <small>{selectedTarget.provider.name}</small>
-                            <b>/</b>
-                            <strong>{selectedTarget.model.displayName}</strong>
-                          </>
-                        ) : (
-                          "未配置模型"
-                        )}
-                      </span>
-                      <ChevronDown size={13} />
-                    </button>
+                  <div className="composer-chips">
+                    <div className="model-picker" ref={modelPickerRef}>
+                      <button
+                        ref={modelTriggerRef}
+                        className="model-trigger composer-chip"
+                        aria-haspopup="listbox"
+                        aria-expanded={modelMenuOpen}
+                        onClick={() => {
+                          setModelMenuProvider(undefined);
+                          setModelMenuOpen((open) => !open);
+                        }}
+                        disabled={
+                          !models.length || Boolean(runningId) || summaryBusy
+                        }
+                        onKeyDown={handleModelMenuKeyDown}
+                      >
+                        <span
+                          className={`model-provider-dot ${selectedConnected ? "online" : ""}`}
+                        />
+                        <span className="model-trigger-label">
+                          {selectedTarget ? (
+                            <>
+                              <small>{selectedTarget.provider.name}</small>
+                              <b>/</b>
+                              <strong>
+                                {selectedTarget.model.displayName}
+                              </strong>
+                            </>
+                          ) : (
+                            "未配置模型"
+                          )}
+                        </span>
+                        <ChevronDown size={13} />
+                      </button>
                     {modelMenuOpen && (
                       <div
                         className="model-menu"
@@ -6722,31 +6747,31 @@ export default function App() {
                         </button>
                       </div>
                     )}
-                  </div>
-                  <CollaborationPicker
-                    providers={providers}
-                    plannerSelection={selected}
-                    value={activeTask?.collaboration}
-                    disabled={Boolean(runningId) || summaryBusy}
-                    onChange={selectCollaboration}
-                  />
-                  <div className="effort-picker" ref={effortPickerRef}>
-                    <button
-                      className="effort-trigger"
-                      aria-haspopup="menu"
-                      aria-expanded={effortMenuOpen}
-                      disabled={
-                        Boolean(runningId) ||
-                        summaryBusy ||
-                        efforts.length === 1
-                      }
-                      title={
-                        activeTask?.collaboration
-                          ? "规划模型推理强度"
-                          : "推理强度"
-                      }
-                      onClick={() => setEffortMenuOpen((open) => !open)}
-                    >
+                    </div>
+                    <CollaborationPicker
+                      providers={providers}
+                      plannerSelection={selected}
+                      value={activeTask?.collaboration}
+                      disabled={Boolean(runningId) || summaryBusy}
+                      onChange={selectCollaboration}
+                    />
+                    <div className="effort-picker" ref={effortPickerRef}>
+                      <button
+                        className="effort-trigger composer-chip"
+                        aria-haspopup="menu"
+                        aria-expanded={effortMenuOpen}
+                        disabled={
+                          Boolean(runningId) ||
+                          summaryBusy ||
+                          efforts.length === 1
+                        }
+                        title={
+                          activeTask?.collaboration
+                            ? "规划模型推理强度"
+                            : "推理强度"
+                        }
+                        onClick={() => setEffortMenuOpen((open) => !open)}
+                      >
                       <BrainCircuit size={14} />
                       <span>
                         {activeTask?.collaboration
@@ -6793,14 +6818,15 @@ export default function App() {
                           </button>
                         ))}
                       </div>
-                    )}
+                      )}
+                    </div>
+                    <PermissionPicker
+                      mode={permissionMode}
+                      policy={permissionPolicy}
+                      disabled={summaryBusy}
+                      onChange={updatePermissionMode}
+                    />
                   </div>
-                  <PermissionPicker
-                    mode={permissionMode}
-                    policy={permissionPolicy}
-                    disabled={summaryBusy}
-                    onChange={updatePermissionMode}
-                  />
                 </div>
                 <div className="composer-right">
                   {(usage.input > 0 || usage.output > 0) && (
@@ -6848,8 +6874,6 @@ export default function App() {
             gitRefreshing={gitRefreshing}
             refreshGitState={refreshGitState}
             gitState={gitState}
-            gitDiffOpen={gitDiffOpen}
-            setGitDiffOpen={setGitDiffOpen}
             durationMs={durationMs}
             messages={messages}
             usage={usage}

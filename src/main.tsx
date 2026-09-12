@@ -8,9 +8,11 @@ const savedTheme = localStorage.getItem("kcode.theme");
 const initialTheme =
   savedTheme === "light" || savedTheme === "dark"
     ? savedTheme
-    : window.matchMedia("(prefers-color-scheme: dark)").matches
-      ? "dark"
-      : "light";
+    : savedTheme === "system"
+      ? window.matchMedia("(prefers-color-scheme: dark)").matches
+        ? "dark"
+        : "light"
+      : "dark";
 document.documentElement.dataset.theme = initialTheme;
 document.documentElement.style.colorScheme = initialTheme;
 

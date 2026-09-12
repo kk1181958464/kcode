@@ -173,7 +173,8 @@ export const TopBar = memo(function TopBar({
         <button
           className="icon framed status-toggle"
           onClick={() => updateStatusPanel(!statusOpen)}
-          title={statusOpen ? "收起状态栏" : "展开状态栏"}
+          title={statusOpen ? "收起工作面板" : "展开工作面板"}
+          aria-label={statusOpen ? "收起工作面板" : "展开工作面板"}
         >
           {statusOpen ? (
             <PanelRightClose size={17} />

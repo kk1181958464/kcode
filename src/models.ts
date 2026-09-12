@@ -26,10 +26,10 @@ export const ACCENT_OPTIONS: {
   label: string;
   swatch: string;
 }[] = [
+  { value: "blue", label: "蓝色", swatch: "#2563eb" },
   { value: "indigo", label: "靛蓝", swatch: "#5b6cff" },
   { value: "violet", label: "紫罗兰", swatch: "#7c3aed" },
   { value: "emerald", label: "翡翠绿", swatch: "#10a37f" },
-  { value: "blue", label: "钢青蓝", swatch: "#2563eb" },
   { value: "orange", label: "陶土橙", swatch: "#e0663a" },
   { value: "mono", label: "纯净黑白", swatch: "#171717" },
 ];

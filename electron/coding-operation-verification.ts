@@ -671,6 +671,9 @@ export function successfulCodingEvidence(
   const executeTools = new Set([
     "run_command",
     "ssh_run",
+    "start_process",
+    "process_output",
+    "stop_process",
     "mysql_query",
     "sqlserver_query",
     "mongodb_execute",
@@ -799,6 +802,53 @@ export function codingOperationsRequiringToolEvidence(
   );
 }
 
+/**
+ * A skipped diagnostics call means the workspace has no matching script.
+ * That is an environment fact, not an unfinished execute/validate, unless
+ * another native call independently requested the same operation.
+ */
+export function unavailableCodingOperations(
+  history: CodingVerificationHistoryItem[],
+) {
+  const parsed = parsedResults(history);
+  const calls = new Map<
+    string,
+    { name: string; input: Record<string, unknown> }
+  >();
+  let requestedExecuteElsewhere = false;
+  let requestedValidateElsewhere = false;
+  for (const item of history) {
+    if (item.kind !== "calls") continue;
+    for (const call of item.calls) {
+      calls.set(call.id, { name: call.name, input: call.input ?? {} });
+      if (call.name === "diagnostics") continue;
+      if (EXECUTION_CALL_TOOLS.has(call.name))
+        requestedExecuteElsewhere = true;
+      if (
+        ["run_command", "ssh_run"].includes(call.name) &&
+        call.input?.purpose === "validate"
+      )
+        requestedValidateElsewhere = true;
+    }
+  }
+  let skippedDiagnostics = false;
+  for (const [callId, result] of parsed) {
+    const call = calls.get(callId);
+    if (call?.name !== "diagnostics") continue;
+    if (result.data?.executed === true) {
+      requestedExecuteElsewhere = true;
+      requestedValidateElsewhere = true;
+      continue;
+    }
+    if (result.data?.executed === false) skippedDiagnostics = true;
+  }
+  const unavailable = new Set<CodingOperation>();
+  if (!skippedDiagnostics) return unavailable;
+  if (!requestedExecuteElsewhere) unavailable.add("execute");
+  if (!requestedValidateElsewhere) unavailable.add("validate");
+  return unavailable;
+}
+
 export function missingVerifiedCodingOperations(
   required: ReadonlySet<CodingOperation>,
   evidence: ReadonlySet<CodingOperation>,
@@ -806,8 +856,10 @@ export function missingVerifiedCodingOperations(
 ) {
   const noChangeEvidence = hasVerifiedNoChangeEvidence(history);
   const noChangeReport = hasVerifiedNoChangeReport(history);
+  const unavailable = unavailableCodingOperations(history);
   return missingRequestedCodingOperations(required, evidence).filter(
     (operation) =>
+      !unavailable.has(operation) &&
       !(
         (operation === "modify" && noChangeEvidence) ||
         (operation === "validate" && noChangeReport)

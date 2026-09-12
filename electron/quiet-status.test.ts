@@ -1,0 +1,28 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import {
+  classifyQuietStatus,
+  quietStatusLabel,
+} from "../src/quiet-status";
+
+test("classifies live progress into quiet-status chips", () => {
+  assert.equal(classifyQuietStatus(""), undefined);
+  assert.equal(
+    classifyQuietStatus("上游连接中断，正在重连（1/5）…"),
+    "retrying",
+  );
+  assert.equal(
+    classifyQuietStatus("上下文接近预算，正在让模型整理较早运行记录…"),
+    "compacting",
+  );
+  assert.equal(
+    classifyQuietStatus("子 Agent 没有新进展，已停止未完成的子任务…"),
+    "waiting-subagents",
+  );
+  assert.equal(
+    classifyQuietStatus("上游返回空响应，正在自动恢复（第 1 次尝试）…"),
+    "recovering",
+  );
+  assert.equal(classifyQuietStatus("正在生成回复…"), "waiting-model");
+  assert.equal(quietStatusLabel("retrying"), "正在重连");
+});

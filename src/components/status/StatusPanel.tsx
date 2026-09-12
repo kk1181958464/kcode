@@ -2,6 +2,7 @@ import {
   Activity,
   BrainCircuit,
   CheckCircle2,
+  Columns2,
   ChevronRight,
   CircleAlert,
   Clock3,
@@ -11,12 +12,14 @@ import {
   Paperclip,
   RefreshCw,
   RotateCcw,
+  SquareSplitVertical,
   Terminal,
   TextWrap,
   Workflow,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { CONTEXT_AUTO_COMPACT_RATIO } from "../../context";
 import { extractGitFileDiff } from "../../git-diff";
 import { normalizeActivity } from "../../activity-view-model";
@@ -29,6 +32,7 @@ import type { TaskRecord } from "../../models";
 import { localWorkspacePath } from "../../task-workspace";
 import {
   summarizeStatusActivities,
+  statusHeadline,
   statusOverviewTone,
   type StatusFileChange,
 } from "../../status-summary";
@@ -56,6 +60,8 @@ interface ModelEntry {
   model: ModelConfig;
 }
 
+type WorkPanelTab = "run" | "changes" | "context";
+
 export interface StatusPanelProps {
   runStatus: TaskRunStatus;
   activities: AgentActivity[];
@@ -71,8 +77,6 @@ export interface StatusPanelProps {
   gitRefreshing: boolean;
   refreshGitState(includeDiff?: boolean): Promise<void>;
   gitState: GitWorkspaceState;
-  gitDiffOpen: boolean;
-  setGitDiffOpen(updater: (value: boolean) => boolean): void;
   durationMs: number;
   messages: ChatMessage[];
   usage: UsageInfo;
@@ -101,16 +105,6 @@ function resultStatus(activity: AgentActivity) {
   return view.successful ? "通过" : view.statusLabel;
 }
 
-function statusHeadline(runStatus: TaskRunStatus, hasActivities: boolean) {
-  if (runStatus === "failed") return "本轮执行失败";
-  if (runStatus === "cancelled") return "本轮已停止";
-  if (runStatus === "paused") return "任务可以恢复";
-  if (runStatus === "blocked") return "等待补充信息";
-  if (runStatus === "completed") return "本轮执行完成";
-  if (runStatus === "running") return "正在生成回复";
-  return hasActivities ? "最近一轮" : "";
-}
-
 function fileName(path: string) {
   return path.replace(/\\/g, "/").split("/").filter(Boolean).at(-1) || path;
 }
@@ -128,11 +122,18 @@ function FileChangeRow({
     <button
       type="button"
       className={`status-file-row ${active ? "is-active" : ""}`}
-      title={`查看 ${change.path} 的改动`}
+      title={`弹窗查看 ${change.path} 的改动`}
       onClick={onClick}
     >
       <FileCode2 size={12} />
-      <span>{fileName(change.path)}</span>
+      <span className="status-file-row-name">
+        <strong>{fileName(change.path)}</strong>
+        {change.path.replace(/\\/g, "/") !== fileName(change.path) ? (
+          <em title={change.path}>{change.path}</em>
+        ) : (
+          <em>工作区文件</em>
+        )}
+      </span>
       <small>
         {change.additions || change.deletions ? (
           <>
@@ -163,8 +164,6 @@ export function StatusPanel({
   gitRefreshing,
   refreshGitState,
   gitState,
-  gitDiffOpen,
-  setGitDiffOpen,
   durationMs,
   messages,
   usage,
@@ -184,11 +183,16 @@ export function StatusPanel({
   restoreFullContext,
 }: StatusPanelProps) {
   const [liveDurationMs, setLiveDurationMs] = useState(durationMs);
+  const [diffOpen, setDiffOpen] = useState(false);
   const [selectedDiffPath, setSelectedDiffPath] = useState<string>();
   const [loadedFileDiff, setLoadedFileDiff] = useState("");
   const [fileDiffError, setFileDiffError] = useState("");
   const [fileDiffLoading, setFileDiffLoading] = useState(false);
   const [wrapDiffLines, setWrapDiffLines] = useState(true);
+  const [diffViewMode, setDiffViewMode] = useState<"split" | "unified">("split");
+  const diffFileNavRef = useRef<HTMLElement | null>(null);
+  const diffContentRef = useRef<HTMLDivElement | null>(null);
+  const [workTab, setWorkTab] = useState<WorkPanelTab>("changes");
   const gitWorkspacePath = activeTask
     ? localWorkspacePath(activeTask)
     : undefined;
@@ -267,17 +271,31 @@ export function StatusPanel({
       setFileDiffError("");
     }
     setSelectedDiffPath(nextPath);
-    setGitDiffOpen(() => true);
-    if (!gitState.diff) void refreshGitState(true);
+    setDiffOpen(true);
+    const hasActivityDiff = Boolean(
+      nextPath &&
+        fileChanges.find((change) => change.path === nextPath)?.diffs.length,
+    );
+    if (!hasActivityDiff && !gitState.diff) void refreshGitState(true);
   };
   useEffect(() => {
+    setDiffOpen(false);
     setSelectedDiffPath(undefined);
     setLoadedFileDiff("");
     setFileDiffError("");
   }, [activeTask?.id, runningId]);
   useEffect(() => {
+    setWorkTab(
+      fileChanges.length
+        ? "changes"
+        : runningId || activities.length
+          ? "run"
+          : "context",
+    );
+  }, [activeTask?.id, fileChanges.length, runningId, activities.length]);
+  useEffect(() => {
     if (
-      !gitDiffOpen ||
+      !diffOpen ||
       !selectedDiffPath ||
       selectedDiffChange?.diffs.length ||
       extractGitFileDiff(gitState.diff, selectedDiffPath) ||
@@ -308,22 +326,78 @@ export function StatusPanel({
     };
   }, [
     gitWorkspacePath,
-    gitDiffOpen,
+    diffOpen,
     gitState.diff,
     selectedDiffChange?.diffs.length,
     selectedDiffPath,
   ]);
   useEffect(() => {
-    if (!gitDiffOpen) return;
+    if (!diffOpen) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setGitDiffOpen(() => false);
+      if (event.key === "Escape") setDiffOpen(false);
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [gitDiffOpen, setGitDiffOpen]);
+  }, [diffOpen]);
+
+  useEffect(() => {
+    if (!diffOpen) return;
+    const content = diffContentRef.current;
+    if (content) content.scrollTop = 0;
+    const nav = diffFileNavRef.current;
+    if (!nav) return;
+    const active = nav.querySelector<HTMLElement>("button.is-active");
+    active?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [diffOpen, selectedDiffPath, selectedDiffText]);
+
+  const showUsage =
+    runStatus !== "idle" || liveDurationMs > 0 || messages.length > 0;
+  const runEmpty =
+    !showRunOverview &&
+    resultActivities.length === 0 &&
+    taskCheckpoints.length === 0;
 
   return (
-    <aside className="status-panel" aria-label="任务详情">
+    <aside className="status-panel work-panel" aria-label="工作面板">
+      <header className="work-panel-header">
+        <nav className="work-panel-tabs" role="tablist" aria-label="工作面板">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={workTab === "run"}
+            className={workTab === "run" ? "is-active" : ""}
+            onClick={() => setWorkTab("run")}
+          >
+            本轮
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={workTab === "changes"}
+            className={workTab === "changes" ? "is-active" : ""}
+            onClick={() => setWorkTab("changes")}
+          >
+            改动
+            {fileChanges.length > 0 && <b>{fileChanges.length}</b>}
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={workTab === "context"}
+            className={workTab === "context" ? "is-active" : ""}
+            onClick={() => setWorkTab("context")}
+          >
+            上下文
+          </button>
+        </nav>
+      </header>
+      <div className="work-panel-body">
+      <div
+        className="work-panel-pane"
+        role="tabpanel"
+        aria-label="本轮"
+        hidden={workTab !== "run"}
+      >
       {showRunOverview && (
         <section
           className={`status-run-overview ${running ? "is-running" : ""} ${runStatus === "blocked" ? "is-blocked" : ""} ${overviewTone === "success" ? "is-success" : ""} ${overviewTone === "failure" ? "has-failures" : ""}`}
@@ -371,56 +445,6 @@ export function StatusPanel({
               </span>
             )}
           </div>
-        </section>
-      )}
-
-      {showChanges && (
-        <section className="git-section status-changes-section">
-          <div className="status-section-heading">
-            <span>
-              <GitCompareArrows size={14} />
-              <strong>改动概览</strong>
-            </span>
-            <button
-              className={gitRefreshing ? "spinning" : ""}
-              onClick={() => void refreshGitState()}
-              title="刷新 Git 状态"
-              aria-label="刷新 Git 状态"
-            >
-              <RefreshCw size={13} />
-            </button>
-          </div>
-          <div className="status-change-total">
-            <span>
-              <strong>{displayChangeCount} 个文件</strong>
-              <small>本轮改动</small>
-            </span>
-            <b>
-              <i>+{displayAdditions}</i>
-              <em>-{displayDeletions}</em>
-            </b>
-          </div>
-          {fileChanges.length > 0 && (
-            <div className="status-file-list">
-              <small>文件列表 · 点击查看差异</small>
-              <div className="status-file-list-scroll">
-                {fileChanges.map((change) => (
-                  <FileChangeRow
-                    key={change.path}
-                    change={change}
-                    active={change.path === selectedDiffPath}
-                    onClick={() => openDiff(change.path)}
-                  />
-                ))}
-              </div>
-            </div>
-          )}
-          {fileChanges.length > 0 && (
-            <button className="git-diff-toggle" onClick={() => openDiff()}>
-              查看本轮差异
-              <ChevronRight size={13} />
-            </button>
-          )}
         </section>
       )}
 
@@ -489,8 +513,73 @@ export function StatusPanel({
           ))}
         </section>
       )}
+      {runEmpty && (
+        <p className="work-panel-empty">本轮还没有执行记录。</p>
+      )}
+      </div>
 
-      {(runStatus !== "idle" || liveDurationMs > 0 || messages.length > 0) && (
+      <div
+        className="work-panel-pane"
+        role="tabpanel"
+        aria-label="改动"
+        hidden={workTab !== "changes"}
+      >
+      {showChanges ? (
+        <section className="git-section status-changes-section">
+          <div className="status-section-heading">
+            <span>
+              <GitCompareArrows size={14} />
+              <strong>改动概览</strong>
+            </span>
+            <div className="work-panel-heading-actions">
+              <button
+                className={gitRefreshing ? "spinning" : ""}
+                onClick={() => void refreshGitState()}
+                title="刷新 Git 状态"
+                aria-label="刷新 Git 状态"
+              >
+                <RefreshCw size={13} />
+              </button>
+            </div>
+          </div>
+          <div className="status-change-total">
+            <span>
+              <strong>{displayChangeCount} 个文件</strong>
+              <small>本轮改动</small>
+            </span>
+            <b>
+              <i>+{displayAdditions}</i>
+              <em>-{displayDeletions}</em>
+            </b>
+          </div>
+          {fileChanges.length > 0 && (
+            <div className="status-file-list">
+              <small>文件列表 · 点击弹窗查看差异</small>
+              <div className="status-file-list-scroll">
+                {fileChanges.map((change) => (
+                  <FileChangeRow
+                    key={change.path}
+                    change={change}
+                    active={diffOpen && change.path === selectedDiffPath}
+                    onClick={() => openDiff(change.path)}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+        </section>
+      ) : (
+        <p className="work-panel-empty">本轮还没有文件改动。</p>
+      )}
+      </div>
+
+      <div
+        className="work-panel-pane"
+        role="tabpanel"
+        aria-label="上下文"
+        hidden={workTab !== "context"}
+      >
+      {showUsage && (
         <section className="status-usage-section">
           <div className="status-section-heading">
             <span>
@@ -619,7 +708,6 @@ export function StatusPanel({
           )}
         </section>
       )}
-
       {selectedTarget && (
         <footer
           className="status-model-line"
@@ -643,12 +731,18 @@ export function StatusPanel({
           </span>
         </footer>
       )}
+      {!showUsage && !selectedTarget && (
+        <p className="work-panel-empty">还没有上下文用量。</p>
+      )}
+      </div>
+      </div>
 
-      {gitDiffOpen && (
+      {diffOpen &&
+        createPortal(
         <div
           className="git-diff-layer"
           onMouseDown={(event) =>
-            event.target === event.currentTarget && setGitDiffOpen(() => false)
+            event.target === event.currentTarget && setDiffOpen(false)
           }
         >
           <section
@@ -663,6 +757,26 @@ export function StatusPanel({
                 <strong>文件更新</strong>
               </span>
               <div className="git-diff-dialog-actions">
+                <button
+                  type="button"
+                  className={diffViewMode === "split" ? "is-active" : ""}
+                  title="左右分栏对比"
+                  aria-label="左右分栏对比"
+                  aria-pressed={diffViewMode === "split"}
+                  onClick={() => setDiffViewMode("split")}
+                >
+                  <Columns2 size={15} />
+                </button>
+                <button
+                  type="button"
+                  className={diffViewMode === "unified" ? "is-active" : ""}
+                  title="统一视图"
+                  aria-label="统一视图"
+                  aria-pressed={diffViewMode === "unified"}
+                  onClick={() => setDiffViewMode("unified")}
+                >
+                  <SquareSplitVertical size={15} />
+                </button>
                 <button
                   type="button"
                   className={wrapDiffLines ? "is-active" : ""}
@@ -681,7 +795,7 @@ export function StatusPanel({
                   type="button"
                   title="关闭"
                   aria-label="关闭文件更新"
-                  onClick={() => setGitDiffOpen(() => false)}
+                  onClick={() => setDiffOpen(false)}
                 >
                   <X size={16} />
                 </button>
@@ -689,10 +803,10 @@ export function StatusPanel({
             </header>
             <div className="git-diff-dialog-body">
               {fileChanges.length > 0 && (
-                <nav className="git-diff-file-nav" aria-label="更新文件">
+                <nav ref={diffFileNavRef} className="git-diff-file-nav" aria-label="更新文件">
                   <button
                     type="button"
-                    className={!selectedDiffPath ? "is-active" : ""}
+                    className={`git-diff-file-nav-all${!selectedDiffPath ? " is-active" : ""}`}
                     onClick={() => {
                       setSelectedDiffPath(undefined);
                       setLoadedFileDiff("");
@@ -715,7 +829,10 @@ export function StatusPanel({
                       onClick={() => openDiff(change.path)}
                       title={change.path}
                     >
-                      <span>{fileName(change.path)}</span>
+                      <span className="git-diff-file-nav-name">
+                        <strong>{fileName(change.path)}</strong>
+                        <em title={change.path}>{change.path}</em>
+                      </span>
                       <small>
                         +{change.additions} -{change.deletions}
                       </small>
@@ -723,7 +840,7 @@ export function StatusPanel({
                   ))}
                 </nav>
               )}
-              <div className="git-diff-dialog-content">
+              <div ref={diffContentRef} className="git-diff-dialog-content">
                 {fileDiffLoading || (gitRefreshing && !selectedDiffText) ? (
                   <div className="git-diff-loading">
                     <RefreshCw className="spinning" size={14} />
@@ -733,8 +850,10 @@ export function StatusPanel({
                   <pre className="git-diff-empty">{fileDiffError}</pre>
                 ) : selectedDiffText ? (
                   <DiffView
+                    key={`${selectedDiffPath || "all"}:${diffViewMode}:${wrapDiffLines}`}
                     text={selectedDiffText}
                     wrapLines={wrapDiffLines}
+                    mode={diffViewMode}
                     virtualize
                   />
                 ) : (
@@ -748,7 +867,9 @@ export function StatusPanel({
             </div>
           </section>
         </div>
-      )}
+      ,
+          document.body,
+        )}
 
       {summaryOpen && activeTask?.contextSummary && (
         <div

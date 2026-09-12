@@ -1,6 +1,7 @@
 import {
   memo,
   useEffect,
+  useRef,
   useState,
   type RefObject,
   type WheelEvent,
@@ -56,6 +57,10 @@ export interface ConversationAreaProps {
   registerTurn(messageId: string, element: HTMLDivElement | null): void;
   endRef: RefObject<HTMLDivElement | null>;
   agentReasoning: string;
+  /** When this changes, play a short enter transition on the conversation pane. */
+  switchKey?: string;
+  /** 1 = next task below in list (enter from right); -1 = above (from left). */
+  switchDirection?: 1 | -1;
 }
 
 const TURN_RAIL_ITEM_HEIGHT = 28;
@@ -90,6 +95,8 @@ export const ConversationArea = memo(function ConversationArea({
   registerTurn,
   endRef,
   agentReasoning,
+  switchKey,
+  switchDirection = 1,
 }: ConversationAreaProps) {
   const [railWindow, setRailWindow] = useState({ start: 0, end: 80 });
   const [turnPreview, setTurnPreview] = useState<TurnPreviewState>();
@@ -140,6 +147,45 @@ export const ConversationArea = memo(function ConversationArea({
       behavior: "smooth",
     });
   };
+
+  const skipFirstSwitchAnimRef = useRef(true);
+  useEffect(() => {
+    if (!switchKey) return;
+    if (skipFirstSwitchAnimRef.current) {
+      skipFirstSwitchAnimRef.current = false;
+      return;
+    }
+    const el = conversationRef.current;
+    if (!el) return;
+    const reduce =
+      typeof window !== "undefined" &&
+      window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+    if (reduce) return;
+    const fromClass =
+      switchDirection < 0
+        ? "is-task-entering-from-left"
+        : "is-task-entering-from-right";
+    el.classList.remove(
+      "is-task-entering",
+      "is-task-entering-from-left",
+      "is-task-entering-from-right",
+    );
+    void el.offsetWidth;
+    el.classList.add("is-task-entering", fromClass);
+    const clear = () =>
+      el.classList.remove(
+        "is-task-entering",
+        "is-task-entering-from-left",
+        "is-task-entering-from-right",
+      );
+    el.addEventListener("animationend", clear);
+    const timer = window.setTimeout(clear, 360);
+    return () => {
+      el.removeEventListener("animationend", clear);
+      window.clearTimeout(timer);
+    };
+  }, [switchKey, switchDirection, conversationRef]);
+
   useEffect(() => {
     const frame = requestAnimationFrame(updateRailWindow);
     return () => cancelAnimationFrame(frame);

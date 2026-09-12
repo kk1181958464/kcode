@@ -12,21 +12,25 @@ import { isPermissionPolicyCustomized } from "../../permissions";
 const permissionOptions: Array<{
   mode: PermissionMode;
   label: string;
+  chip: string;
   description: string;
 }> = [
   {
     mode: "confirm",
     label: "变更前确认",
+    chip: "确认",
     description: "写文件和运行命令前询问",
   },
   {
     mode: "read-only",
     label: "只读模式",
+    chip: "只读",
     description: "仅允许读取和分析工作区",
   },
   {
     mode: "full-access",
     label: "完全访问",
+    chip: "全权",
     description: "直接写文件和运行命令",
   },
 ];
@@ -58,7 +62,8 @@ export function PermissionPicker({
   const rootRef = useRef<HTMLDivElement>(null);
   const current = permissionOptions.find((option) => option.mode === mode)!;
   const customized = isPermissionPolicyCustomized(mode, policy);
-  const triggerLabel = customized ? "自定义权限" : current.label;
+  const triggerLabel = customized ? "自定义" : current.chip;
+  const triggerTitle = customized ? "自定义权限" : current.label;
 
   useEffect(() => {
     if (!open) return;
@@ -80,11 +85,12 @@ export function PermissionPicker({
     <div className="permission-picker" ref={rootRef}>
       <button
         type="button"
-        className="permission-trigger"
+        className="permission-trigger composer-chip"
         aria-haspopup="menu"
         aria-expanded={open}
+        aria-label={`操作权限：${triggerTitle}`}
         disabled={disabled}
-        title={`操作权限：${triggerLabel}`}
+        title={`操作权限：${triggerTitle}`}
         onClick={() => setOpen((value) => !value)}
       >
         <PermissionIcon mode={customized ? "confirm" : mode} />

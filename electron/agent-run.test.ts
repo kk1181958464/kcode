@@ -808,6 +808,72 @@ test("runAgent keeps an existing capability inventory as the final answer", asyn
   );
 });
 
+test("runAgent pauses an empty stream when recoverable tool evidence already exists", async () => {
+  const request = await makeRequest();
+  request.messages = [{ role: "user", content: "创建 hello.txt" }];
+  let round = 0;
+  const deps: RunAgentDeps = {
+    getProvider: fakeProvider("fake-model"),
+    async *streamTurn() {
+      round += 1;
+      if (round === 1) {
+        yield {
+          type: "complete",
+          turn: {
+            text: "",
+            calls: [
+              {
+                id: "empty-write",
+                name: "write_file",
+                input: { path: "hello.txt", content: "hi\n" },
+              },
+            ],
+            rawCalls: [],
+            usage: { input: 8, output: 2, cached: 0 },
+          },
+        };
+        return;
+      }
+      yield {
+        type: "complete",
+        turn: {
+          text: "",
+          calls: [],
+          rawCalls: [],
+          usage: { input: 4, output: 0, cached: 0 },
+        },
+      };
+    },
+  };
+
+  const events = await collect(
+    runAgent(
+      "test-empty-pause-evidence",
+      request,
+      new AbortController().signal,
+      deps,
+    ),
+  );
+  assert.equal(round, 3);
+  assert.equal(
+    events.some((event) => event.type === "error"),
+    false,
+  );
+  const done = events.find(
+    (event): event is Extract<AgentEvent, { type: "done" }> =>
+      event.type === "done",
+  );
+  assert.equal(done?.outcome, "paused");
+  assert.equal(done?.result?.kind, "incomplete");
+  assert.match(
+    events
+      .filter((event) => event.type === "text")
+      .map((event) => (event as Extract<AgentEvent, { type: "text" }>).delta)
+      .join(""),
+    /连续返回空响应/,
+  );
+});
+
 test("runAgent never infers missing runtime evidence from user or model prose", async () => {
   const request = await makeRequest();
   request.messages = [
@@ -1005,7 +1071,7 @@ test("runAgent text resets retain the text before the current model turn", async
   );
 });
 
-test("runAgent propagates a fatal model-stream failure to the caller", async () => {
+test("runAgent pauses a first-round retryable stream disconnect", async () => {
   const request = await makeRequest();
   const deps: RunAgentDeps = {
     getProvider: fakeProvider("fake-model"),
@@ -1015,14 +1081,42 @@ test("runAgent propagates a fatal model-stream failure to the caller", async () 
     },
   };
 
-  // runAgent does not emit an error AgentEvent itself; the model-turn failure
-  // rejects out of the generator and main.ts turns it into an error event.
-  // Characterize that contract here so a future refactor keeps it.
+  const events = await collect(
+    runAgent("test-req-2", request, new AbortController().signal, deps),
+  );
+  const done = events.find(
+    (event): event is Extract<AgentEvent, { type: "done" }> =>
+      event.type === "done",
+  );
+  assert.equal(
+    events.some((event) => event.type === "error"),
+    false,
+  );
+  assert.equal(done?.outcome, "paused");
+  assert.equal(done?.result?.kind, "incomplete");
+  assert.ok(
+    events.some(
+      (event) =>
+        event.type === "text" && event.delta.includes("任务已安全暂停"),
+    ),
+  );
+});
+
+test("runAgent still propagates a non-retryable model-stream failure", async () => {
+  const request = await makeRequest();
+  const deps: RunAgentDeps = {
+    getProvider: fakeProvider("fake-model"),
+    // eslint-disable-next-line require-yield
+    async *streamTurn() {
+      throw new Error("invalid api key");
+    },
+  };
+
   await assert.rejects(
     collect(
-      runAgent("test-req-2", request, new AbortController().signal, deps),
+      runAgent("test-req-auth", request, new AbortController().signal, deps),
     ),
-    /上游连接失败/,
+    /invalid api key/,
   );
 });
 

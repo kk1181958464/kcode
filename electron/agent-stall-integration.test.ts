@@ -1613,3 +1613,104 @@ test("context compaction does not reset the semantic stall guard", async () => {
   );
   assert.equal(done?.outcome, "completed");
 });
+
+test("planner coordinator cannot complete without spawning an executor", async () => {
+  const workspacePath = await mkdtemp(
+    path.join(os.tmpdir(), "kcode-planner-no-spawn-"),
+  );
+  const request: ModelRequest = {
+    providerId: "fake",
+    modelId: "fake-model",
+    messages: [{ role: "user", content: "规划并落实登录修复" }],
+    permissionMode: "full-access",
+    workspacePath,
+    agentRole: "planner",
+    collaboration: {
+      mode: "planner-executor",
+      executor: {
+        providerId: "fake",
+        modelId: "fake-executor",
+        displayName: "Fake Executor",
+      },
+    },
+  };
+  let rounds = 0;
+  let spawnRequested = false;
+  const events: AgentEvent[] = [];
+  for await (const event of runAgent(
+    "planner-no-spawn-integration",
+    request,
+    new AbortController().signal,
+    {
+      getProvider: fakeProvider(),
+      async *streamTurn(args) {
+        rounds += 1;
+        spawnRequested ||= args.history.some(
+          (item) =>
+            item.kind === "message" &&
+            (item.content.includes("启动执行 Agent") ||
+              item.content.includes("agent:spawn_executor") ||
+              item.content.includes("启动执行模型")),
+        );
+        if (rounds === 1) {
+          yield {
+            type: "complete",
+            turn: {
+              text: "计划已整理，可以直接结束。",
+              calls: [
+                {
+                  id: "planner-plan",
+                  name: "update_plan",
+                  input: {
+                    plan: [
+                      {
+                        step: "确认登录问题",
+                        status: "completed",
+                        requires: ["inspect"],
+                      },
+                      {
+                        step: "修复登录",
+                        status: "completed",
+                        requires: ["modify"],
+                      },
+                    ],
+                  },
+                },
+              ],
+              rawCalls: [],
+              usage: { input: 10, output: 5, cached: 0 },
+            },
+          };
+          return;
+        }
+        yield {
+          type: "complete",
+          turn: {
+            text: "规划已经完成，无需再派发执行模型。",
+            calls: [],
+            rawCalls: [],
+            usage: { input: 10, output: 5, cached: 0 },
+          },
+        };
+      },
+    },
+  ))
+    events.push(event);
+
+  assert.ok(rounds <= 8, `expected bounded planner recovery, received ${rounds}`);
+  assert.equal(spawnRequested, true);
+  assert.equal(
+    events.some(
+      (event) =>
+        event.type === "activity" && event.activity.tool === "spawn_agent",
+    ),
+    false,
+  );
+  const done = events.find(
+    (event): event is Extract<AgentEvent, { type: "done" }> =>
+      event.type === "done",
+  );
+  assert.equal(done?.outcome, "paused");
+  assert.equal(done?.result?.kind, "incomplete");
+  assert.ok(done?.result?.missingOperations?.includes("agent:spawn_executor"));
+});

@@ -42,6 +42,16 @@ export function statusOverviewTone(
   return "neutral";
 }
 
+export function statusHeadline(runStatus: TaskRunStatus, hasActivities: boolean) {
+  if (runStatus === "failed") return "本轮执行失败";
+  if (runStatus === "cancelled") return "本轮已停止";
+  if (runStatus === "paused") return "任务未完成，可继续";
+  if (runStatus === "blocked") return "等待补充信息";
+  if (runStatus === "completed") return "本轮已完成";
+  if (runStatus === "running") return "正在生成回复";
+  return hasActivities ? "最近一轮" : "";
+}
+
 export function latestRequestActivities(
   activities: AgentActivity[],
   runningId?: string,

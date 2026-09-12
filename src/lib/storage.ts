@@ -1,18 +1,20 @@
 import {
   recoverOrphanedFailure,
   recoverInterruptedActivities,
+  recoverRetryableDisconnectMessages,
   recoverTaskRunStatus,
 } from "../task-status";
 import type { TaskRecord } from "../models";
 import { localWorkspacePath, taskWorkspaceName } from "../task-workspace";
 
 export function normalizeStoredTask(task: TaskRecord): TaskRecord {
-  const runStatus = recoverTaskRunStatus(task);
+  const messages = recoverRetryableDisconnectMessages(task.messages);
+  const runStatus = recoverTaskRunStatus({ ...task, messages });
   return {
     ...task,
     workspaceName: task.workspaceName?.trim() || taskWorkspaceName(task),
     localWorkspacePath: localWorkspacePath(task),
-    messages: recoverOrphanedFailure(task.messages, runStatus, task.updatedAt),
+    messages: recoverOrphanedFailure(messages, runStatus, task.updatedAt),
     runningId: undefined,
     runtimeStatus: undefined,
     startedAt: undefined,

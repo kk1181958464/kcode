@@ -72,6 +72,10 @@ import {
   subscribeStreamingText,
 } from "../../streaming-text-store";
 import {
+  classifyQuietStatus,
+  quietStatusLabel,
+} from "../../quiet-status";
+import {
   boundedStreamingReasoning,
   completedProcessDuration,
   completedProcessTextLength,
@@ -110,7 +114,7 @@ function renderedActivityDetail(detail: string) {
   };
 }
 
-function MessageItem({
+const MessageItem = memo(function MessageItem({
   message,
   running,
   workspacePath,
@@ -136,7 +140,10 @@ function MessageItem({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [previewImage]);
   const error = message.error;
-  const isError = Boolean(error);
+  const pausedOrBlocked = ["incomplete", "blocked"].includes(
+    message.completionResult?.kind ?? "",
+  );
+  const isError = Boolean(error) && !pausedOrBlocked;
   const visibleContent =
     message.role === "assistant"
       ? visibleAssistantContent(message.content)
@@ -248,7 +255,7 @@ function MessageItem({
                   <strong>
                     {message.completionResult.kind === "blocked"
                       ? "等待补充信息"
-                      : "已暂停，执行结果已保留"}
+                      : "未完成，执行结果已保留，可继续"}
                   </strong>
                   {message.completionResult.notice && (
                     <small>{message.completionResult.notice}</small>
@@ -355,7 +362,14 @@ function MessageItem({
         )}
     </article>
   );
-}
+}, (previous, next) => {
+  return previous.message === next.message &&
+    previous.running === next.running &&
+    previous.workspacePath === next.workspacePath &&
+    previous.attachments === next.attachments &&
+    previous.assistantBody === next.assistantBody &&
+    previous.onRetry === next.onRetry;
+});
 
 const StreamingActivityOutputLeaf = memo(function StreamingActivityOutputLeaf({
   activityId,
@@ -1497,15 +1511,18 @@ function AgentWorkingState({
 function AssistantTailState({
   reasoningNode,
   progressNode,
+  requestId,
 }: {
   reasoningNode?: React.ReactNode;
   progressNode?: React.ReactNode;
+  requestId?: string;
 }) {
   if (!reasoningNode && !progressNode) return null;
   return (
     <div className="assistant-tail-state" aria-live="polite">
       <BrainCircuit size={12} />
       <span className="assistant-tail-copy">
+        {requestId ? <QuietStatusChip requestId={requestId} /> : null}
         {reasoningNode}
         {progressNode}
         <span className="assistant-tail-fallback">正在继续执行…</span>
@@ -1569,7 +1586,7 @@ function CompletedProcessDisclosure({
             {blocked
               ? "等待输入"
               : paused
-                ? "已暂停"
+                ? "未完成"
                 : failed
                   ? "处理未完成"
                   : "已处理"}
@@ -1790,6 +1807,7 @@ const AssistantTimeline = memo(function AssistantTimeline({
       {streamingTail}
       {shouldShowAssistantTailState(running) && (
         <AssistantTailState
+          requestId={requestId}
           reasoningNode={hasActiveActivity ? undefined : streamingReasoning}
           progressNode={streamingProgress}
         />
@@ -1935,6 +1953,32 @@ const StreamingReasoningLeaf = memo(function StreamingReasoningLeaf({
   return <span ref={nodeRef} className="streaming-status-leaf" hidden />;
 });
 
+const QuietStatusChip = memo(function QuietStatusChip({
+  requestId,
+}: {
+  requestId: string;
+}) {
+  const [kind, setKind] = useState(() =>
+    classifyQuietStatus(getStreamingText(streamingProgressKey(requestId))),
+  );
+  useEffect(() => {
+    const key = streamingProgressKey(requestId);
+    const sync = (value: string) => setKind(classifyQuietStatus(value));
+    sync(getStreamingText(key));
+    return subscribeStreamingText(key, (change) => {
+      if (change.type === "reset") setKind(undefined);
+      else if (change.type === "replace") sync(change.value);
+      else sync(getStreamingText(key));
+    });
+  }, [requestId]);
+  if (!kind) return null;
+  return (
+    <span className={`quiet-status-chip is-${kind}`} data-kind={kind}>
+      {quietStatusLabel(kind)}
+    </span>
+  );
+});
+
 const StreamingProgressLeaf = memo(function StreamingProgressLeaf({
   requestId,
 }: {
@@ -2062,6 +2106,32 @@ const ConversationMessage = memo(
       (element: HTMLDivElement | null) => registerTurn(message.id, element),
       [message.id, registerTurn],
     );
+    const handleRetry = useCallback(() => {
+      if (retryContent) onRetry(retryContent);
+    }, [onRetry, retryContent]);
+    const assistantBody = useMemo(
+      () =>
+        requestId ? (
+          <StreamingAssistantTimeline
+            message={message}
+            activities={activities}
+            running={running}
+            requestId={requestId}
+            workspacePath={workspacePath}
+            onActivityChange={onActivityChange}
+            reasoning={reasoning}
+          />
+        ) : undefined,
+      [
+        activities,
+        message,
+        onActivityChange,
+        reasoning,
+        requestId,
+        running,
+        workspacePath,
+      ],
+    );
     return (
       <div
         className={`conversation-turn-item ${running ? "running" : "complete"}`}
@@ -2072,20 +2142,8 @@ const ConversationMessage = memo(
           running={running}
           workspacePath={workspacePath}
           attachments={attachments}
-          onRetry={() => retryContent && onRetry(retryContent)}
-          assistantBody={
-            requestId ? (
-              <StreamingAssistantTimeline
-                message={message}
-                activities={activities}
-                running={running}
-                requestId={requestId}
-                workspacePath={workspacePath}
-                onActivityChange={onActivityChange}
-                reasoning={reasoning}
-              />
-            ) : undefined
-          }
+          onRetry={handleRetry}
+          assistantBody={assistantBody}
         />
       </div>
     );

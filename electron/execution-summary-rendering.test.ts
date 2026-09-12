@@ -129,7 +129,7 @@ test("uses structured completion evidence for paused file totals", () => {
     }),
   );
 
-  assert.match(markup, /已暂停/);
+  assert.match(markup, /未完成/);
   assert.match(markup, /2 个文件/);
   assert.match(markup, /\+9/);
   assert.match(markup, /-3/);
@@ -415,8 +415,6 @@ test("right rail uses only the current request changes instead of Git totals", (
         summary: " M src/old.ts",
         diff: "",
       },
-      gitDiffOpen: false,
-      setGitDiffOpen() {},
       durationMs: 1000,
       messages: [],
       usage: { input: 0, output: 0, cached: 0 },
@@ -434,10 +432,77 @@ test("right rail uses only the current request changes instead of Git totals", (
     }),
   );
 
+  assert.match(markup, /aria-label="工作面板"/);
+  assert.match(markup, /role="tablist"/);
+  assert.match(markup, />本轮</);
+  assert.match(markup, />改动</);
+  assert.match(markup, />上下文</);
   assert.match(markup, /1 个文件/);
   assert.match(markup, /本轮改动/);
   assert.match(markup, /\+2/);
   assert.match(markup, /-1/);
+  assert.match(markup, /aria-label="本轮差异"/);
+  assert.match(markup, /diff --git a\/src\/current\.ts b\/src\/current\.ts/);
+  assert.doesNotMatch(markup, /查看本轮差异|git-diff-layer|查看文件更新/);
   assert.doesNotMatch(markup, /工作区总计|src\/old\.ts|\+99|-55/);
   assert.match(markup, /规划 中 \/ 执行 中/);
+});
+
+test("right rail keeps recovery checkpoints on the current-run pane", () => {
+  const markup = renderToStaticMarkup(
+    React.createElement(StatusPanel, {
+      runStatus: "paused",
+      activities: [],
+      selectedTarget: undefined,
+      effortLabels: {
+        auto: "自动",
+        low: "轻度",
+        medium: "中",
+        high: "高",
+      } as never,
+      reasoningEffort: "medium",
+      checkpoints: [
+        {
+          id: "checkpoint-1",
+          taskId: "task-1",
+          startedAt: 1_700_000_000_000,
+          status: "paused",
+          request: { modelId: "gpt-5" },
+        } as never,
+      ],
+      activeTask: { id: "task-1" } as never,
+      runningId: undefined,
+      summaryBusy: false,
+      async resumeCheckpoint() {},
+      gitRefreshing: false,
+      async refreshGitState() {},
+      gitState: {
+        available: false,
+        files: 0,
+        additions: 0,
+        deletions: 0,
+        summary: "",
+        diff: "",
+      },
+      durationMs: 0,
+      messages: [],
+      usage: { input: 0, output: 0, cached: 0 },
+      usageResolved: false,
+      usedContextCount: 0,
+      selectedContextWindow: undefined,
+      contextTokens: 0,
+      calibrationFactor: 1,
+      compactActiveConversation() {},
+      summaryOpen: false,
+      setSummaryOpen() {},
+      restoreSummarySnapshot() {},
+      async rebuildActiveSummary() {},
+      restoreFullContext() {},
+    }),
+  );
+
+  assert.match(markup, /可恢复任务/);
+  assert.match(markup, /从检查点继续/);
+  const changesPane = markup.slice(markup.indexOf('aria-label="改动"'));
+  assert.doesNotMatch(changesPane, /可恢复任务|从检查点继续/);
 });

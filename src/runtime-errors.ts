@@ -37,7 +37,9 @@ export function classifyRuntimeError(raw: string): RuntimeErrorClassification {
   if (/超时|timed? ?out|ETIMEDOUT|等待响应/i.test(value))
     return { kind: "timeout", retryable: true, userAction: "retry" };
   if (
-    /ERR_|ECONN|socket|\bstream\b|chunked|connection|连接中断|断流/i.test(value)
+    /ERR_|ECONN|socket|\bstream\b|chunked|connection|连接中断|连接失败|网络连接|断流|已安全暂停|没有返回完成或错误状态/i.test(
+      value,
+    )
   )
     return { kind: "transport", retryable: true, userAction: "retry" };
   if (

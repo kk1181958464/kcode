@@ -221,12 +221,11 @@ export function recoveryPlanFromActivities(
   const summary = summarizeExecutionPlan(matching);
   const steps = source.planSteps.map((step, index) => ({
     step: redactSensitiveText(step).replace(/\s+/g, " ").trim().slice(0, 180),
-    status: (source.planStatuses?.[index] ??
-      (summary?.statuses[index] === "running"
-        ? "in_progress"
-        : summary?.statuses[index] === "completed"
-          ? "completed"
-          : "pending")) as AgentPlanStepStatus,
+    status: (summary?.statuses[index] === "running"
+      ? "in_progress"
+      : summary?.statuses[index] === "completed"
+        ? "completed"
+        : "pending") as AgentPlanStepStatus,
     requires: source.planRequirements?.[index]
       ? [...source.planRequirements[index]]
       : [],

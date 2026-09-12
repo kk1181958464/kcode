@@ -930,8 +930,8 @@ export function SettingsPanel({
                   </div>
                   <div className="settings-row">
                     <span>
-                      <strong>任务状态栏</strong>
-                      <small>在工作台右侧显示执行、改动与上下文详情</small>
+                      <strong>工作面板</strong>
+                      <small>在工作台右侧显示本轮、改动与上下文</small>
                     </span>
                     <button
                       className={`setting-switch ${statusPanelEnabled ? "on" : ""}`}

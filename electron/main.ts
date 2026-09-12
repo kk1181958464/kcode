@@ -21,6 +21,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
+import os from "node:os";
 import type {
   AgentEvent,
   ContextFile,
@@ -227,6 +228,13 @@ function friendlyModelError(raw: string): string {
   return text;
 }
 installProcessLogging();
+// Windows often locks Chromium's GPU/disk cache (Access Denied 0x5) when
+// another Electron instance or AV holds GPUCache. That leaves a blank window.
+app.commandLine.appendSwitch("disable-gpu-shader-disk-cache");
+app.commandLine.appendSwitch(
+  "disk-cache-dir",
+  path.join(os.tmpdir(), "kcode-chromium-cache"),
+);
 const appUserModelId = windowsAppUserModelId(app.isPackaged);
 app.setName("KCode");
 if (process.platform === "win32") app.setAppUserModelId(appUserModelId);
@@ -391,16 +399,26 @@ async function listPublicSkills(refresh = false) {
   if (refresh) skillStore.refresh();
   return (await skillStore.list(refresh)).map(publicSkill);
 }
-function notifyTask(result: "done" | "error", message?: string) {
+function notifyTask(
+  result: "done" | "error" | "paused",
+  message?: string,
+) {
   if (mainWindow?.isFocused() && !mainWindow.isMinimized()) return;
   updateUnread(unreadTasks + 1);
   if (Notification.isSupported()) {
     const notification = new Notification({
-      title: result === "done" ? "KCode 任务已完成" : "KCode 任务执行失败",
+      title:
+        result === "done"
+          ? "KCode 任务已完成"
+          : result === "paused"
+            ? "KCode 任务未完成"
+            : "KCode 任务执行失败",
       body:
         result === "done"
           ? "模型已经完成任务，点击查看结果。"
-          : message || "任务执行失败，点击查看详情。",
+          : result === "paused"
+            ? message || "任务未完成，已有结果已保留，点击继续。"
+            : message || "任务执行失败，点击查看详情。",
       icon: appIcon(),
       silent: false,
     });
@@ -490,8 +508,40 @@ function createWindow() {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true,
     },
   });
+  // Dev (Vite) needs an inline React-refresh preamble; apply CSP only when packaged.
+  // Use a single policy string — an array of directive strings becomes multiple CSP
+  // headers that Chromium ANDs together, which is far stricter than intended.
+  if (app.isPackaged) {
+    win.webContents.session.webRequest.onHeadersReceived((details, callback) => {
+      const isLocalApp =
+        details.url.startsWith("file://") ||
+        details.url.startsWith("http://127.0.0.1:5173");
+      if (!isLocalApp) {
+        return callback({ responseHeaders: details.responseHeaders });
+      }
+      callback({
+        responseHeaders: {
+          ...details.responseHeaders,
+          "Content-Security-Policy": [
+            [
+              "default-src 'self'",
+              "script-src 'self'",
+              "style-src 'self' 'unsafe-inline'",
+              "img-src 'self' data: blob:",
+              "font-src 'self' data:",
+              "connect-src 'self' https: wss:",
+              "object-src 'none'",
+              "base-uri 'self'",
+              "frame-ancestors 'none'",
+            ].join("; "),
+          ],
+        },
+      });
+    });
+  }
   configureWindowsTaskbar(win, icon);
   win.once("ready-to-show", () => configureWindowsTaskbar(win, icon));
   mainWindow = win;
@@ -553,6 +603,9 @@ app.whenReady().then(async () => {
     writeLog("warn", "runtime.stale-runs-interrupted", {
       count: interruptedRuns,
     });
+  // Rebuild the in-memory projection from the durable journal so runtime
+  // status remains available immediately after a main-process restart.
+  agentRuntimeService.restore(loadRuntimeTaskStatuses());
   const recoveredProcesses = await initializeManagedProcessRegistry(
     app.getPath("userData"),
   );
@@ -1511,7 +1564,12 @@ app.whenReady().then(async () => {
           if (item.type === "done") {
             await checkpointWriter.waitForIdle();
             await removeCheckpoint(id);
-            notifyTask("done");
+            notifyTask(
+              item.outcome === "paused" || item.outcome === "blocked"
+                ? "paused"
+                : "done",
+              item.result?.notice,
+            );
           }
           if (item.type === "error") notifyTask("error", item.message);
         }
@@ -1525,7 +1583,7 @@ app.whenReady().then(async () => {
           terminalEventSent = true;
           queueCheckpoint(true);
           rendererEvents.push(item);
-          notifyTask("error", message);
+          notifyTask("paused", message);
           writeLog("error", "agent.missingTerminalEvent", {
             id,
             taskId: request.taskId,
@@ -1554,7 +1612,10 @@ app.whenReady().then(async () => {
           if (events.length > 100) events.shift();
           queueCheckpoint(true);
           rendererEvents.push(item);
-          notifyTask("error", friendly);
+          notifyTask(
+            classifyRuntimeError(friendly).retryable ? "paused" : "error",
+            friendly,
+          );
         }
       } finally {
         if (controller.signal.aborted && !terminalEventSent) {

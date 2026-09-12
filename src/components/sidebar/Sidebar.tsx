@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode} from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import {
   Archive,
@@ -46,6 +46,30 @@ function sidebarRowKey(_: number, row: SidebarRow) {
 
 function conversationWorkspaceKey(group: SidebarWorkspaceGroup) {
   return group.key;
+}
+
+
+function highlightTaskQuery(text: string, query: string) {
+  const q = query.trim();
+  if (!q) return text;
+  const lower = text.toLowerCase();
+  const needle = q.toLowerCase();
+  const parts: ReactNode[] = [];
+  let start = 0;
+  let index = lower.indexOf(needle, start);
+  let key = 0;
+  while (index >= 0) {
+    if (index > start) parts.push(text.slice(start, index));
+    parts.push(
+      <mark key={`m${key++}`} className="task-query-mark">
+        {text.slice(index, index + needle.length)}
+      </mark>,
+    );
+    start = index + needle.length;
+    index = lower.indexOf(needle, start);
+  }
+  if (start < text.length) parts.push(text.slice(start));
+  return parts.length ? parts : text;
 }
 
 export interface SidebarProps {
@@ -358,7 +382,8 @@ export const Sidebar = memo(function Sidebar({
                     {row.group.name}
                   </span>
                   <span className="workspace-meta">
-                    {row.group.runningCount > 0 && (
+                    {row.group.runningCount > 0 &&
+                      collapsedWorkspaces.has(row.group.key) && (
                       <small
                         className="task-running"
                         title={`${row.group.runningCount} 个任务正在运行`}
@@ -434,9 +459,10 @@ export const Sidebar = memo(function Sidebar({
                   ) : (
                     <FolderOpen size={15} />
                   )}
-                  <span className="workspace-name">{row.group.name}</span>
+                  <span className="workspace-name">{highlightTaskQuery(row.group.name, taskQuery)}</span>
                   <span className="workspace-meta">
-                    {row.group.runningCount > 0 && (
+                    {row.group.runningCount > 0 &&
+                      collapsedWorkspaces.has(row.group.key) && (
                       <small
                         className="task-running"
                         title={`${row.group.runningCount} 个任务正在运行`}
@@ -565,13 +591,16 @@ export const Sidebar = memo(function Sidebar({
                 <GripVertical size={13} />
               </span>
               <div className="task-main">
-                <span>{row.task.name}</span>
+                <span>{highlightTaskQuery(row.task.name, taskQuery)}</span>
               </div>
               {(row.task.runningId || row.task.runStatus === "running") && (
                 <small className="task-running">运行中</small>
               )}
               {!row.task.runningId && row.task.runStatus === "blocked" && (
                 <small className="task-blocked">待补充</small>
+              )}
+              {!row.task.runningId && row.task.runStatus === "paused" && (
+                <small className="task-paused">未完成</small>
               )}
               <button
                 className="task-archive"

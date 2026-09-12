@@ -163,7 +163,7 @@ class CommandApprovalCache {
       (entry) =>
         entry.pattern.join(" ") === pattern.join(" ") &&
         entry.category === category &&
-        (scope === "session" || entry.workspace === workspace),
+        entry.workspace === workspace,
     );
     if (exists) return;
 
@@ -171,7 +171,7 @@ class CommandApprovalCache {
       pattern,
       scope,
       category,
-      workspace: scope === "permanent" ? workspace : undefined,
+      workspace,
       createdAt: Date.now(),
     };
 
@@ -212,14 +212,14 @@ class CommandApprovalCache {
 
     for (const entry of this.sessionRules) {
       if (entry.category !== category) continue;
+      if (entry.workspace && entry.workspace !== workspace) continue;
       rules.push({ action: "allow", match: entry.pattern });
     }
 
     for (const entry of this.permanentRules) {
       if (entry.category !== category) continue;
       // Permanent rules are scoped to workspace if specified
-      if (entry.workspace && workspace && entry.workspace !== workspace)
-        continue;
+      if (entry.workspace && entry.workspace !== workspace) continue;
       rules.push({ action: "allow", match: entry.pattern });
     }
 

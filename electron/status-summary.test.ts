@@ -4,6 +4,7 @@ import {
   isValidationActivity,
   latestRequestActivities,
   summarizeStatusActivities,
+  statusHeadline,
   statusOverviewTone,
 } from "../src/status-summary";
 import type { AgentActivity } from "../src/types";
@@ -86,4 +87,8 @@ test("a completed run stays successful when one step failed and was recovered", 
   assert.equal(statusOverviewTone("failed"), "failure");
   assert.equal(statusOverviewTone("running"), "running");
   assert.equal(statusOverviewTone("blocked"), "neutral");
+  assert.equal(statusOverviewTone("paused"), "neutral");
+  assert.equal(statusHeadline("paused", true), "任务未完成，可继续");
+  assert.equal(statusHeadline("completed", true), "本轮已完成");
+  assert.equal(statusHeadline("blocked", false), "等待补充信息");
 });

@@ -31,7 +31,7 @@ function successful(activity: AgentActivity) {
 /** Builds a pause result from the activities already persisted in the UI. */
 export function completionResultFromActivities(
   activities: readonly AgentActivity[],
-  notice = "任务已暂停，已有执行记录和部分结果已保留。",
+  notice = "任务未完成，已有执行记录和部分结果已保留，可继续。",
 ): AgentCompletionResult {
   let successfulTools = 0;
   let failedTools = 0;
@@ -130,7 +130,7 @@ const operationLabels: Record<string, string> = {
 /** Formats a compact, visible conclusion for a paused run. */
 export function pausedCompletionNarrative(
   result: AgentCompletionResult,
-  prefix = "任务已暂停，已有结果已保留。",
+  prefix = "任务未完成，已有结果已保留，可继续。",
 ) {
   const lines = [
     prefix,

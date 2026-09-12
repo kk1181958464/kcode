@@ -98,7 +98,7 @@ export function CollaborationPicker({
   return (
     <div className="collaboration-picker" ref={rootRef}>
       <button
-        className="collaboration-trigger"
+        className="collaboration-trigger composer-chip"
         type="button"
         aria-haspopup="menu"
         aria-expanded={open}

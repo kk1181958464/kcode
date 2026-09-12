@@ -83,8 +83,8 @@ test("restores a structured recovery plan independently of prose", () => {
   );
   assert.deepEqual(plan, {
     steps: [
-      { step: "检查现状", status: "completed", requires: ["inspect"] },
-      { step: "修改文件", status: "in_progress", requires: ["modify"] },
+      { step: "检查现状", status: "pending", requires: ["inspect"] },
+      { step: "修改文件", status: "pending", requires: ["modify"] },
     ],
     current: 1,
     requirementsDeclared: true,
@@ -278,7 +278,7 @@ test("aggregates the full run and preserves the latest unfinished structured pla
   assert.ok(context);
   assert.match(context, /覆盖本轮全部 40 条活动/);
   assert.match(context, /src\/core\.ts \(\+7 -2\)/);
-  assert.match(context, /\[已完成\] 完成实现/);
+  assert.match(context, /\[待执行\] 完成实现/);
   assert.match(context, /\[失败\] 运行回归测试/);
   assert.match(context, /不会重复成功的修改|不要重复成功的修改/);
 });

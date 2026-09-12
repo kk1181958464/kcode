@@ -14,6 +14,17 @@ import {
 } from "../../lib/reveal-path";
 import { openExternalUrl } from "./external";
 
+const MERMAID_CACHE_LIMIT = 32;
+const mermaidSvgCache = new Map<string, string>();
+const mermaidPending = new Map<string, Promise<string>>();
+
+function cacheMermaidSvg(chart: string, svg: string) {
+  mermaidSvgCache.delete(chart);
+  mermaidSvgCache.set(chart, svg);
+  while (mermaidSvgCache.size > MERMAID_CACHE_LIMIT)
+    mermaidSvgCache.delete(mermaidSvgCache.keys().next().value as string);
+}
+
 const MermaidDiagram = memo(function MermaidDiagram({
   chart,
 }: {
@@ -24,22 +35,40 @@ const MermaidDiagram = memo(function MermaidDiagram({
   const [error, setError] = useState("");
   useEffect(() => {
     let active = true;
+    const normalizedChart = chart.trim();
+    const cached = mermaidSvgCache.get(normalizedChart);
+    if (cached) {
+      setSvg(cached);
+      setError("");
+      return () => {
+        active = false;
+      };
+    }
     setSvg("");
     setError("");
-    void import("mermaid")
+    const pending = mermaidPending.get(normalizedChart) ?? import("mermaid")
       .then(async ({ default: mermaid }) => {
         mermaid.initialize({
           startOnLoad: false,
           securityLevel: "strict",
           theme: "default",
         });
-        const result = await mermaid.render(id, chart.trim());
-        if (active) setSvg(result.svg);
+        const result = await mermaid.render(id, normalizedChart);
+        cacheMermaidSvg(normalizedChart, result.svg);
+        return result.svg;
+      });
+    mermaidPending.set(normalizedChart, pending);
+    void pending
+      .then((result) => {
+        mermaidPending.delete(normalizedChart);
+        if (active) setSvg(result);
       })
       .catch(
-        (reason) =>
-          active &&
-          setError(reason instanceof Error ? reason.message : String(reason)),
+        (reason) => {
+          mermaidPending.delete(normalizedChart);
+          if (active)
+            setError(reason instanceof Error ? reason.message : String(reason));
+        },
       );
     return () => {
       active = false;

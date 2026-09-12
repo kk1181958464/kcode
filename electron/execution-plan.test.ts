@@ -112,7 +112,7 @@ test("summarizes statuses emitted by update_plan", () => {
     {
       steps: planSteps,
       current: 1,
-      statuses: ["completed", "running", "pending"],
+      statuses: ["pending", "pending", "pending"],
     },
   );
 });

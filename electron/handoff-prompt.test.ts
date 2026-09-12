@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { HANDOFF_SYSTEM_PROMPT } from "./handoff-prompt";
 import { summaryModelForProvider } from "./gateway";
 
 test("selects a configured cheap model without inventing one", () => {
@@ -28,4 +29,9 @@ test("selects a configured cheap model without inventing one", () => {
     ),
     "gpt-5.6-sol",
   );
+});
+
+test("handoff prompt treats runtime pending obligations as authoritative", () => {
+  assert.match(HANDOFF_SYSTEM_PROMPT, /runtime pending|未完成义务/);
+  assert.match(HANDOFF_SYSTEM_PROMPT, /Never mark a pending operation complete/);
 });

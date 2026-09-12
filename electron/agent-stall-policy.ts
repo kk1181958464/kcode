@@ -4,6 +4,7 @@ export const STALL_FINALIZATION_ROUNDS = 5;
 // not sufficient evidence of progress. Bound those rounds separately from the
 // exact-fingerprint guard so verification cannot spin forever.
 export const SEMANTIC_STALL_ROUNDS = 10;
+export const VALIDATION_STALL_ROUNDS = 3;
 
 export type StallAction = "continue" | "recover" | "finalize";
 

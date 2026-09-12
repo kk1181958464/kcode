@@ -14,6 +14,20 @@ test("classifies transport and provider errors separately", () => {
   );
 });
 
+test("treats a Chinese connection drop as retryable transport", () => {
+  const result = classifyRuntimeError("上游连接失败");
+  assert.equal(result.kind, "transport");
+  assert.equal(result.retryable, true);
+});
+
+test("treats a missing terminal event as a retryable pause", () => {
+  const result = classifyRuntimeError(
+    "Agent 运行已意外结束，但没有返回完成或错误状态。任务已安全暂停，请重试。",
+  );
+  assert.equal(result.kind, "transport");
+  assert.equal(result.retryable, true);
+});
+
 test("does not recommend retrying invalid credentials", () => {
   const result = classifyRuntimeError("401 invalid api key");
   assert.equal(result.kind, "authentication");

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
 import test from "node:test";
 import os from "node:os";
 import path from "node:path";
@@ -399,6 +399,242 @@ test("runtime compaction source and ledger carry structured evidence", () => {
   assert.match(source, /npm test/);
   assert.deepEqual(ledger.validations, ["测试通过"]);
   assert.deepEqual(ledger.changedFiles, []);
+  assert.deepEqual(ledger.pending, []);
+});
+
+test("runtime compaction keeps unfinished obligations in source, ledger and summary", () => {
+  const history: HistoryItem[] = [
+    { kind: "message", role: "user", content: "修改并验证登录页" },
+    ...Array.from({ length: 10 }, (_, index) => ({
+      kind: "message" as const,
+      role: "assistant" as const,
+      content: `较早记录 ${index}`,
+    })),
+  ];
+  const pending = ["coding:modify", "agent:spawn_executor"];
+  const source = buildRuntimeCompactionSource(
+    history,
+    [],
+    12_000,
+    8,
+    pending,
+  );
+  const ledger = buildRuntimeCompactionLedger(history, history, [], pending);
+  assert.match(source, /未完成义务/);
+  assert.match(source, /coding:modify/);
+  assert.match(source, /agent:spawn_executor/);
+  assert.deepEqual(ledger.pending, [
+    "实际修改 (coding:modify)",
+    "启动执行模型 (agent:spawn_executor)",
+  ]);
+  assert.equal(compactRuntimeHistory(history, false, [], 8, undefined, pending), true);
+  const fallback = history.find(
+    (item) =>
+      item.kind === "message" && item.content.includes("<runtime_compaction>"),
+  );
+  assert.ok(fallback);
+  assert.match(fallback.content, /未完成义务/);
+  assert.match(fallback.content, /coding:modify/);
+});
+
+test("second runtime compaction does not recover unfinished obligations from handoff prose", () => {
+  const previousSummary = [
+    "<runtime_model_compaction>",
+    "以下为模型生成的语义交接摘要。",
+    "看起来修改已经完成，可以结束。",
+    "未完成义务（压缩后仍必须用原生工具完成，不得仅凭摘要声称已完成）：",
+    "- 实际修改 (coding:modify)",
+    "- 修改后验证 (coding:validate)",
+    "</runtime_model_compaction>",
+  ].join("\n");
+  const history: HistoryItem[] = [
+    { kind: "message", role: "user", content: "继续完成登录修复" },
+    { kind: "message", role: "user", content: previousSummary },
+    ...Array.from({ length: 10 }, (_, index) => ({
+      kind: "message" as const,
+      role: "assistant" as const,
+      content: `后续记录 ${index} ${"x".repeat(80)}`,
+    })),
+  ];
+  const source = buildRuntimeCompactionSource(history, [], 12_000, 8, []);
+  assert.doesNotMatch(source, /coding:modify/);
+  assert.doesNotMatch(source, /coding:validate/);
+  assert.equal(
+    compactRuntimeHistory(history, false, [], 8, undefined, []),
+    true,
+  );
+  const next = history.find(
+    (item) =>
+      item.kind === "message" && item.content.includes("<runtime_compaction>"),
+  );
+  assert.ok(next);
+  assert.doesNotMatch(next.content, /runtime_pending_obligations/);
+  assert.doesNotMatch(next.content, /coding:modify/);
+  assert.doesNotMatch(next.content, /coding:validate/);
+});
+
+test("second runtime compaction prefers the structured obligation tag over contradictory prose", () => {
+  const pending = ["coding:modify"];
+  const previousSummary = [
+    "<runtime_model_compaction>",
+    "以下为模型生成的语义交接摘要。",
+    "看起来修改已经完成，可以结束。",
+    "未完成义务（压缩后仍必须用原生工具完成，不得仅凭摘要声称已完成）：",
+    "- 修改后验证 (coding:validate)",
+    "<runtime_pending_obligations>",
+    JSON.stringify(pending),
+    "</runtime_pending_obligations>",
+    "</runtime_model_compaction>",
+  ].join("\n");
+  const history: HistoryItem[] = [
+    { kind: "message", role: "user", content: "继续完成登录修复" },
+    { kind: "message", role: "user", content: previousSummary },
+    ...Array.from({ length: 10 }, (_, index) => ({
+      kind: "message" as const,
+      role: "assistant" as const,
+      content: `后续记录 ${index} ${"x".repeat(80)}`,
+    })),
+  ];
+  const source = buildRuntimeCompactionSource(history, [], 12_000, 8, []);
+  assert.match(source, /coding:modify/);
+  assert.doesNotMatch(source, /coding:validate/);
+});
+
+test("second runtime compaction keeps unfinished obligations from the previous handoff", () => {
+  const pending = ["coding:modify", "coding:validate"];
+  const previousSummary = [
+    "<runtime_model_compaction>",
+    "以下为模型生成的语义交接摘要。",
+    `已整理早期记录。${"进展叙述。".repeat(80)}`,
+    "<runtime_verified_evidence>",
+    JSON.stringify({ changedFiles: [], validations: [], failures: [] }),
+    "</runtime_verified_evidence>",
+    "未完成义务（压缩后仍必须用原生工具完成，不得仅凭摘要声称已完成）：",
+    "- 实际修改 (coding:modify)",
+    "- 修改后验证 (coding:validate)",
+    "<runtime_pending_obligations>",
+    JSON.stringify(pending),
+    "</runtime_pending_obligations>",
+    "</runtime_model_compaction>",
+  ].join("\n");
+  const history: HistoryItem[] = [
+    { kind: "message", role: "user", content: "继续完成登录修复" },
+    { kind: "message", role: "user", content: previousSummary },
+    ...Array.from({ length: 10 }, (_, index) => ({
+      kind: "message" as const,
+      role: "assistant" as const,
+      content: `后续记录 ${index} ${"x".repeat(80)}`,
+    })),
+  ];
+  assert.equal(
+    compactRuntimeHistory(history, false, [], 8, undefined, pending),
+    true,
+  );
+  const next = history.find(
+    (item) =>
+      item.kind === "message" && item.content.includes("<runtime_compaction>"),
+  );
+  assert.ok(next);
+  assert.match(next.content, /未完成义务/);
+  assert.match(next.content, /coding:modify/);
+  assert.match(next.content, /coding:validate/);
+  assert.match(next.content, /上次交接/);
+});
+
+test("second runtime compaction keeps the previous handoff outside the rolling fact window", () => {
+  const pending = ["coding:modify"];
+  const previousSummary = [
+    "<runtime_model_compaction>",
+    "以下为模型生成的语义交接摘要。",
+    "登录页修改尚未落地。",
+    "<runtime_verified_evidence>",
+    JSON.stringify({ changedFiles: [], validations: [], failures: [] }),
+    "</runtime_verified_evidence>",
+    "<runtime_pending_obligations>",
+    JSON.stringify(pending),
+    "</runtime_pending_obligations>",
+    "</runtime_model_compaction>",
+  ].join("\n");
+  const history: HistoryItem[] = [
+    { kind: "message", role: "user", content: "继续完成登录修复" },
+    { kind: "message", role: "user", content: previousSummary },
+    ...Array.from({ length: 90 }, (_, index) => ({
+      kind: "result" as const,
+      callId: `noise-${index}`,
+      content: JSON.stringify({
+        success: true,
+        summary: `读取第 ${index} 项`,
+        data: { path: `src/file-${index}.ts` },
+        truncated: false,
+      }),
+    })),
+    ...Array.from({ length: 8 }, (_, index) => ({
+      kind: "message" as const,
+      role: "assistant" as const,
+      content: `recent-${index}`,
+    })),
+  ];
+  const source = buildRuntimeCompactionSource(
+    history,
+    [],
+    12_000,
+    8,
+    pending,
+  );
+  assert.match(source, /coding:modify/);
+  assert.match(source, /上次运行交接|登录页修改尚未落地/);
+  assert.equal(
+    compactRuntimeHistory(history, false, [], 8, undefined, pending),
+    true,
+  );
+  const next = history.find(
+    (item) =>
+      item.kind === "message" && item.content.includes("<runtime_compaction>"),
+  );
+  assert.ok(next);
+  assert.match(next.content, /上次交接/);
+  assert.match(next.content, /登录页修改尚未落地/);
+  assert.match(next.content, /coding:modify/);
+});
+
+test("model compaction summary keeps structured unfinished obligations", async () => {
+  const history: HistoryItem[] = [
+    { kind: "message", role: "user", content: "修改并验证登录页" },
+    ...Array.from({ length: 10 }, (_, index) => ({
+      kind: "message" as const,
+      role: "assistant" as const,
+      content: `较早记录 ${index}`,
+    })),
+  ];
+  const pending = ["coding:modify"];
+  const result = await compactRuntimeHistoryWithModel(history, {
+    requestId: "runtime-model-pending-compaction",
+    request: runtimeRequest,
+    provider: fakeProvider,
+    pendingOperations: pending,
+    summarize: async (args) => {
+      assert.match(args.source, /coding:modify/);
+      assert.ok(args.ledger.pending.some((item) => item.includes("coding:modify")));
+      return {
+        summary: "看起来修改已经完成，可以结束。",
+        ledger: { ...args.ledger, pending: [] },
+        modelGenerated: true,
+        durationMs: 1,
+        modelId: "fake-model",
+      };
+    },
+  });
+  assert.equal(result.strategy, "model");
+  const summary = history.find(
+    (item) =>
+      item.kind === "message" &&
+      item.content.includes("<runtime_model_compaction>"),
+  );
+  assert.ok(summary);
+  assert.match(summary.content, /runtime_pending_obligations/);
+  assert.match(summary.content, /coding:modify/);
+  assert.match(summary.content, /未完成义务/);
+  assert.match(summary.content, /看起来修改已经完成/);
 });
 
 test("packs older records independently instead of dropping the middle", () => {
@@ -486,4 +722,108 @@ test("runAgent wires model compaction into the live turn", async () => {
         event.strategy === "model",
     ),
   );
+});
+
+test("runAgent keeps unfinished obligations in live model compaction", async () => {
+  const workspacePath = await mkdtemp(
+    path.join(os.tmpdir(), "kcode-live-pending-compaction-"),
+  );
+  const request = {
+    ...runtimeRequest,
+    workspacePath,
+    contextWindow: 50_000,
+    messages: [
+      { role: "user" as const, content: "继续完成登录修复" },
+      ...Array.from({ length: 10 }, (_, index) => ({
+        role: "assistant" as const,
+        content: `较早的执行记录 ${index} ${"x".repeat(900)}`,
+      })),
+    ],
+    recoveryPlan: {
+      steps: [
+        {
+          step: "修改登录",
+          status: "completed" as const,
+          requires: ["modify" as const],
+        },
+      ],
+      current: 0,
+      requirementsDeclared: true,
+    },
+  };
+  let pendingSeen = false;
+  let wrote = false;
+  const deps: RunAgentDeps = {
+    getProvider: async () => fakeProvider,
+    summarizeRuntimeContext: async (args) => {
+      pendingSeen = args.ledger.pending.some((item) =>
+        item.includes("coding:modify"),
+      );
+      assert.match(args.source, /coding:modify|实际修改/);
+      return {
+        summary: "模型已整理早期执行记录，修改仍未完成。",
+        ledger: args.ledger,
+        modelGenerated: true,
+        durationMs: 1,
+        modelId: "fake-model",
+      };
+    },
+    async *streamTurn() {
+      if (wrote) {
+        yield {
+          type: "complete",
+          turn: {
+            text: "已根据实际工具结果完成修改。",
+            calls: [],
+            rawCalls: [],
+            usage: { input: 10, output: 5, cached: 0 },
+          },
+        };
+        return;
+      }
+      if (pendingSeen) {
+        wrote = true;
+        yield {
+          type: "complete",
+          turn: {
+            text: "现在执行缺少的修改。",
+            calls: [
+              {
+                id: "pending-write",
+                name: "write_file",
+                input: { path: "login.ts", content: "fixed\n" },
+              },
+            ],
+            rawCalls: [],
+            usage: { input: 10, output: 5, cached: 0 },
+          },
+        };
+        return;
+      }
+      yield {
+        type: "complete",
+        turn: {
+          text: "旧上下文已经足够，可以直接结束。",
+          calls: [],
+          rawCalls: [],
+          usage: { input: 10, output: 5, cached: 0 },
+        },
+      };
+    },
+  };
+  const events = [];
+  for await (const event of runAgent(
+    "live-pending-compaction",
+    request,
+    new AbortController().signal,
+    deps,
+  ))
+    events.push(event);
+  assert.equal(pendingSeen, true);
+  assert.equal(
+    await readFile(path.join(workspacePath, "login.ts"), "utf8"),
+    "fixed\n",
+  );
+  const done = events.find((event) => event.type === "done");
+  assert.equal(done && "outcome" in done ? done.outcome : undefined, "completed");
 });

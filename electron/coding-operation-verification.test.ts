@@ -16,6 +16,7 @@ import {
   shouldRequireCodingTool,
   structuredToolEvidenceSummary,
   successfulCodingEvidence,
+  unavailableCodingOperations,
   type CodingOperation,
   type CodingVerificationHistoryItem,
 } from "./coding-operation-verification";
@@ -47,6 +48,152 @@ test("requires successful evidence for explicitly classified validation commands
       ]),
     ],
     ["execute", "validate"],
+  );
+});
+
+test("process tools require execute evidence and accept start or output results", () => {
+  assert.deepEqual(
+    [...codingOperationsRequiredByCalls([{ name: "start_process" }])],
+    ["execute"],
+  );
+  assert.deepEqual(
+    [
+      ...codingOperationsRequiredByCalls([
+        { name: "process_output" },
+        { name: "stop_process" },
+      ]),
+    ],
+    ["execute"],
+  );
+  const started: CodingVerificationHistoryItem[] = [
+    {
+      kind: "calls",
+      calls: [{ id: "start", name: "start_process", input: { command: "npm test" } }],
+    },
+    compactOperationEvidenceResult("start", "start_process", true, {
+      executed: true,
+      operationEvidence: ["execute"],
+    }),
+  ];
+  assert.deepEqual([...successfulCodingEvidence(started)], ["execute"]);
+  assert.deepEqual(
+    missingVerifiedCodingOperations(new Set(["execute"]), successfulCodingEvidence(started), started),
+    [],
+  );
+  const exitedOutput: CodingVerificationHistoryItem[] = [
+    {
+      kind: "calls",
+      calls: [{ id: "out", name: "process_output", input: { processId: "proc-1" } }],
+    },
+    compactOperationEvidenceResult("out", "process_output", true, {
+      executed: true,
+      exitCode: 0,
+      operationEvidence: ["execute"],
+    }),
+  ];
+  assert.deepEqual([...successfulCodingEvidence(exitedOutput)], ["execute"]);
+});
+
+test("skipped diagnostics waives execute and validate unless another call requested them", () => {
+  const skipped: CodingVerificationHistoryItem[] = [
+    {
+      kind: "calls",
+      calls: [{ id: "lint", name: "diagnostics", input: { kind: "lint" } }],
+    },
+    compactOperationEvidenceResult("lint", "diagnostics", false, {
+      executed: false,
+    }),
+  ];
+  assert.deepEqual(
+    [...unavailableCodingOperations(skipped)].sort(),
+    ["execute", "validate"],
+  );
+  assert.deepEqual(
+    missingVerifiedCodingOperations(
+      new Set(["execute", "validate"]),
+      successfulCodingEvidence(skipped),
+      skipped,
+    ),
+    [],
+  );
+
+  const blockedCommand: CodingVerificationHistoryItem[] = [
+    {
+      kind: "calls",
+      calls: [
+        {
+          id: "cmd",
+          name: "run_command",
+          input: { command: "npm test", purpose: "validate" },
+        },
+      ],
+    },
+    compactOperationEvidenceResult("cmd", "run_command", false, {
+      executed: false,
+    }),
+  ];
+  assert.deepEqual([...unavailableCodingOperations(blockedCommand)], []);
+  assert.deepEqual(
+    missingVerifiedCodingOperations(
+      new Set(["execute", "validate"]),
+      successfulCodingEvidence(blockedCommand),
+      blockedCommand,
+    ).sort(),
+    ["execute", "validate"],
+  );
+
+  const skippedWithCommand: CodingVerificationHistoryItem[] = [
+    {
+      kind: "calls",
+      calls: [
+        { id: "lint", name: "diagnostics", input: { kind: "lint" } },
+        {
+          id: "cmd",
+          name: "run_command",
+          input: { command: "npm test", purpose: "validate" },
+        },
+      ],
+    },
+    compactOperationEvidenceResult("lint", "diagnostics", false, {
+      executed: false,
+    }),
+    compactOperationEvidenceResult("cmd", "run_command", false, {
+      executed: false,
+    }),
+  ];
+  assert.deepEqual([...unavailableCodingOperations(skippedWithCommand)], []);
+  assert.deepEqual(
+    missingVerifiedCodingOperations(
+      new Set(["execute", "validate"]),
+      successfulCodingEvidence(skippedWithCommand),
+      skippedWithCommand,
+    ).sort(),
+    ["execute", "validate"],
+  );
+
+  const skippedAfterEdit: CodingVerificationHistoryItem[] = [
+    {
+      kind: "calls",
+      calls: [
+        { id: "edit", name: "write_file", input: { path: "a.ts" } },
+        { id: "lint", name: "diagnostics", input: { kind: "lint" } },
+      ],
+    },
+    compactOperationEvidenceResult("edit", "write_file", true, {
+      changed: true,
+      path: "a.ts",
+    }),
+    compactOperationEvidenceResult("lint", "diagnostics", false, {
+      executed: false,
+    }),
+  ];
+  assert.deepEqual(
+    missingVerifiedCodingOperations(
+      new Set(["modify", "execute", "validate"]),
+      successfulCodingEvidence(skippedAfterEdit),
+      skippedAfterEdit,
+    ),
+    [],
   );
 });
 

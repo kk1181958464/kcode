@@ -8,6 +8,7 @@ export const MODEL_TURN_HTTP_ATTEMPTS = 10;
 // in separate turns and is not limited by these values.
 export const MODEL_TURN_MAX_DURATION_MS = 8 * 60_000;
 export const FINALIZATION_TURN_MAX_DURATION_MS = 2 * 60_000;
+export const REASONING_ONLY_IDLE_TIMEOUT_MS = 45_000;
 const INITIAL_STREAM_RETRY_DELAY_MS = 5_000;
 const MAX_STREAM_RETRY_DELAY_MS = 60_000;
 

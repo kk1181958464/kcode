@@ -693,6 +693,9 @@ export type ModelEvent =
       changed?: boolean;
       strategy?: "model" | "fallback" | "none";
       modelId?: string;
+      reason?: "threshold" | "hard_pressure";
+      durationMs?: number;
+      tokensSaved?: number;
     }
   | {
       type: "usage";

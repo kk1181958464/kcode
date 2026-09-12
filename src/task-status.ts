@@ -1,4 +1,5 @@
-import type { AgentActivity, ChatMessage } from "./types";
+import type { AgentActivity, AgentCompletionResult, ChatMessage } from "./types";
+import { classifyRuntimeError } from "./runtime-errors";
 
 export type TaskRunStatus =
   | "idle"
@@ -53,19 +54,63 @@ export function recoverTaskRunStatus(task: {
   messages: ChatMessage[];
 }): TaskRunStatus {
   if (task.runningId || task.runStatus === "running") return "paused";
-  if (task.runStatus) return task.runStatus;
+  if (task.runStatus === "cancelled") return "cancelled";
   const latestAssistant = [...task.messages]
     .reverse()
     .find(
       (message) =>
         message.role === "assistant" &&
-        Boolean(message.content || message.error),
+        Boolean(
+          message.content || message.error || message.completionResult,
+        ),
     );
-  if (latestAssistant?.error) return "failed";
   if (latestAssistant?.completionResult?.kind === "blocked") return "blocked";
   if (latestAssistant?.completionResult?.kind === "incomplete") return "paused";
+  if (latestAssistant?.error) {
+    return isRetryableDisconnectError(latestAssistant.error)
+      ? "paused"
+      : "failed";
+  }
+  if (task.runStatus) return task.runStatus;
   if (latestAssistant) return "completed";
   return "idle";
+}
+
+function isLaunchFailure(error: string) {
+  return /模型请求未能启动|启动阶段中断/.test(error);
+}
+
+export function isRetryableDisconnectError(error: string) {
+  return (
+    !isLaunchFailure(error) && classifyRuntimeError(error).retryable
+  );
+}
+
+const emptyDisconnectResult = (notice: string): AgentCompletionResult => ({
+  kind: "incomplete",
+  operations: [],
+  missingOperations: [],
+  toolCalls: 0,
+  successfulTools: 0,
+  failedTools: 0,
+  changedFiles: [],
+  additions: 0,
+  deletions: 0,
+  notice,
+});
+
+/** Persist a retryable disconnect as an incomplete pause, not a hard failure. */
+export function recoverRetryableDisconnectMessages(messages: ChatMessage[]) {
+  return messages.map((message) => {
+    if (message.role !== "assistant" || !message.error || message.completionResult)
+      return message;
+    if (!isRetryableDisconnectError(message.error)) return message;
+    return {
+      ...message,
+      error: undefined,
+      completionResult: emptyDisconnectResult(message.error),
+    };
+  });
 }
 
 export function recoverOrphanedFailure(

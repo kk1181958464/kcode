@@ -4,6 +4,7 @@ import {
   initialRuntimeState,
   type RuntimeState,
 } from "../src/runtime-state-machine";
+import type { RuntimeTaskStatusSnapshot } from "../src/runtime-protocol";
 
 export type RuntimeRunSnapshot = RuntimeState & {
   taskId: string;
@@ -24,6 +25,27 @@ export class AgentRuntimeService {
     return state;
   }
 
+  /** Restore the latest durable projection after the main process starts. */
+  restore(snapshots: readonly RuntimeTaskStatusSnapshot[]) {
+    for (const snapshot of snapshots) {
+      const active =
+        snapshot.status === "running" || snapshot.status === "waiting";
+      this.runs.set(snapshot.requestId, {
+        taskId: snapshot.taskId,
+        active,
+        state: {
+          requestId: snapshot.requestId,
+          threadStatus: snapshot.status,
+          turnStatus: snapshot.turnStatus,
+          lastSequence: snapshot.lastSequence,
+          startedAt: snapshot.updatedAt,
+          updatedAt: snapshot.updatedAt,
+        },
+      });
+    }
+    this.prune();
+  }
+
   apply(taskId: string, requestId: string, event: AgentEvent) {
     const current = this.runs.get(requestId);
     const state = current?.state ?? initialRuntimeState(requestId);
@@ -33,10 +55,13 @@ export class AgentRuntimeService {
       event.sequence ?? state.lastSequence + 1,
       event.emittedAt,
     );
+    // The reducer is authoritative: stale events return the exact same state
+    // object and must not resurrect a terminal run.
+    if (next === state) return next;
     this.runs.set(requestId, {
       taskId,
       state: next,
-      active: event.type !== "done" && event.type !== "error",
+      active: next.threadStatus === "running" || next.threadStatus === "waiting",
     });
     this.prune();
     return next;

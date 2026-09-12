@@ -156,10 +156,6 @@ export function summarizeExecutionPlan(
   if (!source?.planSteps?.length) return undefined;
   const steps = source.planSteps;
   const current = Math.min(Math.max(0, source.planStep ?? 0), steps.length - 1);
-  const declaredStatuses =
-    source.planStatuses?.length === steps.length
-      ? source.planStatuses
-      : undefined;
   const declaredRequirements =
     source.planRequirements?.length === steps.length
       ? source.planRequirements
@@ -172,13 +168,13 @@ export function summarizeExecutionPlan(
       .reverse()
       .find(
         (activity) =>
-          !["report_no_change", "request_user_input"].includes(activity.tool),
+          !["report_no_change", "request_user_input", "update_plan"].includes(
+            activity.tool,
+          ),
       );
     if (last?.status === "running" || last?.status === "waiting")
       return "running";
     if (last?.status === "failed" || last?.status === "denied") return "failed";
-    if (declaredStatuses?.[index] === "completed") return "completed";
-    if (declaredStatuses?.[index] === "in_progress") return "running";
     if (last && (last.status === "success" || last.status === "completed"))
       return "completed";
     return "pending";

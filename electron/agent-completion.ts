@@ -51,10 +51,12 @@ function uniqueTransfers(values: Iterable<AgentFileTransfer>) {
   return [...transfers.values()];
 }
 
+export function pendingOperationLabel(operation: string) {
+  return operationLabels[operation] ?? operation;
+}
+
 function missingEvidenceNotice(missing: readonly string[]) {
-  const labels = missing.map(
-    (operation) => operationLabels[operation] ?? operation,
-  );
+  const labels = missing.map(pendingOperationLabel);
   return `未检测到${labels.join("、")}的成功运行记录。已保留模型回答，但没有把这些操作标记为完成。`;
 }
 
