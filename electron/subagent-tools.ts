@@ -2,8 +2,9 @@ import { createRequire } from "node:module";
 import { executorModelOverrides } from "./collaboration";
 import { latestUserRequestContent } from "./coding-operation-verification";
 import {
+  SUBAGENT_WAIT_DEFAULT_MS,
+  SUBAGENT_WAIT_MAX_MS,
   SUBAGENT_WAIT_MIN_MS,
-  SUBAGENT_WAIT_SLICE_MS,
 } from "./agent-run-budget";
 import {
   collectedSubagentSummaries,
@@ -51,7 +52,8 @@ export type SubagentToolContext = {
 export type SubagentToolDeps = {
   maxDepth: number;
   waitMinMs: number;
-  waitSliceMs: number;
+  waitDefaultMs: number;
+  waitMaxMs: number;
   executorModelOverrides: typeof executorModelOverrides;
   getProviderWithKey: (id: string) => Promise<{
     enabled: boolean;
@@ -90,7 +92,8 @@ function productionGetProviderWithKey(id: string) {
 const defaultSubagentDeps: SubagentToolDeps = {
   maxDepth: MAX_SUBAGENT_DEPTH,
   waitMinMs: SUBAGENT_WAIT_MIN_MS,
-  waitSliceMs: SUBAGENT_WAIT_SLICE_MS,
+  waitDefaultMs: SUBAGENT_WAIT_DEFAULT_MS,
+  waitMaxMs: SUBAGENT_WAIT_MAX_MS,
   executorModelOverrides,
   getProviderWithKey: productionGetProviderWithKey,
   latestUserRequestContent,
@@ -109,12 +112,13 @@ export function subagentWaitTimeoutMs(
   requestedTimeout: unknown,
   waitTimeoutOverrideMs: number | undefined,
   waitMinMs: number,
-  waitSliceMs: number,
+  waitDefaultMs: number,
+  waitMaxMs: number = waitDefaultMs,
 ) {
   const requested = Number(requestedTimeout);
   const requestedWaitTimeoutMs = Number.isFinite(requested)
-    ? Math.min(waitSliceMs, Math.max(waitMinMs, Math.floor(requested)))
-    : waitSliceMs;
+    ? Math.min(waitMaxMs, Math.max(waitMinMs, Math.floor(requested)))
+    : Math.min(waitMaxMs, Math.max(waitMinMs, waitDefaultMs));
   if (waitTimeoutOverrideMs === undefined) return requestedWaitTimeoutMs;
   return Math.min(
     requestedWaitTimeoutMs,
@@ -246,11 +250,14 @@ export async function executeSubagentTool(
     const agentIds = Array.isArray(input.agentIds)
       ? input.agentIds.map(String)
       : undefined;
+    // Codex-style: one wait up to the requested timeout (min..max), not short
+    // observation slices. Prefer longer waits (minutes) to avoid busy polling.
     const waitTimeoutMs = subagentWaitTimeoutMs(
       input.timeoutMs,
       ctx.waitTimeoutOverrideMs,
       deps.waitMinMs,
-      deps.waitSliceMs,
+      deps.waitDefaultMs,
+      deps.waitMaxMs,
     );
     const waitResult = await deps.waitForSubagents(requestId, agentIds, {
       signal,

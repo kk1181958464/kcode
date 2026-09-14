@@ -15,6 +15,8 @@ import {
   ROOT_SOFT_ROUND_LIMIT,
   agentFinalizationMode,
   externalWaitLimitReached,
+  EXTERNAL_WAIT_STALL_ROUNDS,
+  EXTERNAL_WAIT_MAX_DURATION_MS,
 } from "./agent-run-budget";
 
 test("bounds ordinary runs with an explicit root-task budget", () => {
@@ -145,18 +147,26 @@ test("gives ordinary subagents a bounded independent budget", () => {
 
 test("detects a child wait that has exceeded its no-progress guard", () => {
   assert.equal(
-    externalWaitLimitReached({ stalledRounds: 3, startedAt: 100, now: 100 }),
+    externalWaitLimitReached({
+      stalledRounds: EXTERNAL_WAIT_STALL_ROUNDS - 1,
+      startedAt: 100,
+      now: 100,
+    }),
     false,
   );
   assert.equal(
-    externalWaitLimitReached({ stalledRounds: 4, startedAt: 100, now: 100 }),
+    externalWaitLimitReached({
+      stalledRounds: EXTERNAL_WAIT_STALL_ROUNDS,
+      startedAt: 100,
+      now: 100,
+    }),
     true,
   );
   assert.equal(
     externalWaitLimitReached({
       stalledRounds: 0,
       startedAt: 100,
-      now: 300_100,
+      now: 100 + EXTERNAL_WAIT_MAX_DURATION_MS,
     }),
     true,
   );

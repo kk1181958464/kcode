@@ -155,6 +155,8 @@ import {
   latestConversationWindow,
   prependConversationWindow,
   windowContainingTurn,
+  offsetWithinScrollContainer,
+  scrollContainerToElementTop,
   type ConversationWindow,
 } from "./conversation-window";
 import {
@@ -923,7 +925,8 @@ export default function App() {
   const [visibleTurnWindow, setVisibleTurnWindow] =
     useState<ConversationWindow>({ start: 0, end: 0 });
   const [turnRailOverflow, setTurnRailOverflow] = useState({
-    up: false,
+    // Default session opens following the bottom of the thread.
+    up: true,
     down: false,
   });
   const registerTurn = useCallback(
@@ -1269,10 +1272,15 @@ export default function App() {
     loadingOlderTurnsRef.current = false;
     const targetId = pendingTurnTargetRef.current;
     const target = targetId ? turnRefs.current.get(targetId) : undefined;
-    if (conversation && targetId && target) {
-      conversation.scrollTop = Math.max(0, target.offsetTop - 20);
+    if (conversation && targetId && target?.isConnected) {
+      scrollContainerToElementTop(conversation, target, 28);
       setActiveConversationTurn(targetId);
       pendingTurnTargetRef.current = undefined;
+      target.classList.add("turn-scroll-target");
+      window.setTimeout(
+        () => target.classList.remove("turn-scroll-target"),
+        900,
+      );
     }
     refreshTurnPositions();
     const pendingLatestScroll = pendingLatestScrollRef.current;
@@ -1292,11 +1300,27 @@ export default function App() {
   }, [conversationPageSize, conversationTurns.length, visibleTurnWindow]);
 
   const updateTurnRailOverflow = useCallback(() => {
-    const rail = turnRailRef.current;
-    if (!rail) return;
+    // Cue visibility follows the conversation viewport, not the tick strip:
+    // top → down only, middle → both, bottom → up only.
+    // On first open, scrollTop is still 0 before scrollToLatest settles while
+    // autoFollow is already true — trust follow-bottom so we do not flash the
+    // down cue (task switches restore scroll first, so they already looked fine).
+    const conversation = conversationRef.current;
+    if (!conversation) return;
+    const { scrollTop, clientHeight, scrollHeight } = conversation;
+    const maxScroll = Math.max(0, scrollHeight - clientHeight);
+    const followingBottom = autoFollowRef.current;
+    const fitsWithoutScroll = maxScroll <= 4;
+    const atBottom =
+      fitsWithoutScroll ||
+      followingBottom ||
+      scrollTop >= maxScroll - 4;
+    const atTop = fitsWithoutScroll
+      ? true
+      : !followingBottom && scrollTop <= 4;
     const next = {
-      up: rail.scrollTop > 4,
-      down: rail.scrollTop + rail.clientHeight < rail.scrollHeight - 4,
+      up: !atTop,
+      down: !atBottom,
     };
     setTurnRailOverflow((current) =>
       current.up === next.up && current.down === next.down ? current : next,
@@ -1430,10 +1454,16 @@ export default function App() {
       cancelAnimationFrame(turnLayoutFrameRef.current);
     turnLayoutFrameRef.current = requestAnimationFrame(() => {
       turnLayoutFrameRef.current = undefined;
-      turnPositionsRef.current = [...turnRefs.current.entries()]
-        .map(([id, element]) => ({ id, top: element.offsetTop }))
-        .sort((a, b) => a.top - b.top);
       const conversation = conversationRef.current;
+      turnPositionsRef.current = [...turnRefs.current.entries()]
+        .filter(([, element]) => element.isConnected)
+        .map(([id, element]) => ({
+          id,
+          top: conversation
+            ? offsetWithinScrollContainer(conversation, element)
+            : element.offsetTop,
+        }))
+        .sort((a, b) => a.top - b.top);
       if (conversation) updateActiveTurn(conversation);
     });
   }
@@ -1635,6 +1665,7 @@ export default function App() {
         !shouldFollow || scrollObservation.showScrollButton,
       );
       updateActiveTurn(target);
+      updateTurnRailOverflow();
     });
   }
 
@@ -1683,6 +1714,7 @@ export default function App() {
       programmaticScrollRef.current = false;
       setScrollingToBottom(false);
       setShowScrollToBottom(false);
+      updateTurnRailOverflow();
     };
 
     const alignToLatest = () => {
@@ -1778,15 +1810,15 @@ export default function App() {
   }
 
   function scrollToTurn(turnId: string, index: number) {
-    if (index === conversationTurns.length - 1) return scrollToLatest("auto");
     const conversation = conversationRef.current;
-    const element = turnRefs.current.get(turnId);
     if (!conversation) return;
-    interruptBottomSettle();
+    interruptBottomSettle(true);
     conversationScrollControllerRef.current.markUserIntent();
     autoFollowRef.current = false;
     setShowScrollToBottom(true);
-    if (!element) {
+    const element = turnRefs.current.get(turnId);
+    // Element missing or detached: expand the paged window, then scroll in layout.
+    if (!element || !element.isConnected) {
       pendingTurnTargetRef.current = turnId;
       setVisibleTurnWindow(
         windowContainingTurn(
@@ -1797,11 +1829,17 @@ export default function App() {
       );
       return;
     }
-    conversation.scrollTo({
-      top: Math.max(0, element.offsetTop - 20),
+    scrollContainerToElementTop(conversation, element, 28);
+    setActiveConversationTurn(turnId);
+    requestAnimationFrame(updateTurnRailOverflow);
+    element.classList.remove("turn-scroll-target");
+    void element.offsetWidth;
+    element.classList.add("turn-scroll-target");
+    window.setTimeout(() => element.classList.remove("turn-scroll-target"), 900);
+    turnButtonRefs.current.get(turnId)?.scrollIntoView({
+      block: "nearest",
       behavior: "auto",
     });
-    setActiveConversationTurn(turnId);
   }
   const workspaceGroups = useMemo(() => {
     const sidebarTasks = taskRuntimeStore.overlayTasks(tasks);

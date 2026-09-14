@@ -121,6 +121,39 @@ test("buildRoundEvidenceSnapshot marks planner spawn, plan requirements and miss
   assert.equal(snapshot.hasMutationEvidence, false);
 });
 
+test("single-step collaboration plans still require an executor", () => {
+  const pending = buildRoundEvidenceSnapshot(
+    snapshotInput({
+      plannerCoordinator: true,
+      plan: {
+        steps: ["落实修改并验证"],
+        statuses: ["pending"],
+        requirements: [["modify", "validate"]],
+        cursor: 0,
+        requirementsDeclared: true,
+      },
+      successfulTools: new Set(),
+    }),
+  );
+  assert.equal(pending.plannerExecutionPending, true);
+  const spawned = buildRoundEvidenceSnapshot(
+    snapshotInput({
+      plannerCoordinator: true,
+      plan: {
+        steps: ["落实修改并验证"],
+        statuses: ["in_progress"],
+        requirements: [["modify", "validate"]],
+        cursor: 0,
+        requirementsDeclared: true,
+      },
+      successfulTools: new Set(["spawn_agent"]),
+      hasUncollectedAgentWork: true,
+    }),
+  );
+  assert.equal(spawned.plannerExecutionPending, false);
+  assert.equal(spawned.evidenceComplete, false);
+});
+
 test("declared completed plan steps are not complete without tool evidence", () => {
   const snapshot = buildRoundEvidenceSnapshot(
     snapshotInput({

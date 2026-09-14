@@ -94,8 +94,9 @@ function memorySubagent(
     calls,
     spawned,
     maxDepth: 1,
-    waitMinMs: 5_000,
-    waitSliceMs: 60_000,
+    waitMinMs: 10_000,
+    waitDefaultMs: 300_000,
+    waitMaxMs: 3_600_000,
     executorModelOverrides: () => undefined,
     async getProviderWithKey(id) {
       calls.push(`provider:${id}`);
@@ -217,11 +218,11 @@ function memoryCommand(
 }
 
 test("subagentWaitTimeoutMs clamps requested and override windows", () => {
-  assert.equal(subagentWaitTimeoutMs(1_000, undefined, 5_000, 60_000), 5_000);
-  assert.equal(subagentWaitTimeoutMs(120_000, undefined, 5_000, 60_000), 60_000);
-  assert.equal(subagentWaitTimeoutMs("nope", undefined, 5_000, 60_000), 60_000);
-  assert.equal(subagentWaitTimeoutMs(5_000, 100, 5_000, 60_000), 100);
-  assert.equal(subagentWaitTimeoutMs(5_000, 70_000, 5_000, 60_000), 5_000);
+  assert.equal(subagentWaitTimeoutMs(1_000, undefined, 10_000, 300_000, 3_600_000), 10_000);
+  assert.equal(subagentWaitTimeoutMs(120_000, undefined, 10_000, 300_000, 3_600_000), 120_000);
+  assert.equal(subagentWaitTimeoutMs("nope", undefined, 10_000, 300_000, 3_600_000), 300_000);
+  assert.equal(subagentWaitTimeoutMs(5_000, 100, 10_000, 300_000, 3_600_000), 100);
+  assert.equal(subagentWaitTimeoutMs(5_000_000, 70_000, 10_000, 300_000, 3_600_000), 70_000);
 });
 
 test("spawn_agent records a regular child and forwards the runner", async () => {

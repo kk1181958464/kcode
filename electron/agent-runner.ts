@@ -1188,7 +1188,9 @@ export async function* runAgent(
     });
     const roundFingerprints: string[] = [];
     const turnRecords: ToolCallRecord[] = [];
-    const roundWaitDeadline = Date.now() + SUBAGENT_WAIT_SLICE_MS;
+    // One wait_agent may auto-continue across progress slices up to the
+    // external-wait ceiling; keep the shared per-turn budget aligned with that.
+    const roundWaitDeadline = Date.now() + EXTERNAL_WAIT_MAX_DURATION_MS;
     let roundAdvanced = false;
     let roundOperationalProgress = false;
     let roundWaitingOnExternalWork = false;

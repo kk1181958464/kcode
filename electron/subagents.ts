@@ -9,6 +9,10 @@ import type {
   ReasoningEffort,
   SubagentCheckpoint,
 } from "../src/types";
+import {
+  SUBAGENT_WAIT_DEFAULT_MS,
+  SUBAGENT_WAIT_MAX_MS,
+} from "./agent-run-budget";
 
 const MAX_ACTIVE_SUBAGENTS_PER_ROOT = 8;
 const MAX_TOTAL_SUBAGENTS_PER_ROOT = 12;
@@ -19,8 +23,8 @@ const MAX_TRANSCRIPT_CHARS = 10_000;
 const MAX_RETAINED_TRANSCRIPT_CHARS = 2_000;
 const MAX_RESULT_ACTIVITIES = 25;
 const STOP_GRACE_MS = 10_000;
-export const DEFAULT_SUBAGENT_WAIT_TIMEOUT_MS = 60_000;
-export const MAX_SUBAGENT_WAIT_TIMEOUT_MS = 60_000;
+export const DEFAULT_SUBAGENT_WAIT_TIMEOUT_MS = SUBAGENT_WAIT_DEFAULT_MS;
+export const MAX_SUBAGENT_WAIT_TIMEOUT_MS = SUBAGENT_WAIT_MAX_MS;
 
 export type WaitForSubagentsOptions = {
   timeoutMs?: number;
@@ -541,7 +545,7 @@ export async function waitForSubagents(
   const message = completed.length
     ? `已有 ${completed.length} 个子 Agent 返回结果。`
     : timedOut
-      ? `等待 ${Math.ceil(timeoutMs / 1_000)} 秒后暂无新结果；${pending.length} 个子 Agent 仍在后台运行。`
+      ? `观察窗口 ${Math.ceil(timeoutMs / 1_000)} 秒已到，尚无完整结果；${pending.length} 个子 Agent 仍在后台运行（超时不会停止它们，可继续 wait_agent）。`
       : interrupted
         ? `等待已被新指令或父任务状态变化打断；${pending.length} 个子 Agent 仍在后台运行。`
         : "所选子 Agent 的结果已收集。";
@@ -710,3 +714,4 @@ export async function closeAllSubagents() {
 export async function resetSubagentsForTests() {
   await closeAllSubagents();
 }
+

@@ -138,13 +138,42 @@ export const ConversationArea = memo(function ConversationArea({
   };
   const scrollTurnRail = (direction: -1 | 1) => {
     const rail = turnRailRef.current;
-    if (!rail) return;
+    if (!rail || conversationTurns.length === 0) return;
     setTurnPreview(undefined);
-    rail.scrollBy({
-      top:
-        direction *
-        Math.max(TURN_RAIL_ITEM_HEIGHT * 4, rail.clientHeight * 0.55),
-      behavior: "smooth",
+    // Page by roughly one rail viewport of ticks, then land the conversation
+    // on that turn's start — cues used to only scroll the tick strip.
+    const pageSize = Math.max(
+      4,
+      Math.floor((rail.clientHeight - 24) / TURN_RAIL_ITEM_HEIGHT),
+    );
+    const activeId = activeConversationTurnRef.current;
+    let currentIndex = activeId
+      ? conversationTurns.findIndex((turn) => turn.id === activeId)
+      : -1;
+    if (currentIndex < 0) {
+      // Fall back to the tick nearest the rail viewport center.
+      currentIndex = Math.min(
+        conversationTurns.length - 1,
+        Math.max(
+          0,
+          Math.floor(
+            (rail.scrollTop + rail.clientHeight * 0.45) / TURN_RAIL_ITEM_HEIGHT,
+          ),
+        ),
+      );
+    }
+    const targetIndex = Math.min(
+      conversationTurns.length - 1,
+      Math.max(0, currentIndex + direction * pageSize),
+    );
+    const target = conversationTurns[targetIndex];
+    if (!target) return;
+    scrollToTurn(target.id, targetIndex);
+    requestAnimationFrame(() => {
+      const button = turnButtonRefs.current.get(target.id);
+      button?.scrollIntoView({ block: "center", behavior: "smooth" });
+      updateTurnRailOverflow();
+      updateRailWindow();
     });
   };
 
@@ -235,10 +264,10 @@ export const ConversationArea = memo(function ConversationArea({
           <button
             type="button"
             className={`turn-rail-cue up ${turnRailOverflow.up ? "visible" : ""}`}
-            aria-label="向上浏览较早对话"
+            aria-label="向上翻到更早的对话"
             aria-hidden={!turnRailOverflow.up}
             tabIndex={turnRailOverflow.up ? 0 : -1}
-            title="向上浏览较早对话"
+            title="向上翻到更早的对话"
             onClick={() => scrollTurnRail(-1)}
           >
             <ChevronUp size={15} strokeWidth={2.4} />
@@ -246,10 +275,10 @@ export const ConversationArea = memo(function ConversationArea({
           <button
             type="button"
             className={`turn-rail-cue down ${turnRailOverflow.down ? "visible" : ""}`}
-            aria-label="向下浏览较新对话"
+            aria-label="向下翻到更新的对话"
             aria-hidden={!turnRailOverflow.down}
             tabIndex={turnRailOverflow.down ? 0 : -1}
-            title="向下浏览较新对话"
+            title="向下翻到更新的对话"
             onClick={() => scrollTurnRail(1)}
           >
             <ChevronDown size={15} strokeWidth={2.4} />

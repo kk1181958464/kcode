@@ -107,3 +107,30 @@ export function windowContainingTurn(
   const start = Math.max(0, Math.min(index, turnCount - size));
   return { start, end: Math.min(turnCount, start + size * 2) };
 }
+
+
+/** Scroll-container-relative Y for an element (avoids float/offsetParent skew). */
+export function offsetWithinScrollContainer(
+  container: Pick<HTMLElement, "getBoundingClientRect" | "scrollTop">,
+  element: Pick<HTMLElement, "getBoundingClientRect">,
+) {
+  return (
+    element.getBoundingClientRect().top -
+    container.getBoundingClientRect().top +
+    container.scrollTop
+  );
+}
+
+/** Scroll so the target's top sits near the top of the conversation viewport. */
+export function scrollContainerToElementTop(
+  container: HTMLElement,
+  element: HTMLElement,
+  paddingTop = 24,
+) {
+  const top = Math.max(
+    0,
+    offsetWithinScrollContainer(container, element) - paddingTop,
+  );
+  container.scrollTo({ top, behavior: "auto" });
+  return top;
+}

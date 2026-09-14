@@ -1,4 +1,4 @@
-import assert from "node:assert/strict";
+﻿import assert from "node:assert/strict";
 import test from "node:test";
 import {
   appendConversationWindow,
@@ -7,6 +7,7 @@ import {
   latestConversationWindow,
   prependConversationWindow,
   windowContainingTurn,
+  offsetWithinScrollContainer,
 } from "../src/conversation-window";
 
 test("detects whether the conversation is showing its real bottom", () => {
@@ -110,4 +111,18 @@ test("removes persisted thinking blocks from hover previews", () => {
     },
   ]);
   assert.equal(turns[0].answer, "当前目录没有 Git。");
+});
+
+test("offsetWithinScrollContainer maps viewport rects into scroll coordinates", () => {
+  const container = {
+    scrollTop: 400,
+    getBoundingClientRect: () => ({ top: 100 }),
+  };
+  const element = {
+    getBoundingClientRect: () => ({ top: 160 }),
+  };
+  assert.equal(
+    offsetWithinScrollContainer(container as never, element as never),
+    460,
+  );
 });

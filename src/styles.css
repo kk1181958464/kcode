@@ -16794,3 +16794,243 @@ button.execution-summary-tool.inspect-group {
   width: 100%;
 }
 
+
+/* ========================================================================== */
+/* approval-allow-contrast-v1                                                 */
+/* Dark theme blanket sets ALL .approval-actions button to surface+ink, which */
+/* beats .approval-actions .allow on background. accent-ink mapping then      */
+/* forces near-black text onto that dark fill — allow buttons vanish.         */
+/* Restore accent fills (and readable ink) with higher specificity.           */
+/* ========================================================================== */
+:root .approval-actions button.allow,
+:root[data-theme="dark"] .approval-actions button.allow,
+:root[data-theme="light"] .approval-actions button.allow {
+  border-color: var(--accent) !important;
+  background: var(--accent) !important;
+  color: var(--accent-ink) !important;
+}
+:root .approval-actions button.allow:hover,
+:root[data-theme="dark"] .approval-actions button.allow:hover,
+:root[data-theme="light"] .approval-actions button.allow:hover {
+  border-color: var(--accent-hover) !important;
+  background: var(--accent-hover) !important;
+  color: var(--accent-ink) !important;
+}
+/* Session / permanent stay accent-tinted but slightly softer so "允许" reads
+   as the primary action while remaining fully legible. */
+:root .approval-actions button.allow.session,
+:root .approval-actions button.allow.permanent,
+:root[data-theme="dark"] .approval-actions button.allow.session,
+:root[data-theme="dark"] .approval-actions button.allow.permanent {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line)) !important;
+  background: color-mix(in srgb, var(--accent) 22%, var(--surface-raised)) !important;
+  color: var(--ink) !important;
+}
+:root .approval-actions button.allow.session:hover,
+:root .approval-actions button.allow.permanent:hover,
+:root[data-theme="dark"] .approval-actions button.allow.session:hover,
+:root[data-theme="dark"] .approval-actions button.allow.permanent:hover {
+  border-color: var(--accent) !important;
+  background: color-mix(in srgb, var(--accent) 34%, var(--surface-raised)) !important;
+  color: var(--ink) !important;
+}
+
+/* ========================================================================== */
+/* turn-rail-v2 — cleaner ticks + scroll-target flash                         */
+/* ========================================================================== */
+.turn-rail {
+  width: 44px !important;
+  margin-right: -44px !important;
+  padding: 16px 0 !important;
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 18px,
+    #000 calc(100% - 18px),
+    transparent 100%
+  );
+}
+
+.turn-rail-line::before {
+  left: 18px !important;
+  width: 1px !important;
+  background: color-mix(in srgb, var(--ui-border-strong) 55%, transparent) !important;
+  border-radius: 1px;
+}
+
+.turn-rail-turn {
+  width: 44px !important;
+  height: 28px !important;
+  min-height: 28px !important;
+  cursor: pointer;
+}
+
+.turn-tick {
+  left: 13px !important;
+  width: 10px !important;
+  height: 2px !important;
+  border-radius: 999px !important;
+  background: color-mix(in srgb, var(--ui-text-tertiary) 55%, transparent) !important;
+  transition:
+    width 160ms ease,
+    height 160ms ease,
+    left 160ms ease,
+    background 160ms ease,
+    box-shadow 160ms ease,
+    opacity 160ms ease !important;
+  opacity: 0.72;
+}
+
+.turn-rail-turn:hover .turn-tick {
+  left: 11px !important;
+  width: 16px !important;
+  opacity: 1;
+  background: var(--ui-text-secondary) !important;
+}
+
+.turn-rail-turn.active .turn-tick {
+  left: 10px !important;
+  width: 18px !important;
+  height: 3px !important;
+  opacity: 1;
+  background: var(--accent) !important;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.turn-rail-turn:focus-visible {
+  outline: none;
+}
+.turn-rail-turn:focus-visible .turn-tick {
+  left: 10px !important;
+  width: 18px !important;
+  background: var(--accent) !important;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.turn-rail-cue {
+  left: 8px !important;
+  width: 26px !important;
+  height: 26px !important;
+  border-radius: 999px !important;
+  backdrop-filter: blur(8px);
+}
+
+/* Keep avatars clear of the slightly wider rail */
+.message-list {
+  padding-left: 58px !important;
+}
+
+.conversation-turn-item.turn-scroll-target {
+  animation: turn-scroll-target-flash 900ms ease;
+}
+.conversation-turn-item.turn-scroll-target > .message.user .message-body {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+@keyframes turn-scroll-target-flash {
+  0% {
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
+  }
+  100% {
+    background: transparent;
+  }
+}
+
+
+/* ========================================================================== */
+/* turn-rail-cue-v3 — conversation-based visibility + line-centered */
+/* ========================================================================== */
+.turn-rail-cue {
+  /* Line sits at left:18px (1px). Center the 26px control on that axis. */
+  left: 18px !important;
+  width: 26px !important;
+  height: 26px !important;
+  margin-bottom: -26px !important;
+  border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--ui-border)) !important;
+  border-radius: 999px !important;
+  background: color-mix(in srgb, var(--ui-elevated) 88%, var(--accent-soft)) !important;
+  color: var(--accent) !important;
+  box-shadow:
+    0 1px 2px rgb(0 0 0 / 18%),
+    0 0 0 1px color-mix(in srgb, var(--accent) 8%, transparent) !important;
+  backdrop-filter: blur(10px) saturate(1.1);
+  transform: translateX(-50%) scale(0.84) !important;
+  transition:
+    opacity 180ms ease,
+    visibility 180ms ease,
+    transform 180ms ease,
+    border-color 140ms ease,
+    background 140ms ease,
+    color 140ms ease,
+    box-shadow 140ms ease !important;
+}
+
+.turn-rail-cue.up {
+  top: 10px !important;
+}
+
+.turn-rail-cue.down {
+  /* Stick near the bottom of the rail viewport; keep centered on the line. */
+  top: calc(100% - 36px) !important;
+  bottom: auto !important;
+}
+
+.turn-rail-cue.visible {
+  opacity: 1 !important;
+  visibility: visible !important;
+  pointer-events: auto !important;
+  transform: translateX(-50%) scale(1) !important;
+}
+
+.turn-rail-cue:hover {
+  border-color: var(--accent) !important;
+  background: var(--accent) !important;
+  color: var(--accent-ink) !important;
+  box-shadow:
+    0 0 0 4px color-mix(in srgb, var(--accent) 18%, transparent),
+    0 6px 16px rgb(0 0 0 / 22%) !important;
+  transform: translateX(-50%) scale(1.06) !important;
+}
+
+.turn-rail-cue:active {
+  transform: translateX(-50%) scale(0.94) !important;
+}
+
+.turn-rail-cue:focus-visible {
+  outline: 2px solid var(--accent) !important;
+  outline-offset: 2px !important;
+}
+
+.turn-rail-cue.up svg,
+.turn-rail-cue.down svg {
+  animation: none !important;
+}
+
+.turn-rail-cue.visible.up svg {
+  animation: turn-rail-cue-nudge-up 1.8s ease-in-out infinite !important;
+}
+
+.turn-rail-cue.visible.down svg {
+  animation: turn-rail-cue-nudge-down 1.8s ease-in-out infinite !important;
+}
+
+@keyframes turn-rail-cue-nudge-up {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-1.5px);
+  }
+}
+
+@keyframes turn-rail-cue-nudge-down {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(1.5px);
+  }
+}
+

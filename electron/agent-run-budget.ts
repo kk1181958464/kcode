@@ -21,12 +21,16 @@ export const SUBAGENT_HARD_ROUND_LIMIT = 20;
 export const SUBAGENT_SOFT_DURATION_MS = 6 * 60_000;
 export const SUBAGENT_HARD_DURATION_MS = 12 * 60_000;
 
-// wait_agent is intentionally sliced so the parent loop can observe child
-// progress and apply its no-progress guard instead of blocking in one call.
-export const SUBAGENT_WAIT_MIN_MS = 5_000;
-export const SUBAGENT_WAIT_SLICE_MS = 60_000;
-export const EXTERNAL_WAIT_STALL_ROUNDS = 4;
-export const EXTERNAL_WAIT_MAX_DURATION_MS = 5 * 60_000;
+// Codex-aligned wait_agent budgets (openai/codex multi_agent_v2):
+// min 10s / max 1h, with a minutes-scale default so omitters do not busy-poll.
+// Hint to the model: prefer longer waits (minutes) to avoid busy polling.
+export const SUBAGENT_WAIT_MIN_MS = 10_000;
+export const SUBAGENT_WAIT_DEFAULT_MS = 300_000;
+export const SUBAGENT_WAIT_MAX_MS = 3_600_000;
+/** @deprecated alias of SUBAGENT_WAIT_MAX_MS — kept for existing call sites */
+export const SUBAGENT_WAIT_SLICE_MS = SUBAGENT_WAIT_MAX_MS;
+export const EXTERNAL_WAIT_STALL_ROUNDS = 6;
+export const EXTERNAL_WAIT_MAX_DURATION_MS = SUBAGENT_WAIT_MAX_MS;
 
 export function externalWaitLimitReached({
   stalledRounds,

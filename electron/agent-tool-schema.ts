@@ -908,7 +908,7 @@ export const tools = [
   {
     name: "wait_agent",
     description:
-      "Wait for the first selected direct subagent final result, or any direct subagent when agentIds is omitted. Pass every relevant agent id in one call; do not emit one wait call per child in the same turn. A timeout only ends this wait call and never stops the subagent. Completed results include final text, tool summaries, usage, and file changes.",
+      "Wait for the first selected direct subagent final result, or any direct subagent when agentIds is omitted. Pass every relevant agent id in one call; do not emit one wait call per child in the same turn. Prefer longer waits (minutes) to avoid busy polling. A timeout only ends this wait call and never stops the subagent. Completed results include final text, tool summaries, usage, and file changes.",
     parameters: {
       type: "object",
       properties: {
@@ -916,7 +916,7 @@ export const tools = [
         timeoutMs: {
           type: "number",
           description:
-            "Wait timeout in milliseconds. Defaults to 60000 and is capped at 60000; all wait_agent calls in one model turn share that 60000 ms budget. Timeout does not stop agents.",
+            "Timeout in milliseconds. Defaults to 300000, min 10000, max 3600000. Prefer longer waits (minutes) to avoid busy polling. Timeout does not stop agents.",
         },
       },
       additionalProperties: false,

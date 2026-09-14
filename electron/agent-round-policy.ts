@@ -117,9 +117,11 @@ export function buildRoundEvidenceSnapshot(input: {
   evidenceHistory: HistoryItem[];
   hasUncollectedAgentWork: boolean;
 }): RoundEvidenceSnapshot {
+  // Any non-empty collaboration plan must hand off to the executor. Requiring
+  // two steps let single-step plans finalize without ever spawning.
   const plannerExecutionPending =
     input.plannerCoordinator &&
-    input.plan.steps.length >= 2 &&
+    input.plan.steps.length > 0 &&
     !input.successfulTools.has("spawn_agent");
   const planRequirementsPending =
     input.plan.steps.length > 0 && !input.plan.requirementsDeclared;

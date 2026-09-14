@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { EXTERNAL_WAIT_STALL_ROUNDS } from "./agent-run-budget";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -227,7 +228,11 @@ test("stops a child that remains active without observable progress", async () =
     await resetSubagentsForTests();
   }
 
-  assert.equal(rounds, 5, "four stalled rounds plus one finalization turn");
+  assert.equal(
+    rounds,
+    EXTERNAL_WAIT_STALL_ROUNDS + 1,
+    "stalled rounds plus one finalization turn",
+  );
   assert.equal(childState?.id, child.id);
   assert.equal(childState?.status, "stopped");
   assert.equal(childState?.collected, true);
