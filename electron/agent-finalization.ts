@@ -176,6 +176,10 @@ export function buildPausedCompletionResult({
   plannerExecutionPending,
   planRequirementsPending = false,
   planPending = false,
+  planSteps,
+  planStatuses,
+  planRequirements,
+  pauseReason,
 }: {
   evidenceHistory: HistoryItem[];
   baselineCodingEvidence: ReadonlySet<CodingOperation>;
@@ -185,6 +189,11 @@ export function buildPausedCompletionResult({
   plannerExecutionPending: boolean;
   planRequirementsPending?: boolean;
   planPending?: boolean;
+  planSteps?: readonly string[];
+  planStatuses?: readonly AgentPlanStepStatus[];
+  planRequirements?: readonly AgentPlanRequirement[][];
+  /** Soften the incomplete notice when pausing for a stream safety boundary. */
+  pauseReason?: "stream-timeout" | "empty-turn" | "other";
 }): AgentCompletionResult {
   const codingEvidence = codingEvidenceWithBaseline(
     evidenceHistory,
@@ -198,6 +207,18 @@ export function buildPausedCompletionResult({
     codingEvidence,
     evidenceHistory,
   );
+  // Prefer evidence over plan statuses: a step whose requires[] are already
+  // satisfied must not keep plan:pending on a stream-timeout pause just
+  // because the model never called update_plan to flip statuses.
+  const evidencePlanPending =
+    planSteps && planRequirements
+      ? firstPendingRequiredPlanStep(
+          planSteps,
+          planStatuses,
+          planRequirements,
+          codingEvidence,
+        ) >= 0
+      : planPending;
   const requestedOperations = [
     ...[...requestedCodingEvidenceOps].map(
       (operation) => `coding:${operation}`,
@@ -206,7 +227,7 @@ export function buildPausedCompletionResult({
     ...[...requestedGitOps].map((operation) => `git:${operation}`),
     ...(plannerExecutionPending ? ["agent:spawn_executor"] : []),
     ...(planRequirementsPending ? ["plan:requirements"] : []),
-    ...(planPending ? ["plan:pending"] : []),
+    ...(evidencePlanPending ? ["plan:pending"] : []),
   ];
   const observedOperations = [
     ...[...codingEvidence].map((operation) => `coding:${operation}`),
@@ -229,7 +250,7 @@ export function buildPausedCompletionResult({
       .map((operation) => `git:${operation}`),
     ...(plannerExecutionPending ? ["agent:spawn_executor"] : []),
     ...(planRequirementsPending ? ["plan:requirements"] : []),
-    ...(planPending ? ["plan:pending"] : []),
+    ...(evidencePlanPending ? ["plan:pending"] : []),
   ];
   const result = buildAgentCompletionResult({
     requestedOperations,
@@ -239,11 +260,22 @@ export function buildPausedCompletionResult({
     waitingForUser: hasRequestedUserInputEvidence(evidenceHistory),
     verifiedNoChange: hasVerifiedNoChangeReport(evidenceHistory),
   });
+  const hasMissing = missingOperations.length > 0;
+  const streamTimeoutNotice =
+    pauseReason === "stream-timeout"
+      ? hasMissing
+        ? "本轮因单轮安全边界暂停。已有工具结果和实际改动已保留；点击“继续”可从当前未完成步骤恢复。"
+        : "本轮因单轮安全边界暂停。已有工具结果和实际改动已保留；点击“继续”可从当前状态恢复。"
+      : undefined;
   return {
     ...result,
+    // Paused runs stay "incomplete" for the Continue affordance, but the
+    // missingOperations ledger (and stream-timeout notice) must not falsely
+    // claim plan/modify gaps when codingEvidence already satisfies requires.
     kind: result.kind === "blocked" ? "blocked" : "incomplete",
     notice:
-      result.notice ??
+      streamTimeoutNotice ??
+      (hasMissing ? result.notice : undefined) ??
       "任务因连续无新进展而暂停，已有执行记录和实际改动已保留。",
   };
 }
@@ -264,6 +296,38 @@ export function isModelTurnTimeout(error: unknown) {
   return /连续只输出思考内容|持续只有思考内容|模型单轮响应超过安全时限/.test(
     message,
   );
+}
+
+/** Absolute wall-clock turn limit — always pause; never auto-continue. */
+export function isAbsoluteModelTurnTimeout(error: unknown) {
+  if (error instanceof SseStreamTimeoutError)
+    return error.timeoutKind === "absolute";
+  const message = error instanceof Error ? error.message : String(error);
+  return /模型单轮响应超过安全时限|超过 \d+ 秒安全时限/.test(message);
+}
+
+/**
+ * Meaningful/reasoning-only idle watchdog (or the Error raised after the
+ * in-stream one-shot recovery). Eligible for one outer auto-continue when
+ * prior tool evidence exists and structured work remains.
+ */
+export function isMeaningfulModelTurnTimeout(error: unknown) {
+  if (isAbsoluteModelTurnTimeout(error)) return false;
+  if (error instanceof SseStreamTimeoutError)
+    return error.timeoutKind === "meaningful";
+  const message = error instanceof Error ? error.message : String(error);
+  return /连续只输出思考内容|持续只有思考内容|没有形成新的正文或工具调用|持续没有正文或工具调用/.test(
+    message,
+  );
+}
+
+export function modelTurnTimeoutKind(
+  error: unknown,
+): "meaningful" | "absolute" | "other" {
+  if (isAbsoluteModelTurnTimeout(error)) return "absolute";
+  if (isMeaningfulModelTurnTimeout(error) || isModelTurnTimeout(error))
+    return "meaningful";
+  return "other";
 }
 
 export function hasRecoverableToolEvidence(history: HistoryItem[]) {

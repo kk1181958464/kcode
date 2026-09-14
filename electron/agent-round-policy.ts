@@ -75,6 +75,10 @@ export type EmptyTurnRecovery =
   | { action: "pause-empty" }
   | { action: "error-empty" };
 
+export type StreamTimeoutRecovery =
+  | { action: "auto-continue" }
+  | { action: "pause" };
+
 export type ToolRoundProgress = {
   unchangedPlanMaintenanceRound: boolean;
   verificationOnlyRound: boolean;
@@ -464,6 +468,35 @@ export const REASONING_ONLY_RETRY_CONTENT =
 
 export const EMPTY_TURN_RETRY_CONTENT =
   "<runtime_verification>上一轮上游返回了空响应：没有正文，也没有工具调用。任务尚未完成。请从现有历史和工具结果继续，输出最终结论或立即调用下一步工具，不要再次返回空内容。</runtime_verification>";
+
+const STREAM_TIMEOUT_RECOVERY_LIMIT = 1;
+
+/**
+ * After a meaningful/reasoning-only stream watchdog fires, prefer one outer
+ * auto-continue when prior tools already made progress and structured work
+ * remains — matching Codex-style recoverable mid-task recovery. Absolute
+ * wall-clock timeouts still pause immediately.
+ */
+export function streamTimeoutRecovery(input: {
+  timeoutKind: "meaningful" | "absolute" | "other";
+  finalizationMode?: AgentFinalizationMode;
+  hasRecoverableToolEvidence: boolean;
+  unfinishedWork: boolean;
+  streamTimeoutRecoveries: number;
+}): StreamTimeoutRecovery {
+  if (input.timeoutKind !== "meaningful") return { action: "pause" };
+  if (input.finalizationMode) return { action: "pause" };
+  if (
+    input.hasRecoverableToolEvidence &&
+    input.unfinishedWork &&
+    input.streamTimeoutRecoveries < STREAM_TIMEOUT_RECOVERY_LIMIT
+  )
+    return { action: "auto-continue" };
+  return { action: "pause" };
+}
+
+export const STREAM_TIMEOUT_RECOVERY_CONTENT =
+  "<runtime_verification>上一轮模型持续思考但超过单轮安全边界，没有形成新的正文或工具调用。已有工具结果仍然有效。任务尚未完成：请立即基于已有结果调用下一项具体工具，或在证据已齐时给出最终结论；不要继续只输出思考过程。</runtime_verification>";
 
 export const REPETITION_RECOVERY_CONTENT =
   "<runtime_repetition_recovery>你已经连续多轮使用相同工具输入并得到相同结果。不要再次原样重试。请保留已有成果，检查最近一次失败或阻塞点，然后选择不同的命令或验证方式；已有后台进程时只读取其状态，不要重复启动；确实缺少外部信息时调用 request_user_input；任务已经完成时直接给出最终结论。</runtime_repetition_recovery>";

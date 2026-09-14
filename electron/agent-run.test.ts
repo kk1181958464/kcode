@@ -1176,3 +1176,245 @@ test("runAgent pauses and preserves completed tool evidence after a late gateway
     ),
   );
 });
+
+test("runAgent auto-continues a meaningful stream timeout mid-task with tool evidence", async () => {
+  const request = await makeRequest();
+  request.messages = [{ role: "user", content: "修改 hello.txt" }];
+  request.recoveryPlan = {
+    steps: [
+      {
+        step: "修改文件",
+        status: "in_progress",
+        requires: ["modify"],
+      },
+    ],
+    current: 0,
+    requirementsDeclared: true,
+  };
+  let round = 0;
+  let wrote = false;
+  let sawStreamTimeoutRecovery = false;
+  const deps: RunAgentDeps = {
+    getProvider: fakeProvider("fake-model"),
+    async *streamTurn(args) {
+      round += 1;
+      sawStreamTimeoutRecovery ||= args.history.some(
+        (item) =>
+          item.kind === "message" &&
+          typeof item.content === "string" &&
+          item.content.includes("单轮安全边界"),
+      );
+      if (round === 1) {
+        yield {
+          type: "complete",
+          turn: {
+            text: "",
+            calls: [
+              {
+                id: "inspect-1",
+                name: "list_directory",
+                input: { path: "." },
+              },
+            ],
+            rawCalls: [],
+            usage: { input: 8, output: 2, cached: 0 },
+          },
+        };
+        return;
+      }
+      if (!sawStreamTimeoutRecovery) {
+        throw new Error(
+          "模型连续只输出思考内容，未返回正文或工具调用。已自动停止，请重试或切换模型。",
+        );
+      }
+      if (!wrote) {
+        wrote = true;
+        yield {
+          type: "complete",
+          turn: {
+            text: "继续修改。",
+            calls: [
+              {
+                id: "write-1",
+                name: "write_file",
+                input: { path: "hello.txt", content: "hi\n" },
+              },
+            ],
+            rawCalls: [],
+            usage: { input: 10, output: 4, cached: 0 },
+          },
+        };
+        return;
+      }
+      yield { type: "text", delta: "已完成修改。" };
+      yield {
+        type: "complete",
+        turn: {
+          text: "已完成修改。",
+          calls: [],
+          rawCalls: [],
+          usage: { input: 12, output: 6, cached: 0 },
+        },
+      };
+    },
+  };
+
+  const events = await collect(
+    runAgent(
+      "test-stream-timeout-auto-continue",
+      request,
+      new AbortController().signal,
+      deps,
+    ),
+  );
+  assert.equal(sawStreamTimeoutRecovery, true);
+  assert.ok(wrote);
+  assert.ok(
+    events.some(
+      (event) =>
+        event.type === "progress" &&
+        event.message.includes("自动继续"),
+    ),
+  );
+  const done = events.find(
+    (event): event is Extract<AgentEvent, { type: "done" }> =>
+      event.type === "done",
+  );
+  assert.ok(done);
+  assert.equal(
+    events.some((event) => event.type === "error"),
+    false,
+  );
+});
+
+test("runAgent pauses immediately on absolute model turn timeout", async () => {
+  const { SseStreamTimeoutError } = await import("./sse-stream");
+  const request = await makeRequest();
+  request.messages = [{ role: "user", content: "修改 hello.txt" }];
+  request.recoveryPlan = {
+    steps: [
+      {
+        step: "修改文件",
+        status: "in_progress",
+        requires: ["modify"],
+      },
+    ],
+    current: 0,
+    requirementsDeclared: true,
+  };
+  let round = 0;
+  const deps: RunAgentDeps = {
+    getProvider: fakeProvider("fake-model"),
+    async *streamTurn() {
+      round += 1;
+      if (round === 1) {
+        yield {
+          type: "complete",
+          turn: {
+            text: "",
+            calls: [
+              {
+                id: "inspect-abs",
+                name: "list_directory",
+                input: { path: "." },
+              },
+            ],
+            rawCalls: [],
+            usage: { input: 8, output: 2, cached: 0 },
+          },
+        };
+        return;
+      }
+      throw new SseStreamTimeoutError("absolute", 480_000);
+    },
+  };
+
+  const events = await collect(
+    runAgent(
+      "test-absolute-timeout-pause",
+      request,
+      new AbortController().signal,
+      deps,
+    ),
+  );
+  assert.equal(round, 2, "absolute timeout must not outer-auto-continue");
+  const done = events.find(
+    (event): event is Extract<AgentEvent, { type: "done" }> =>
+      event.type === "done",
+  );
+  assert.equal(done?.outcome, "paused");
+  assert.match(
+    events
+      .filter((event) => event.type === "text")
+      .map((event) => (event as Extract<AgentEvent, { type: "text" }>).delta)
+      .join(""),
+    /安全时限/,
+  );
+});
+
+test("runAgent pauses after one meaningful stream-timeout recovery is exhausted", async () => {
+  const request = await makeRequest();
+  request.messages = [{ role: "user", content: "修改 hello.txt" }];
+  request.recoveryPlan = {
+    steps: [
+      {
+        step: "修改文件",
+        status: "in_progress",
+        requires: ["modify"],
+      },
+    ],
+    current: 0,
+    requirementsDeclared: true,
+  };
+  let round = 0;
+  const deps: RunAgentDeps = {
+    getProvider: fakeProvider("fake-model"),
+    async *streamTurn() {
+      round += 1;
+      if (round === 1) {
+        yield {
+          type: "complete",
+          turn: {
+            text: "",
+            calls: [
+              {
+                id: "inspect-exhaust",
+                name: "list_directory",
+                input: { path: "." },
+              },
+            ],
+            rawCalls: [],
+            usage: { input: 8, output: 2, cached: 0 },
+          },
+        };
+        return;
+      }
+      throw new Error(
+        "模型连续只输出思考内容，未返回正文或工具调用。已自动停止，请重试或切换模型。",
+      );
+    },
+  };
+
+  const events = await collect(
+    runAgent(
+      "test-stream-timeout-recovery-exhausted",
+      request,
+      new AbortController().signal,
+      deps,
+    ),
+  );
+  assert.equal(round, 3, "one auto-continue then pause on second timeout");
+  const done = events.find(
+    (event): event is Extract<AgentEvent, { type: "done" }> =>
+      event.type === "done",
+  );
+  assert.equal(done?.outcome, "paused");
+  assert.match(
+    events
+      .filter((event) => event.type === "text")
+      .map((event) => (event as Extract<AgentEvent, { type: "text" }>).delta)
+      .join(""),
+    /单轮安全边界|持续思考/,
+  );
+});
+

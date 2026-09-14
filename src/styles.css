@@ -17112,3 +17112,66 @@ button.execution-summary-tool.inspect-group {
   animation: ios-rail 2.8s var(--motion-ios-soft, cubic-bezier(0.33, 1, 0.68, 1)) infinite !important;
   filter: none !important;
 }
+
+
+/* ========================================================================== */
+/* running-bottom-rail-v2 — sweep via left, not transform                     */
+/* motion-calm locks transform:none !important on ::before, so ios-rail's     */
+/* translateX never moves (stuck glow at the left). Animate left instead.     */
+/* ========================================================================== */
+@keyframes running-bottom-rail-sweep {
+  0% {
+    left: -32%;
+    opacity: 0;
+  }
+  12% {
+    opacity: 1;
+  }
+  88% {
+    opacity: 1;
+  }
+  100% {
+    left: 102%;
+    opacity: 0;
+  }
+}
+
+.message.assistant.is-running .message-content::before {
+  content: "" !important;
+  display: block !important;
+  position: absolute !important;
+  top: auto !important;
+  right: auto !important;
+  bottom: -2px !important;
+  left: -32%; /* no !important — keyframes drive left */
+  z-index: 1 !important;
+  width: 32% !important;
+  height: 1.5px !important;
+  border-radius: 999px !important;
+  pointer-events: none !important;
+  transform: none !important;
+  filter: none !important;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--accent) 50%, white 12%),
+    var(--accent),
+    color-mix(in srgb, var(--accent) 50%, white 12%),
+    transparent
+  ) !important;
+  box-shadow: 0 0 8px 0 var(--stream-glow, color-mix(in srgb, var(--accent) 28%, transparent)) !important;
+  animation: running-bottom-rail-sweep 2.8s var(--motion-ios-soft, cubic-bezier(0.33, 1, 0.68, 1)) infinite !important;
+}
+
+.message.assistant.is-running .message-content::after {
+  content: "" !important;
+  display: block !important;
+  position: absolute !important;
+  left: 0 !important;
+  right: 0 !important;
+  bottom: -2px !important;
+  width: auto !important;
+  height: 1.5px !important;
+  transform: none !important;
+  animation: none !important;
+}

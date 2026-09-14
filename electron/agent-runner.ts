@@ -137,6 +137,8 @@ import {
   roundStallDecision,
   runDoneOutcome,
   stallFinalizeProgressMessage,
+  streamTimeoutRecovery,
+  STREAM_TIMEOUT_RECOVERY_CONTENT,
 } from "./agent-round-policy";
 import type {
   PendingUserInput,
@@ -172,6 +174,7 @@ import {
   streamFailurePauseMessage,
   blockedVerificationEvents,
   isModelTurnTimeout,
+  modelTurnTimeoutKind,
   hasRecoverableToolEvidence,
   toolProducedOperationalProgress,
   MAX_PLAN_RECOVERY_NUDGES,
@@ -680,6 +683,7 @@ export async function* runAgent(
     }
     let imageRetryAttempted = false;
     let usedRuntimeFinalizationFallback = false;
+    let streamTimeoutAutoContinue = false;
     const turnAttemptBudget = new ModelAttemptBudget(MODEL_TURN_HTTP_ATTEMPTS);
     for (;;) {
       try {
@@ -767,10 +771,46 @@ export async function* runAgent(
           // Retryable gateway/transport failures (including a first-round
           // disconnect with no tool evidence yet) must pause instead of
           // failing the task. Auth and invalid-request errors still throw.
+          // Meaningful/reasoning-only timeouts with prior tool progress and
+          // unfinished structured work get one outer auto-continue instead of
+          // an immediate scary incomplete pause; absolute wall-clock still pauses.
           if (
             !signal.aborted &&
             (isRetryableStreamError(error) || isModelTurnTimeout(error))
           ) {
+            const timeoutKind = modelTurnTimeoutKind(error);
+            const unfinishedWork =
+              actionablePlanPending ||
+              !evidenceComplete ||
+              plannerExecutionPending ||
+              roundStartSnapshot.missingActionCodingOperations.length > 0;
+            const timeoutRecovery = isModelTurnTimeout(error)
+              ? streamTimeoutRecovery({
+                  timeoutKind,
+                  finalizationMode,
+                  hasRecoverableToolEvidence:
+                    hasRecoverableToolEvidence(evidenceHistory),
+                  unfinishedWork,
+                  streamTimeoutRecoveries: run.budgets.streamTimeoutRecoveries,
+                })
+              : { action: "pause" as const };
+            if (timeoutRecovery.action === "auto-continue") {
+              run.budgets.streamTimeoutRecoveries += 1;
+              yield {
+                type: "progress",
+                message:
+                  "模型本轮持续思考已达单轮安全边界，正在基于已有工具结果自动继续（仅一次）…",
+              };
+              history.push({
+                kind: "message",
+                role: "user",
+                content: STREAM_TIMEOUT_RECOVERY_CONTENT,
+              });
+              // Break the image-retry loop and continue the outer run loop so
+              // round snapshots/budgets refresh like emptyTurnRecovery.
+              streamTimeoutAutoContinue = true;
+              break;
+            }
             const pausedCompletionResult = buildPausedCompletionResult({
               evidenceHistory,
               baselineCodingEvidence,
@@ -780,6 +820,12 @@ export async function* runAgent(
               plannerExecutionPending,
               planRequirementsPending,
               planPending: pendingRequiredPlanStep >= 0,
+              planSteps: run.plan.steps,
+              planStatuses: run.plan.statuses,
+              planRequirements: run.plan.requirements,
+              pauseReason: isModelTurnTimeout(error)
+                ? "stream-timeout"
+                : "other",
             });
             for (const pausedEvent of blockedVerificationEvents(
               run.timelineTextLength,
@@ -803,6 +849,7 @@ export async function* runAgent(
         }
       }
     }
+    if (streamTimeoutAutoContinue) continue;
     if (!turn) throw new Error("模型流结束但没有完成结果");
     if (turn.reasoningContent && !streamedReasoning.trim())
       yield { type: "reasoning", delta: turn.reasoningContent };
@@ -933,6 +980,10 @@ export async function* runAgent(
           plannerExecutionPending,
           planRequirementsPending,
           planPending: pendingRequiredPlanStep >= 0,
+          planSteps: run.plan.steps,
+          planStatuses: run.plan.statuses,
+          planRequirements: run.plan.requirements,
+          pauseReason: "empty-turn",
         });
         for (const pausedEvent of blockedVerificationEvents(
           run.timelineTextLength,

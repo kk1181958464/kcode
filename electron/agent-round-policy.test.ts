@@ -20,6 +20,8 @@ import {
   completionOperationKeys,
   EMPTY_TURN_RETRY_CONTENT,
   emptyTurnRecovery,
+  streamTimeoutRecovery,
+  STREAM_TIMEOUT_RECOVERY_CONTENT,
   finalizationHistoryContent,
   finalizationProgressMessage,
   finalizationRoleLabel,
@@ -626,6 +628,66 @@ test("emptyTurnRecovery retries then pauses, errors or abandons subagents", () =
   assert.match(EMPTY_TURN_RETRY_CONTENT, /空响应/);
   assert.match(REPETITION_RECOVERY_CONTENT, /不要再次原样重试/);
 });
+
+test("streamTimeoutRecovery auto-continues meaningful mid-task timeouts once", () => {
+  assert.deepEqual(
+    streamTimeoutRecovery({
+      timeoutKind: "meaningful",
+      hasRecoverableToolEvidence: true,
+      unfinishedWork: true,
+      streamTimeoutRecoveries: 0,
+    }),
+    { action: "auto-continue" },
+  );
+  assert.deepEqual(
+    streamTimeoutRecovery({
+      timeoutKind: "meaningful",
+      hasRecoverableToolEvidence: true,
+      unfinishedWork: true,
+      streamTimeoutRecoveries: 1,
+    }),
+    { action: "pause" },
+  );
+  assert.deepEqual(
+    streamTimeoutRecovery({
+      timeoutKind: "absolute",
+      hasRecoverableToolEvidence: true,
+      unfinishedWork: true,
+      streamTimeoutRecoveries: 0,
+    }),
+    { action: "pause" },
+  );
+  assert.deepEqual(
+    streamTimeoutRecovery({
+      timeoutKind: "meaningful",
+      hasRecoverableToolEvidence: false,
+      unfinishedWork: true,
+      streamTimeoutRecoveries: 0,
+    }),
+    { action: "pause" },
+  );
+  assert.deepEqual(
+    streamTimeoutRecovery({
+      timeoutKind: "meaningful",
+      finalizationMode: "evidence-complete",
+      hasRecoverableToolEvidence: true,
+      unfinishedWork: true,
+      streamTimeoutRecoveries: 0,
+    }),
+    { action: "pause" },
+  );
+  assert.deepEqual(
+    streamTimeoutRecovery({
+      timeoutKind: "meaningful",
+      hasRecoverableToolEvidence: true,
+      unfinishedWork: false,
+      streamTimeoutRecoveries: 0,
+    }),
+    { action: "pause" },
+  );
+  assert.match(STREAM_TIMEOUT_RECOVERY_CONTENT, /单轮安全边界/);
+});
+
 
 test("classifyToolRoundProgress treats plan-only and verification-only as non-progress", () => {
   const planOnly = classifyToolRoundProgress({

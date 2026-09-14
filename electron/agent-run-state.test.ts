@@ -39,6 +39,7 @@ test("createRunState defaults an empty run and leaves plan undeclared-open", () 
     autoContinues: 0,
     emptyTurns: 0,
     reasoningOnlyTurns: 0,
+    streamTimeoutRecoveries: 0,
     planRecoveryNudges: 0,
   });
   assert.deepEqual(run.prevRound, { toolNarrative: "" });
@@ -97,6 +98,7 @@ test("resetRunStateAfterSteering clears obligations and preserves timeline", () 
   run.budgets.autoContinues = 1;
   run.budgets.emptyTurns = 1;
   run.budgets.reasoningOnlyTurns = 1;
+  run.budgets.streamTimeoutRecoveries = 1;
   run.budgets.planRecoveryNudges = 2;
   run.requestedGitOps.add("commit");
   run.requestedBrowserOps.add("open");
@@ -124,6 +126,7 @@ test("resetRunStateAfterSteering clears obligations and preserves timeline", () 
     autoContinues: 0,
     emptyTurns: 0,
     reasoningOnlyTurns: 0,
+    streamTimeoutRecoveries: 0,
     planRecoveryNudges: 0,
   });
   assert.equal(run.requestedCodingEvidenceOps.size, 0);

@@ -14,6 +14,8 @@ export type RunBudgets = {
   autoContinues: number;
   emptyTurns: number;
   reasoningOnlyTurns: number;
+  /** Outer-run recoveries after a meaningful/reasoning stream timeout. */
+  streamTimeoutRecoveries: number;
   planRecoveryNudges: number;
 };
 
@@ -101,6 +103,7 @@ export function createRunState(input: {
       autoContinues: 0,
       emptyTurns: 0,
       reasoningOnlyTurns: 0,
+      streamTimeoutRecoveries: 0,
       planRecoveryNudges: 0,
     },
     prevRound: { toolNarrative: "" },
@@ -127,6 +130,7 @@ export function resetRunStateAfterSteering(
   state.budgets.autoContinues = 0;
   state.budgets.emptyTurns = 0;
   state.budgets.reasoningOnlyTurns = 0;
+  state.budgets.streamTimeoutRecoveries = 0;
   state.budgets.planRecoveryNudges = 0;
   state.stalledRounds = 0;
   state.semanticStallRounds = 0;
