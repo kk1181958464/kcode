@@ -17034,3 +17034,81 @@ button.execution-summary-tool.inspect-group {
   }
 }
 
+
+
+/* ========================================================================== */
+/* running-edge-off-v1 — drop the live-message left accent rail               */
+/* The calm-motion pack drew an inset accent edge on .message-content while   */
+/* generating; next to the avatar it reads as a stray purple vertical line.   */
+/* Keep the 生成中 badge / avatar cue; remove the edge.                       */
+/* ========================================================================== */
+.message.assistant.is-running .message-content,
+:root[data-theme="dark"] .message.assistant.is-running .message-content {
+  box-shadow: none !important;
+  border-left: 0 !important;
+}
+.message.assistant.is-running .message-content::before,
+.message.assistant.is-running .message-content::after {
+  content: none !important;
+  display: none !important;
+}
+
+
+/* ========================================================================== */
+/* running-bottom-rail-v1 — restore live-message bottom breathe rail          */
+/* motion-calm / running-edge-off killed ::before/::after (vertical edge +    */
+/* bottom rail). Keep left edge off; bring back only the bottom luminous rail */
+/* so “生成中” still feels alive without the stray purple vertical line.      */
+/* ========================================================================== */
+.message.assistant.is-running .message-content {
+  position: relative;
+}
+
+.message.assistant.is-running .message-content::after {
+  content: "" !important;
+  display: block !important;
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -2px;
+  z-index: 0;
+  width: auto;
+  height: 1.5px;
+  border-radius: 999px;
+  pointer-events: none;
+  animation: none !important;
+  transform: none !important;
+  box-shadow: none !important;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--accent) 16%, transparent) 22%,
+    color-mix(in srgb, var(--accent) 36%, transparent) 50%,
+    color-mix(in srgb, var(--accent) 16%, transparent) 78%,
+    transparent 100%
+  ) !important;
+}
+
+.message.assistant.is-running .message-content::before {
+  content: "" !important;
+  display: block !important;
+  position: absolute;
+  left: 0;
+  bottom: -2px;
+  z-index: 1;
+  width: 30%;
+  height: 1.5px;
+  border-radius: 999px;
+  pointer-events: none;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--accent) 50%, white 12%),
+    var(--accent),
+    color-mix(in srgb, var(--accent) 50%, white 12%),
+    transparent
+  ) !important;
+  box-shadow: 0 0 8px 0 var(--stream-glow, color-mix(in srgb, var(--accent) 28%, transparent));
+  animation: ios-rail 2.8s var(--motion-ios-soft, cubic-bezier(0.33, 1, 0.68, 1)) infinite !important;
+  filter: none !important;
+}
