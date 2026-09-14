@@ -46,6 +46,7 @@ import {
 } from "../../activity-view-model";
 import {
   summarizeExecutionPlan,
+  decodeLiteralUnicodeEscapes,
   type ExecutionPlanStepStatus,
 } from "../../execution-plan";
 import {
@@ -109,12 +110,13 @@ const STREAMING_DOM_TRIM_TARGET = 80_000;
 const ACTIVITY_LIVE_OUTPUT_LIMIT = 24_000;
 
 function renderedActivityDetail(detail: string) {
-  if (detail.length <= ACTIVITY_DETAIL_RENDER_LIMIT)
-    return { text: detail, omitted: 0 };
+  const readable = decodeLiteralUnicodeEscapes(detail);
+  if (readable.length <= ACTIVITY_DETAIL_RENDER_LIMIT)
+    return { text: readable, omitted: 0 };
   const tailLength = ACTIVITY_DETAIL_RENDER_LIMIT - ACTIVITY_DETAIL_HEAD_CHARS;
-  const omitted = detail.length - ACTIVITY_DETAIL_RENDER_LIMIT;
+  const omitted = readable.length - ACTIVITY_DETAIL_RENDER_LIMIT;
   return {
-    text: `${detail.slice(0, ACTIVITY_DETAIL_HEAD_CHARS)}\n\n... 已省略中间 ${omitted.toLocaleString()} 个字符 ...\n\n${detail.slice(-tailLength)}`,
+    text: `${readable.slice(0, ACTIVITY_DETAIL_HEAD_CHARS)}\n\n... 已省略中间 ${omitted.toLocaleString()} 个字符 ...\n\n${readable.slice(-tailLength)}`,
     omitted,
   };
 }
@@ -1331,7 +1333,21 @@ export const ExecutionSummary = memo(
           </span>
           <ChevronDown size={14} />
         </button>
-        {inlineCards.length > 0 && (
+        {!expanded &&
+          running &&
+          isLatestGroup &&
+          executionStats.active && (
+          <div className="execution-summary-live" aria-label="当前执行">
+            <i />
+            <b>{executionStats.active.title}</b>
+            {activityTarget(executionStats.active) && (
+              <code title={activityTarget(executionStats.active) || undefined}>
+                {activityTarget(executionStats.active)}
+              </code>
+            )}
+          </div>
+        )}
+        {expanded && inlineCards.length > 0 && (
           <div className="execution-summary-toolline" aria-label="本组执行命令">
             {inlineCards.flatMap((card) => {
               if (
@@ -1393,7 +1409,7 @@ export const ExecutionSummary = memo(
             )}
           </div>
         )}
-        {isLatestGroup && planInfo && !showPlanList && (
+        {expanded && isLatestGroup && planInfo && !showPlanList && (
           <div className="execution-plan-progress">
             <span>
               <ListChecks size={12} />第 {planInfo.current + 1} /{" "}
@@ -1409,7 +1425,8 @@ export const ExecutionSummary = memo(
             statuses={planInfo.statuses}
           />
         )}
-        {running &&
+        {expanded &&
+          running &&
           executionStats.active &&
           (fallbackNarrative || reasoningNode) && (
             <div
@@ -1429,12 +1446,11 @@ export const ExecutionSummary = memo(
               </span>
             </div>
           )}
-        {!expanded && fileStats.entries.length > 0 && (
+        {expanded && fileStats.entries.length > 0 && (
           <ExecutionFileBreakdown
             fileStats={fileStats}
             entries={fileStats.entries}
             workspacePath={workspacePath}
-            compact
           />
         )}
         {expanded && (
@@ -2500,3 +2516,4 @@ export const ConversationHistory = memo(
     return true;
   },
 );
+

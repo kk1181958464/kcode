@@ -254,19 +254,18 @@ test("keeps the running plan collapsed and still shows concrete file changes", (
     }),
   );
 
-  // Default: compact progress only (full list needs explicit expand).
-  assert.match(markup, /execution-plan-progress/);
+  // Default: one-line head. Live row only while a tool is actively running.
+  assert.match(markup, /execution-summary-head/);
   assert.match(markup, /第 2 \/\s*3 步/);
-  assert.match(markup, /修改相关文件并记录实际差异/);
+  assert.doesNotMatch(markup, /execution-summary-live/);
+  assert.doesNotMatch(markup, /execution-plan-progress/);
   assert.doesNotMatch(markup, /执行计划/);
+  assert.doesNotMatch(markup, /execution-summary-file-breakdown/);
+  assert.doesNotMatch(markup, /execution-summary-toolline/);
   for (const step of [planSteps[0], planSteps[2]]) {
     assert.doesNotMatch(markup, new RegExp(step));
   }
-  assert.match(markup, /execution-summary-file-breakdown compact/);
-  assert.match(markup, /src\/App\.tsx/);
-  assert.match(markup, /aria-label="查看 src\/App\.tsx 的改动"/);
-  assert.match(markup, /execution-summary-file-row/);
-  assert.match(markup, /aria-label="在文件资源管理器中显示 src\/App\.tsx"/);
+  // Diff totals stay in the head stats.
   assert.match(markup, /\+12/);
   assert.match(markup, /-3/);
 });
@@ -318,8 +317,9 @@ test("shows verified execution model evidence on delegated tool activity", () =>
 
   assert.match(markup, /GPT-5\.6 Luna/);
   assert.match(markup, /GPT-5\.6 Luna · 高 执行/);
-  assert.match(markup, /execution-summary-tool-model/);
   assert.match(markup, /已收到该执行模型的真实工具活动/);
+  // Tool chips (incl. model badge) are expand-only now.
+  assert.doesNotMatch(markup, /execution-summary-tool-model/);
 });
 
 test("offers a resource-manager action for downloaded local files", () => {
@@ -352,10 +352,12 @@ test("offers a resource-manager action for downloaded local files", () => {
   );
 
   assert.match(markup, /1 个文件/);
-  assert.match(
+  // Reveal-in-folder lives in the expanded file list now.
+  assert.doesNotMatch(
     markup,
     /aria-label="在文件资源管理器中显示 D:\/downloads\/report\.txt"/,
   );
+  assert.doesNotMatch(markup, /execution-summary-file-breakdown/);
 });
 
 test("right rail uses only the current request changes instead of Git totals", () => {

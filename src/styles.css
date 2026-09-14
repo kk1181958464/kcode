@@ -16412,3 +16412,385 @@ button.primary:active {
   }
 }
 
+
+/* ===== user-bubble-contrast-v1（正文气泡 / 操作区可读） ===== */
+/* 不要把整块 message-content 刷成 accent：复制按钮和「你 时间」会糊掉。 */
+.message.user .message-content {
+  max-width: min(640px, 88%);
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  color: inherit !important;
+  box-shadow: none !important;
+}
+
+.message.user .message-meta {
+  gap: 6px;
+  margin: 0 2px 6px;
+  color: var(--ui-text-tertiary, var(--muted));
+}
+
+.message.user .message-meta > span:first-child,
+.message.user .message-meta time {
+  color: var(--ui-text-tertiary, var(--muted));
+  opacity: 1;
+}
+
+.message.user .message-actions {
+  opacity: 0.78;
+  transition: opacity var(--ui-motion-fast, 180ms) var(--ui-ease, ease);
+}
+
+.message.user:hover .message-actions,
+.message.user:focus-within .message-actions {
+  opacity: 1;
+}
+
+.message.user .message-actions button {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  border: 1px solid color-mix(in srgb, var(--ui-border, var(--line)) 88%, transparent);
+  background: color-mix(
+    in srgb,
+    var(--ui-elevated, var(--surface-raised, var(--surface))) 92%,
+    transparent
+  );
+  color: var(--ui-text-secondary, var(--muted));
+  box-shadow: 0 1px 2px color-mix(in srgb, black 12%, transparent);
+}
+
+.message.user .message-actions button:hover {
+  background: var(--ui-hover, color-mix(in srgb, var(--accent) 14%, transparent));
+  color: var(--ui-text, var(--ink));
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--ui-border, var(--line)));
+}
+
+/* Soft iOS-like bubble on the body only — readable ink on every accent */
+.message.user .message-body {
+  padding: 11px 14px !important;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--ui-border, var(--line))) !important;
+  border-radius: 16px 16px 5px 16px !important;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--accent) 22%, var(--ui-elevated, var(--surface-raised, var(--surface)))) 0%,
+    color-mix(in srgb, var(--accent) 14%, var(--ui-elevated, var(--surface-raised, var(--surface)))) 100%
+  ) !important;
+  color: var(--ui-text, var(--ink)) !important;
+  box-shadow:
+    0 1px 0 color-mix(in srgb, var(--accent) 16%, transparent),
+    0 8px 20px -14px color-mix(in srgb, var(--accent) 45%, transparent) !important;
+}
+
+.message.user .message-body a {
+  color: var(--accent) !important;
+  text-decoration: underline;
+}
+
+.message.user .markdown-block,
+.message.user .markdown-block *,
+.message.user .message-body :not(pre) > code {
+  color: inherit;
+}
+
+.message.user .message-body :not(pre) > code {
+  background: color-mix(in srgb, var(--accent) 14%, transparent) !important;
+  border-radius: 5px;
+  padding: 0.1em 0.35em;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .message.user .message-actions {
+    transition: none;
+  }
+}
+
+
+/* ===== motion-calm-v1（输出动效降噪：只留一处主信号） ===== */
+/*
+  问题：生成中时对话区 / 底部状态 / 右侧面板同时在扫光、呼吸、闪烁，太吵。
+  策略：关掉叠层循环；只保留光标轻闪 + 静态 accent 提示，结束态仍可短反馈。
+*/
+
+.message.assistant.is-running .message-content::before,
+.message.assistant.is-running .message-content::after,
+.message.assistant.is-running .message-avatar,
+.run-state i,
+.streaming-progress-leaf:not([hidden]),
+.assistant-tail-fallback,
+.message.assistant.is-running .assistant-tail-gap,
+.agent-working-head::before,
+.assistant-tail-state > svg,
+.agent-working-mark svg,
+.thinking span,
+.execution-plan-spinner,
+.agent-activity.running,
+.execution-plan-step.current,
+.execution-plan-step.running,
+.execution-plan-step.running .execution-plan-step-mark,
+.execution-plan-step.current .execution-plan-step-mark,
+.message.assistant.is-running .execution-summary-tool.running,
+.message.assistant.is-running .execution-summary-tool.waiting,
+.message.assistant.is-running .execution-summary-tool.inspect-group.running,
+.message.assistant.is-running .execution-summary-tool.inspect-group.waiting,
+.status-run-overview.is-running::before,
+.status-run-overview.is-running::after,
+.status-result-row.active,
+.status-result-row.active > svg {
+  animation: none !important;
+  filter: none !important;
+  transform: none !important;
+}
+
+/* Kill shimmer text fill — use plain muted status copy */
+.streaming-progress-leaf:not([hidden]),
+.assistant-tail-fallback,
+.message.assistant.is-running .assistant-tail-gap {
+  background: none !important;
+  background-image: none !important;
+  color: var(--muted) !important;
+  -webkit-text-fill-color: currentColor !important;
+  background-clip: border-box !important;
+  -webkit-background-clip: border-box !important;
+}
+
+.message.assistant.is-running .message-content::before,
+.message.assistant.is-running .message-content::after,
+.status-run-overview.is-running::before,
+.status-run-overview.is-running::after,
+.agent-working-head::before {
+  content: none !important;
+  display: none !important;
+}
+
+/* One calm running cue: thin static accent edge on the live message */
+.message.assistant.is-running .message-content {
+  box-shadow: inset 2px 0 0 0 color-mix(in srgb, var(--accent) 70%, transparent);
+}
+
+.message.assistant.is-running .message-avatar {
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+.run-state i,
+.execution-plan-spinner {
+  opacity: 0.85;
+  color: var(--accent);
+}
+
+.assistant-tail-state > svg,
+.agent-working-mark svg,
+.status-result-row.active > svg {
+  color: var(--accent);
+  opacity: 0.8;
+}
+
+/* Keep only a soft caret — single moving element while streaming */
+.streaming-message-text.is-live::after,
+.streaming-md-open::after {
+  animation: ios-caret 1.35s var(--motion-ios-ease, var(--ui-ease, ease)) infinite !important;
+  box-shadow: none !important;
+}
+
+/* Plan / tool rows: static highlight, no pulse */
+.agent-activity.running,
+.execution-plan-step.current,
+.execution-plan-step.running {
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  border-left-color: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+.execution-plan-step.running .execution-plan-step-mark,
+.execution-plan-step.current .execution-plan-step-mark {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.message.assistant.is-running .execution-summary-tool.running,
+.message.assistant.is-running .execution-summary-tool.waiting,
+.message.assistant.is-running .execution-summary-tool.inspect-group.running,
+.message.assistant.is-running .execution-summary-tool.inspect-group.waiting {
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--ui-border, var(--line)));
+}
+
+.status-run-overview.is-running {
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--ui-border, var(--line)));
+}
+
+.status-result-row.active {
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+  border-left-color: color-mix(in srgb, var(--accent) 50%, transparent);
+}
+
+/* Finish bloom stays short and rare — leave as-is if defined earlier */
+
+
+/* ===== execution-summary-compact-v1（默认一行摘要） ===== */
+.execution-summary {
+  margin: 8px 0;
+  border: 1px solid color-mix(in srgb, var(--ui-border, var(--line)) 88%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--ui-elevated, var(--surface-raised)) 86%, transparent);
+  overflow: hidden;
+}
+
+.execution-summary-head {
+  min-height: 34px;
+  gap: 8px;
+  padding: 6px 10px;
+}
+
+.execution-summary-copy strong {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.execution-summary-statline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  margin-top: 2px;
+  font-size: 10px;
+  color: var(--ui-text-tertiary, var(--muted));
+}
+
+.execution-summary-live {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px 8px;
+  border-top: 1px solid color-mix(in srgb, var(--ui-border, var(--line)) 70%, transparent);
+  font-size: 11px;
+  color: var(--ui-text-secondary, var(--muted));
+}
+
+.execution-summary-live i {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--accent);
+  flex: 0 0 auto;
+}
+
+.execution-summary-live b {
+  font-weight: 550;
+  color: var(--ui-text, var(--ink));
+}
+
+.execution-summary-live code {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 55%;
+  color: var(--ui-text-tertiary, var(--muted));
+  font-size: 10px;
+}
+
+
+/* ===== execution-summary-wrap-v1（展开后长命令/路径自动换行） ===== */
+.execution-summary,
+.execution-summary-detail,
+.execution-summary-toolline,
+.agent-activity,
+.activity-detail,
+.activity-title,
+.activity-head {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.execution-summary-toolline {
+  display: flex !important;
+  flex-direction: column !important;
+  flex-wrap: nowrap !important;
+  align-items: stretch !important;
+  gap: 5px !important;
+  margin-right: 6px;
+  overflow: visible !important;
+}
+
+.execution-summary-tool,
+button.execution-summary-tool.inspect-group {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  align-items: flex-start !important;
+  max-width: 100% !important;
+  white-space: normal !important;
+  overflow: visible !important;
+}
+
+.execution-summary-tool b {
+  flex: 0 1 auto !important;
+  white-space: normal !important;
+}
+
+.execution-summary-tool code,
+.execution-summary-live code {
+  flex: 1 1 100% !important;
+  max-width: 100% !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+  white-space: pre-wrap !important;
+  overflow-wrap: anywhere !important;
+  word-break: break-word !important;
+}
+
+.activity-title-line {
+  flex-wrap: wrap !important;
+  align-items: flex-start !important;
+}
+
+.activity-title-line > strong,
+.execution-summary-detail .activity-title strong,
+.activity-title small,
+.execution-summary-detail .activity-title small,
+.execution-summary-detail .activity-title span {
+  overflow: visible !important;
+  text-overflow: clip !important;
+  white-space: pre-wrap !important;
+  overflow-wrap: anywhere !important;
+  word-break: break-word !important;
+}
+
+.activity-purpose small,
+.activity-error-reason small,
+.activity-exit-note small,
+.execution-summary-narrative-copy,
+.execution-summary-narrative-fallback,
+.execution-summary-detail pre,
+.execution-summary-detail code {
+  white-space: pre-wrap !important;
+  overflow-wrap: anywhere !important;
+  word-break: break-word !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+  max-width: 100%;
+}
+
+.activity-head {
+  align-items: flex-start !important;
+  height: auto !important;
+  min-height: 40px;
+}
+
+.execution-summary-copy strong,
+.execution-summary-head strong {
+  white-space: normal !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+  overflow-wrap: anywhere !important;
+}
+
+.execution-summary-detail .agent-activity,
+.execution-summary .agent-activity {
+  overflow: visible !important;
+}
+
+.activity-title small {
+  display: block;
+  width: 100%;
+}
+

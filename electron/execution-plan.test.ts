@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   defaultExecutionPlan,
   fallbackExecutionPlanStep,
+  decodeLiteralUnicodeEscapes,
   normalizePlanUpdate,
   summarizeExecutionPlan,
 } from "../src/execution-plan";
@@ -134,4 +135,29 @@ test("builds a fallback coding plan and maps concrete tools to its phases", () =
     ),
     2,
   );
+});
+
+
+test("decodes literal unicode escapes in plan explanation and steps", () => {
+  assert.equal(
+    decodeLiteralUnicodeEscapes("\\u67e5\\u6e05\\u56fe\\u6587"),
+    "查清图文",
+  );
+  const normalized = normalizePlanUpdate({
+    explanation: "\\u67e5\\u6e05\\u56fe\\u6587\\u5bfc\\u822a",
+    plan: [
+      {
+        step: "\\u68c0\\u67e5\\u5f53\\u524d\\u5b9e\\u73b0",
+        status: "completed",
+        requires: ["inspect"],
+      },
+      {
+        step: "修改相关文件",
+        status: "in_progress",
+        requires: ["modify"],
+      },
+    ],
+  });
+  assert.equal(normalized.explanation, "查清图文导航");
+  assert.equal(normalized.plan[0].step, "检查当前实现");
 });

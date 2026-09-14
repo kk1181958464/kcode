@@ -23,6 +23,20 @@ export type StructuredPlanUpdate = {
   }>;
 };
 
+
+/** Decode literal \uXXXX sequences models sometimes emit inside plan text. */
+export function decodeLiteralUnicodeEscapes(value: string) {
+  if (!/\\u[0-9a-fA-F]{4}/.test(value)) return value;
+  const decodeOnce = (text: string) =>
+    text.replace(/\\u([0-9a-fA-F]{4})/g, (_match, hex: string) =>
+      String.fromCharCode(Number.parseInt(hex, 16)),
+    );
+  let decoded = decodeOnce(value);
+  // Double-encoded payloads like \\u67e5 still containing escapes after one pass.
+  if (/\\u[0-9a-fA-F]{4}/.test(decoded)) decoded = decodeOnce(decoded);
+  return decoded;
+}
+
 export function normalizePlanUpdate(input: {
   explanation?: unknown;
   plan?: unknown;
@@ -33,9 +47,11 @@ export function normalizePlanUpdate(input: {
     if (!raw || typeof raw !== "object")
       throw new Error(`计划第 ${index + 1} 步格式无效`);
     const item = raw as Record<string, unknown>;
-    const step = String(item.step ?? "")
-      .replace(/\s+/g, " ")
-      .trim();
+    const step = decodeLiteralUnicodeEscapes(
+      String(item.step ?? "")
+        .replace(/\s+/g, " ")
+        .trim(),
+    );
     const status = String(item.status ?? "") as AgentPlanStepStatus;
     if (!Array.isArray(item.requires))
       throw new Error(
@@ -60,10 +76,11 @@ export function normalizePlanUpdate(input: {
     throw new Error("执行计划不能包含重复步骤");
   if (plan.filter((item) => item.status === "in_progress").length > 1)
     throw new Error("执行计划最多只能有一个进行中的步骤");
-  const explanation = String(input.explanation ?? "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 500);
+  const explanation = decodeLiteralUnicodeEscapes(
+    String(input.explanation ?? "")
+      .replace(/\s+/g, " ")
+      .trim(),
+  ).slice(0, 500);
   return { explanation: explanation || undefined, plan };
 }
 
