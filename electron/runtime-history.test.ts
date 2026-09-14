@@ -827,3 +827,28 @@ test("runAgent keeps unfinished obligations in live model compaction", async () 
   const done = events.find((event) => event.type === "done");
   assert.equal(done && "outcome" in done ? done.outcome : undefined, "completed");
 });
+
+test("includes current execution plan in compaction source", () => {
+  const history = Array.from({ length: 10 }, (_, index) => ({
+    kind: "message" as const,
+    role: "user" as const,
+    content: `earlier work ${index} ${"x".repeat(120)}`,
+  }));
+  const source = buildRuntimeCompactionSource(
+    history,
+    [],
+    40_000,
+    4,
+    ["coding:modify"],
+    {
+      steps: ["读代码", "改 UI", "跑测试"],
+      statuses: ["completed", "in_progress", "pending"],
+      cursor: 1,
+    },
+  );
+  assert.match(source, /当前执行计划/);
+  assert.match(source, /\[completed\] 读代码/);
+  assert.match(source, /\[in_progress\] 改 UI/);
+  assert.match(source, /\[pending\] 跑测试/);
+});
+

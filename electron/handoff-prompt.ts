@@ -72,6 +72,7 @@ Rules for accuracy:
 - Preserve the exact next action, unresolved blocker, and any user constraint needed to continue the task
 - Treat <runtime_verified_evidence> as authoritative for execution claims, while keeping the surrounding conversation as context rather than proof
 - Treat runtime pending / 未完成义务 as authoritative. Copy those exact unfinished operations into "## Next Steps" and ledger.pending
+- If the source includes 当前执行计划, preserve its step order and statuses in "## Progress" / "## Next Steps"; do not invent a replacement plan
 - Never mark a pending operation complete, and never invent completion from assistant prose`
 
 /**

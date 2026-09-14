@@ -214,7 +214,7 @@ test("keeps ordinary text auto-continuation fully visible", () => {
   assert.doesNotMatch(markup, /completed-process-trigger/);
 });
 
-test("shows the full running plan and concrete file changes while collapsed", () => {
+test("keeps the running plan collapsed and still shows concrete file changes", () => {
   const planSteps = [
     "检查当前实现并确认处理范围",
     "修改相关文件并记录实际差异",
@@ -254,8 +254,14 @@ test("shows the full running plan and concrete file changes while collapsed", ()
     }),
   );
 
-  assert.match(markup, /执行计划/);
-  for (const step of planSteps) assert.match(markup, new RegExp(step));
+  // Default: compact progress only (full list needs explicit expand).
+  assert.match(markup, /execution-plan-progress/);
+  assert.match(markup, /第 2 \/\s*3 步/);
+  assert.match(markup, /修改相关文件并记录实际差异/);
+  assert.doesNotMatch(markup, /执行计划/);
+  for (const step of [planSteps[0], planSteps[2]]) {
+    assert.doesNotMatch(markup, new RegExp(step));
+  }
   assert.match(markup, /execution-summary-file-breakdown compact/);
   assert.match(markup, /src\/App\.tsx/);
   assert.match(markup, /aria-label="查看 src\/App\.tsx 的改动"/);
@@ -433,10 +439,10 @@ test("right rail uses only the current request changes instead of Git totals", (
   );
 
   assert.match(markup, /aria-label="工作面板"/);
-  assert.match(markup, /role="tablist"/);
-  assert.match(markup, />本轮</);
-  assert.match(markup, />改动</);
-  assert.match(markup, />上下文</);
+  assert.doesNotMatch(markup, /role="tablist"/);
+  assert.match(markup, /aria-label="改动"/);
+  assert.match(markup, /aria-label="本轮"/);
+  assert.match(markup, /aria-label="上下文"/);
   assert.match(markup, /1 个文件/);
   assert.match(markup, /本轮改动/);
   assert.match(markup, /\+2/);
@@ -504,6 +510,14 @@ test("right rail keeps recovery checkpoints on the current-run pane", () => {
 
   assert.match(markup, /可恢复任务/);
   assert.match(markup, /从检查点继续/);
-  const changesPane = markup.slice(markup.indexOf('aria-label="改动"'));
+  const changesPane = markup.slice(
+    markup.indexOf('aria-label="改动"'),
+    markup.indexOf('aria-label="本轮"'),
+  );
+  const runPane = markup.slice(
+    markup.indexOf('aria-label="本轮"'),
+    markup.indexOf('aria-label="上下文"'),
+  );
   assert.doesNotMatch(changesPane, /可恢复任务|从检查点继续/);
+  assert.match(runPane, /可恢复任务|从检查点继续/);
 });

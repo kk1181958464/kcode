@@ -15240,3 +15240,1175 @@ body.resizing-composer * {
     animation: none !important;
   }
 }
+
+/* ===== output-motion polish (keep stream feeling alive) ===== */
+:root {
+  --stream-caret: var(--accent);
+  --stream-ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Running turn: continuous indeterminate rail so gaps never feel frozen */
+.message.assistant.is-running .message-content {
+  position: relative;
+}
+
+.message.assistant.is-running .message-content::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -2px;
+  height: 2px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  pointer-events: none;
+}
+
+.message.assistant.is-running .message-content::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  bottom: -2px;
+  z-index: 1;
+  width: 34%;
+  height: 2px;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--accent),
+    transparent
+  );
+  pointer-events: none;
+  animation: stream-rail-run 1.15s linear infinite;
+}
+
+@keyframes stream-rail-run {
+  0% {
+    transform: translateX(-120%);
+    opacity: 0.35;
+  }
+  18%,
+  82% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateX(320%);
+    opacity: 0.35;
+  }
+}
+
+/* Avatar + "生成中" stay visibly pulsing while live */
+.message.assistant.is-running .message-avatar {
+  animation: stream-avatar-pulse 1.4s ease-in-out infinite;
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+@keyframes stream-avatar-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 28%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 0%, transparent);
+  }
+}
+
+.run-state i {
+  width: 6px;
+  height: 6px;
+  background: var(--accent);
+  animation: stream-run-dot 0.9s ease-in-out infinite;
+}
+
+@keyframes stream-run-dot {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.35;
+    transform: scale(0.72);
+  }
+}
+
+/* Progress / fallback copy: faster high-contrast shimmer */
+.streaming-progress-leaf:not([hidden]),
+.assistant-tail-fallback {
+  animation: streaming-progress-breathe 1.35s linear infinite;
+  will-change: background-position;
+}
+
+@supports ((-webkit-background-clip: text) or (background-clip: text)) {
+  .streaming-progress-leaf:not([hidden]),
+  .assistant-tail-fallback {
+    background: linear-gradient(
+      100deg,
+      var(--muted) 0%,
+      var(--muted) 28%,
+      var(--ink) 48%,
+      var(--accent) 52%,
+      var(--ink) 56%,
+      var(--muted) 72%,
+      var(--muted) 100%
+    );
+    background-size: 240% 100%;
+    background-position: 100% 0;
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+}
+
+@keyframes streaming-progress-breathe {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -20% 0;
+  }
+}
+
+/* Working head sweep: always noticeable */
+.agent-working-head::before {
+  width: 42%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--accent) 22%, transparent),
+    transparent
+  );
+  animation: execution-summary-sweep 1.55s ease-in-out infinite;
+}
+
+@keyframes execution-summary-sweep {
+  0% {
+    opacity: 0;
+    transform: translateX(0);
+  }
+  12%,
+  78% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(320%);
+  }
+}
+
+.assistant-tail-state > svg,
+.agent-working-mark svg {
+  animation: stream-icon-pulse 1.1s ease-in-out infinite;
+  color: var(--accent);
+}
+
+@keyframes stream-icon-pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+    transform: scale(0.92);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.08);
+  }
+}
+
+.thinking span {
+  animation: thinking-dot 0.85s ease-in-out infinite;
+}
+
+@keyframes thinking-dot {
+  0%,
+  80%,
+  100% {
+    opacity: 0.25;
+    transform: translateY(0) scale(0.85);
+  }
+  40% {
+    opacity: 1;
+    transform: translateY(-3px) scale(1.08);
+  }
+}
+
+.execution-plan-spinner {
+  animation: execution-plan-spin 0.85s linear infinite;
+  opacity: 1;
+  color: var(--accent);
+}
+
+/* Live caret: stays mostly on, with accent glow — never "dead" */
+.streaming-message-text.is-live::after,
+.streaming-md-open::after {
+  content: "";
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 3px;
+  vertical-align: -0.15em;
+  border-radius: 1px;
+  background: var(--stream-caret);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 55%, transparent);
+  animation: stream-caret-alive 0.85s ease-in-out infinite;
+}
+
+.streaming-md-open {
+  position: relative;
+}
+
+.streaming-md-open::after {
+  position: static;
+}
+
+.streaming-md-sealed {
+  animation: stream-block-settle 140ms var(--stream-ease);
+}
+
+@keyframes stream-caret-alive {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scaleY(1);
+  }
+  50% {
+    opacity: 0.35;
+    transform: scaleY(0.86);
+  }
+}
+
+@keyframes stream-block-settle {
+  from {
+    opacity: 0.82;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* Running activity: left edge breathes so tool waits still feel live */
+.agent-activity.running {
+  animation: stream-activity-border 1.35s ease-in-out infinite;
+}
+
+@keyframes stream-activity-border {
+  0%,
+  100% {
+    border-left-color: var(--accent);
+    box-shadow: inset 3px 0 0 color-mix(in srgb, var(--accent) 0%, transparent);
+  }
+  50% {
+    border-left-color: color-mix(in srgb, var(--accent) 70%, var(--ink));
+    box-shadow: inset 3px 0 12px color-mix(in srgb, var(--accent) 10%, transparent);
+  }
+}
+
+.execution-plan-step {
+  transition:
+    color 140ms var(--stream-ease),
+    background-color 140ms var(--stream-ease);
+}
+
+.execution-plan-step.current,
+.execution-plan-step.running {
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  padding-inline: 4px;
+  margin-inline: -4px;
+  animation: stream-plan-current 1.5s ease-in-out infinite;
+}
+
+@keyframes stream-plan-current {
+  0%,
+  100% {
+    background: color-mix(in srgb, var(--accent) 6%, transparent);
+  }
+  50% {
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+  }
+}
+
+.execution-plan-step-mark {
+  transition:
+    border-color 140ms var(--stream-ease),
+    color 140ms var(--stream-ease),
+    background-color 140ms var(--stream-ease);
+}
+
+.execution-plan-step.running .execution-plan-step-mark,
+.execution-plan-step.current .execution-plan-step-mark {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  animation: stream-plan-mark 1.1s ease-in-out infinite;
+}
+
+@keyframes stream-plan-mark {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.08);
+  }
+}
+
+.conversation-turn-item.running {
+  /* keep GPU layer warm while tokens pause */
+  will-change: contents;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .message.assistant.is-running .message-content::before,
+  .message.assistant.is-running .message-avatar,
+  .run-state i,
+  .streaming-progress-leaf:not([hidden]),
+  .assistant-tail-fallback,
+  .assistant-tail-state > svg,
+  .agent-working-head::before,
+  .thinking span,
+  .execution-plan-spinner,
+  .streaming-message-text.is-live::after,
+  .streaming-md-open::after,
+  .streaming-md-sealed,
+  .agent-activity.running,
+  .execution-plan-step.current,
+  .execution-plan-step.running,
+  .execution-plan-step.running .execution-plan-step-mark,
+  .execution-plan-step.current .execution-plan-step-mark {
+    animation: none !important;
+  }
+
+  .streaming-progress-leaf:not([hidden]),
+  .assistant-tail-fallback {
+    background: none;
+    color: var(--muted);
+    -webkit-text-fill-color: currentColor;
+  }
+
+  .streaming-message-text.is-live::after,
+  .streaming-md-open::after {
+    opacity: 1;
+    box-shadow: none;
+  }
+
+  .message.assistant.is-running .message-content::before {
+    display: none;
+  }
+}
+
+/* ===== output-ux: inspect merge + just-finished ===== */
+.execution-summary-tool.inspect-group {
+  cursor: pointer;
+  gap: 6px;
+  opacity: 0.92;
+}
+.execution-summary-tool.inspect-group:hover,
+.execution-summary-tool.inspect-group:focus-visible {
+  opacity: 1;
+}
+.assistant-tail-gap {
+  color: var(--text-secondary, rgba(228, 228, 228, 0.72));
+  font-size: 12px;
+  line-height: 1.35;
+}
+@keyframes assistant-just-finished {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent, #81a1c1) 45%, transparent);
+    transform: scale(1);
+  }
+  40% {
+    box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent, #81a1c1) 0%, transparent);
+    transform: scale(1.06);
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+    transform: scale(1);
+  }
+}
+.message.assistant.just-finished .message-avatar {
+  animation: assistant-just-finished 480ms ease-out;
+}
+.conversation-turn-item.just-finished .message.assistant .message-avatar {
+  animation: assistant-just-finished 480ms ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .message.assistant.just-finished .message-avatar,
+  .conversation-turn-item.just-finished .message.assistant .message-avatar {
+    animation: none;
+  }
+}
+
+/* ===== work-panel cursor polish ===== */
+.work-panel-tabs > button > b.is-danger {
+  background: color-mix(in srgb, var(--danger, #e06c75) 18%, transparent);
+  color: var(--danger, #e06c75);
+}
+.work-panel-tabs > button > b.is-warn {
+  background: color-mix(in srgb, var(--warning, #e5c07b) 20%, transparent);
+  color: var(--warning, #d19a66);
+}
+
+.status-changes-section.is-compact {
+  gap: 8px;
+}
+.status-changes-section.is-compact .status-change-total {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--ui-border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--ui-elevated) 70%, transparent);
+}
+.status-changes-section.is-compact .status-file-list {
+  margin: 0;
+  gap: 2px;
+}
+.status-changes-section.is-compact .status-file-list > small {
+  display: none;
+}
+.status-changes-section.is-compact .status-file-list-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.status-changes-section.is-compact .status-file-row {
+  min-height: 34px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  gap: 8px;
+}
+.status-changes-section.is-compact .status-file-row-name strong {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+.status-changes-section.is-compact .status-file-row-name em {
+  font-size: 10px;
+  opacity: 0.72;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.status-run-overview.is-compact {
+  padding: 10px 10px 8px;
+  border-radius: 10px;
+}
+.status-run-overview.is-compact .status-section-heading strong {
+  font-size: 12px;
+}
+.status-run-overview.is-compact .status-run-stats {
+  gap: 6px;
+  margin-top: 6px;
+}
+.status-results-section .status-section-heading,
+.status-recovery-section .status-section-heading {
+  margin-bottom: 6px;
+}
+.status-result-row {
+  border-radius: 8px;
+}
+
+.status-usage-section.is-compact {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.status-usage-section.is-compact .context-usage-hero {
+  margin: 0;
+  padding: 10px;
+  border: 1px solid var(--ui-border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 6%, var(--ui-elevated));
+}
+.status-usage-section.is-compact .context-usage-hero > div:first-child strong {
+  font-size: 18px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+.status-usage-section.is-compact .context-budget-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+.status-usage-section.is-compact .run-metrics {
+  margin: 0;
+  gap: 6px;
+}
+.status-usage-section.is-compact .run-metrics > div {
+  padding: 8px;
+  border-radius: 8px;
+}
+.status-usage-section.is-compact .token-split {
+  margin: 0;
+  opacity: 0.85;
+  font-size: 11px;
+}
+.status-usage-section.is-compact .compact-context-button,
+.status-usage-section.is-compact .view-summary-button {
+  width: 100%;
+}
+.status-usage-section.is-compact .status-model-line {
+  margin-top: 2px;
+  padding-top: 8px;
+  border-top: 1px solid var(--ui-border);
+}
+
+.work-panel-empty {
+  margin: 28px 10px;
+  text-align: center;
+  opacity: 0.9;
+}
+
+/* ===== work-panel unified single column ===== */
+.work-panel.is-unified {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.work-panel.is-unified > .work-panel-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 4px 2px 12px;
+}
+.work-panel.is-unified .work-panel-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.work-panel.is-unified .work-panel-block + .work-panel-block {
+  padding-top: 12px;
+  border-top: 1px solid var(--ui-border);
+}
+.work-panel.is-unified .work-panel-empty.is-inline {
+  margin: 4px 2px;
+  text-align: left;
+}
+.work-panel.is-unified .status-model-line {
+  margin-top: 4px;
+}
+.work-panel.is-unified .work-panel-header,
+.work-panel.is-unified .work-panel-tabs {
+  display: none;
+}
+
+/* ===== motion-ios-v1 (慢而流畅：学习 iOS，去掉傻快) ===== */
+:root {
+  /* Global UI transitions — longer, Apple-like ease */
+  --ui-motion-fast: 180ms;
+  --ui-motion: 320ms;
+  --ui-motion-slow: 480ms;
+  --ui-ease: cubic-bezier(0.25, 0.1, 0.25, 1);
+  --motion-fast: var(--ui-motion-fast);
+  --motion-standard: var(--ui-motion);
+  --motion-slow: var(--ui-motion-slow);
+  --motion-ease: var(--ui-ease);
+
+  --motion-ios-ease: cubic-bezier(0.25, 0.1, 0.25, 1);
+  --motion-ios-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --motion-ios-soft: cubic-bezier(0.33, 1, 0.68, 1);
+  --stream-glow: color-mix(in srgb, var(--accent) 28%, transparent);
+  --stream-glow-strong: color-mix(in srgb, var(--accent) 42%, transparent);
+}
+
+.conversation-turn-item.running,
+.streaming-progress-leaf:not([hidden]),
+.assistant-tail-fallback {
+  will-change: auto;
+}
+
+/* ---- Live message: slow luminous rail ---- */
+.message.assistant.is-running .message-content {
+  position: relative;
+}
+
+.message.assistant.is-running .message-content::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -2px;
+  height: 1.5px;
+  border-radius: 999px;
+  pointer-events: none;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--accent) 16%, transparent) 22%,
+    color-mix(in srgb, var(--accent) 36%, transparent) 50%,
+    color-mix(in srgb, var(--accent) 16%, transparent) 78%,
+    transparent 100%
+  );
+}
+
+.message.assistant.is-running .message-content::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  bottom: -2px;
+  z-index: 1;
+  width: 30%;
+  height: 1.5px;
+  border-radius: 999px;
+  pointer-events: none;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--accent) 50%, white 12%),
+    var(--accent),
+    color-mix(in srgb, var(--accent) 50%, white 12%),
+    transparent
+  );
+  box-shadow: 0 0 8px 0 var(--stream-glow);
+  animation: ios-rail 2.8s var(--motion-ios-soft) infinite;
+}
+
+@keyframes ios-rail {
+  0% {
+    transform: translateX(-140%);
+    opacity: 0;
+  }
+  14% {
+    opacity: 1;
+  }
+  86% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateX(360%);
+    opacity: 0;
+  }
+}
+
+/* Avatar: slow breathe */
+.message.assistant.is-running .message-avatar {
+  animation: ios-avatar 2.8s var(--motion-ios-soft) infinite;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent),
+    0 0 10px -2px var(--stream-glow);
+}
+
+@keyframes ios-avatar {
+  0%,
+  100% {
+    transform: scale(1);
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--accent) 24%, transparent),
+      0 0 8px -2px var(--stream-glow);
+  }
+  50% {
+    transform: scale(1.03);
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--accent) 48%, transparent),
+      0 0 16px -1px var(--stream-glow-strong);
+  }
+}
+
+.run-state i {
+  animation: ios-dot 2s var(--motion-ios-soft) infinite;
+  box-shadow: 0 0 5px var(--stream-glow);
+}
+
+@keyframes ios-dot {
+  0%,
+  100% {
+    opacity: 0.5;
+    transform: scale(0.94);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.1);
+  }
+}
+
+/* Silk shimmer — slow */
+.streaming-progress-leaf:not([hidden]),
+.assistant-tail-fallback,
+.message.assistant.is-running .assistant-tail-gap {
+  animation: ios-shimmer 3.2s linear infinite;
+}
+
+@supports ((-webkit-background-clip: text) or (background-clip: text)) {
+  .streaming-progress-leaf:not([hidden]),
+  .assistant-tail-fallback,
+  .message.assistant.is-running .assistant-tail-gap {
+    background: linear-gradient(
+      100deg,
+      color-mix(in srgb, var(--muted) 90%, transparent) 0%,
+      color-mix(in srgb, var(--muted) 90%, transparent) 34%,
+      color-mix(in srgb, var(--ink) 72%, var(--accent) 14%) 47%,
+      color-mix(in srgb, var(--accent) 70%, white 10%) 50%,
+      color-mix(in srgb, var(--ink) 72%, var(--accent) 14%) 53%,
+      color-mix(in srgb, var(--muted) 90%, transparent) 66%,
+      color-mix(in srgb, var(--muted) 90%, transparent) 100%
+    );
+    background-size: 220% 100%;
+    background-position: 100% 0;
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+}
+
+@keyframes ios-shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -10% 0;
+  }
+}
+
+.agent-working-head::before {
+  width: 38%;
+  animation: execution-summary-sweep 2.8s var(--motion-ios-soft) infinite;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--accent) 20%, transparent),
+    color-mix(in srgb, var(--accent) 36%, white 6%),
+    color-mix(in srgb, var(--accent) 20%, transparent),
+    transparent
+  );
+}
+
+.assistant-tail-state > svg,
+.agent-working-mark svg {
+  animation: ios-icon 2.4s var(--motion-ios-soft) infinite;
+  color: var(--accent);
+  filter: drop-shadow(0 0 3px var(--stream-glow));
+}
+
+@keyframes ios-icon {
+  0%,
+  100% {
+    opacity: 0.55;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.95;
+    transform: scale(1.06);
+  }
+}
+
+.thinking span {
+  animation: ios-thinking 1.8s var(--motion-ios-soft) infinite;
+}
+
+@keyframes ios-thinking {
+  0%,
+  80%,
+  100% {
+    opacity: 0.3;
+    transform: translateY(0) scale(0.92);
+  }
+  40% {
+    opacity: 1;
+    transform: translateY(-2px) scale(1.05);
+  }
+}
+
+.execution-plan-spinner {
+  animation: execution-plan-spin 1.35s linear infinite;
+  opacity: 0.9;
+  color: var(--accent);
+  filter: drop-shadow(0 0 4px var(--stream-glow));
+}
+
+/* Caret: slow, elegant blink */
+.streaming-message-text.is-live::after,
+.streaming-md-open::after {
+  width: 2px;
+  height: 1.06em;
+  margin-left: 2px;
+  border-radius: 1px;
+  background: color-mix(in srgb, var(--accent) 90%, white 8%);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent) 16%, transparent),
+    0 0 8px 0 var(--stream-glow);
+  animation: ios-caret 1.35s var(--motion-ios-ease) infinite;
+}
+
+@keyframes ios-caret {
+  0%,
+  46% {
+    opacity: 1;
+  }
+  54%,
+  100% {
+    opacity: 0.2;
+  }
+}
+
+.streaming-md-sealed {
+  animation: ios-settle 280ms var(--motion-ios-out);
+}
+
+@keyframes ios-settle {
+  from {
+    opacity: 0.6;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.agent-activity.running {
+  animation: ios-activity 2.6s var(--motion-ios-soft) infinite;
+}
+
+@keyframes ios-activity {
+  0%,
+  100% {
+    border-left-color: color-mix(in srgb, var(--accent) 50%, transparent);
+    background: color-mix(in srgb, var(--accent) 2%, transparent);
+  }
+  50% {
+    border-left-color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 6%, transparent);
+  }
+}
+
+.execution-plan-step.current,
+.execution-plan-step.running {
+  animation: ios-plan 2.8s var(--motion-ios-soft) infinite;
+  border-radius: 8px;
+}
+
+@keyframes ios-plan {
+  0%,
+  100% {
+    background: color-mix(in srgb, var(--accent) 5%, transparent);
+  }
+  50% {
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+  }
+}
+
+.execution-plan-step.running .execution-plan-step-mark,
+.execution-plan-step.current .execution-plan-step-mark {
+  animation: ios-plan-mark 2.2s var(--motion-ios-soft) infinite;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+@keyframes ios-plan-mark {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.08);
+  }
+}
+
+.message.assistant.is-running .execution-summary-tool.running,
+.message.assistant.is-running .execution-summary-tool.waiting,
+.message.assistant.is-running .execution-summary-tool.inspect-group.running,
+.message.assistant.is-running .execution-summary-tool.inspect-group.waiting {
+  animation: ios-chip 2.4s var(--motion-ios-soft) infinite;
+}
+
+@keyframes ios-chip {
+  0%,
+  100% {
+    border-color: color-mix(in srgb, var(--accent) 22%, var(--ui-border, var(--line)));
+  }
+  50% {
+    border-color: color-mix(in srgb, var(--accent) 48%, var(--ui-border, var(--line)));
+  }
+}
+
+.status-run-overview.is-running::before {
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--accent) 16%, transparent),
+    color-mix(in srgb, var(--accent) 32%, white 5%),
+    color-mix(in srgb, var(--accent) 16%, transparent),
+    transparent
+  );
+  animation: status-rail-sweep 2.8s var(--motion-ios-soft) infinite;
+}
+
+.status-run-overview.is-running::after {
+  content: "";
+  position: absolute;
+  left: 10%;
+  right: 10%;
+  bottom: 0;
+  height: 1.5px;
+  pointer-events: none;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--accent) 45%, transparent),
+    var(--accent),
+    color-mix(in srgb, var(--accent) 45%, transparent),
+    transparent
+  );
+  opacity: 0.85;
+}
+
+.status-result-row.active {
+  animation: ios-activity 2.6s var(--motion-ios-soft) infinite;
+}
+
+.status-result-row.active > svg {
+  color: var(--accent);
+  animation: ios-icon 2.4s var(--motion-ios-soft) infinite;
+}
+
+/* Task switch — iOS sheet-like: slower, soft fade + drift */
+.conversation.is-task-entering-from-right,
+.conversation.is-task-entering-from-left {
+  animation-duration: 420ms;
+  animation-timing-function: var(--motion-ios-out);
+}
+
+@keyframes task-switch-enter-from-right {
+  from {
+    opacity: 0;
+    transform: translateX(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes task-switch-enter-from-left {
+  from {
+    opacity: 0;
+    transform: translateX(-12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* Finish bloom — unhurried */
+.message.assistant.just-finished .message-avatar,
+.conversation-turn-item.just-finished .message.assistant .message-avatar {
+  animation: ios-finished 700ms var(--motion-ios-out);
+}
+
+@keyframes ios-finished {
+  0% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 transparent;
+  }
+  35% {
+    transform: scale(1.04);
+    box-shadow:
+      0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent),
+      0 0 16px 0 var(--stream-glow-strong);
+  }
+  100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+/* Menus / overlays / dialogs — stretch historical short keys */
+@keyframes menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+@keyframes submenu-in {
+  from {
+    opacity: 0;
+    transform: translateX(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+@keyframes overlay-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes modal-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+@keyframes kcode-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+@keyframes kcode-overlay-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes kcode-dialog-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+@keyframes ui-pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@keyframes ui-dialog-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+@keyframes ui-sheet-in {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes ui-rail-in {
+  from {
+    opacity: 0;
+    transform: translateX(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* Force common enter animations onto the slower iOS clock */
+[class*="menu"]:not(.composer-menu-open),
+.kcode-menu,
+.git-diff-layer,
+.git-diff-dialog {
+  animation-duration: var(--ui-motion-slow);
+  animation-timing-function: var(--ui-ease);
+}
+
+.composer-send:active,
+.composer button.primary:active,
+button.primary:active {
+  transform: scale(0.98);
+  transition: transform var(--ui-motion-fast) var(--ui-ease);
+}
+
+/* Boot splash leave — match the unhurried feel */
+#kcode-boot {
+  transition:
+    opacity 560ms var(--motion-ios-out),
+    filter 560ms var(--motion-ios-out),
+    visibility 560ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .message.assistant.is-running .message-content::before,
+  .message.assistant.is-running .message-avatar,
+  .run-state i,
+  .streaming-progress-leaf:not([hidden]),
+  .assistant-tail-fallback,
+  .message.assistant.is-running .assistant-tail-gap,
+  .agent-working-head::before,
+  .assistant-tail-state > svg,
+  .agent-working-mark svg,
+  .thinking span,
+  .execution-plan-spinner,
+  .streaming-message-text.is-live::after,
+  .streaming-md-open::after,
+  .streaming-md-sealed,
+  .agent-activity.running,
+  .execution-plan-step.current,
+  .execution-plan-step.running,
+  .execution-plan-step.running .execution-plan-step-mark,
+  .execution-plan-step.current .execution-plan-step-mark,
+  .message.assistant.is-running .execution-summary-tool.running,
+  .message.assistant.is-running .execution-summary-tool.waiting,
+  .message.assistant.is-running .execution-summary-tool.inspect-group.running,
+  .message.assistant.is-running .execution-summary-tool.inspect-group.waiting,
+  .status-run-overview.is-running::before,
+  .status-result-row.active,
+  .status-result-row.active > svg,
+  .message.assistant.just-finished .message-avatar,
+  .conversation-turn-item.just-finished .message.assistant .message-avatar,
+  .conversation.is-task-entering-from-left,
+  .conversation.is-task-entering-from-right {
+    animation: none !important;
+    filter: none !important;
+  }
+
+  .streaming-progress-leaf:not([hidden]),
+  .assistant-tail-fallback,
+  .message.assistant.is-running .assistant-tail-gap {
+    background: none;
+    color: var(--muted);
+    -webkit-text-fill-color: currentColor;
+  }
+
+  .status-run-overview.is-running::after,
+  .message.assistant.is-running .message-content::before {
+    display: none;
+  }
+
+  .streaming-message-text.is-live::after,
+  .streaming-md-open::after {
+    opacity: 1;
+    box-shadow: none;
+  }
+
+  .composer-send:active,
+  .composer button.primary:active,
+  button.primary:active {
+    transform: none;
+  }
+}
+

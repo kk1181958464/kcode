@@ -4,6 +4,7 @@ import React, {
   useEffect,
   useLayoutEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import { createPortal } from "react-dom";
@@ -76,6 +77,10 @@ import {
   quietStatusLabel,
 } from "../../quiet-status";
 import {
+  collapseInlineToolActivities,
+  deriveLiveGapStatus,
+} from "../../live-output-status";
+import {
   boundedStreamingReasoning,
   completedProcessDuration,
   completedProcessTextLength,
@@ -117,6 +122,7 @@ function renderedActivityDetail(detail: string) {
 const MessageItem = memo(function MessageItem({
   message,
   running,
+  justFinished = false,
   workspacePath,
   onRetry,
   attachments = [],
@@ -124,6 +130,7 @@ const MessageItem = memo(function MessageItem({
 }: {
   message: ChatMessage;
   running: boolean;
+  justFinished?: boolean;
   workspacePath: string;
   onRetry(): void;
   attachments?: ContextFile[];
@@ -149,7 +156,11 @@ const MessageItem = memo(function MessageItem({
       ? visibleAssistantContent(message.content)
       : message.content;
   return (
-    <article className={`message ${message.role} ${isError ? "failed" : ""}`}>
+    <article
+      className={`message ${message.role} ${isError ? "failed" : ""} ${
+        running ? "is-running" : ""
+      } ${justFinished ? "just-finished" : ""}`.trim()}
+    >
       <div className={`message-avatar ${message.role}`}>
         {message.role === "user" ? <UserRound size={15} /> : <Bot size={16} />}
       </div>
@@ -1218,17 +1229,20 @@ export const ExecutionSummary = memo(
     useEffect(() => {
       if (!expanded) setVisibleActivityCount(ACTIVITY_INITIAL_RENDER_LIMIT);
     }, [expanded]);
+    const [inspectGroupsOpen, setInspectGroupsOpen] = useState<
+      Record<string, boolean>
+    >({});
+    const inlineCards = useMemo(
+      () => collapseInlineToolActivities(displayActivities.slice(-4)),
+      [displayActivities],
+    );
     if (!displayActivities.length) return null;
     const hiddenActivityCount = Math.max(
       0,
       displayActivities.length - visibleActivityCount,
     );
     const visibleActivities = displayActivities.slice(hiddenActivityCount);
-    const showPlanList = Boolean(
-      isLatestGroup &&
-      planInfo &&
-      (running || Boolean(executionStats.active) || expanded),
-    );
+    const showPlanList = Boolean(isLatestGroup && planInfo && expanded);
     const fallbackNarrative = executionStats.active
       ? hasLeadingNarration
         ? ""
@@ -1317,30 +1331,60 @@ export const ExecutionSummary = memo(
           </span>
           <ChevronDown size={14} />
         </button>
-        {inlineActivities.length > 0 && (
+        {inlineCards.length > 0 && (
           <div className="execution-summary-toolline" aria-label="本组执行命令">
-            {inlineActivities.map((activity) => {
-              const target = activityTarget(activity);
-              return (
-                <span
-                  className={`execution-summary-tool ${activity.status} ${activity.recoverable ? "recoverable" : ""}`}
-                  key={activity.id}
-                  title={target || activity.title}
-                >
-                  <i />
-                  <b>{activity.title}</b>
-                  {activity.agentRole === "executor" &&
-                    (activity.modelDisplayName || activity.modelId) && (
-                      <em className="execution-summary-tool-model">
-                        <Cpu size={9} />
-                        {activity.modelDisplayName || activity.modelId}
-                        {activity.reasoningEffort &&
-                          ` · ${effortLabels[activity.reasoningEffort]}`}
-                      </em>
-                    )}
-                  {target && <code>{target}</code>}
-                </span>
-              );
+            {inlineCards.flatMap((card) => {
+              if (
+                card.type === "inspect-group" &&
+                !inspectGroupsOpen[card.id]
+              ) {
+                return [
+                  <button
+                    type="button"
+                    className={`execution-summary-tool inspect-group ${card.status}`}
+                    key={`inspect:${card.id}`}
+                    title={card.activities
+                      .map((item) => activityTarget(item) || item.title)
+                      .join("\n")}
+                    onClick={() =>
+                      setInspectGroupsOpen((current) => ({
+                        ...current,
+                        [card.id]: true,
+                      }))
+                    }
+                  >
+                    <i />
+                    <b>{card.label}</b>
+                    <em className="execution-summary-tool-count">{card.count}</em>
+                    {card.target && <code>{card.target}</code>}
+                  </button>,
+                ];
+              }
+              const items =
+                card.type === "inspect-group" ? card.activities : [card.activity];
+              return items.map((activity) => {
+                const target = activityTarget(activity);
+                return (
+                  <span
+                    className={`execution-summary-tool ${activity.status} ${activity.recoverable ? "recoverable" : ""}`}
+                    key={activity.id}
+                    title={target || activity.title}
+                  >
+                    <i />
+                    <b>{activity.title}</b>
+                    {activity.agentRole === "executor" &&
+                      (activity.modelDisplayName || activity.modelId) && (
+                        <em className="execution-summary-tool-model">
+                          <Cpu size={9} />
+                          {activity.modelDisplayName || activity.modelId}
+                          {activity.reasoningEffort &&
+                            ` · ${effortLabels[activity.reasoningEffort]}`}
+                        </em>
+                      )}
+                    {target && <code>{target}</code>}
+                  </span>
+                );
+              });
             })}
             {displayActivities.length > inlineActivities.length && (
               <small>
@@ -1512,20 +1556,50 @@ function AssistantTailState({
   reasoningNode,
   progressNode,
   requestId,
+  activities = [],
 }: {
   reasoningNode?: React.ReactNode;
   progressNode?: React.ReactNode;
   requestId?: string;
+  activities?: AgentActivity[];
 }) {
-  if (!reasoningNode && !progressNode) return null;
+  const [progressText, setProgressText] = useState(() =>
+    requestId ? getStreamingText(streamingProgressKey(requestId)) : "",
+  );
+  useEffect(() => {
+    if (!requestId) {
+      setProgressText("");
+      return;
+    }
+    const key = streamingProgressKey(requestId);
+    const sync = (value: string) => setProgressText(value);
+    sync(getStreamingText(key));
+    return subscribeStreamingText(key, (change) => {
+      if (change.type === "reset") setProgressText("");
+      else if (change.type === "replace") sync(change.value);
+      else sync(getStreamingText(key));
+    });
+  }, [requestId]);
+  const gap = deriveLiveGapStatus(activities, progressText);
+  if (!reasoningNode && !progressNode && !gap) return null;
   return (
     <div className="assistant-tail-state" aria-live="polite">
       <BrainCircuit size={12} />
       <span className="assistant-tail-copy">
         {requestId ? <QuietStatusChip requestId={requestId} /> : null}
+        {!requestId && gap?.kind ? (
+          <span className={`quiet-status-chip is-${gap.kind}`} data-kind={gap.kind}>
+            {quietStatusLabel(gap.kind)}
+          </span>
+        ) : null}
+        {gap?.label ? (
+          <span className="assistant-tail-gap">{gap.label}</span>
+        ) : null}
         {reasoningNode}
         {progressNode}
-        <span className="assistant-tail-fallback">正在继续执行…</span>
+        {!gap?.label && (
+          <span className="assistant-tail-fallback">正在继续执行…</span>
+        )}
       </span>
     </div>
   );
@@ -1808,6 +1882,7 @@ const AssistantTimeline = memo(function AssistantTimeline({
       {shouldShowAssistantTailState(running) && (
         <AssistantTailState
           requestId={requestId}
+          activities={activities}
           reasoningNode={hasActiveActivity ? undefined : streamingReasoning}
           progressNode={streamingProgress}
         />
@@ -1937,9 +2012,11 @@ const StreamingMarkdownTail = memo(function StreamingMarkdownTail({
   );
 
   return (
-    <>
+    <div className="streaming-md-tail">
       {sealed.content ? (
-        <MarkdownMessage content={sealed.content} workspacePath={workspacePath} />
+        <div className="streaming-md-sealed">
+          <MarkdownMessage content={sealed.content} workspacePath={workspacePath} />
+        </div>
       ) : null}
       {openFence ? (
         <StreamingTextLeaf
@@ -1948,9 +2025,11 @@ const StreamingMarkdownTail = memo(function StreamingMarkdownTail({
           revision={revision}
         />
       ) : remendedOpen ? (
-        <MarkdownMessage content={remendedOpen} workspacePath={workspacePath} />
+        <div className="streaming-md-open">
+          <MarkdownMessage content={remendedOpen} workspacePath={workspacePath} />
+        </div>
       ) : null}
-    </>
+    </div>
   );
 });
 const StreamingTextLeaf = memo(function StreamingTextLeaf({
@@ -2033,7 +2112,7 @@ const StreamingTextLeaf = memo(function StreamingTextLeaf({
       } else appendText(change.delta);
     });
   }, [offset, requestId, revision]);
-  return <div ref={nodeRef} className="streaming-message-text" />;
+  return <div ref={nodeRef} className="streaming-message-text is-live" />;
 });
 
 const StreamingReasoningLeaf = memo(function StreamingReasoningLeaf({
@@ -2247,6 +2326,18 @@ const ConversationMessage = memo(
     const handleRetry = useCallback(() => {
       if (retryContent) onRetry(retryContent);
     }, [onRetry, retryContent]);
+    const wasRunningRef = useRef(running);
+    const [justFinished, setJustFinished] = useState(false);
+    useEffect(() => {
+      const wasRunning = wasRunningRef.current;
+      wasRunningRef.current = running;
+      if (wasRunning && !running && message.role === "assistant") {
+        setJustFinished(true);
+        const timer = window.setTimeout(() => setJustFinished(false), 480);
+        return () => window.clearTimeout(timer);
+      }
+      if (running) setJustFinished(false);
+    }, [message.role, running]);
     const assistantBody = useMemo(
       () =>
         requestId ? (
@@ -2272,12 +2363,15 @@ const ConversationMessage = memo(
     );
     return (
       <div
-        className={`conversation-turn-item ${running ? "running" : "complete"}`}
+        className={`conversation-turn-item ${
+          running ? "running is-running" : "complete"
+        } ${justFinished ? "just-finished" : ""}`.trim()}
         ref={message.role === "user" ? turnRef : undefined}
       >
         <MessageItem
           message={message}
           running={running}
+          justFinished={justFinished}
           workspacePath={workspacePath}
           attachments={attachments}
           onRetry={handleRetry}

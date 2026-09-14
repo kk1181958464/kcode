@@ -256,6 +256,7 @@ export function compactRuntimeHistory(
   recentItemCount = RUNTIME_COMPACTION_RECENT_ITEMS,
   preserveImageMessageId?: string,
   pendingOperations: Iterable<string> = [],
+  plan?: RuntimeCompactionPlanSnapshot,
 ) {
   const retainedRecentCount = Math.max(
     1,
@@ -396,10 +397,11 @@ export function compactRuntimeHistory(
   const handoffBlock = handoffFacts.length
     ? `上次交接（压缩后仍有效，不得覆盖未完成义务）：\n${handoffFacts.join("\n")}\n\n`
     : "";
+  const planBlock = planProgressBlock(plan);
   const summary: HistoryItem = {
     kind: "message",
     role: "user",
-    content: `<runtime_compaction>较早的 Agent 工具循环已压缩。${connectionBlock}${pendingObligationBlock(pendingOperations)}${handoffBlock}关键状态：\n${facts.slice(-80).join("\n")}</runtime_compaction>`,
+    content: `<runtime_compaction>较早的 Agent 工具循环已压缩。${connectionBlock}${pendingObligationBlock(pendingOperations)}${planBlock ? `${planBlock}\n\n` : ""}${handoffBlock}关键状态：\n${facts.slice(-80).join("\n")}</runtime_compaction>`,
   };
   const retainedSpecialByIndex = new Map<number, HistoryItem>(
     retainedProtocolEntries.map(({ index, item }) => [index, item]),
@@ -568,12 +570,51 @@ function runtimeCompactionSourceLimit(
  * tool evidence is appended separately so a long narrative cannot hide a
  * mutation, failure, or transfer.
  */
+export type RuntimeCompactionPlanSnapshot = {
+  steps: string[];
+  statuses?: Array<string | undefined>;
+  cursor?: number;
+};
+
+function uniqueRuntimeLines(items: string[], limit: number) {
+  return [
+    ...new Set(
+      items
+        .map((item) => redactSensitiveText(item).trim())
+        .filter(Boolean),
+    ),
+  ].slice(-limit);
+}
+
+function planProgressBlock(plan?: RuntimeCompactionPlanSnapshot) {
+  const steps = plan?.steps?.map((step) => step.trim()).filter(Boolean) ?? [];
+  if (!steps.length) return "";
+  const cursor = Math.max(
+    0,
+    Math.min(steps.length - 1, Math.floor(plan?.cursor ?? 0)),
+  );
+  const lines = steps.map((step, index) => {
+    const raw = plan?.statuses?.[index];
+    const status =
+      typeof raw === "string" && raw.trim()
+        ? raw.trim()
+        : index < cursor
+          ? "completed"
+          : index === cursor
+            ? "in_progress"
+            : "pending";
+    return `- [${status}] ${step}`;
+  });
+  return `当前执行计划（压缩后必须延续当前进度，不要重新发明整份计划）：\n${lines.join("\n")}`;
+}
+
 export function buildRuntimeCompactionSource(
   history: HistoryItem[],
   activeConnections: Iterable<string> = [],
   maxChars = RUNTIME_COMPACTION_SOURCE_MAX_CHARS,
   recentItemCount = RUNTIME_COMPACTION_RECENT_ITEMS,
   pendingOperations: Iterable<string> = [],
+  plan?: RuntimeCompactionPlanSnapshot,
 ) {
   const retainedRecentCount = Math.max(
     1,
@@ -618,12 +659,14 @@ export function buildRuntimeCompactionSource(
     ? `${connectionLabel}${connectionPayload}`
     : "";
   const pendingBlock = pendingObligationBlock(pendingOperations).trim();
+  const planBlock = planProgressBlock(plan).trim();
   const previousHandoffBlock = previousHandoffs.join(separator);
   const fixedLength = [
     prefix,
     evidenceBlock,
     connectionBlock,
     pendingBlock,
+    planBlock,
     previousHandoffBlock,
     closing,
   ]
@@ -640,6 +683,7 @@ export function buildRuntimeCompactionSource(
     evidenceBlock,
     connectionBlock,
     pendingBlock,
+    planBlock,
     previousHandoffBlock,
     closing,
   ]
@@ -650,6 +694,7 @@ export function buildRuntimeCompactionSource(
     evidenceBlock,
     connectionBlock,
     pendingBlock,
+    planBlock,
     previousHandoffBlock,
     closing,
   ]
@@ -887,6 +932,7 @@ export async function compactRuntimeHistoryWithModel(
     activeConnections?: Iterable<string>;
     preserveImageMessageId?: string;
     pendingOperations?: Iterable<string>;
+    plan?: RuntimeCompactionPlanSnapshot;
     signal?: AbortSignal;
     summarize?: RuntimeContextSummarizer;
   },
@@ -894,6 +940,7 @@ export async function compactRuntimeHistoryWithModel(
   const force = options.force ?? false;
   const activeConnections = [...(options.activeConnections ?? [])];
   const pendingOperations = [...(options.pendingOperations ?? [])];
+  const plan = options.plan;
   const recentItemCount = runtimeCompactionRecentItemCount(
     history,
     options.request.contextWindow,
@@ -902,12 +949,9 @@ export async function compactRuntimeHistoryWithModel(
   if (history.length <= recentItemCount && !force)
     return { changed: false, strategy: "none" };
   const evidenceHistory = options.evidenceHistory ?? history;
-  const source = buildRuntimeCompactionSource(
-    history,
-    activeConnections,
-    runtimeCompactionSourceLimit(options.request, options.provider),
-    recentItemCount,
-    pendingOperations,
+  const sourceLimit = runtimeCompactionSourceLimit(
+    options.request,
+    options.provider,
   );
   const ledger = buildRuntimeCompactionLedger(
     history,
@@ -915,6 +959,24 @@ export async function compactRuntimeHistoryWithModel(
     activeConnections,
     pendingOperations,
   );
+  if (plan?.steps?.length) {
+    const planLines = planProgressBlock(plan)
+      .split("\n")
+      .slice(1)
+      .map((line) => line.replace(/^-\s*/, "").trim())
+      .filter(Boolean);
+    ledger.pending = uniqueRuntimeLines(
+      [...(ledger.pending ?? []), ...planLines.filter((line) => /\bin_progress\b|\bpending\b/i.test(line))],
+      32,
+    );
+    ledger.decisions = uniqueRuntimeLines(
+      [
+        ...(ledger.decisions ?? []),
+        ...planLines.filter((line) => /\bcompleted\b/i.test(line)),
+      ],
+      32,
+    );
+  }
   // A custom provider resolver is commonly used by embedders/tests without a
   // network-capable provider. In that case the caller must explicitly opt in
   // to a summarizer; the production path below always supplies one.
@@ -927,14 +989,58 @@ export async function compactRuntimeHistoryWithModel(
       recentItemCount,
       options.preserveImageMessageId,
       pendingOperations,
+      plan,
     );
     return {
       changed: fallbackChanged,
       strategy: fallbackChanged ? "fallback" : "none",
     };
   }
-  try {
+
+  const applyModelSummary = (result: ContextSummaryResult) => {
+    const boundedResult = boundedRuntimeModelSummary(
+      result,
+      options.request.contextWindow,
+    );
+    const nextHistory = [...history];
+    if (
+      !compactRuntimeHistory(
+        nextHistory,
+        force,
+        activeConnections,
+        recentItemCount,
+        options.preserveImageMessageId,
+        pendingOperations,
+        plan,
+      ) ||
+      !replaceRuntimeCompactionSummary(
+        nextHistory,
+        boundedResult,
+        evidenceHistory,
+        pendingOperations,
+      )
+    )
+      return undefined;
+    history.splice(0, history.length, ...nextHistory);
+    return {
+      changed: true as const,
+      strategy: "model" as const,
+      modelId: boundedResult.modelId ?? options.request.modelId,
+      summary: boundedResult.summary,
+      usage: boundedResult.usage,
+    };
+  };
+
+  const requestSummary = async (maxChars: number) => {
     if (options.signal?.aborted) throw new Error("上下文压缩已取消");
+    const source = buildRuntimeCompactionSource(
+      history,
+      activeConnections,
+      maxChars,
+      recentItemCount,
+      pendingOperations,
+      plan,
+    );
     const result = await summarizer({
       requestId: options.requestId,
       taskId: options.request.taskId ?? options.requestId,
@@ -949,50 +1055,42 @@ export async function compactRuntimeHistoryWithModel(
       !runtimeSummaryLooksUsable(result.summary, options.request.contextWindow)
     )
       throw new Error("模型未返回有效的上下文摘要");
-    const boundedResult = boundedRuntimeModelSummary(
-      result,
-      options.request.contextWindow,
-    );
-    const nextHistory = [...history];
-    if (
-      !compactRuntimeHistory(
-        nextHistory,
+    return result;
+  };
+
+  try {
+    const result = await requestSummary(sourceLimit);
+    const applied = applyModelSummary(result);
+    if (!applied) return { changed: false, strategy: "none" };
+    return applied;
+  } catch (firstError) {
+    // Codex-style: one shrink-and-retry before the deterministic local outline.
+    // A smaller source often succeeds when the first pass timed out or returned
+    // a malformed handoff, and keeps mid-run memory much denser than fallback.
+    try {
+      if (options.signal?.aborted) throw firstError;
+      const retryLimit = Math.max(12_000, Math.floor(sourceLimit * 0.55));
+      if (retryLimit >= sourceLimit - 1_000) throw firstError;
+      const retryResult = await requestSummary(retryLimit);
+      const applied = applyModelSummary(retryResult);
+      if (!applied) throw firstError;
+      return applied;
+    } catch (error) {
+      const fallbackChanged = compactRuntimeHistory(
+        history,
         force,
         activeConnections,
         recentItemCount,
         options.preserveImageMessageId,
         pendingOperations,
-      ) ||
-      !replaceRuntimeCompactionSummary(
-        nextHistory,
-        boundedResult,
-        evidenceHistory,
-        pendingOperations,
-      )
-    )
-      return { changed: false, strategy: "none" };
-    history.splice(0, history.length, ...nextHistory);
-    return {
-      changed: true,
-      strategy: "model",
-      modelId: boundedResult.modelId ?? options.request.modelId,
-      summary: boundedResult.summary,
-      usage: boundedResult.usage,
-    };
-  } catch (error) {
-    const fallbackChanged = compactRuntimeHistory(
-      history,
-      force,
-      activeConnections,
-      recentItemCount,
-      options.preserveImageMessageId,
-      pendingOperations,
-    );
-    return {
-      changed: fallbackChanged,
-      strategy: fallbackChanged ? "fallback" : "none",
-      error: error instanceof Error ? error.message : String(error),
-    };
+        plan,
+      );
+      return {
+        changed: fallbackChanged,
+        strategy: fallbackChanged ? "fallback" : "none",
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
   }
 }
 

@@ -172,6 +172,52 @@ test("a plan is complete only after required tool evidence exists", () => {
   assert.equal(snapshot.evidenceComplete, true);
 });
 
+
+test("incomplete plan statuses keep the turn actionable without reading prose", () => {
+  const snapshot = buildRoundEvidenceSnapshot(
+    snapshotInput({
+      plan: {
+        steps: ["查账号", "统计请求", "核对日志"],
+        statuses: ["completed", "pending", "pending"],
+        requirements: [["inspect"], ["inspect"], ["inspect"]],
+        cursor: 1,
+        requirementsDeclared: true,
+      },
+      requestedCodingEvidenceOps: new Set(["inspect"]),
+      requestedBrowserOps: new Set(),
+      requestedGitOps: new Set(),
+      // Global inspect already happened, but later plan steps are still pending.
+      codingEvidence: new Set(["inspect"]),
+      browserEvidence: new Set(),
+      gitEvidence: new Set(),
+      unavailableGit: new Set(),
+    }),
+  );
+  assert.equal(snapshot.actionablePlanPending, true);
+  assert.equal(snapshot.evidenceComplete, false);
+});
+
+test("plan auto-continue allows several structured nudges", () => {
+  const once = noToolAutoContinue({
+    hasCalls: false,
+    plannerCoordinator: false,
+    plannerExecutionPending: false,
+    requestedUserInput: false,
+    actionablePlanPending: true,
+    autoContinues: 1,
+  });
+  assert.equal(once.willAutoContinue, true);
+  const exhausted = noToolAutoContinue({
+    hasCalls: false,
+    plannerCoordinator: false,
+    plannerExecutionPending: false,
+    requestedUserInput: false,
+    actionablePlanPending: true,
+    autoContinues: 4,
+  });
+  assert.equal(exhausted.willAutoContinue, false);
+});
+
 test("buildRoundEvidenceSnapshot is complete when remaining git ops are unavailable", () => {
   const snapshot = buildRoundEvidenceSnapshot(
     snapshotInput({

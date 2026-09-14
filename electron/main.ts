@@ -8,6 +8,7 @@ import {
   nativeImage,
   Notification,
   Tray,
+  nativeTheme,
 } from "electron";
 import {
   mkdir,
@@ -367,7 +368,11 @@ function updateUnread(count: number) {
   );
 }
 function showMainWindow() {
-  if (!mainWindow || mainWindow.isDestroyed()) mainWindow = createWindow();
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    // Fresh windows stay hidden until ready-to-show paints the boot splash.
+    mainWindow = createWindow();
+    return;
+  }
   mainWindow.show();
   mainWindow.restore();
   mainWindow.focus();
@@ -495,20 +500,25 @@ async function listCheckpoints() {
 function createWindow() {
   rendererReady = false;
   const icon = windowIcon();
+  // Keep the window hidden until the first paint. Showing earlier flashes the
+  // OS/Chromium default light surface before index.html boot splash can run.
+  // App default theme is dark, so use the dark canvas even when the OS is light.
   const win = new BrowserWindow({
     width: 1420,
     height: 900,
     minWidth: 960,
     minHeight: 640,
     frame: false,
+    show: false,
     autoHideMenuBar: true,
-    backgroundColor: "#f6f7f9",
+    backgroundColor: "#181818",
     icon,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      backgroundThrottling: false,
     },
   });
   // Dev (Vite) needs an inline React-refresh preamble; apply CSP only when packaged.
@@ -543,7 +553,16 @@ function createWindow() {
     });
   }
   configureWindowsTaskbar(win, icon);
-  win.once("ready-to-show", () => configureWindowsTaskbar(win, icon));
+  win.once("ready-to-show", () => {
+    if (win.isDestroyed()) return;
+    configureWindowsTaskbar(win, icon);
+    // First paint includes the inline boot splash in index.html — show only then.
+    win.show();
+    if (!win.isDestroyed()) {
+      win.focus();
+      updateUnread(0);
+    }
+  });
   mainWindow = win;
   win.on("close", (event) => {
     if (!quitting && remoteShouldKeepRunning()) {

@@ -60,8 +60,6 @@ interface ModelEntry {
   model: ModelConfig;
 }
 
-type WorkPanelTab = "run" | "changes" | "context";
-
 export interface StatusPanelProps {
   runStatus: TaskRunStatus;
   activities: AgentActivity[];
@@ -129,9 +127,12 @@ function FileChangeRow({
       <span className="status-file-row-name">
         <strong>{fileName(change.path)}</strong>
         {change.path.replace(/\\/g, "/") !== fileName(change.path) ? (
-          <em title={change.path}>{change.path}</em>
+          <em title={change.path}>
+            {change.path.replace(/\\/g, "/").split("/").slice(0, -1).join("/") ||
+              "."}
+          </em>
         ) : (
-          <em>工作区文件</em>
+          <em>工作区</em>
         )}
       </span>
       <small>
@@ -192,7 +193,6 @@ export function StatusPanel({
   const [diffViewMode, setDiffViewMode] = useState<"split" | "unified">("split");
   const diffFileNavRef = useRef<HTMLElement | null>(null);
   const diffContentRef = useRef<HTMLDivElement | null>(null);
-  const [workTab, setWorkTab] = useState<WorkPanelTab>("changes");
   const gitWorkspacePath = activeTask
     ? localWorkspacePath(activeTask)
     : undefined;
@@ -285,15 +285,6 @@ export function StatusPanel({
     setFileDiffError("");
   }, [activeTask?.id, runningId]);
   useEffect(() => {
-    setWorkTab(
-      fileChanges.length
-        ? "changes"
-        : runningId || activities.length
-          ? "run"
-          : "context",
-    );
-  }, [activeTask?.id, fileChanges.length, runningId, activities.length]);
-  useEffect(() => {
     if (
       !diffOpen ||
       !selectedDiffPath ||
@@ -358,383 +349,319 @@ export function StatusPanel({
     taskCheckpoints.length === 0;
 
   return (
-    <aside className="status-panel work-panel" aria-label="工作面板">
-      <header className="work-panel-header">
-        <nav className="work-panel-tabs" role="tablist" aria-label="工作面板">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={workTab === "run"}
-            className={workTab === "run" ? "is-active" : ""}
-            onClick={() => setWorkTab("run")}
-          >
-            本轮
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={workTab === "changes"}
-            className={workTab === "changes" ? "is-active" : ""}
-            onClick={() => setWorkTab("changes")}
-          >
-            改动
-            {fileChanges.length > 0 && <b>{fileChanges.length}</b>}
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={workTab === "context"}
-            className={workTab === "context" ? "is-active" : ""}
-            onClick={() => setWorkTab("context")}
-          >
-            上下文
-          </button>
-        </nav>
-      </header>
+    <aside className="status-panel work-panel is-unified" aria-label="工作面板">
       <div className="work-panel-body">
-      <div
-        className="work-panel-pane"
-        role="tabpanel"
-        aria-label="本轮"
-        hidden={workTab !== "run"}
-      >
-      {showRunOverview && (
-        <section
-          className={`status-run-overview ${running ? "is-running" : ""} ${runStatus === "blocked" ? "is-blocked" : ""} ${overviewTone === "success" ? "is-success" : ""} ${overviewTone === "failure" ? "has-failures" : ""}`}
-        >
-          <div className="status-section-heading">
-            <span>
-              {running ? (
-                <Activity size={14} />
-              ) : overviewTone === "failure" ? (
-                <CircleAlert size={14} />
-              ) : runStatus === "blocked" ? (
-                <Clock3 size={14} />
-              ) : (
-                <CheckCircle2 size={14} />
-              )}
-              <strong>{headline}</strong>
-            </span>
-            <time>{formatDuration(liveDurationMs)}</time>
-          </div>
-          {running && activitySummary.active && (
-            <code title={activityTarget(activitySummary.active)}>
-              {activityTarget(activitySummary.active) ||
-                activitySummary.active.title}
-            </code>
-          )}
-          {running && !activitySummary.active && (
-            <p className="status-live-detail">{currentPhase.detail}</p>
-          )}
-          <div className="status-run-stats">
-            {activitySummary.total > 0 ? (
-              <span>
-                <b>{activitySummary.completed}</b>/{activitySummary.total} 步
-              </span>
-            ) : (
-              <span>正在准备步骤</span>
-            )}
-            {activitySummary.commands > 0 && (
-              <span>{activitySummary.commands} 个命令</span>
-            )}
-            {fileChanges.length > 0 && <span>{fileChanges.length} 个文件</span>}
-            {queuedCount > 0 && <span>{queuedCount} 条排队</span>}
-            {activitySummary.failures > 0 && (
-              <span className="status-failure-count">
-                {activitySummary.failures} 项失败
-              </span>
-            )}
-          </div>
-        </section>
-      )}
-
-      {resultActivities.length > 0 && (
-        <section className="status-results-section">
-          <div className="status-section-heading">
-            <span>
-              <Terminal size={14} />
-              <strong>{resultTitle}</strong>
-            </span>
-            <small>{resultSource.length} 次执行</small>
-          </div>
-          <div className="status-result-list">
-            {resultActivities.map((activity) => {
-              const failed =
-                activity.status === "failed" || activity.status === "denied";
-              const active =
-                activity.status === "running" || activity.status === "waiting";
-              return (
-                <div
-                  className={`status-result-row ${failed ? "failed" : ""} ${active ? "active" : ""}`}
-                  key={activity.id}
-                >
-                  {failed ? (
-                    <CircleAlert size={13} />
-                  ) : active ? (
-                    <RefreshCw className="spinning" size={13} />
-                  ) : (
-                    <CheckCircle2 size={13} />
-                  )}
-                  <span>
-                    <strong>{activity.title}</strong>
-                    <code title={activity.command || activityTarget(activity)}>
-                      {activity.command || activityTarget(activity) || "已完成"}
-                    </code>
-                  </span>
-                  <small>{resultStatus(activity)}</small>
+        <section className="work-panel-block" aria-label="改动">
+          {showChanges ? (
+            <section className="git-section status-changes-section is-compact">
+              <div className="status-change-total">
+                <span>
+                  <strong>{displayChangeCount} 个文件</strong>
+                  <small>本轮改动</small>
+                </span>
+                <b>
+                  <i>+{displayAdditions}</i>
+                  <em>-{displayDeletions}</em>
+                </b>
+                <div className="work-panel-heading-actions">
+                  <button
+                    className={gitRefreshing ? "spinning" : ""}
+                    onClick={() => void refreshGitState()}
+                    title="刷新 Git 状态"
+                    aria-label="刷新 Git 状态"
+                  >
+                    <RefreshCw size={13} />
+                  </button>
                 </div>
-              );
-            })}
-          </div>
-        </section>
-      )}
-
-      {taskCheckpoints.length > 0 && (
-        <section className="status-recovery-section">
-          <div className="status-section-heading">
-            <span>
-              <RotateCcw size={14} />
-              <strong>可恢复任务</strong>
-            </span>
-          </div>
-          {taskCheckpoints.map((checkpoint) => (
-            <button
-              className="resume-checkpoint"
-              key={checkpoint.id}
-              disabled={Boolean(runningId) || summaryBusy}
-              onClick={() => void resumeCheckpoint(checkpoint)}
-            >
-              <RefreshCw size={13} />
-              <span>
-                <strong>从检查点继续</strong>
-                <small>{new Date(checkpoint.startedAt).toLocaleString()}</small>
-              </span>
-            </button>
-          ))}
-        </section>
-      )}
-      {runEmpty && (
-        <p className="work-panel-empty">本轮还没有执行记录。</p>
-      )}
-      </div>
-
-      <div
-        className="work-panel-pane"
-        role="tabpanel"
-        aria-label="改动"
-        hidden={workTab !== "changes"}
-      >
-      {showChanges ? (
-        <section className="git-section status-changes-section">
-          <div className="status-section-heading">
-            <span>
-              <GitCompareArrows size={14} />
-              <strong>改动概览</strong>
-            </span>
-            <div className="work-panel-heading-actions">
-              <button
-                className={gitRefreshing ? "spinning" : ""}
-                onClick={() => void refreshGitState()}
-                title="刷新 Git 状态"
-                aria-label="刷新 Git 状态"
-              >
-                <RefreshCw size={13} />
-              </button>
-            </div>
-          </div>
-          <div className="status-change-total">
-            <span>
-              <strong>{displayChangeCount} 个文件</strong>
-              <small>本轮改动</small>
-            </span>
-            <b>
-              <i>+{displayAdditions}</i>
-              <em>-{displayDeletions}</em>
-            </b>
-          </div>
-          {fileChanges.length > 0 && (
-            <div className="status-file-list">
-              <small>文件列表 · 点击弹窗查看差异</small>
-              <div className="status-file-list-scroll">
-                {fileChanges.map((change) => (
-                  <FileChangeRow
-                    key={change.path}
-                    change={change}
-                    active={diffOpen && change.path === selectedDiffPath}
-                    onClick={() => openDiff(change.path)}
-                  />
-                ))}
               </div>
-            </div>
-          )}
-        </section>
-      ) : (
-        <p className="work-panel-empty">本轮还没有文件改动。</p>
-      )}
-      </div>
-
-      <div
-        className="work-panel-pane"
-        role="tabpanel"
-        aria-label="上下文"
-        hidden={workTab !== "context"}
-      >
-      {showUsage && (
-        <section className="status-usage-section">
-          <div className="status-section-heading">
-            <span>
-              <BrainCircuit size={14} />
-              <strong>上下文与用量</strong>
-            </span>
-          </div>
-          <div className="run-metrics">
-            <div>
-              <Clock3 size={14} />
-              <span>
-                <small>耗时</small>
-                <strong>{formatDuration(liveDurationMs)}</strong>
-              </span>
-            </div>
-            <div>
-              <BrainCircuit size={14} />
-              <span>
-                <small>Token</small>
-                <strong>
-                  {totalTokens
-                    ? totalTokens.toLocaleString()
-                    : usageResolved
-                      ? "渠道未返回"
-                      : "计算中"}
-                </strong>
-              </span>
-            </div>
-            {usedContextCount > 0 && (
-              <div>
-                <Paperclip size={14} />
-                <span>
-                  <small>引用上下文</small>
-                  <strong>{usedContextCount} 个文件</strong>
-                </span>
+              <div className="status-file-list">
+                <div className="status-file-list-scroll">
+                  {fileChanges.map((change) => (
+                    <FileChangeRow
+                      key={change.path}
+                      change={change}
+                      active={diffOpen && change.path === selectedDiffPath}
+                      onClick={() => openDiff(change.path)}
+                    />
+                  ))}
+                </div>
               </div>
-            )}
-          </div>
-          {totalTokens > 0 && (
-            <div className="token-split">
-              <span>输入 {usage.input.toLocaleString()}</span>
-              <i />
-              <span>输出 {usage.output.toLocaleString()}</span>
-              <i />
-              <span>缓存 {usage.cached.toLocaleString()}</span>
-            </div>
-          )}
-          {selectedContextWindow ? (
-            <div className="context-usage">
-              <div>
-                <span>
-                  当前上下文
-                  <em className="context-source-label">
-                    {contextTokenSource === "reported"
-                      ? "渠道实测"
-                      : contextTokenSource === "partial"
-                        ? "近期记录估算"
-                        : "本地估算"}
-                  </em>
-                </span>
-                <strong>{contextPercent}%</strong>
-              </div>
-              <div className="context-usage-bar">
-                <i style={{ width: `${contextPercent}%` }} />
-                <b
-                  style={{ left: `${autoCompactPercent}%` }}
-                  title={`${autoCompactPercent}% 自动压缩线`}
-                />
-              </div>
-              <div className="context-budget-meta">
-                <small>
-                  {contextTokens.toLocaleString()} /{" "}
-                  {selectedContextWindow.toLocaleString()} Token
-                  {contextWindowEstimated ? "（窗口推测值）" : ""}
-                </small>
-              </div>
-              <div className="context-next-budget">
-                <span>
-                  下次请求预算
-                  <small>含附件与输出预留</small>
-                </span>
-                <strong>{nextRequestPercent}%</strong>
-                <small>{nextRequestTokens.toLocaleString()} Token</small>
-              </div>
-              <div className="context-auto-compact-note">
-                {autoCompactPercent}% 时自动压缩较早对话
-              </div>
-            </div>
+            </section>
           ) : (
-            <div className="context-usage">
-              <div>
-                <span>当前上下文</span>
-                <strong>未配置</strong>
-              </div>
-              <small>请在模型设置中填写上下文窗口</small>
-            </div>
-          )}
-          {Math.abs(calibrationFactor - 1) >= 0.01 && (
-            <small className="calibration-status">
-              估算已按当前渠道校准 ×{calibrationFactor.toFixed(2)}
-            </small>
-          )}
-          <button
-            className="compact-context-button"
-            type="button"
-            disabled={Boolean(runningId) || summaryBusy}
-            onClick={() => void compactActiveConversation()}
-            title="按 Token 预算压缩较早消息并保留关键状态"
-          >
-            <Minimize2 size={13} />
-            压缩上下文
-          </button>
-          {(activeTask?.compactedMessageCount ?? 0) > 0 && (
-            <small className="compaction-status">
-              已压缩 {activeTask?.compactedMessageCount} 条较早消息
-            </small>
-          )}
-          {activeTask?.contextSummary && (
-            <button
-              className="view-summary-button"
-              type="button"
-              onClick={() => setSummaryOpen(true)}
-            >
-              查看压缩摘要
-            </button>
+            <p className="work-panel-empty is-inline">本轮还没有文件改动。</p>
           )}
         </section>
-      )}
-      {selectedTarget && (
-        <footer
-          className="status-model-line"
-          title={
-            executorTarget
-              ? `规划：${selectedTarget.provider.name} / ${selectedTarget.model.modelId}（${effortLabels[reasoningEffort]}）· 执行：${executorTarget.provider.name} / ${executorTarget.model.modelId}（${effortLabels[executorReasoningEffort]}）`
-              : `${selectedTarget.provider.name} / ${selectedTarget.model.modelId}`
-          }
-        >
-          {executorTarget ? <Workflow size={13} /> : <BrainCircuit size={13} />}
-          <span>
-            <strong>
-              {selectedTarget.model.displayName}
-              {executorTarget ? ` → ${executorTarget.model.displayName}` : ""}
-            </strong>
-            <small>
-              {executorTarget
-                ? `规划 ${effortLabels[reasoningEffort]} / 执行 ${effortLabels[executorReasoningEffort]}`
-                : effortLabels[reasoningEffort]}
-            </small>
-          </span>
-        </footer>
-      )}
-      {!showUsage && !selectedTarget && (
-        <p className="work-panel-empty">还没有上下文用量。</p>
-      )}
-      </div>
+
+        <section className="work-panel-block" aria-label="本轮">
+          {showRunOverview && (
+            <section
+              className={`status-run-overview is-compact ${running ? "is-running" : ""} ${runStatus === "blocked" ? "is-blocked" : ""} ${overviewTone === "success" ? "is-success" : ""} ${overviewTone === "failure" ? "has-failures" : ""}`}
+            >
+              <div className="status-section-heading">
+                <span>
+                  {running ? (
+                    <Activity size={14} />
+                  ) : overviewTone === "failure" ? (
+                    <CircleAlert size={14} />
+                  ) : runStatus === "blocked" ? (
+                    <Clock3 size={14} />
+                  ) : (
+                    <CheckCircle2 size={14} />
+                  )}
+                  <strong>{headline}</strong>
+                </span>
+                <time>{formatDuration(liveDurationMs)}</time>
+              </div>
+              {running && activitySummary.active && (
+                <code title={activityTarget(activitySummary.active)}>
+                  {activityTarget(activitySummary.active) ||
+                    activitySummary.active.title}
+                </code>
+              )}
+              {running && !activitySummary.active && (
+                <p className="status-live-detail">{currentPhase.detail}</p>
+              )}
+              <div className="status-run-stats">
+                {activitySummary.total > 0 ? (
+                  <span>
+                    <b>{activitySummary.completed}</b>/{activitySummary.total} 步
+                  </span>
+                ) : (
+                  <span>正在准备步骤</span>
+                )}
+                {activitySummary.commands > 0 && (
+                  <span>{activitySummary.commands} 个命令</span>
+                )}
+                {fileChanges.length > 0 && <span>{fileChanges.length} 个文件</span>}
+                {queuedCount > 0 && <span>{queuedCount} 条排队</span>}
+                {activitySummary.failures > 0 && (
+                  <span className="status-failure-count">
+                    {activitySummary.failures} 项失败
+                  </span>
+                )}
+              </div>
+            </section>
+          )}
+
+          {resultActivities.length > 0 && (
+            <section className="status-results-section">
+              <div className="status-section-heading">
+                <span>
+                  <Terminal size={14} />
+                  <strong>{resultTitle}</strong>
+                </span>
+                <small>{resultSource.length} 次执行</small>
+              </div>
+              <div className="status-result-list">
+                {resultActivities.map((activity) => {
+                  const failed =
+                    activity.status === "failed" || activity.status === "denied";
+                  const active =
+                    activity.status === "running" || activity.status === "waiting";
+                  return (
+                    <div
+                      className={`status-result-row ${failed ? "failed" : ""} ${active ? "active" : ""}`}
+                      key={activity.id}
+                    >
+                      {failed ? (
+                        <CircleAlert size={13} />
+                      ) : active ? (
+                        <RefreshCw className="spinning" size={13} />
+                      ) : (
+                        <CheckCircle2 size={13} />
+                      )}
+                      <span>
+                        <strong>{activity.title}</strong>
+                        <code title={activity.command || activityTarget(activity)}>
+                          {activity.command || activityTarget(activity) || "已完成"}
+                        </code>
+                      </span>
+                      <small>{resultStatus(activity)}</small>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          )}
+
+          {taskCheckpoints.length > 0 && (
+            <section className="status-recovery-section">
+              <div className="status-section-heading">
+                <span>
+                  <RotateCcw size={14} />
+                  <strong>可恢复任务</strong>
+                </span>
+              </div>
+              {taskCheckpoints.map((checkpoint) => (
+                <button
+                  className="resume-checkpoint"
+                  key={checkpoint.id}
+                  disabled={Boolean(runningId) || summaryBusy}
+                  onClick={() => void resumeCheckpoint(checkpoint)}
+                >
+                  <RefreshCw size={13} />
+                  <span>
+                    <strong>从检查点继续</strong>
+                    <small>{new Date(checkpoint.startedAt).toLocaleString()}</small>
+                  </span>
+                </button>
+              ))}
+            </section>
+          )}
+          {runEmpty && !showChanges && (
+            <p className="work-panel-empty is-inline">本轮还没有执行记录。</p>
+          )}
+        </section>
+
+        <section className="work-panel-block" aria-label="上下文">
+          {showUsage && (
+            <section className="status-usage-section is-compact">
+              {selectedContextWindow ? (
+                <div className="context-usage context-usage-hero">
+                  <div>
+                    <span>
+                      上下文预算
+                      <em className="context-source-label">
+                        {contextTokenSource === "reported"
+                          ? "渠道实测"
+                          : contextTokenSource === "partial"
+                            ? "近期记录估算"
+                            : "本地估算"}
+                      </em>
+                    </span>
+                    <strong>{contextPercent}%</strong>
+                  </div>
+                  <div className="context-usage-bar">
+                    <i style={{ width: `${contextPercent}%` }} />
+                    <b
+                      style={{ left: `${autoCompactPercent}%` }}
+                      title={`${autoCompactPercent}% 自动压缩线`}
+                    />
+                  </div>
+                  <div className="context-budget-meta">
+                    <small>
+                      {contextTokens.toLocaleString()} /{" "}
+                      {selectedContextWindow.toLocaleString()} Token
+                      {contextWindowEstimated ? "（窗口推测值）" : ""}
+                    </small>
+                    <small>{autoCompactPercent}% 自动压缩</small>
+                  </div>
+                  <div className="context-next-budget">
+                    <span>
+                      下次请求
+                      <small>含附件与输出预留</small>
+                    </span>
+                    <strong>{nextRequestPercent}%</strong>
+                    <small>{nextRequestTokens.toLocaleString()} Token</small>
+                  </div>
+                </div>
+              ) : (
+                <div className="context-usage context-usage-hero">
+                  <div>
+                    <span>上下文预算</span>
+                    <strong>未配置</strong>
+                  </div>
+                  <small>请在模型设置中填写上下文窗口</small>
+                </div>
+              )}
+              <div className="run-metrics">
+                <div>
+                  <Clock3 size={14} />
+                  <span>
+                    <small>耗时</small>
+                    <strong>{formatDuration(liveDurationMs)}</strong>
+                  </span>
+                </div>
+                <div>
+                  <BrainCircuit size={14} />
+                  <span>
+                    <small>Token</small>
+                    <strong>
+                      {totalTokens
+                        ? totalTokens.toLocaleString()
+                        : usageResolved
+                          ? "渠道未返回"
+                          : "计算中"}
+                    </strong>
+                  </span>
+                </div>
+                {usedContextCount > 0 && (
+                  <div>
+                    <Paperclip size={14} />
+                    <span>
+                      <small>引用</small>
+                      <strong>{usedContextCount} 文件</strong>
+                    </span>
+                  </div>
+                )}
+              </div>
+              {totalTokens > 0 && (
+                <div className="token-split">
+                  <span>输入 {usage.input.toLocaleString()}</span>
+                  <i />
+                  <span>输出 {usage.output.toLocaleString()}</span>
+                  <i />
+                  <span>缓存 {usage.cached.toLocaleString()}</span>
+                </div>
+              )}
+              {Math.abs(calibrationFactor - 1) >= 0.01 && (
+                <small className="calibration-status">
+                  估算已按当前渠道校准 ×{calibrationFactor.toFixed(2)}
+                </small>
+              )}
+              <button
+                className="compact-context-button"
+                type="button"
+                disabled={Boolean(runningId) || summaryBusy}
+                onClick={() => void compactActiveConversation()}
+                title="按 Token 预算压缩较早消息并保留关键状态"
+              >
+                <Minimize2 size={13} />
+                压缩上下文
+              </button>
+              {(activeTask?.compactedMessageCount ?? 0) > 0 && (
+                <small className="compaction-status">
+                  已压缩 {activeTask?.compactedMessageCount} 条较早消息
+                </small>
+              )}
+              {activeTask?.contextSummary && (
+                <button
+                  className="view-summary-button"
+                  type="button"
+                  onClick={() => setSummaryOpen(true)}
+                >
+                  查看压缩摘要
+                </button>
+              )}
+            </section>
+          )}
+          {selectedTarget && (
+            <footer
+              className="status-model-line"
+              title={
+                executorTarget
+                  ? `规划：${selectedTarget.provider.name} / ${selectedTarget.model.modelId}（${effortLabels[reasoningEffort]}）· 执行：${executorTarget.provider.name} / ${executorTarget.model.modelId}（${effortLabels[executorReasoningEffort]}）`
+                  : `${selectedTarget.provider.name} / ${selectedTarget.model.modelId}`
+              }
+            >
+              {executorTarget ? <Workflow size={13} /> : <BrainCircuit size={13} />}
+              <span>
+                <strong>
+                  {selectedTarget.model.displayName}
+                  {executorTarget ? ` → ${executorTarget.model.displayName}` : ""}
+                </strong>
+                <small>
+                  {executorTarget
+                    ? `规划 ${effortLabels[reasoningEffort]} / 执行 ${effortLabels[executorReasoningEffort]}`
+                    : effortLabels[reasoningEffort]}
+                </small>
+              </span>
+            </footer>
+          )}
+          {!showUsage && !selectedTarget && (
+            <p className="work-panel-empty is-inline">还没有上下文用量。</p>
+          )}
+        </section>
       </div>
 
       {diffOpen &&

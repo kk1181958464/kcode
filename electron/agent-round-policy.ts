@@ -154,8 +154,24 @@ export function buildRoundEvidenceSnapshot(input: {
   const missingAvailableGitOperations = missingGitOperations.filter(
     (operation) => !input.unavailableGit.has(operation),
   );
+  // Codex-style: completion follows structured runtime state, never user/assistant
+  // natural language. Plan step statuses come from update_plan (a tool), so an
+  // incomplete status keeps the turn open even when earlier global evidence
+  // already satisfied a shared requirement like inspect.
+  const planStatusIncomplete =
+    input.plan.steps.length > 0 &&
+    input.plan.requirementsDeclared &&
+    Array.isArray(input.plan.statuses) &&
+    input.plan.statuses.length === input.plan.steps.length &&
+    input.plan.statuses.some((status, index) => {
+      if (status !== "pending" && status !== "in_progress") return false;
+      // Any declared obligation (including inspect) keeps investigation plans open.
+      // Explanation-only steps (requires: []) must not block stall finalization.
+      return (input.plan.requirements[index] ?? []).length > 0;
+    });
   const actionablePlanPending =
     planRequirementsPending ||
+    planStatusIncomplete ||
     (hasActionablePlanRequirements(input.plan.requirements) &&
       (missingActionCodingOperations.length > 0 ||
         pendingRequiredPlanStep >= 0));
@@ -338,6 +354,7 @@ export function finalizationHistoryContent(
 }
 
 const AUTO_CONTINUE_LIMIT = 1;
+const PLAN_AUTO_CONTINUE_LIMIT = 4;
 
 /** Continue a no-tool round only for protocol truncation or unfinished structured work. Assistant prose never participates. */
 export function noToolAutoContinue(input: {
@@ -376,7 +393,10 @@ export function noToolAutoContinue(input: {
         pausedOrIncomplete ||
         collaborationPlanPending ||
         executionPlanPending) &&
-      input.autoContinues < AUTO_CONTINUE_LIMIT,
+      input.autoContinues <
+        (executionPlanPending || collaborationPlanPending
+          ? PLAN_AUTO_CONTINUE_LIMIT
+          : AUTO_CONTINUE_LIMIT),
   };
 }
 

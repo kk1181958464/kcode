@@ -549,6 +549,13 @@ export async function* runAgent(
           spawnedExecutor: successfulToolsAtRoundStart.has("spawn_agent"),
           snapshot: roundStartSnapshot,
         }).missingOperations,
+        plan: run.plan.steps.length
+          ? {
+              steps: run.plan.steps,
+              statuses: run.plan.statuses,
+              cursor: run.plan.cursor,
+            }
+          : undefined,
         signal,
         summarize: runtimeContextSummarizer,
       });
@@ -685,7 +692,8 @@ export async function* runAgent(
           toolsEnabled: finalizationMode ? false : toolsEnabled,
           requireToolCall: finalizationMode
             ? false
-            : shouldRequireCodingTool(
+            : actionablePlanPending ||
+              shouldRequireCodingTool(
                 request.modelId,
                 run.requestedCodingEvidenceOps,
                 codingEvidenceWithBaseline(
