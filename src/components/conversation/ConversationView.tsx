@@ -58,7 +58,7 @@ import {
 import { copyWithToast } from "../../lib/toast";
 import { revealLocalPath } from "../../lib/reveal-path";
 import { effortLabels } from "../../lib/model-utils";
-import { MarkdownMessage, isOpenMarkdownFence, partitionStreamingMarkdown } from "../common/MarkdownMessage";
+import { MarkdownMessage, isOpenMarkdownFence, closeOpenMarkdownFence, partitionStreamingMarkdown } from "../common/MarkdownMessage";
 import { DiffView } from "../common/DiffView";
 import {
   FileChangePreviewDialog,
@@ -1745,7 +1745,15 @@ const AssistantTimeline = memo(function AssistantTimeline({
           {display}
         </div>
       );
-    return <MarkdownMessage content={display} workspacePath={workspacePath} />;
+    // Tool offsets can split an open fence across timeline segments. Closing
+    // the dangling fence keeps the code-block height bounded so remend/stream
+    // text cannot paint over following execution-summary tool cards.
+    return (
+      <MarkdownMessage
+        content={closeOpenMarkdownFence(display)}
+        workspacePath={workspacePath}
+      />
+    );
   };
   const hasActiveActivity = activities.some(
     (activity) =>
@@ -2035,11 +2043,13 @@ const StreamingMarkdownTail = memo(function StreamingMarkdownTail({
         </div>
       ) : null}
       {openFence ? (
-        <StreamingTextLeaf
-          requestId={requestId}
-          offset={sealed.end}
-          revision={revision}
-        />
+        <div className="streaming-md-open streaming-md-fence">
+          <StreamingTextLeaf
+            requestId={requestId}
+            offset={sealed.end}
+            revision={revision}
+          />
+        </div>
       ) : remendedOpen ? (
         <div className="streaming-md-open">
           <MarkdownMessage content={remendedOpen} workspacePath={workspacePath} />

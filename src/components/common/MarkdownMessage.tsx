@@ -211,6 +211,27 @@ export function isOpenMarkdownFence(src: string): boolean {
   return fence !== null;
 }
 
+/** Close a dangling ``` / ~~~ fence so a split timeline segment renders as a bounded code-block. */
+export function closeOpenMarkdownFence(src: string): string {
+  if (!src || !isOpenMarkdownFence(src)) return src;
+  let fence: string | null = null;
+  let marker = "```";
+  for (const line of src.split("\n")) {
+    const match = /^\s*(```+|~~~+)/.exec(line);
+    if (!match) continue;
+    const kind = match[1][0];
+    if (!fence) {
+      fence = kind;
+      marker = match[1];
+    } else if (fence === kind) {
+      fence = null;
+    }
+  }
+  if (!fence) return src;
+  const trimmed = src.replace(/\s*$/, "");
+  return `${trimmed}\n${marker}\n`;
+}
+
 const MarkdownBlock = memo(function MarkdownBlock({
   content,
   workspacePath,

@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MarkdownMessage } from "../src/components/common/MarkdownMessage";
+import {
+  MarkdownMessage,
+  closeOpenMarkdownFence,
+  isOpenMarkdownFence,
+  partitionStreamingMarkdown,
+} from "../src/components/common/MarkdownMessage";
 
 Object.assign(globalThis, { React });
 
@@ -28,4 +33,30 @@ test("keeps web links external", () => {
   assert.match(markup, /target="_blank"/);
   assert.match(markup, /rel="noreferrer"/);
   assert.doesNotMatch(markup, /local-file-link/);
+});
+
+test("isOpenMarkdownFence detects dangling code fences", () => {
+  assert.equal(isOpenMarkdownFence("```python\nprint(1)\n"), true);
+  assert.equal(isOpenMarkdownFence("```python\nprint(1)\n```\n"), false);
+  assert.equal(isOpenMarkdownFence("plain text"), false);
+});
+
+test("closeOpenMarkdownFence bounds a split timeline segment", () => {
+  const open = "```python\nrouter = APIRouter()\n";
+  const closed = closeOpenMarkdownFence(open);
+  assert.equal(isOpenMarkdownFence(open), true);
+  assert.equal(isOpenMarkdownFence(closed), false);
+  assert.match(closed, /```\s*$/);
+  assert.equal(
+    closeOpenMarkdownFence("already ```ok``` done"),
+    "already ```ok``` done",
+  );
+});
+
+test("partitionStreamingMarkdown keeps open fence out of sealed content", () => {
+  const src = "hello\n\n```python\nprint(1)\n";
+  const part = partitionStreamingMarkdown(src);
+  assert.ok(part.sealedEnd > 0);
+  assert.match(part.sealedContent, /hello/);
+  assert.equal(isOpenMarkdownFence(src.slice(part.sealedEnd)), true);
 });

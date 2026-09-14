@@ -17175,3 +17175,124 @@ button.execution-summary-tool.inspect-group {
   transform: none !important;
   animation: none !important;
 }
+
+
+/* ========================================================================== */
+/* stream-fence-contain-v1 — stop open-fence / remend stream text covering    */
+/* completed execution-summary tool cards (运行远程命令 / 读取远程文件).       */
+/* Evidence: unstyled code fragments (no .code-block chrome) painted over     */
+/* .execution-summary-tool / .agent-activity rows after tools interleaved     */
+/* mid-fence; .streaming-md-open { position:relative } + overflow:visible     */
+/* toolline / summary let stream text stack above tool chrome.                */
+/* ========================================================================== */
+
+.streaming-md-tail {
+  position: relative !important;
+  top: auto !important;
+  right: auto !important;
+  bottom: auto !important;
+  left: auto !important;
+  z-index: 0;
+  display: block;
+  max-width: 100%;
+  isolation: isolate;
+  contain: paint;
+}
+
+.streaming-md-sealed,
+.streaming-md-open,
+.streaming-md-tail > .streaming-message-text {
+  position: relative !important;
+  top: auto !important;
+  right: auto !important;
+  bottom: auto !important;
+  left: auto !important;
+  float: none !important;
+  max-width: 100%;
+  isolation: isolate;
+}
+
+/* Open fence leaf: real box + clip so pre-wrap code cannot paint through tools */
+.streaming-md-open.streaming-md-fence,
+.streaming-md-tail > .streaming-md-open {
+  display: block;
+  margin: 8px 0 12px;
+  padding: 10px 12px;
+  overflow: auto;
+  max-height: min(60vh, 720px);
+  border: 1px solid var(--ui-border, var(--line));
+  border-radius: 10px;
+  background: var(--ui-code, var(--code-surface, transparent));
+  color: var(--ui-code-text, var(--code-ink, inherit));
+  contain: paint;
+}
+
+.streaming-md-open.streaming-md-fence > .streaming-message-text.is-live {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  font-family: "Cascadia Code", Consolas, ui-monospace, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Tool cards stay above any stray stream paint and clip their own overflow */
+.assistant-timeline,
+.assistant-timeline-group {
+  position: relative;
+  z-index: 1;
+  isolation: isolate;
+}
+
+.execution-summary,
+.agent-activity {
+  position: relative;
+  z-index: 2;
+  isolation: isolate;
+  overflow: hidden;
+  background: color-mix(
+    in srgb,
+    var(--ui-elevated, var(--surface-raised)) 94%,
+    transparent
+  );
+}
+
+.execution-summary-tool,
+button.execution-summary-tool.inspect-group {
+  position: relative;
+  z-index: 2;
+  overflow: hidden !important;
+}
+
+.execution-summary-toolline {
+  position: relative;
+  z-index: 2;
+  /* wrap-v1 set overflow:visible for long paths; keep wrap but don't let
+     descendants paint over neighboring cards */
+  overflow: hidden !important;
+}
+
+/* Code blocks must never escape their box over following tool rows */
+.message.assistant .code-block,
+.message.assistant .markdown-block .code-block,
+.streaming-md-sealed .code-block,
+.streaming-md-open .code-block {
+  position: relative;
+  z-index: 1;
+  overflow: hidden !important;
+  contain: paint;
+}
+
+/* After the run ends, drop live caret / bottom-rail absolute leftovers */
+.message.assistant:not(.is-running) .streaming-message-text.is-live::after,
+.message.assistant:not(.is-running) .streaming-md-open::after,
+.message.assistant:not(.is-running) .message-content::before,
+.message.assistant:not(.is-running) .message-content::after {
+  content: none !important;
+  display: none !important;
+  animation: none !important;
+  position: static !important;
+}

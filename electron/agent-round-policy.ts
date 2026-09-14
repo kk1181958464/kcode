@@ -469,10 +469,10 @@ export const REASONING_ONLY_RETRY_CONTENT =
 export const EMPTY_TURN_RETRY_CONTENT =
   "<runtime_verification>上一轮上游返回了空响应：没有正文，也没有工具调用。任务尚未完成。请从现有历史和工具结果继续，输出最终结论或立即调用下一步工具，不要再次返回空内容。</runtime_verification>";
 
-const STREAM_TIMEOUT_RECOVERY_LIMIT = 1;
+export const STREAM_TIMEOUT_RECOVERY_LIMIT = 3;
 
 /**
- * After a meaningful/reasoning-only stream watchdog fires, prefer one outer
+ * After a meaningful/reasoning-only stream watchdog fires, prefer a few outer
  * auto-continue when prior tools already made progress and structured work
  * remains — matching Codex-style recoverable mid-task recovery. Absolute
  * wall-clock timeouts still pause immediately.

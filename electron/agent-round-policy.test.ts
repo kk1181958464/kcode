@@ -629,7 +629,7 @@ test("emptyTurnRecovery retries then pauses, errors or abandons subagents", () =
   assert.match(REPETITION_RECOVERY_CONTENT, /不要再次原样重试/);
 });
 
-test("streamTimeoutRecovery auto-continues meaningful mid-task timeouts once", () => {
+test("streamTimeoutRecovery auto-continues meaningful mid-task timeouts up to the limit", () => {
   assert.deepEqual(
     streamTimeoutRecovery({
       timeoutKind: "meaningful",
@@ -645,6 +645,24 @@ test("streamTimeoutRecovery auto-continues meaningful mid-task timeouts once", (
       hasRecoverableToolEvidence: true,
       unfinishedWork: true,
       streamTimeoutRecoveries: 1,
+    }),
+    { action: "auto-continue" },
+  );
+  assert.deepEqual(
+    streamTimeoutRecovery({
+      timeoutKind: "meaningful",
+      hasRecoverableToolEvidence: true,
+      unfinishedWork: true,
+      streamTimeoutRecoveries: 2,
+    }),
+    { action: "auto-continue" },
+  );
+  assert.deepEqual(
+    streamTimeoutRecovery({
+      timeoutKind: "meaningful",
+      hasRecoverableToolEvidence: true,
+      unfinishedWork: true,
+      streamTimeoutRecoveries: 3,
     }),
     { action: "pause" },
   );

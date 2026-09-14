@@ -138,6 +138,7 @@ import {
   runDoneOutcome,
   stallFinalizeProgressMessage,
   streamTimeoutRecovery,
+  STREAM_TIMEOUT_RECOVERY_LIMIT,
   STREAM_TIMEOUT_RECOVERY_CONTENT,
 } from "./agent-round-policy";
 import type {
@@ -799,7 +800,7 @@ export async function* runAgent(
               yield {
                 type: "progress",
                 message:
-                  "模型本轮持续思考已达单轮安全边界，正在基于已有工具结果自动继续（仅一次）…",
+                  `模型本轮持续思考已达单轮安全边界，正在基于已有工具结果自动继续（${run.budgets.streamTimeoutRecoveries}/${STREAM_TIMEOUT_RECOVERY_LIMIT}）…`,
               };
               history.push({
                 kind: "message",

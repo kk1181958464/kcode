@@ -1352,7 +1352,7 @@ test("runAgent pauses immediately on absolute model turn timeout", async () => {
   );
 });
 
-test("runAgent pauses after one meaningful stream-timeout recovery is exhausted", async () => {
+test("runAgent pauses after meaningful stream-timeout recoveries are exhausted", async () => {
   const request = await makeRequest();
   request.messages = [{ role: "user", content: "修改 hello.txt" }];
   request.recoveryPlan = {
@@ -1403,7 +1403,7 @@ test("runAgent pauses after one meaningful stream-timeout recovery is exhausted"
       deps,
     ),
   );
-  assert.equal(round, 3, "one auto-continue then pause on second timeout");
+  assert.equal(round, 5, "three auto-continues then pause on fourth timeout");
   const done = events.find(
     (event): event is Extract<AgentEvent, { type: "done" }> =>
       event.type === "done",
