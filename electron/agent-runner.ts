@@ -103,7 +103,12 @@ import {
   stopSubagentsForParent,
   subagentProgressToken,
 } from "./subagents";
-import { isPlannerCoordinator } from "./collaboration";
+import {
+  isPlanConfirmGatedTool,
+  isPlanConfirmMode,
+  isPlannerCoordinator,
+  planRequiresUserGoAhead,
+} from "./collaboration";
 import {
   agentFinalizationMode,
   EXTERNAL_WAIT_MAX_DURATION_MS,
@@ -1261,7 +1266,10 @@ export async function* runAgent(
     for (const call of turn.calls) {
       const activityOptions = {
         plannerCoordinator,
-        executorDisplayName: request.collaboration?.executor.displayName,
+        executorDisplayName:
+          request.collaboration?.mode === "planner-executor"
+            ? request.collaboration.executor.displayName
+            : undefined,
       };
       const activity: AgentActivity = {
         id: randomUUID(),
@@ -1305,6 +1313,27 @@ export async function* runAgent(
         },
         signal,
       );
+      if (
+        isPlanConfirmMode(request) &&
+        !run.planConfirmed &&
+        isPlanConfirmGatedTool(call.name)
+      ) {
+        activity.status = "denied";
+        activity.completedAt = Date.now();
+        activity.output = planRequiresUserGoAhead(run.plan.requirements)
+          ? "计划确认模式：请先等待用户确认执行计划"
+          : "计划确认模式：变更前请先调用 update_plan 提交简短计划并等待用户确认";
+        toolRegistry.finish(toolTrace.callId, "denied");
+        yield { type: "activity", activity };
+        roundLastActivity = activity;
+        roundFailedActivity = activity;
+        history.push({
+          kind: "result",
+          callId: call.id,
+          content: activity.output,
+        });
+        continue;
+      }
       const { decision, category } = resolvePermissionDecisionForCategories(
         request.permissionMode,
         request.permissionPolicy,
@@ -1543,6 +1572,50 @@ export async function* runAgent(
           errorSummary: outcome.errorSummary,
           liveStatus: undefined,
         });
+        if (
+          planUpdate &&
+          outcome.status === "success" &&
+          isPlanConfirmMode(request) &&
+          !run.planConfirmed &&
+          planRequiresUserGoAhead(run.plan.requirements) &&
+          !signal.aborted
+        ) {
+          activity.status = "waiting";
+          activity.completedAt = undefined;
+          activity.liveStatus = "plan-confirm";
+          activity.title = "待确认执行计划";
+          toolRegistry.markWaiting(toolTrace.callId);
+          yield { type: "activity", activity };
+          const approvalKey = `${requestId}:${activity.id}`;
+          const allowed = await new Promise<boolean>((resolve) => {
+            approvals.set(approvalKey, resolve);
+            signal.addEventListener("abort", () => resolve(false), {
+              once: true,
+            });
+          });
+          approvals.delete(approvalKey);
+          if (allowed) {
+            run.planConfirmed = true;
+            activity.status = "success";
+            activity.completedAt = Date.now();
+            activity.liveStatus = undefined;
+            activity.output = activity.output
+              ? `${activity.output}；用户已确认计划，可以开始执行`
+              : "用户已确认计划，可以开始执行";
+          } else if (signal.aborted) {
+            activity.status = "denied";
+            activity.completedAt = Date.now();
+            activity.liveStatus = undefined;
+            activity.output = "计划确认已取消";
+          } else {
+            activity.status = "success";
+            activity.completedAt = Date.now();
+            activity.liveStatus = undefined;
+            activity.output =
+              "用户要求调整计划。请修订后再次调用 update_plan；在用户确认前不要执行变更。";
+          }
+          yield { type: "activity", activity };
+        }
         if (
           call.name === "request_user_input" &&
           activity.status === "success" &&

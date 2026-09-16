@@ -103,7 +103,9 @@ export function executorModelOverrides(
     }
   | undefined {
   if (!isPlannerCoordinator(request)) return undefined;
-  const target = request.collaboration!.executor;
+  const collaboration = request.collaboration;
+  if (collaboration?.mode !== "planner-executor") return undefined;
+  const target = collaboration.executor;
   return {
     providerId: target.providerId,
     modelId: target.modelId,
@@ -117,7 +119,9 @@ export function executorModelOverrides(
 
 export function plannerCollaborationInstruction(request: ModelRequest) {
   if (!isPlannerCoordinator(request)) return "";
-  const executor = request.collaboration!.executor;
+  const collaboration = request.collaboration;
+  if (collaboration?.mode !== "planner-executor") return "";
+  const executor = collaboration.executor;
   return `You are the planning and review coordinator in a two-model workflow. The configured executor is ${executor.displayName} (${executor.modelId}).
 Workflow (in order):
 1) Inspect with read-only tools only.
@@ -126,4 +130,45 @@ Workflow (in order):
 4) Call wait_agent once for that executor (or omit agentIds to wait for any direct child). Prefer longer waits (minutes); timeout_ms defaults to 5 minutes and may be set up to 1 hour. A timeout does not stop the executor — wait again only when list_agents shows real progress.
 5) Review the executor's tool evidence, diffs, and validation results before answering the user. Never claim the plan was implemented without successful executor evidence.
 If execution is incomplete: message_agent with a precise correction while it is still running, or after collecting its result spawn one focused follow-up executor. Do not emit one wait call per child in the same model turn.`;
+}
+
+const PLAN_CONFIRM_GATED_REQUIREMENTS = new Set([
+  "modify",
+  "execute",
+  "connect",
+  "upload",
+  "download",
+]);
+
+/** Single-model plan-first mode: propose a plan, wait for user go-ahead, then mutate. */
+export function isPlanConfirmMode(
+  request: Pick<ModelRequest, "collaboration">,
+) {
+  return request.collaboration?.mode === "plan-confirm";
+}
+
+/** Tools that must not run until the user confirms the plan. */
+export function isPlanConfirmGatedTool(tool: AgentToolName) {
+  return PLANNER_DISABLED_TOOLS.has(tool);
+}
+
+export function planRequiresUserGoAhead(
+  requirements: ReadonlyArray<ReadonlyArray<string>> | undefined,
+) {
+  if (!requirements?.length) return false;
+  return requirements.some((step) =>
+    step.some((item) => PLAN_CONFIRM_GATED_REQUIREMENTS.has(item)),
+  );
+}
+
+export function planConfirmInstruction(request: ModelRequest) {
+  if (!isPlanConfirmMode(request)) return "";
+  return `You are in plan-confirm mode (计划确认). The product will pause for an explicit user go-ahead before any mutating or destructive tools run.
+Workflow (in order):
+1) Inspect with read-only tools as needed (list/read/search/git status/diff are fine).
+2) For any work that will write files, run commands, connect remotes, or transfer data, call update_plan first with a short readable checklist, acceptance criteria, and per-step requires. Keep the plan concise (prefer 2–8 steps).
+3) After update_plan, stop calling mutating tools — KCode will show the plan and wait for the user to confirm or ask for revisions. Do not call apply_patch, write_file, run_command, ssh_*, database mutations, or similar until confirmation succeeds.
+4) If the user asks to revise the plan, update_plan again with the adjusted checklist and wait again.
+5) After confirmation, execute the plan with native tools and keep update_plan statuses in sync.
+For pure Q&A or explanation with no side effects, answer directly without inventing a mutation plan.`;
 }

@@ -28,6 +28,10 @@ export type StatusFileChange = {
   additions: number;
   deletions: number;
   diffs: string[];
+  /** True when every contributing activity was explicitly kept. */
+  kept?: boolean;
+  /** True when at least one contributing activity is still reviewable. */
+  pending?: boolean;
 };
 
 export type StatusOverviewTone = "running" | "success" | "failure" | "neutral";
@@ -110,11 +114,17 @@ export function summarizeStatusActivities(activities: AgentActivity[]) {
         additions: 0,
         deletions: 0,
         diffs: [],
+        kept: true,
+        pending: false,
       };
       current.additions += change.additions;
       current.deletions += change.deletions;
       const diff = change.diff || (changes.length === 1 ? activity.diff : "");
       if (diff && !current.diffs.includes(diff)) current.diffs.push(diff);
+      const activityKept = Boolean(activity.kept);
+      current.kept = Boolean(current.kept) && activityKept;
+      // Undone activities are filtered out above; anything not kept is still reviewable.
+      current.pending = Boolean(current.pending) || !activityKept;
       files.set(change.path, current);
     }
   }

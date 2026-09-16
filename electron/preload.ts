@@ -99,6 +99,24 @@ const api: KCodeApi = {
       ipcRenderer.invoke("chat:approveWithScope", requestId, activityId, allowed, scope, command, category, workspace),
     undo: (workspacePath, activityId, force) =>
       ipcRenderer.invoke("chat:undo", workspacePath, activityId, force),
+    keepFiles: (workspacePath, requestId, paths) =>
+      ipcRenderer.invoke("chat:keep-files", workspacePath, requestId, paths),
+    undoFiles: (workspacePath, requestId, paths, force) =>
+      ipcRenderer.invoke(
+        "chat:undo-files",
+        workspacePath,
+        requestId,
+        paths,
+        force,
+      ),
+    editCheckpoints: (requestId) =>
+      ipcRenderer.invoke("chat:edit-checkpoints", requestId),
+    restoreEditCheckpoint: (checkpointId, force) =>
+      ipcRenderer.invoke(
+        "chat:restore-edit-checkpoint",
+        checkpointId,
+        force,
+      ),
     cleanup: (requestIds, activityIds) =>
       ipcRenderer.invoke("chat:cleanup", requestIds, activityIds),
     summarize: (request) => ipcRenderer.invoke("chat:summarize", request),
@@ -195,6 +213,8 @@ const api: KCodeApi = {
     forward: (sessionId) => ipcRenderer.invoke("browser:forward", sessionId),
     reload: (sessionId) => ipcRenderer.invoke("browser:reload", sessionId),
     setWidth: (width) => ipcRenderer.invoke("browser:set-width", width),
+    setDesignMode: (sessionId, enabled) =>
+      ipcRenderer.invoke("browser:set-design-mode", sessionId, enabled),
     recordings: () => ipcRenderer.invoke("browser:recordings"),
     removeRecording: (id) => ipcRenderer.invoke("browser:remove-recording", id),
     revealRecording: (id) => ipcRenderer.invoke("browser:reveal-recording", id),
@@ -203,6 +223,13 @@ const api: KCodeApi = {
         callback(state);
       ipcRenderer.on("browser:state", listener);
       return () => ipcRenderer.removeListener("browser:state", listener);
+    },
+    onDesignElement: (callback) => {
+      const listener = (_e: unknown, details: Parameters<typeof callback>[0]) =>
+        callback(details);
+      ipcRenderer.on("browser:design-element", listener);
+      return () =>
+        ipcRenderer.removeListener("browser:design-element", listener);
     },
   },
   remote: {

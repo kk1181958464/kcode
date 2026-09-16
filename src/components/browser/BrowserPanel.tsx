@@ -1,6 +1,7 @@
 import {
   ArrowLeft,
   ArrowRight,
+  Crosshair,
   PanelRightClose,
   PanelRightOpen,
   RefreshCw,
@@ -23,6 +24,7 @@ interface BrowserState {
   verificationRequired?: boolean;
   verificationSince?: number;
   verificationMessage?: string;
+  designMode?: boolean;
 }
 
 export interface BrowserPanelProps {
@@ -65,6 +67,8 @@ export function BrowserPanel({
     }
     return null;
   }
+
+  const designModeOn = Boolean(browserState.designMode);
 
   return (
     <aside className="browser-panel" aria-label="浏览器">
@@ -131,6 +135,26 @@ export function BrowserPanel({
           </b>
         )}
         <button
+          className={`icon browser-design-toggle ${designModeOn ? "is-active" : ""}`}
+          title={
+            designModeOn
+              ? "关闭设计模式（恢复正常浏览）"
+              : "开启设计模式：点击页面元素采集上下文到输入框"
+          }
+          aria-pressed={designModeOn}
+          onClick={() =>
+            void window.kcode.browser.setDesignMode(
+              browserState.sessionId,
+              !designModeOn,
+            )
+          }
+        >
+          <Crosshair size={14} />
+          <span className="browser-design-label">
+            {designModeOn ? "设计中" : "设计"}
+          </span>
+        </button>
+        <button
           className="icon"
           title="隐藏网页（浏览器继续在后台运行，可随时重新显示）"
           onClick={() => void window.kcode.browser.hide(browserState.sessionId)}
@@ -147,6 +171,15 @@ export function BrowserPanel({
           <X size={16} />
         </button>
       </header>
+      {designModeOn && (
+        <div className="browser-design-hint" role="status" aria-live="polite">
+          <Crosshair size={14} />
+          <span>
+            <strong>设计模式</strong>
+            <small>点击页面元素，上下文会加入下方输入框</small>
+          </span>
+        </div>
+      )}
       {browserState.verificationRequired && (
         <div className="browser-verification" role="status" aria-live="polite">
           <ShieldAlert size={17} />

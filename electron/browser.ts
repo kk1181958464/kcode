@@ -20,6 +20,13 @@ import {
   type CdpAxNode,
 } from "./browser-cdp";
 import { browserStoragePartition } from "./browser-profile";
+import {
+  DESIGN_PICK_CONSOLE_PREFIX,
+  normalizeDesignElementCapture,
+  parseDesignPickConsoleMessage,
+  type DesignElementContext,
+} from "../src/design-mode";
+import { designModeInjectSource } from "./design-mode-inject";
 
 type BrowserState = {
   open: boolean;
@@ -37,6 +44,8 @@ type BrowserState = {
   verificationRequired?: boolean;
   verificationSince?: number;
   verificationMessage?: string;
+  /** Design Mode v1: click-to-context picker active for this session. */
+  designMode?: boolean;
 };
 type RecordedOperation = {
   at: number;
@@ -129,6 +138,14 @@ let verificationRequired:
       message: string;
     }) => void)
   | undefined;
+let designElementPicked:
+  | ((details: DesignElementContext & { sessionId: string }) => void)
+  | undefined;
+const designModeEnabled = new Set<string>();
+const designConsoleListeners = new Map<
+  string,
+  (event: Electron.Event & { message?: string }, ...rest: unknown[]) => void
+>();
 
 const cdp = (
   view: WebContentsView,
@@ -273,12 +290,21 @@ export function setBrowserHost(
       requestId: string;
       message: string;
     }): void;
+    onDesignElement?(details: DesignElementContext & { sessionId: string }): void;
   },
 ) {
   host = window;
-  stateChanged = callbacks.onState;
+  stateChanged = (state) => {
+    callbacks.onState({
+      ...state,
+      designMode: Boolean(
+        state.sessionId && designModeEnabled.has(state.sessionId),
+      ),
+    });
+  };
   closedByUser = callbacks.onUserClose;
   verificationRequired = callbacks.onVerificationRequired;
+  designElementPicked = callbacks.onDesignElement;
   const layout = () => layoutBrowser();
   window.on("resize", layout);
   window.on("closed", () => {
@@ -288,6 +314,9 @@ export function setBrowserHost(
       );
     for (const [sessionId, session] of sessions)
       disposeBrowserAutomation(sessionId, session.view);
+    for (const sessionId of [...designModeEnabled])
+      detachDesignModeListener(sessionId);
+    designModeEnabled.clear();
     host = undefined;
     sessions.clear();
     activeSessionId = undefined;
@@ -320,6 +349,7 @@ const RESIZE_HANDLE_WIDTH = 6;
 // 32px title bar + 48px browser toolbar. Keep this aligned with BrowserPanel.
 const BROWSER_CONTENT_TOP = 80;
 const VERIFICATION_BAR_HEIGHT = 44;
+const DESIGN_MODE_BAR_HEIGHT = 36;
 function browserVerificationFields(sessionId: string) {
   const verification = automationStates.get(sessionId)?.verification;
   return verification
@@ -337,6 +367,7 @@ function layoutBrowser() {
     width = browserWidth(),
     contentTop =
       BROWSER_CONTENT_TOP +
+      (designModeEnabled.has(active.sessionId) ? DESIGN_MODE_BAR_HEIGHT : 0) +
       (automationStates.get(active.sessionId)?.verification
         ? VERIFICATION_BAR_HEIGHT
         : 0);
@@ -443,6 +474,84 @@ async function executePage<T>(
       `网页脚本执行失败：${result.__kcodeError}${result.__kcodeStack ? `\n${result.__kcodeStack}` : ""}`,
     );
   return result as T;
+}
+
+function readConsoleMessageText(
+  event: Electron.Event & { message?: string },
+  ...rest: unknown[]
+) {
+  if (typeof event?.message === "string") return event.message;
+  if (typeof rest[1] === "string") return rest[1];
+  if (typeof rest[0] === "string" && rest[0].startsWith(DESIGN_PICK_CONSOLE_PREFIX))
+    return rest[0];
+  return "";
+}
+
+function detachDesignModeListener(sessionId: string) {
+  const session = sessions.get(sessionId);
+  const listener = designConsoleListeners.get(sessionId);
+  if (session && listener && !session.view.webContents.isDestroyed())
+    session.view.webContents.removeListener("console-message", listener as any);
+  designConsoleListeners.delete(sessionId);
+}
+
+function attachDesignModeListener(sessionId: string, view: WebContentsView) {
+  if (designConsoleListeners.has(sessionId)) return;
+  const listener = (
+    event: Electron.Event & { message?: string },
+    ...rest: unknown[]
+  ) => {
+    const message = readConsoleMessageText(event, ...rest);
+    if (!message.startsWith(DESIGN_PICK_CONSOLE_PREFIX)) return;
+    if (message.includes('"__kcodeDesignDisabled":true')) {
+      designModeEnabled.delete(sessionId);
+      void injectDesignMode(sessionId, false).catch(() => undefined);
+      if (activeSessionId === sessionId) layoutBrowser();
+      return;
+    }
+    const parsed = parseDesignPickConsoleMessage(message);
+    if (!parsed) return;
+    const element = normalizeDesignElementCapture(parsed);
+    designElementPicked?.({ ...element, sessionId });
+  };
+  designConsoleListeners.set(sessionId, listener);
+  view.webContents.on("console-message", listener as any);
+}
+
+async function injectDesignMode(sessionId: string, enabled: boolean) {
+  const session = sessions.get(sessionId);
+  if (!session || session.view.webContents.isDestroyed()) return;
+  attachDesignModeListener(sessionId, session.view);
+  await executePage(session.view, designModeInjectSource(enabled)).catch(
+    () => undefined,
+  );
+}
+
+export async function setBrowserDesignMode(
+  sessionId: string | undefined,
+  enabled: boolean,
+) {
+  const targetId = sessionId || activeSessionId || selectedSessionId;
+  if (!targetId) throw new Error("没有可用的浏览器会话");
+  const session = sessions.get(targetId);
+  if (!session || session.view.webContents.isDestroyed())
+    throw new Error("浏览器页面已关闭");
+  if (enabled) designModeEnabled.add(targetId);
+  else designModeEnabled.delete(targetId);
+  attachDesignModeListener(targetId, session.view);
+  await injectDesignMode(targetId, enabled);
+  if (activeSessionId === targetId) layoutBrowser();
+  else
+    stateChanged?.({
+      open: false,
+      hidden: !session.attached,
+      sessionId: targetId,
+      requestId: session.requestId,
+      title: session.view.webContents.getTitle(),
+      url: session.view.webContents.getURL(),
+      ...browserVerificationFields(targetId),
+    });
+  return { enabled: designModeEnabled.has(targetId), sessionId: targetId };
 }
 const safeName = (value: string) =>
   (value.trim() || `browser-${new Date().toISOString().replace(/[:.]/g, "-")}`)
@@ -754,10 +863,19 @@ export async function openBrowser(
       invalidateBrowserRefs(sessionId);
       update();
     });
+    view.webContents.on("did-finish-load", () => {
+      if (designModeEnabled.has(sessionId))
+        void injectDesignMode(sessionId, true).catch(() => undefined);
+    });
+    view.webContents.on("dom-ready", () => {
+      if (designModeEnabled.has(sessionId))
+        void injectDesignMode(sessionId, true).catch(() => undefined);
+    });
     view.webContents.on("render-process-gone", () => {
       if (sessions.get(sessionId)?.view === view)
         destroySession(sessionId, true);
     });
+    attachDesignModeListener(sessionId, view);
   }
   session.requestId = requestId;
   if (selectedSessionId === sessionId) activateBrowserSession(sessionId);

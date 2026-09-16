@@ -38,6 +38,14 @@ import {
 import { beginSubagentCleanup } from "./subagents";
 import { executeControlTool } from "./agent-control-tools";
 import type { AgentRunner, ToolCall, ToolResult } from "./agent-types";
+import {
+  clearEditReview,
+  keepPendingFiles,
+  listEditCheckpoints,
+  recordPendingEdit,
+  restoreEditCheckpoint,
+  undoPendingFiles,
+} from "./edit-review";
 
 export const approvals = new Map<string, (allowed: boolean) => void>();
 
@@ -64,6 +72,7 @@ export async function cleanupAgentRecords(
   for (const [activityId, snapshot] of undoSnapshots)
     if (activities.has(activityId) || requests.has(snapshot.requestId))
       undoSnapshots.delete(activityId);
+  clearEditReview([...requests], [...activities]);
   for (const [key, resolve] of approvals) {
     if ([...requests].some((requestId) => key.startsWith(`${requestId}:`))) {
       resolve(false);
@@ -168,6 +177,51 @@ export async function undoActivity(
     success: true,
     message: snapshot.existed ? "已恢复修改前内容" : "已删除本次新建的文件",
   };
+}
+
+export async function keepFileChanges(
+  workspaceRoot: string,
+  requestId: string,
+  paths?: string[],
+) {
+  const result = await keepPendingFiles(workspaceRoot, requestId, paths);
+  if (result.success) {
+    for (const activityId of result.activityIds) undoSnapshots.delete(activityId);
+  }
+  return result;
+}
+
+export async function undoFileChanges(
+  workspaceRoot: string,
+  requestId: string,
+  paths?: string[],
+  force = false,
+) {
+  const result = await undoPendingFiles(
+    workspaceRoot,
+    requestId,
+    paths,
+    force,
+  );
+  if (result.success) {
+    for (const activityId of result.activityIds) undoSnapshots.delete(activityId);
+  }
+  return result;
+}
+
+export async function restoreFileCheckpoint(
+  checkpointId: string,
+  force = false,
+) {
+  const result = await restoreEditCheckpoint(checkpointId, force);
+  if (result.success) {
+    for (const activityId of result.activityIds) undoSnapshots.delete(activityId);
+  }
+  return result;
+}
+
+export function listFileCheckpoints(requestId?: string) {
+  return listEditCheckpoints(requestId);
 }
 
 function workspacePath(root: string, relative: unknown) {
@@ -305,7 +359,7 @@ export async function execute(
     if (signal.aborted) throw new Error("任务已取消");
     return writeFileTool(root, call.input, {
       cache: fileReadCache,
-      onSnapshot: ({ file, before, after, existed }) =>
+      onSnapshot: ({ file, before, after, existed }) => {
         undoSnapshots.set(activityId, {
           root,
           requestId,
@@ -313,7 +367,16 @@ export async function execute(
           before,
           after,
           existed,
-        }),
+        });
+        recordPendingEdit({
+          root,
+          requestId,
+          activityId,
+          file,
+          before,
+          existed,
+        });
+      },
       diff: diffFor,
     });
   }
@@ -322,6 +385,15 @@ export async function execute(
       cache: fileReadCache,
       onUndo: (change) =>
         undoSnapshots.set(activityId, { root, requestId, ...change }),
+      onPending: (change) =>
+        recordPendingEdit({
+          root,
+          requestId,
+          activityId,
+          file: change.file,
+          before: change.before,
+          existed: change.existed,
+        }),
       diff: diffFor,
     });
   if (call.name === "make_directory") {

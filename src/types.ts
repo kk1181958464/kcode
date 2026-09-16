@@ -347,6 +347,13 @@ export type ChatMessage = {
   model?: string;
   images?: ImageAttachment[];
   contextAttachments?: Array<{ name: string; size: number }>;
+  /** Design Mode v1 element chips attached to this user message. */
+  designAttachments?: Array<{
+    id: string;
+    label: string;
+    tagName: string;
+    cssSelector?: string;
+  }>;
 };
 
 export type AgentMessagePhase = "unknown" | "commentary" | "final_answer";
@@ -415,10 +422,14 @@ export type AgentModelTarget = {
   contextWindow?: number;
 };
 
-export type AgentCollaborationConfig = {
-  mode: "planner-executor";
-  executor: AgentModelTarget;
-};
+export type AgentCollaborationConfig =
+  | {
+      mode: "planner-executor";
+      executor: AgentModelTarget;
+    }
+  | {
+      mode: "plan-confirm";
+    };
 
 export type ModelRequest = {
   requestId?: string;
@@ -550,6 +561,8 @@ export type AgentActivity = {
   exitCode?: number;
   undoable?: boolean;
   undone?: boolean;
+  /** User accepted this file change in the Changes review UI. */
+  kept?: boolean;
   /** Structured proof metadata used by the runtime completion verifier. */
   changed?: boolean;
   /** Stable tool lifecycle identity, independent of the activity row ID. */
@@ -586,6 +599,22 @@ export type UndoResult = {
   success: boolean;
   message: string;
   conflict?: boolean;
+};
+export type EditReviewBatchResult = {
+  success: boolean;
+  message: string;
+  conflict?: boolean;
+  paths: string[];
+  activityIds: string[];
+};
+export type EditCheckpointInfo = {
+  id: string;
+  requestId: string;
+  taskId?: string;
+  label: string;
+  createdAt: number;
+  fileCount: number;
+  paths: string[];
 };
 export type ContextLedger = {
   goals: string[];
@@ -893,6 +922,22 @@ export type KCodeApi = {
       activityId: string,
       force?: boolean,
     ): Promise<UndoResult>;
+    keepFiles(
+      workspacePath: string,
+      requestId: string,
+      paths?: string[],
+    ): Promise<EditReviewBatchResult>;
+    undoFiles(
+      workspacePath: string,
+      requestId: string,
+      paths?: string[],
+      force?: boolean,
+    ): Promise<EditReviewBatchResult>;
+    editCheckpoints(requestId?: string): Promise<EditCheckpointInfo[]>;
+    restoreEditCheckpoint(
+      checkpointId: string,
+      force?: boolean,
+    ): Promise<EditReviewBatchResult>;
     cleanup(requestIds: string[], activityIds: string[]): Promise<void>;
     summarize(request: ContextSummaryRequest): Promise<ContextSummaryResult>;
     cancelSummary(taskId: string): Promise<void>;
@@ -960,6 +1005,10 @@ export type KCodeApi = {
     forward(sessionId?: string): Promise<void>;
     reload(sessionId?: string): Promise<void>;
     setWidth(width: number): Promise<void>;
+    setDesignMode(
+      sessionId: string | undefined,
+      enabled: boolean,
+    ): Promise<{ enabled: boolean; sessionId: string }>;
     recordings(): Promise<BrowserRecordingFile[]>;
     removeRecording(id: string): Promise<BrowserRecordingFile[]>;
     revealRecording(id: string): Promise<void>;
@@ -978,6 +1027,36 @@ export type KCodeApi = {
         verificationRequired?: boolean;
         verificationSince?: number;
         verificationMessage?: string;
+        designMode?: boolean;
+      }) => void,
+    ): () => void;
+    onDesignElement(
+      callback: (details: {
+        id: string;
+        capturedAt: number;
+        tagName: string;
+        elementId?: string;
+        classes: string[];
+        textSnippet: string;
+        boundingBox: {
+          x: number;
+          y: number;
+          width: number;
+          height: number;
+          top: number;
+          left: number;
+          right: number;
+          bottom: number;
+        };
+        cssSelector: string;
+        xpath: string;
+        outerHTML?: string;
+        pageUrl?: string;
+        pageTitle?: string;
+        role?: string;
+        name?: string;
+        type?: string;
+        sessionId: string;
       }) => void,
     ): () => void;
   };

@@ -50,7 +50,8 @@ function latestActiveActivity(activities: readonly AgentActivity[]) {
 
 function toolGapLabel(activity: AgentActivity) {
   const target = activityTarget(activity);
-  const withTarget = (label: string) => (target ? `${label} ${target}` : label);
+  const withTarget = (label: string) =>
+    target ? `${label} ${target}…` : `${label}…`;
   if (activity.status === "waiting") {
     return withTarget(`等待确认：${activity.title}`);
   }
@@ -77,7 +78,7 @@ function toolGapLabel(activity: AgentActivity) {
     case "read_file":
     case "read_many_files":
     case "ssh_read_file":
-      return withTarget("正在读取");
+      return withTarget("正在读取文件");
     case "list_directory":
     case "ssh_list_directory":
       return withTarget("正在列出目录");
@@ -87,6 +88,8 @@ function toolGapLabel(activity: AgentActivity) {
       return withTarget("正在搜索代码");
     case "path_info":
       return withTarget("正在查看路径");
+    case "request_user_input":
+      return withTarget("正在等待补充信息");
     default:
       return withTarget(`正在${activity.title}`);
   }
@@ -203,4 +206,151 @@ export function collapseInlineToolActivities(
     cards.push({ type: "item", activity });
   }
   return cards;
+}
+
+
+const UI_FACING_TOOLS = new Set<string>([
+  "request_user_input",
+]);
+
+const MUTATION_TOOLS = new Set<string>([
+  "apply_patch",
+  "write_file",
+  "make_directory",
+  "move_path",
+  "delete_path",
+  "ssh_write_file",
+  "ssh_upload_file",
+  "ssh_download_file",
+]);
+
+const COMMAND_TOOLS = new Set<string>([
+  "run_command",
+  "ssh_run",
+  "start_process",
+  "stop_process",
+  "diagnostics",
+  "mysql_query",
+  "sqlserver_query",
+  "mongodb_execute",
+]);
+
+const VALIDATION_COMMAND =
+  /(?:^|\s)(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|build|lint|typecheck|check)(?:\s|$)|\b(?:tsc|vitest|jest|pytest|cargo\s+test|go\s+test|dotnet\s+test|mvn\s+test|gradle\s+test)\b/i;
+
+/** Tools/activities that must keep a persistent interactive card. */
+export function isUiFacingActivity(activity: AgentActivity) {
+  if (activity.status === "waiting") return true;
+  if (UI_FACING_TOOLS.has(activity.tool)) return true;
+  return false;
+}
+
+/** Hide bulky ExecutionSummary while a quiet non-UI tool is actively running. */
+export function shouldDeferExecutionSummaryCard(
+  activities: readonly AgentActivity[],
+  running: boolean,
+  isLatestGroup: boolean,
+) {
+  if (!running || !isLatestGroup) return false;
+  const active = latestActiveActivity(activities);
+  if (!active) return false;
+  if (isUiFacingActivity(active)) return false;
+  return true;
+}
+
+function countPhrase(count: number, singular: string, plural: string) {
+  if (count <= 0) return "";
+  if (count === 1) return singular;
+  return plural.replace("{n}", String(count));
+}
+
+/**
+ * Compact past-tense receipt for settled / post-tool turns.
+ * Example: 「读了 3 个文件，跑了测试」
+ */
+export function formatPastTenseToolReceipt(
+  activities: readonly AgentActivity[],
+): string {
+  if (!activities.length) return "";
+
+  let reads = 0;
+  let writes = 0;
+  let searches = 0;
+  let commands = 0;
+  let tests = 0;
+  let browsers = 0;
+  let agents = 0;
+  let other = 0;
+  let failures = 0;
+  let denied = 0;
+
+  for (const activity of activities) {
+    if (activity.status === "failed") failures += 1;
+    if (activity.status === "denied") denied += 1;
+
+    const tool = activity.tool;
+    if (isInspectTool(tool)) {
+      if (tool === "search_code" || tool === "glob_files") searches += 1;
+      else reads += 1;
+      continue;
+    }
+    if (MUTATION_TOOLS.has(tool)) {
+      writes += 1;
+      continue;
+    }
+    if (COMMAND_TOOLS.has(tool)) {
+      const isTest =
+        tool === "diagnostics" ||
+        (tool === "run_command" &&
+          VALIDATION_COMMAND.test(activity.command || ""));
+      if (isTest) tests += 1;
+      else commands += 1;
+      continue;
+    }
+    if (tool.startsWith("browser_")) {
+      browsers += 1;
+      continue;
+    }
+    if (
+      tool === "spawn_agent" ||
+      tool === "message_agent" ||
+      tool === "wait_agent" ||
+      tool === "stop_agent" ||
+      tool === "list_agents"
+    ) {
+      agents += 1;
+      continue;
+    }
+    other += 1;
+  }
+
+  const parts: string[] = [];
+  const readPart = countPhrase(reads, "读了 1 个文件", "读了 {n} 个文件");
+  if (readPart) parts.push(readPart);
+  const searchPart = countPhrase(searches, "搜了代码", "搜了 {n} 次代码");
+  if (searchPart) parts.push(searchPart);
+  const writePart = countPhrase(writes, "改了 1 处", "改了 {n} 处");
+  if (writePart) parts.push(writePart);
+  const testPart = countPhrase(tests, "跑了测试", "跑了 {n} 次测试");
+  if (testPart) parts.push(testPart);
+  const commandPart = countPhrase(commands, "跑了 1 个命令", "跑了 {n} 个命令");
+  if (commandPart) parts.push(commandPart);
+  const browserPart = countPhrase(browsers, "用了浏览器", "用了 {n} 次浏览器");
+  if (browserPart) parts.push(browserPart);
+  const agentPart = countPhrase(agents, "调度了子 Agent", "调度了 {n} 个子 Agent");
+  if (agentPart) parts.push(agentPart);
+  const otherPart = countPhrase(other, "完成了 1 个步骤", "完成了 {n} 个步骤");
+  if (otherPart) parts.push(otherPart);
+
+  if (!parts.length) {
+    parts.push(
+      countPhrase(activities.length, "完成了 1 个步骤", "完成了 {n} 个步骤") ||
+        "已处理",
+    );
+  }
+
+  let receipt = parts.join("，");
+  if (denied) receipt += `，${denied} 项被拒绝`;
+  if (failures) receipt += `，${failures} 项失败`;
+  return receipt;
 }

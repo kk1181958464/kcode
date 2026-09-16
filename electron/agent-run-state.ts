@@ -56,6 +56,8 @@ export type RunState = {
   budgets: RunBudgets;
   prevRound: RunPrevRound;
   plan: RunPlan;
+  /** Plan-confirm mode: user has approved the current mutation plan. */
+  planConfirmed: boolean;
   imageFallbackNoticeSent: boolean;
   repetitionFinalizationPending: AgentFinalizationMode | undefined;
   externalWaitStallRounds: number;
@@ -108,6 +110,7 @@ export function createRunState(input: {
     },
     prevRound: { toolNarrative: "" },
     plan: planFromRecovery(input.recoveryPlan),
+    planConfirmed: false,
     imageFallbackNoticeSent: false,
     repetitionFinalizationPending: undefined,
     externalWaitStallRounds: 0,
@@ -146,6 +149,7 @@ export function resetRunStateAfterSteering(
   state.plan.requirements = [];
   state.plan.cursor = 0;
   state.plan.requirementsDeclared = true;
+  state.planConfirmed = false;
 }
 
 export function applyPlanUpdate(state: RunState, planUpdate: RunPlanUpdate) {

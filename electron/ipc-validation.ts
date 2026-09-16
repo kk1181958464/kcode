@@ -67,16 +67,21 @@ const reasoningEffortSchema = z.enum([
   "thinking",
 ]);
 
-const collaborationSchema = z.object({
-  mode: z.literal("planner-executor"),
-  executor: z.object({
-    providerId: idSchema,
-    modelId: idSchema,
-    displayName: z.string().trim().min(1).max(256),
-    reasoningEffort: reasoningEffortSchema.optional(),
-    contextWindow: z.number().int().positive().optional(),
+const collaborationSchema = z.discriminatedUnion("mode", [
+  z.object({
+    mode: z.literal("planner-executor"),
+    executor: z.object({
+      providerId: idSchema,
+      modelId: idSchema,
+      displayName: z.string().trim().min(1).max(256),
+      reasoningEffort: reasoningEffortSchema.optional(),
+      contextWindow: z.number().int().positive().optional(),
+    }),
   }),
-});
+  z.object({
+    mode: z.literal("plan-confirm"),
+  }),
+]);
 
 const planRequirementSchema = z.enum([
   "inspect",

@@ -37,8 +37,9 @@ export type QueuedChatMessage = ChatMessage & { queued?: boolean };
 export type TaskDrafts = Record<string, string>;
 
 export type TaskCollaboration = {
-  mode: "planner-executor";
-  executorModelSelection: string;
+  mode: "planner-executor" | "plan-confirm";
+  /** Required when mode is planner-executor. */
+  executorModelSelection?: string;
   executorReasoningEffort?: ReasoningEffort;
 };
 

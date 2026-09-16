@@ -53,6 +53,7 @@ import { browserIsOpen } from "./browser";
 import { MAX_SUBAGENT_DEPTH } from "./subagents";
 import {
   isPlannerCoordinator,
+  planConfirmInstruction,
   plannerCollaborationInstruction,
   plannerToolAllowed,
   remoteWorkspaceToolAllowed,
@@ -209,6 +210,7 @@ export async function modelTurn(
     workspaceLocationInstruction,
     runtime?.workspaceBinding ?? "",
     plannerCollaborationInstruction(request),
+    planConfirmInstruction(request),
     "Use update_plan only for multi-phase or non-trivial work (several files, a checklist, or more than a couple of tool calls). Skip it for simple Q&A, lookups, and one-shot single-file fixes — do not invent a plan for every turn. When a plan is warranted, call update_plan with concise steps and structured statuses instead of writing a numbered plan in prose. Every plan item must include requires with one or more native obligations (inspect, modify, execute, validate, connect, upload, download), or [] when the item is explanation-only. Keep a required step pending until its native tool result succeeds or a structured no-change/user-input result resolves it. Before every tool-call group, write no more than two concise user-facing progress sentences explaining what you are doing and why; keep this preamble under 240 characters. Never dump a full implementation monologue, speculative patch, or repeated plan into the chat. A non-final turn must include a tool call instead of only describing what you will do. Update the plan as steps advance. After a failed tool result, briefly explain how you are adjusting the approach before the next tool call. Never claim success before a tool result confirms it.",
     "Delegation is one level only: a subagent must complete its assigned scope directly and must not create another subagent. When a child wait times out, use the returned progress and pending status; do not busy-poll with repeated short waits. Repeated waits with no child progress are stopped automatically and the partial result is preserved.",
     "wait_agent returns when the first selected child finishes. Put all relevant agent ids in one wait_agent call; never emit one wait call per child in the same model turn. Prefer longer waits (minutes) to avoid busy polling; timeout_ms defaults to 5 minutes and may be set up to 1 hour. A timeout is a successful, non-destructive status update: the child remains running and uncollected, so wait again only when it is making progress; repeated no-progress waits are stopped automatically and the partial result is preserved. New user steering may interrupt the wait without stopping the child.",

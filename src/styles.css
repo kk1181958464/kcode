@@ -17482,3 +17482,413 @@ button.execution-summary-tool.inspect-group {
     animation: none !important;
   }
 }
+
+
+/* --- ephemeral tool status + past-tense receipt (design item 1) --- */
+.completed-process-state > strong {
+  max-width: min(42vw, 28rem);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.message.assistant.is-running .assistant-tail-gap {
+  letter-spacing: 0.01em;
+}
+
+
+/* --- per-file Keep/Undo + edit checkpoints (design item 2) --- */
+.status-review-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.45rem 0 0.55rem;
+}
+
+.status-review-toolbar > button,
+.status-file-review-actions > button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  color: var(--text);
+  font-size: 0.72rem;
+  line-height: 1;
+  padding: 0.32rem 0.62rem;
+  cursor: pointer;
+}
+
+.status-review-keep-all,
+.status-file-keep {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  color: color-mix(in srgb, var(--accent) 82%, white 10%);
+}
+
+.status-review-undo-all,
+.status-file-undo {
+  border-color: color-mix(in srgb, #f07178 40%, var(--border));
+  color: color-mix(in srgb, #f07178 78%, white 8%);
+}
+
+.status-review-toolbar > button:disabled,
+.status-file-review-actions > button:disabled,
+.status-edit-checkpoint:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.status-file-row-wrap {
+  display: grid;
+  gap: 0.28rem;
+  margin-bottom: 0.28rem;
+}
+
+.status-file-row-wrap.is-kept .status-file-row small {
+  color: color-mix(in srgb, var(--accent) 70%, var(--muted));
+}
+
+.status-file-review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.32rem;
+  padding-left: 0.15rem;
+}
+
+.status-edit-checkpoints {
+  margin-top: 0.7rem;
+  padding-top: 0.55rem;
+  border-top: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+  display: grid;
+  gap: 0.4rem;
+}
+
+.status-edit-checkpoint {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.45rem;
+  width: 100%;
+  text-align: left;
+  border-radius: 0.7rem;
+  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  color: var(--text);
+  padding: 0.55rem 0.65rem;
+  cursor: pointer;
+}
+
+.status-edit-checkpoint > span {
+  display: grid;
+  gap: 0.12rem;
+  min-width: 0;
+}
+
+.status-edit-checkpoint strong {
+  font-size: 0.78rem;
+}
+
+.status-edit-checkpoint small {
+  color: var(--muted);
+  font-size: 0.68rem;
+}
+
+.status-edit-checkpoint:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel));
+}
+
+:root[data-theme="dark"] .status-review-toolbar > button,
+:root[data-theme="dark"] .status-file-review-actions > button,
+:root[data-theme="dark"] .status-edit-checkpoint {
+  background: color-mix(in srgb, #12161d 86%, transparent);
+}
+
+/* Design item 3 — composer message queue hint */
+.queued-message-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.68rem;
+  line-height: 1.35;
+}
+
+/* --- multi-agent overview board (design item 4) --- */
+.agent-overview-board {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.agent-overview-heading small {
+  color: var(--muted);
+  font-size: 0.68rem;
+}
+
+.agent-overview-list {
+  display: grid;
+  gap: 0.32rem;
+}
+
+.agent-overview-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 0.45rem;
+  width: 100%;
+  text-align: left;
+  border-radius: 0.7rem;
+  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  color: var(--text);
+  padding: 0.48rem 0.58rem;
+  min-height: 2.35rem;
+}
+
+button.agent-overview-row {
+  cursor: pointer;
+  font: inherit;
+}
+
+button.agent-overview-row:hover {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel));
+}
+
+.agent-overview-row.is-active {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  background: color-mix(in srgb, var(--accent) 14%, var(--panel));
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--accent) 80%, transparent);
+}
+
+.agent-overview-phase {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.15rem;
+  height: 1.15rem;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.agent-overview-phase.is-phase-running {
+  color: var(--accent);
+}
+
+.agent-overview-phase.is-phase-waiting {
+  color: #e0b14a;
+}
+
+.agent-overview-phase.is-phase-failed {
+  color: #ef6b6b;
+}
+
+.agent-overview-phase.is-phase-done {
+  color: color-mix(in srgb, var(--accent) 70%, #6ee7a8);
+}
+
+.agent-overview-main {
+  display: grid;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.agent-overview-main strong {
+  font-size: 0.78rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-overview-main em {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.2rem;
+  align-items: center;
+  font-style: normal;
+  color: var(--muted);
+  font-size: 0.66rem;
+  line-height: 1.25;
+  min-width: 0;
+}
+
+.agent-overview-role {
+  color: color-mix(in srgb, var(--accent) 72%, var(--muted));
+}
+
+.agent-overview-sep {
+  opacity: 0.55;
+}
+
+.agent-overview-detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.agent-overview-status {
+  font-size: 0.66rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.agent-overview-status.is-phase-running {
+  color: var(--accent);
+}
+
+.agent-overview-status.is-phase-waiting {
+  color: #e0b14a;
+}
+
+.agent-overview-status.is-phase-failed {
+  color: #ef6b6b;
+}
+
+.agent-overview-status.is-phase-done {
+  color: color-mix(in srgb, var(--accent) 65%, #6ee7a8);
+}
+
+.agent-overview-empty {
+  margin: 0.15rem 0 0;
+}
+
+.agent-overview-cloud-hint {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0.1rem 0 0;
+  padding: 0.35rem 0.45rem;
+  border-radius: 0.55rem;
+  border: 1px dashed color-mix(in srgb, var(--border) 88%, transparent);
+  color: var(--muted);
+  font-size: 0.64rem;
+  line-height: 1.35;
+}
+
+.agent-overview-cloud-hint[data-extension="cloud-agents"] {
+  /* Extension point marker for future cloud agent sources. */
+}
+
+:root[data-theme="dark"] .agent-overview-row {
+  background: color-mix(in srgb, #12161d 86%, transparent);
+}
+
+:root[data-theme="dark"] button.agent-overview-row:hover,
+:root[data-theme="dark"] .agent-overview-row.is-active {
+  background: color-mix(in srgb, var(--accent) 12%, #12161d);
+}
+
+
+/* --- design item 5: plan-first confirm mode (add-only) --- */
+.collaboration-mode-tabs button {
+  flex: 1 1 auto;
+}
+
+.plan-confirm-hint {
+  margin: 0.45rem 0.55rem 0.2rem;
+  line-height: 1.4;
+}
+
+.plan-confirm-actions {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.plan-confirm-actions > span {
+  flex: 1 1 100%;
+  font-weight: 600;
+  color: color-mix(in srgb, var(--accent) 70%, var(--text));
+}
+
+.activity-card:has(.plan-confirm-actions) .activity-status,
+.activity-row:has(.plan-confirm-actions) .activity-status {
+  color: #e0b14a;
+}
+
+:root[data-theme="dark"] .plan-confirm-actions {
+  background: color-mix(in srgb, var(--accent) 12%, #12161d);
+}
+
+
+/* --- design item 6: Design Mode v1 click-to-context (add-only) --- */
+.browser-design-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+  min-width: auto;
+  padding: 0 0.45rem;
+  border-radius: 0.55rem;
+}
+
+.browser-design-toggle .browser-design-label {
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.browser-design-toggle.is-active {
+  color: color-mix(in srgb, var(--accent) 80%, #10b981);
+  background: color-mix(in srgb, #10b981 16%, transparent);
+  border: 1px solid color-mix(in srgb, #10b981 35%, var(--border));
+}
+
+.browser-design-hint {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin: 0;
+  padding: 0.35rem 0.7rem;
+  border-bottom: 1px solid color-mix(in srgb, #10b981 28%, var(--border));
+  background: color-mix(in srgb, #10b981 10%, transparent);
+  color: var(--text);
+  font-size: 0.72rem;
+}
+
+.browser-design-hint > span {
+  display: flex;
+  flex-direction: column;
+  gap: 0.05rem;
+  min-width: 0;
+}
+
+.browser-design-hint strong {
+  font-size: 0.74rem;
+}
+
+.browser-design-hint small {
+  color: var(--muted);
+}
+
+.design-element-files .design-element-chip,
+.design-element-attachments .design-element-chip {
+  border-color: color-mix(in srgb, #10b981 32%, var(--border));
+  background: color-mix(in srgb, #10b981 8%, transparent);
+}
+
+.design-element-files .file-icon,
+.design-element-attachments .design-element-chip {
+  color: color-mix(in srgb, var(--accent) 55%, #10b981);
+}
+
+:root[data-theme="dark"] .browser-design-toggle.is-active,
+:root[data-theme="dark"] .browser-design-hint,
+:root[data-theme="dark"] .design-element-files .design-element-chip {
+  background: color-mix(in srgb, #10b981 14%, #12161d);
+}
+
+/* --- assistant-tail de-dupe (fix stacked waiting-model copy) --- */
+.assistant-tail-copy:has(.assistant-tail-gap) > .streaming-progress-leaf {
+  display: none !important;
+}
+.assistant-tail-copy {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem 0.55rem;
+  min-width: 0;
+  max-width: 100%;
+}
+.assistant-tail-copy > .assistant-tail-gap {
+  flex: 1 1 auto;
+  min-width: 0;
+}

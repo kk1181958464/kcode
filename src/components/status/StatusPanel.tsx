@@ -1,7 +1,10 @@
 import {
   Activity,
+  Bot,
   BrainCircuit,
+  Check,
   CheckCircle2,
+  CloudOff,
   Columns2,
   ChevronRight,
   CircleAlert,
@@ -12,9 +15,11 @@ import {
   Paperclip,
   RefreshCw,
   RotateCcw,
+  Undo2,
   SquareSplitVertical,
   Terminal,
   TextWrap,
+  Users,
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -24,6 +29,11 @@ import { extractGitFileDiff } from "../../git-diff";
 import { normalizeActivity } from "../../activity-view-model";
 import { activityTarget, formatDuration, workingPhase } from "../../lib/format";
 import type { TaskRecord } from "../../models";
+import {
+  buildAgentOverviewBoard,
+  type AgentOverviewRow,
+  type AgentOverviewTaskInput,
+} from "../../agent-overview";
 import { localWorkspacePath } from "../../task-workspace";
 import {
   summarizeStatusActivities,
@@ -36,6 +46,7 @@ import type {
   AgentActivity,
   AgentCheckpoint,
   ChatMessage,
+  EditCheckpointInfo,
   GitWorkspaceState,
   ModelConfig,
   ProviderConfig,
@@ -67,6 +78,10 @@ export interface StatusPanelProps {
   runningId: string | undefined;
   summaryBusy: boolean;
   resumeCheckpoint(checkpoint: AgentCheckpoint): Promise<void>;
+  editCheckpoints?: EditCheckpointInfo[];
+  keepFileChanges?(paths?: string[]): Promise<void> | void;
+  undoFileChanges?(paths?: string[]): Promise<void> | void;
+  restoreEditCheckpoint?(checkpointId: string): Promise<void> | void;
   gitRefreshing: boolean;
   refreshGitState(includeDiff?: boolean): Promise<void>;
   gitState: GitWorkspaceState;
@@ -89,6 +104,9 @@ export interface StatusPanelProps {
   ): void;
   rebuildActiveSummary(): Promise<void>;
   restoreFullContext(): void;
+  /** Local (+ optional cloud) sessions for the multi-agent overview board. */
+  overviewTasks?: AgentOverviewTaskInput[];
+  onFocusOverviewSession?(taskId: string): void;
 }
 
 function resultStatus(activity: AgentActivity) {
@@ -105,42 +123,165 @@ function fileName(path: string) {
 function FileChangeRow({
   change,
   active,
+  busy,
   onClick,
+  onKeep,
+  onUndo,
 }: {
   change: StatusFileChange;
   active: boolean;
+  busy: boolean;
   onClick(): void;
+  onKeep?(): void;
+  onUndo?(): void;
 }) {
+  const kept = Boolean(change.kept);
+  const pending = Boolean(change.pending) && !kept;
+  return (
+    <div
+      className={`status-file-row-wrap ${active ? "is-active" : ""} ${kept ? "is-kept" : ""} ${pending ? "is-pending" : ""}`}
+    >
+      <button
+        type="button"
+        className={`status-file-row ${active ? "is-active" : ""}`}
+        title={`弹窗查看 ${change.path} 的改动`}
+        onClick={onClick}
+      >
+        <FileCode2 size={12} />
+        <span className="status-file-row-name">
+          <strong>{fileName(change.path)}</strong>
+          {change.path.replace(/\\/g, "/") !== fileName(change.path) ? (
+            <em title={change.path}>
+              {change.path.replace(/\\/g, "/").split("/").slice(0, -1).join("/") ||
+                "."}
+            </em>
+          ) : (
+            <em>工作区</em>
+          )}
+        </span>
+        <small>
+          {kept ? (
+            "已保留"
+          ) : change.additions || change.deletions ? (
+            <>
+              <b>+{change.additions}</b>
+              <i>-{change.deletions}</i>
+            </>
+          ) : (
+            "已变更"
+          )}
+        </small>
+        <ChevronRight size={12} />
+      </button>
+      {pending && (onKeep || onUndo) ? (
+        <div className="status-file-review-actions">
+          {onKeep ? (
+            <button
+              type="button"
+              className="status-file-keep"
+              disabled={busy}
+              title={`保留 ${change.path}`}
+              aria-label={`保留 ${change.path}`}
+              onClick={(event) => {
+                event.stopPropagation();
+                onKeep();
+              }}
+            >
+              <Check size={12} />
+              保留
+            </button>
+          ) : null}
+          {onUndo ? (
+            <button
+              type="button"
+              className="status-file-undo"
+              disabled={busy}
+              title={`撤销 ${change.path}`}
+              aria-label={`撤销 ${change.path}`}
+              onClick={(event) => {
+                event.stopPropagation();
+                onUndo();
+              }}
+            >
+              <Undo2 size={12} />
+              撤销
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+
+function AgentOverviewRowButton({
+  row,
+  onFocus,
+}: {
+  row: AgentOverviewRow;
+  onFocus?: (taskId: string) => void;
+}) {
+  const clickable = Boolean(row.focusable && row.taskId && onFocus);
+  const phaseClass = `is-phase-${row.phase}`;
+  const content = (
+    <>
+      <span className={`agent-overview-phase ${phaseClass}`} aria-hidden="true">
+        {row.phase === "running" ? (
+          <RefreshCw className="spinning" size={12} />
+        ) : row.phase === "waiting" ? (
+          <Clock3 size={12} />
+        ) : row.phase === "failed" ? (
+          <CircleAlert size={12} />
+        ) : row.phase === "done" ? (
+          <CheckCircle2 size={12} />
+        ) : (
+          <Bot size={12} />
+        )}
+      </span>
+      <span className="agent-overview-main">
+        <strong title={row.name}>{row.name}</strong>
+        <em>
+          <span className="agent-overview-role">{row.roleLabel}</span>
+          <span className="agent-overview-sep">·</span>
+          <span className="agent-overview-location">{row.locationLabel}</span>
+          {row.detail ? (
+            <>
+              <span className="agent-overview-sep">·</span>
+              <span className="agent-overview-detail" title={row.detail}>
+                {row.detail}
+              </span>
+            </>
+          ) : null}
+        </em>
+      </span>
+      <small className={`agent-overview-status ${phaseClass}`}>
+        {row.phaseLabel}
+      </small>
+      {clickable ? <ChevronRight size={12} /> : null}
+    </>
+  );
+
+  if (!clickable) {
+    return (
+      <div
+        className={`agent-overview-row ${row.active ? "is-active" : ""} ${phaseClass}`}
+        role="listitem"
+      >
+        {content}
+      </div>
+    );
+  }
+
   return (
     <button
       type="button"
-      className={`status-file-row ${active ? "is-active" : ""}`}
-      title={`弹窗查看 ${change.path} 的改动`}
-      onClick={onClick}
+      className={`agent-overview-row is-button ${row.active ? "is-active" : ""} ${phaseClass}`}
+      role="listitem"
+      title={`切换到会话：${row.name}`}
+      aria-label={`切换到会话 ${row.name}（${row.phaseLabel}）`}
+      onClick={() => onFocus?.(row.taskId)}
     >
-      <FileCode2 size={12} />
-      <span className="status-file-row-name">
-        <strong>{fileName(change.path)}</strong>
-        {change.path.replace(/\\/g, "/") !== fileName(change.path) ? (
-          <em title={change.path}>
-            {change.path.replace(/\\/g, "/").split("/").slice(0, -1).join("/") ||
-              "."}
-          </em>
-        ) : (
-          <em>工作区</em>
-        )}
-      </span>
-      <small>
-        {change.additions || change.deletions ? (
-          <>
-            <b>+{change.additions}</b>
-            <i>-{change.deletions}</i>
-          </>
-        ) : (
-          "已变更"
-        )}
-      </small>
-      <ChevronRight size={12} />
+      {content}
     </button>
   );
 }
@@ -154,6 +295,10 @@ export function StatusPanel({
   runningId,
   summaryBusy,
   resumeCheckpoint,
+  editCheckpoints = [],
+  keepFileChanges,
+  undoFileChanges,
+  restoreEditCheckpoint,
   gitRefreshing,
   refreshGitState,
   gitState,
@@ -174,6 +319,8 @@ export function StatusPanel({
   restoreSummarySnapshot,
   rebuildActiveSummary,
   restoreFullContext,
+  overviewTasks,
+  onFocusOverviewSession,
 }: StatusPanelProps) {
   const [liveDurationMs, setLiveDurationMs] = useState(durationMs);
   const [diffOpen, setDiffOpen] = useState(false);
@@ -183,6 +330,7 @@ export function StatusPanel({
   const [fileDiffLoading, setFileDiffLoading] = useState(false);
   const [wrapDiffLines, setWrapDiffLines] = useState(true);
   const [diffViewMode, setDiffViewMode] = useState<"split" | "unified">("split");
+  const [reviewBusy, setReviewBusy] = useState(false);
   const diffFileNavRef = useRef<HTMLElement | null>(null);
   const diffContentRef = useRef<HTMLDivElement | null>(null);
   const gitWorkspacePath = activeTask
@@ -202,6 +350,16 @@ export function StatusPanel({
   const activitySummary = useMemo(
     () => summarizeStatusActivities(activities),
     [activities],
+  );
+  const agentOverview = useMemo(
+    () =>
+      buildAgentOverviewBoard({
+        tasks: overviewTasks ?? (activeTask ? [activeTask] : []),
+        activeTaskId: activeTask?.id,
+        limit: 12,
+        cloudAvailable: false,
+      }),
+    [activeTask, overviewTasks],
   );
   const fileChanges = activitySummary.fileChanges;
   const queuedCount = messages.filter((message) =>
@@ -244,6 +402,37 @@ export function StatusPanel({
   const displayAdditions = activitySummary.additions;
   const displayDeletions = activitySummary.deletions;
   const showChanges = fileChanges.length > 0;
+  const pendingFileChanges = fileChanges.filter(
+    (change) => change.pending && !change.kept,
+  );
+  const keptFileCount = fileChanges.filter((change) => change.kept).length;
+  const taskEditCheckpoints = editCheckpoints.filter(
+    (checkpoint) =>
+      !activeTask?.id ||
+      !checkpoint.taskId ||
+      checkpoint.taskId === activeTask.id,
+  );
+  async function runReviewAction(
+    action?: (paths?: string[]) => Promise<void> | void,
+    paths?: string[],
+  ) {
+    if (!action || reviewBusy) return;
+    setReviewBusy(true);
+    try {
+      await action(paths);
+    } finally {
+      setReviewBusy(false);
+    }
+  }
+  async function runRestoreCheckpoint(checkpointId: string) {
+    if (!restoreEditCheckpoint || reviewBusy) return;
+    setReviewBusy(true);
+    try {
+      await restoreEditCheckpoint(checkpointId);
+    } finally {
+      setReviewBusy(false);
+    }
+  }
   const selectedDiffChange = fileChanges.find(
     (change) => change.path === selectedDiffPath,
   );
@@ -339,13 +528,63 @@ export function StatusPanel({
   return (
     <aside className="status-panel work-panel is-unified" aria-label="工作面板">
       <div className="work-panel-body">
-        <section className="work-panel-block" aria-label="改动">
+        <section className="work-panel-block" aria-label="智能体总览">
+          <section className="agent-overview-board" aria-label="智能体总览面板">
+            <div className="status-section-heading agent-overview-heading">
+              <span>
+                <Users size={14} />
+                <strong>智能体总览</strong>
+              </span>
+              <small>
+                {agentOverview.runningCount
+                  ? `${agentOverview.runningCount} 运行`
+                  : "无运行"}
+                {agentOverview.waitingCount
+                  ? ` · ${agentOverview.waitingCount} 等待`
+                  : ""}
+                {agentOverview.localCount
+                  ? ` · ${agentOverview.localCount} 本地`
+                  : ""}
+              </small>
+            </div>
+            {agentOverview.rows.length === 0 ? (
+              <p className="work-panel-empty is-inline agent-overview-empty">
+                暂无运行中或等待中的会话。完整列表在左侧侧栏。
+              </p>
+            ) : (
+              <div className="agent-overview-list" role="list">
+                {agentOverview.rows.map((row) => (
+                  <AgentOverviewRowButton
+                    key={row.id}
+                    row={row}
+                    onFocus={onFocusOverviewSession}
+                  />
+                ))}
+              </div>
+            )}
+            {agentOverview.cloudUnavailable ? (
+              <p className="agent-overview-cloud-hint" data-extension="cloud-agents">
+                <CloudOff size={12} />
+                <span>云端智能体尚未接入 · 当前仅展示本地 / SSH 会话</span>
+              </p>
+            ) : null}
+          </section>
+        </section>
+
+                <section className="work-panel-block" aria-label="改动">
           {showChanges ? (
             <section className="git-section status-changes-section is-compact">
               <div className="status-change-total">
                 <span>
                   <strong>{displayChangeCount} 个文件</strong>
-                  <small>本轮改动</small>
+                  <small>
+                    本轮改动
+                    {pendingFileChanges.length
+                      ? ` · ${pendingFileChanges.length} 待确认`
+                      : keptFileCount
+                        ? ` · ${keptFileCount} 已保留`
+                        : ""}
+                  </small>
                 </span>
                 <b>
                   <i>+{displayAdditions}</i>
@@ -362,6 +601,37 @@ export function StatusPanel({
                   </button>
                 </div>
               </div>
+              {pendingFileChanges.length > 0 &&
+              (keepFileChanges || undoFileChanges) ? (
+                <div className="status-review-toolbar" aria-label="改动审查">
+                  {keepFileChanges ? (
+                    <button
+                      type="button"
+                      className="status-review-keep-all"
+                      disabled={reviewBusy}
+                      onClick={() =>
+                        void runReviewAction(keepFileChanges, undefined)
+                      }
+                    >
+                      <Check size={12} />
+                      全部保留
+                    </button>
+                  ) : null}
+                  {undoFileChanges ? (
+                    <button
+                      type="button"
+                      className="status-review-undo-all"
+                      disabled={reviewBusy}
+                      onClick={() =>
+                        void runReviewAction(undoFileChanges, undefined)
+                      }
+                    >
+                      <Undo2 size={12} />
+                      全部撤销
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
               <div className="status-file-list">
                 <div className="status-file-list-scroll">
                   {fileChanges.map((change) => (
@@ -369,18 +639,70 @@ export function StatusPanel({
                       key={change.path}
                       change={change}
                       active={diffOpen && change.path === selectedDiffPath}
+                      busy={reviewBusy}
                       onClick={() => openDiff(change.path)}
+                      onKeep={
+                        keepFileChanges && change.pending && !change.kept
+                          ? () =>
+                              void runReviewAction(keepFileChanges, [
+                                change.path,
+                              ])
+                          : undefined
+                      }
+                      onUndo={
+                        undoFileChanges && change.pending && !change.kept
+                          ? () =>
+                              void runReviewAction(undoFileChanges, [
+                                change.path,
+                              ])
+                          : undefined
+                      }
                     />
                   ))}
                 </div>
               </div>
+              {taskEditCheckpoints.length > 0 ? (
+                <div
+                  className="status-edit-checkpoints"
+                  aria-label="文件还原点"
+                >
+                  <div className="status-section-heading">
+                    <span>
+                      <RotateCcw size={14} />
+                      <strong>文件还原点</strong>
+                    </span>
+                    <small>不删除对话</small>
+                  </div>
+                  {taskEditCheckpoints.map((checkpoint) => (
+                    <button
+                      type="button"
+                      className="status-edit-checkpoint"
+                      key={checkpoint.id}
+                      disabled={
+                        reviewBusy || Boolean(runningId) || summaryBusy
+                      }
+                      title={`还原 ${checkpoint.fileCount} 个文件到「${checkpoint.label}」`}
+                      onClick={() => void runRestoreCheckpoint(checkpoint.id)}
+                    >
+                      <RotateCcw size={13} />
+                      <span>
+                        <strong>{checkpoint.label}</strong>
+                        <small>
+                          {checkpoint.fileCount} 个文件 ·{" "}
+                          {new Date(checkpoint.createdAt).toLocaleString()}
+                        </small>
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              ) : null}
             </section>
           ) : (
             <p className="work-panel-empty is-inline">本轮还没有文件改动。</p>
           )}
         </section>
 
-        <section className="work-panel-block" aria-label="本轮">
+<section className="work-panel-block" aria-label="本轮">
           {showRunOverview && (
             <section
               className={`status-run-overview is-compact ${running ? "is-running" : ""} ${runStatus === "blocked" ? "is-blocked" : ""} ${overviewTone === "success" ? "is-success" : ""} ${overviewTone === "failure" ? "has-failures" : ""}`}

@@ -75,6 +75,8 @@ test("status summary aggregates successful file changes and command results", ()
   assert.deepEqual(summary.fileChanges[0].diffs, [
     "diff --git a/src/App.tsx b/src/App.tsx",
   ]);
+  assert.equal(summary.fileChanges[0].pending, true);
+  assert.equal(summary.fileChanges[0].kept, false);
   assert.deepEqual(
     summary.validations.map((item) => item.id),
     ["test", "build"],
@@ -91,4 +93,22 @@ test("a completed run stays successful when one step failed and was recovered", 
   assert.equal(statusHeadline("paused", true), "任务未完成，可继续");
   assert.equal(statusHeadline("completed", true), "本轮已完成");
   assert.equal(statusHeadline("blocked", false), "等待补充信息");
+});
+
+
+test("status summary marks kept file changes", () => {
+  const summary = summarizeStatusActivities([
+    activity({
+      id: "kept-edit",
+      tool: "write_file",
+      path: "src/kept.ts",
+      additions: 1,
+      deletions: 0,
+      kept: true,
+      undoable: false,
+    }),
+  ]);
+  assert.equal(summary.fileChanges.length, 1);
+  assert.equal(summary.fileChanges[0].kept, true);
+  assert.equal(summary.fileChanges[0].pending, false);
 });

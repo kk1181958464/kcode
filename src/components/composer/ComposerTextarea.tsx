@@ -5,6 +5,7 @@ import React, {
   useImperativeHandle,
   useRef,
 } from "react";
+import { classifyComposerEnterKey } from "../../composer-queue";
 
 export type ComposerTextareaHandle = {
   getValue(): string;
@@ -19,6 +20,8 @@ type ComposerTextareaProps = {
   onBlur(value: string): void;
   onPaste(event: React.ClipboardEvent<HTMLTextAreaElement>): void;
   onSubmit(): void;
+  /** Ctrl/⌘+Enter — send immediately (interrupt when a turn is live). */
+  onSubmitImmediate?(): void;
 };
 
 // Uncontrolled on purpose: a controlled textarea re-renders React on every
@@ -36,6 +39,7 @@ export const ComposerTextarea = memo(
         onBlur,
         onPaste,
         onSubmit,
+        onSubmitImmediate,
       },
       ref,
     ) => {
@@ -77,11 +81,21 @@ export const ComposerTextarea = memo(
           }}
           onKeyDown={(event) => {
             onInputActivity();
-            if (event.nativeEvent.isComposing || event.keyCode === 229) return;
-            if (event.key === "Enter" && !event.shiftKey) {
-              event.preventDefault();
-              onSubmit();
+            const action = classifyComposerEnterKey({
+              key: event.key,
+              shiftKey: event.shiftKey,
+              ctrlKey: event.ctrlKey,
+              metaKey: event.metaKey,
+              isComposing: event.nativeEvent.isComposing,
+              keyCode: event.keyCode,
+            });
+            if (action === "none") return;
+            event.preventDefault();
+            if (action === "submit-immediate") {
+              (onSubmitImmediate ?? onSubmit)();
+              return;
             }
+            onSubmit();
           }}
           placeholder={placeholder}
           spellCheck={false}

@@ -5,7 +5,7 @@ import { applyUpdatePatch } from "./text-patch";
 
 type Action = "Update" | "Add" | "Delete";
 export type PatchChange = { action: Action; file: string; before: string; after: string; existed: boolean };
-export type PatchOptions = { cache: FileReadCache; diff: (file: string, before: string, after: string) => { diff?: string; additions: number; deletions: number }; onUndo: (change: PatchChange) => void };
+export type PatchOptions = { cache: FileReadCache; diff: (file: string, before: string, after: string) => { diff?: string; additions: number; deletions: number }; onUndo: (change: PatchChange) => void; onPending?: (change: PatchChange) => void };
 function resolve(root: string, value: string) { const file = path.resolve(root, value); if (file !== root && !file.startsWith(`${root}${path.sep}`)) throw new Error("路径必须位于当前工作区内"); return file; }
 export async function applyPatchTool(root: string, patchText: string, options: PatchOptions) {
   const lines = patchText.replaceAll("\r\n", "\n").replaceAll("\r", "\n").split("\n");
@@ -27,6 +27,7 @@ export async function applyPatchTool(root: string, patchText: string, options: P
   for (const change of actual) {
     if (change.action === "Delete") await unlink(change.file); else { await mkdir(path.dirname(change.file), { recursive: true }); await writeFile(change.file, change.after, "utf8"); }
     options.cache.invalidate(change.file);
+    options.onPending?.(change);
   }
   if (actual.length === 1 && actual[0].action !== "Delete") options.onUndo(actual[0]);
   const diffs = actual.map((change) => ({ path: path.relative(root, change.file).replaceAll("\\", "/"), ...options.diff(path.relative(root, change.file).replaceAll("\\", "/"), change.before, change.after) }));

@@ -65,9 +65,8 @@ test("keeps process output visible while the request is running", () => {
 test("collapses completed process output and keeps only the final result visible", () => {
   const markup = renderConversationRun(false);
   assert.match(markup, /completed-process-trigger/);
-  assert.match(markup, /已处理/);
+  assert.match(markup, /跑了测试/);
   assert.match(markup, /1m 0s/);
-  assert.match(markup, /1 个步骤/);
   assert.match(markup, /GPT-5\.6 Luna/);
   assert.match(markup, /最终结果：三个问题都已处理/);
   assert.doesNotMatch(markup, /先检查工作区/);
@@ -138,7 +137,7 @@ test("uses structured completion evidence for paused file totals", () => {
 test("collapses process output as soon as the final response starts", () => {
   const markup = renderConversationRun(true, true);
   assert.match(markup, /completed-process-trigger/);
-  assert.match(markup, /已处理/);
+  assert.match(markup, /跑了测试/);
   assert.match(markup, /1m 0s/);
   assert.match(markup, /最终结果：三个问题都已处理/);
   assert.doesNotMatch(markup, /先检查工作区/);
@@ -524,4 +523,213 @@ test("right rail keeps recovery checkpoints on the current-run pane", () => {
   );
   assert.doesNotMatch(changesPane, /可恢复任务|从检查点继续/);
   assert.match(runPane, /可恢复任务|从检查点继续/);
+});
+
+test("changes pane exposes per-file Keep/Undo and edit checkpoints", () => {
+  const activity: AgentActivity = {
+    id: "activity-review",
+    requestId: "request-review",
+    tool: "write_file",
+    status: "success",
+    title: "写入文件",
+    startedAt: 1,
+    completedAt: 2,
+    input: {},
+    path: "src/review.ts",
+    additions: 3,
+    deletions: 1,
+    undoable: true,
+    diff: "diff --git a/src/review.ts b/src/review.ts",
+  };
+  const markup = renderToStaticMarkup(
+    React.createElement(StatusPanel, {
+      runStatus: "completed",
+      activities: [activity],
+      selectedTarget: undefined,
+      effortLabels: {
+        auto: "自动",
+        low: "轻度",
+        medium: "中",
+        high: "高",
+      } as never,
+      reasoningEffort: "medium",
+      checkpoints: [],
+      editCheckpoints: [
+        {
+          id: "edit-cp-request-review",
+          requestId: "request-review",
+          label: "本轮改动前",
+          createdAt: 1_700_000_000_000,
+          fileCount: 1,
+          paths: ["src/review.ts"],
+        },
+      ],
+      activeTask: { id: "task-1" } as never,
+      runningId: undefined,
+      summaryBusy: false,
+      async resumeCheckpoint() {},
+      async keepFileChanges() {},
+      async undoFileChanges() {},
+      async restoreEditCheckpoint() {},
+      gitRefreshing: false,
+      async refreshGitState() {},
+      gitState: {
+        available: false,
+        files: 0,
+        additions: 0,
+        deletions: 0,
+        summary: "",
+        diff: "",
+      },
+      durationMs: 0,
+      messages: [],
+      usage: { input: 0, output: 0, cached: 0 },
+      usageResolved: false,
+      usedContextCount: 0,
+      selectedContextWindow: undefined,
+      contextTokens: 0,
+      calibrationFactor: 1,
+      compactActiveConversation() {},
+      summaryOpen: false,
+      setSummaryOpen() {},
+      restoreSummarySnapshot() {},
+      async rebuildActiveSummary() {},
+      restoreFullContext() {},
+    }),
+  );
+
+  assert.match(markup, /aria-label="改动审查"/);
+  assert.match(markup, /全部保留/);
+  assert.match(markup, /全部撤销/);
+  assert.match(markup, /aria-label="保留 src\/review\.ts"/);
+  assert.match(markup, /aria-label="撤销 src\/review\.ts"/);
+  assert.match(markup, /aria-label="文件还原点"/);
+  assert.match(markup, /本轮改动前/);
+  assert.match(markup, /不删除对话/);
+  const changesPane = markup.slice(
+    markup.indexOf('aria-label="改动"'),
+    markup.indexOf('aria-label="本轮"'),
+  );
+  assert.match(changesPane, /文件还原点|本轮改动前/);
+});
+
+test("defers bulky execution summary while a non-UI tool is running", () => {
+  const activity: AgentActivity = {
+    id: "activity-live-read",
+    requestId: "request-live",
+    tool: "read_file",
+    status: "running",
+    title: "读取文件",
+    startedAt: 1,
+    input: { path: "src/a.ts" },
+    path: "src/a.ts",
+  };
+  const markup = renderToStaticMarkup(
+    React.createElement(ExecutionSummary, {
+      activities: [activity],
+      allActivities: [activity],
+      running: true,
+      isLatestGroup: true,
+      requestFailed: false,
+      hasLeadingNarration: true,
+      hasTrailingNarration: false,
+      requestId: "request-live",
+      workspacePath: "D:/project/kcode",
+      onActivityChange() {},
+    }),
+  );
+  assert.equal(markup, "");
+});
+
+test("keeps waiting approval cards visible instead of deferring", () => {
+  const activity: AgentActivity = {
+    id: "activity-wait",
+    requestId: "request-wait",
+    tool: "run_command",
+    status: "waiting",
+    title: "运行命令",
+    startedAt: 1,
+    input: {},
+    command: "npm test",
+  };
+  const markup = renderToStaticMarkup(
+    React.createElement(ExecutionSummary, {
+      activities: [activity],
+      allActivities: [activity],
+      running: true,
+      isLatestGroup: true,
+      requestFailed: false,
+      hasLeadingNarration: true,
+      hasTrailingNarration: false,
+      requestId: "request-wait",
+      workspacePath: "D:/project/kcode",
+      onActivityChange() {},
+    }),
+  );
+  assert.match(markup, /execution-summary/);
+  assert.match(markup, /等待确认/);
+});
+
+test("settled execution summary uses a past-tense receipt headline", () => {
+  const activities: AgentActivity[] = [
+    {
+      id: "r1",
+      requestId: "request-receipt",
+      tool: "read_file",
+      status: "success",
+      title: "读取文件",
+      startedAt: 1,
+      completedAt: 2,
+      input: { path: "src/a.ts" },
+      path: "src/a.ts",
+    },
+    {
+      id: "r2",
+      requestId: "request-receipt",
+      tool: "read_file",
+      status: "success",
+      title: "读取文件",
+      startedAt: 2,
+      completedAt: 3,
+      input: { path: "src/b.ts" },
+      path: "src/b.ts",
+    },
+    {
+      id: "r3",
+      requestId: "request-receipt",
+      tool: "read_file",
+      status: "success",
+      title: "读取文件",
+      startedAt: 3,
+      completedAt: 4,
+      input: { path: "src/c.ts" },
+      path: "src/c.ts",
+    },
+    {
+      id: "t1",
+      requestId: "request-receipt",
+      tool: "run_command",
+      status: "success",
+      title: "运行测试",
+      startedAt: 4,
+      completedAt: 5,
+      input: {},
+      command: "npm test",
+    },
+  ];
+  const markup = renderToStaticMarkup(
+    React.createElement(ExecutionSummary, {
+      activities,
+      allActivities: activities,
+      running: false,
+      isLatestGroup: true,
+      requestFailed: false,
+      hasLeadingNarration: true,
+      hasTrailingNarration: true,
+      workspacePath: "D:/project/kcode",
+      onActivityChange() {},
+    }),
+  );
+  assert.match(markup, /读了 3 个文件/);
+  assert.match(markup, /跑了测试/);
 });

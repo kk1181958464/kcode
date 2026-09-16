@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   executorModelOverrides,
+  isPlanConfirmGatedTool,
+  isPlanConfirmMode,
   isPlannerCoordinator,
+  planConfirmInstruction,
+  planRequiresUserGoAhead,
   plannerCollaborationInstruction,
   plannerToolAllowed,
   remoteWorkspaceToolAllowed,
@@ -87,4 +91,30 @@ test("keeps ordinary and executor requests on their current model", () => {
     plannerCollaborationInstruction({ ...request, collaboration: undefined }),
     "",
   );
+});
+
+
+test("recognizes plan-confirm mode and gates mutating tools until go-ahead", () => {
+  const planConfirmRequest: ModelRequest = {
+    providerId: "p",
+    modelId: "m",
+    messages: [],
+    permissionMode: "full-access",
+    workspacePath: "D:\\project\\demo",
+    collaboration: { mode: "plan-confirm" },
+  };
+  assert.equal(isPlanConfirmMode(planConfirmRequest), true);
+  assert.equal(isPlannerCoordinator(planConfirmRequest), false);
+  assert.equal(isPlanConfirmGatedTool("apply_patch"), true);
+  assert.equal(isPlanConfirmGatedTool("write_file"), true);
+  assert.equal(isPlanConfirmGatedTool("run_command"), true);
+  assert.equal(isPlanConfirmGatedTool("read_file"), false);
+  assert.equal(isPlanConfirmGatedTool("update_plan"), false);
+  assert.equal(planRequiresUserGoAhead([["inspect"], ["modify"]]), true);
+  assert.equal(planRequiresUserGoAhead([["inspect"], []]), false);
+  assert.equal(planRequiresUserGoAhead(undefined), false);
+  assert.match(planConfirmInstruction(planConfirmRequest), /plan-confirm/);
+  assert.match(planConfirmInstruction(planConfirmRequest), /update_plan/);
+  assert.equal(planConfirmInstruction(request), "");
+  assert.equal(executorModelOverrides(planConfirmRequest), undefined);
 });

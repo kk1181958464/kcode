@@ -9,6 +9,10 @@ export {
   clearAgentSteering,
   clearAgentToolTraces,
   undoActivity,
+  keepFileChanges,
+  undoFileChanges,
+  restoreFileCheckpoint,
+  listFileCheckpoints,
 } from "./agent-tool-runtime";
 export { runtimeFinalizationFallback } from "./agent-finalization";
 export { runAgent } from "./agent-runner";

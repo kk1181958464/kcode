@@ -73,7 +73,7 @@ test("composer keeps single-model mode explicit", () => {
     }),
   );
   assert.match(markup, /单模型/);
-  assert.match(markup, /多模型协作/);
+  assert.match(markup, /协作与计划模式/);
   assert.match(markup, /composer-chip/);
 });
 
@@ -110,4 +110,20 @@ test("composer permission chip names a customized policy", () => {
   );
   assert.match(markup, />自定义</);
   assert.match(markup, /aria-label="操作权限：自定义权限"/);
+});
+
+
+test("composer exposes plan-confirm mode without an executor model", () => {
+  const markup = renderToStaticMarkup(
+    React.createElement(CollaborationPicker, {
+      providers,
+      plannerSelection: "planner|sol",
+      value: { mode: "plan-confirm" },
+      onChange() {},
+    }),
+  );
+  assert.match(markup, /计划确认/);
+  assert.match(markup, /aria-label="计划确认"/);
+  assert.match(markup, /确认后再改文件/);
+  assert.match(markup, /composer-chip/);
 });

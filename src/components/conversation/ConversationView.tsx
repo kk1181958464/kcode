@@ -19,6 +19,7 @@ import {
   Cpu,
   Clock3,
   FileCode2,
+  Crosshair,
   FolderOpen,
   ListChecks,
   LoaderCircle,
@@ -80,6 +81,8 @@ import {
 import {
   collapseInlineToolActivities,
   deriveLiveGapStatus,
+  formatPastTenseToolReceipt,
+  shouldDeferExecutionSummaryCard,
 } from "../../live-output-status";
 import {
   boundedStreamingReasoning,
@@ -227,6 +230,20 @@ const MessageItem = memo(function MessageItem({
                 <span key={file.id} title={file.name}>
                   <FileCode2 size={12} />
                   {file.name}
+                </span>
+              ))}
+            </div>
+          )}
+          {message.designAttachments && message.designAttachments.length > 0 && (
+            <div className="message-attachments design-element-attachments">
+              {message.designAttachments.map((item) => (
+                <span
+                  key={item.id}
+                  title={item.cssSelector || item.label}
+                  className="design-element-chip"
+                >
+                  <Crosshair size={12} />
+                  {item.label}
                 </span>
               ))}
             </div>
@@ -593,7 +610,27 @@ const ActivityItem = memo(function ActivityItem({
               <small>{executionNarrative}</small>
             </span>
           </div>
-          {pending && requestId && (
+          {pending && requestId && activity.liveStatus === "plan-confirm" && (
+            <div className="approval-actions plan-confirm-actions">
+              <span>请确认执行计划后再继续变更</span>
+              <button
+                onClick={() =>
+                  void window.kcode.chat.approve(requestId, activity.id, false)
+                }
+              >
+                修改计划
+              </button>
+              <button
+                className="allow"
+                onClick={() =>
+                  void window.kcode.chat.approve(requestId, activity.id, true)
+                }
+              >
+                确认执行
+              </button>
+            </div>
+          )}
+          {pending && requestId && activity.liveStatus !== "plan-confirm" && (
             <div className="approval-actions">
               <span>此操作会修改工作区或执行命令</span>
               <button
@@ -1202,7 +1239,8 @@ export const ExecutionSummary = memo(
     const activeRunning =
       running && executionStats.active?.status === "running";
     const executionInProgress = activeRunning;
-    let headline = "执行完成";
+    const pastTenseReceipt = formatPastTenseToolReceipt(displayActivities);
+    let headline = pastTenseReceipt || "执行完成";
     let focus = "";
     if (executionStats.waiting && executionStats.active) {
       headline = "等待确认";
@@ -1212,18 +1250,20 @@ export const ExecutionSummary = memo(
       headline = copy.label;
       focus = copy.target;
     } else if (requestFailed) {
-      headline = "执行未完成";
+      headline = pastTenseReceipt
+        ? `${pastTenseReceipt}（未完成）`
+        : "执行未完成";
     } else if (executionStats.failures) {
       headline =
         running && !hasTrailingNarration
-          ? "步骤失败"
-          : "执行完成，已记录失败项";
+          ? pastTenseReceipt || "步骤失败"
+          : pastTenseReceipt || "执行完成，已记录失败项";
     } else if (executionStats.limited) {
-      headline = running ? "访问受限，正在切换方案" : "已降级完成";
-    } else if (executionStats.commands) {
-      headline = `已执行 ${executionStats.commands} 个命令`;
-    } else if (displayActivities.length) {
-      headline = `已完成 ${displayActivities.length} 个步骤`;
+      headline = running
+        ? "访问受限，正在切换方案"
+        : pastTenseReceipt || "已降级完成";
+    } else if (pastTenseReceipt) {
+      headline = pastTenseReceipt;
     }
     useEffect(() => {
       if (executionStats.waiting) setExpanded(true);
@@ -1239,6 +1279,17 @@ export const ExecutionSummary = memo(
       [displayActivities],
     );
     if (!displayActivities.length) return null;
+    // Active non-UI tools stay in AssistantTailState as a calm status line;
+    // avoid stacking a bulky persistent card for every call.
+    if (
+      shouldDeferExecutionSummaryCard(
+        displayActivities,
+        running,
+        isLatestGroup,
+      )
+    ) {
+      return null;
+    }
     const hiddenActivityCount = Math.max(
       0,
       displayActivities.length - visibleActivityCount,
@@ -1558,15 +1609,18 @@ function AssistantTailState({
   }, [requestId]);
   const gap = deriveLiveGapStatus(activities, progressText);
   if (!reasoningNode && !progressNode && !gap) return null;
-  // When progress itself is the auto-continue hint, prefer the mapped gap label
-  // and skip the raw progress leaf so the explicit wording is not buried.
-  const preferProgressGap =
+  // Progress text is already mirrored into gap.label (waiting-model, auto-continue, …).
+  // Showing StreamingProgressLeaf too stacks the same sentence on top of itself.
+  const hideProgressLeaf =
+    gap?.source === "progress" && Boolean(gap.label);
+  // Auto-continue keeps the mapped gap wording only — skip the quiet chip collapse.
+  const hideQuietChip =
     gap?.source === "progress" && /自动继续/.test(progressText);
   return (
     <div className="assistant-tail-state" aria-live="polite">
       <BrainCircuit size={12} />
       <span className="assistant-tail-copy">
-        {requestId && !preferProgressGap ? (
+        {requestId && !hideQuietChip ? (
           <QuietStatusChip requestId={requestId} />
         ) : null}
         {!requestId && gap?.kind ? (
@@ -1578,7 +1632,7 @@ function AssistantTailState({
           <span className="assistant-tail-gap">{gap.label}</span>
         ) : null}
         {reasoningNode}
-        {preferProgressGap ? null : progressNode}
+        {hideProgressLeaf ? null : progressNode}
         {!gap?.label && (
           <span className="assistant-tail-fallback">正在继续执行…</span>
         )}
@@ -1616,6 +1670,17 @@ function CompletedProcessDisclosure({
     deletions: completionResult?.deletions || fileStats.deletions,
   };
   const executor = useMemo(() => executorEvidence(activities), [activities]);
+  const pastTenseReceipt = useMemo(
+    () => formatPastTenseToolReceipt(activities),
+    [activities],
+  );
+  const stateLabel = blocked
+    ? "等待输入"
+    : paused
+      ? "未完成"
+      : failed
+        ? "处理未完成"
+        : pastTenseReceipt || "已处理";
   return (
     <section
       className={`completed-process ${expanded ? "expanded" : ""} ${
@@ -1638,19 +1703,15 @@ function CompletedProcessDisclosure({
           ) : (
             <CheckCircle2 size={13} />
           )}
-          <strong>
-            {blocked
-              ? "等待输入"
-              : paused
-                ? "未完成"
-                : failed
-                  ? "处理未完成"
-                  : "已处理"}
-          </strong>
+          <strong title={pastTenseReceipt || undefined}>{stateLabel}</strong>
           <time>{formatCompactDuration(durationMs)}</time>
         </span>
         <span className="completed-process-metrics">
-          {activities.length > 0 && <span>{activities.length} 个步骤</span>}
+          {activities.length > 0 &&
+            !pastTenseReceipt && <span>{activities.length} 个步骤</span>}
+          {activities.length > 0 &&
+            (blocked || paused || failed) &&
+            pastTenseReceipt && <span>{pastTenseReceipt}</span>}
           {summaryFileStats.files > 0 && (
             <span>{summaryFileStats.files} 个文件</span>
           )}

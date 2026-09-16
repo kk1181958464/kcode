@@ -47,17 +47,20 @@ export function CollaborationPicker({
     ({ provider, model }) =>
       selection(provider.id, model.id) === value?.executorModelSelection,
   );
+  const planConfirm = value?.mode === "plan-confirm";
   const enabled = value?.mode === "planner-executor";
   const executorEfforts = reasoningEffortsForModel(executor?.model);
   const executorEffort = normalizeEffort(
     value?.executorReasoningEffort ?? "auto",
     executorEfforts,
   );
-  const triggerLabel = enabled
-    ? `执行 · ${executor?.model.displayName || "选择模型"}${
-        executor ? ` · ${effortLabels[executorEffort]}` : ""
-      }`
-    : "单模型";
+  const triggerLabel = planConfirm
+    ? "计划确认"
+    : enabled
+      ? `执行 · ${executor?.model.displayName || "选择模型"}${
+          executor ? ` · ${effortLabels[executorEffort]}` : ""
+        }`
+      : "单模型";
 
   useEffect(() => {
     const close = (event: MouseEvent) => {
@@ -105,15 +108,19 @@ export function CollaborationPicker({
         aria-label={triggerLabel}
         disabled={disabled}
         title={
-          enabled && executor
-            ? `规划：当前模型 · 执行：${executor.model.displayName}（${effortLabels[executorEffort]}）`
-            : "多模型协作"
+          planConfirm
+            ? "计划确认：先出计划，确认后再改文件/跑命令"
+            : enabled && executor
+              ? `规划：当前模型 · 执行：${executor.model.displayName}（${effortLabels[executorEffort]}）`
+              : "协作与计划模式"
         }
         onClick={() => setOpen((current) => !current)}
       >
         <Workflow size={14} />
         <span className="collaboration-trigger-label">
-          {enabled ? (
+          {planConfirm ? (
+            "计划确认"
+          ) : enabled ? (
             <>
               <span className="collaboration-trigger-role">执行 · </span>
               <span className="collaboration-trigger-model">
@@ -137,10 +144,18 @@ export function CollaborationPicker({
           <div className="collaboration-mode-tabs" aria-label="协作模式">
             <button
               type="button"
-              className={!enabled ? "active" : ""}
+              className={!enabled && !planConfirm ? "active" : ""}
               onClick={() => onChange(undefined)}
             >
               单模型
+            </button>
+            <button
+              type="button"
+              className={planConfirm ? "active" : ""}
+              title="先提出简短计划，经你确认后再改文件或执行命令"
+              onClick={() => onChange({ mode: "plan-confirm" })}
+            >
+              计划确认
             </button>
             <button
               type="button"
@@ -156,6 +171,11 @@ export function CollaborationPicker({
               规划 → 执行
             </button>
           </div>
+          {planConfirm && (
+            <p className="collaboration-empty-hint plan-confirm-hint">
+              开启后，Agent 会先用 update_plan 给出简短计划并暂停；你确认后才会写文件或运行风险命令。点「修改计划」可让它修订后再确认。
+            </p>
+          )}
           {!availableExecutors.length && (
             <p className="collaboration-empty-hint">
               暂无可用的执行模型：请在「管理模型」中启用另一个已配置 API Key

@@ -4,7 +4,10 @@ import {
   collapseInlineToolActivities,
   deriveLiveGapStatus,
   formatAutoContinueStatusLabel,
+  formatPastTenseToolReceipt,
   isInspectTool,
+  isUiFacingActivity,
+  shouldDeferExecutionSummaryCard,
 } from "../src/live-output-status";
 import type { AgentActivity, AgentToolName } from "../src/types";
 
@@ -113,4 +116,41 @@ test("auto-continue progress keeps explicit wording instead of token fallback", 
     ),
     "上游中断，自动继续（3/3）…",
   );
+});
+
+test("past-tense receipt summarizes reads and tests", () => {
+  const receipt = formatPastTenseToolReceipt([
+    activity("a", "read_file", "success", { path: "src/a.ts" }),
+    activity("b", "read_file", "success", { path: "src/b.ts" }),
+    activity("c", "read_file", "success", { path: "src/c.ts" }),
+    activity("d", "run_command", "success", { command: "npm test", title: "测试" }),
+  ]);
+  assert.equal(receipt, "读了 3 个文件，跑了测试");
+});
+
+test("past-tense receipt keeps denied and failed discoverable", () => {
+  const receipt = formatPastTenseToolReceipt([
+    activity("a", "read_file", "success", { path: "src/a.ts" }),
+    activity("b", "run_command", "denied", { command: "rm -rf /", title: "危险命令" }),
+    activity("c", "apply_patch", "failed", { path: "src/a.ts" }),
+  ]);
+  assert.match(receipt, /读了 1 个文件/);
+  assert.match(receipt, /改了 1 处/);
+  assert.match(receipt, /1 项被拒绝/);
+  assert.match(receipt, /1 项失败/);
+});
+
+test("defers summary cards for active non-UI tools only", () => {
+  const runningRead = [activity("a", "read_file", "running", { path: "src/a.ts" })];
+  assert.equal(shouldDeferExecutionSummaryCard(runningRead, true, true), true);
+  assert.equal(shouldDeferExecutionSummaryCard(runningRead, true, false), false);
+  assert.equal(shouldDeferExecutionSummaryCard(runningRead, false, true), false);
+
+  const waiting = [activity("b", "run_command", "waiting", { command: "npm test" })];
+  assert.equal(isUiFacingActivity(waiting[0]!), true);
+  assert.equal(shouldDeferExecutionSummaryCard(waiting, true, true), false);
+
+  const input = [activity("c", "request_user_input", "running", { title: "补充信息" })];
+  assert.equal(isUiFacingActivity(input[0]!), true);
+  assert.equal(shouldDeferExecutionSummaryCard(input, true, true), false);
 });

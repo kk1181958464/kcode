@@ -50,6 +50,10 @@ import {
   stopBackgroundProcessById,
   steerAgent,
   undoActivity,
+  keepFileChanges,
+  undoFileChanges,
+  restoreFileCheckpoint,
+  listFileCheckpoints,
 } from "./agent";
 import { approvalCache } from "./approval-cache";
 import {
@@ -109,6 +113,7 @@ import {
   recoverBrowserRecordingDrafts,
   reloadBrowser,
   removeBrowserRecording,
+  setBrowserDesignMode,
   setBrowserHost,
   setBrowserWidth,
 } from "./browser";
@@ -578,6 +583,10 @@ function createWindow() {
       controllers.get(requestId)?.abort();
     },
     onVerificationRequired: notifyBrowserVerification,
+    onDesignElement: (details) => {
+      if (!win.isDestroyed())
+        win.webContents.send("browser:design-element", details);
+    },
   });
   win.on("focus", () => updateUnread(0));
   win.on("closed", () => {
@@ -837,6 +846,29 @@ app.whenReady().then(async () => {
     (_e, workspacePath: string, activityId: string, force?: boolean) =>
       undoActivity(workspacePath, activityId, Boolean(force)),
   );
+  ipcMain.handle(
+    "chat:keep-files",
+    (_e, workspacePath: string, requestId: string, paths?: string[]) =>
+      keepFileChanges(workspacePath, requestId, paths),
+  );
+  ipcMain.handle(
+    "chat:undo-files",
+    (
+      _e,
+      workspacePath: string,
+      requestId: string,
+      paths?: string[],
+      force?: boolean,
+    ) => undoFileChanges(workspacePath, requestId, paths, Boolean(force)),
+  );
+  ipcMain.handle("chat:edit-checkpoints", (_e, requestId?: string) =>
+    listFileCheckpoints(requestId),
+  );
+  ipcMain.handle(
+    "chat:restore-edit-checkpoint",
+    (_e, checkpointId: string, force?: boolean) =>
+      restoreFileCheckpoint(checkpointId, Boolean(force)),
+  );
   ipcMain.handle("providers:remove", async (_e, id: string) => {
     const result = await removeProvider(id);
     void uploadProviderVault().catch((error) =>
@@ -949,6 +981,14 @@ app.whenReady().then(async () => {
   );
   ipcMain.handle("browser:set-width", (_e, width: number) =>
     setBrowserWidth(browserWidthSchema.parse(width)),
+  );
+  ipcMain.handle(
+    "browser:set-design-mode",
+    (_e, sessionId: string | undefined, enabled: boolean) =>
+      setBrowserDesignMode(
+        optionalIdSchema.parse(sessionId),
+        enabled === true,
+      ),
   );
   ipcMain.handle("browser:recordings", () => listBrowserRecordings());
   ipcMain.handle("browser:remove-recording", (_e, id: string) =>

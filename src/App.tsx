@@ -35,6 +35,7 @@ import {
   Clock3,
   Code2,
   Copy,
+  Crosshair,
   Cpu,
   Download,
   ExternalLink,
@@ -184,7 +185,10 @@ import {
   formatBytes,
   formatDuration,
 } from "./lib/format";
-import { latestRequestActivities } from "./status-summary";
+import {
+  latestRequestActivities,
+  summarizeStatusActivities,
+} from "./status-summary";
 import {
   MAX_CONTEXT_FILES,
   MAX_CONTEXT_FILE_BYTES,
@@ -276,6 +280,17 @@ import {
 import { registerAppToastHandler, type AppToast } from "./lib/toast";
 import { useEventCallback } from "./lib/use-event-callback";
 import {
+  composerModifierKeyLabel,
+  prioritizeQueuedInMessages,
+  resolveComposerSubmitAction,
+} from "./composer-queue";
+import {
+  designElementChipLabel,
+  mergeDesignElements,
+  serializeDesignElementsForAgent,
+  type DesignElementContext,
+} from "./design-mode";
+import {
   finishTaskRequest,
   isTaskViewCurrent,
   isRetryableDisconnectError,
@@ -290,6 +305,7 @@ import { completionResultFromActivities } from "./completion-summary";
 import type {
   AgentActivity,
   AgentCheckpoint,
+  EditCheckpointInfo,
   AgentToolName,
   AppUpdateState,
   BrowserRecordingFile,
@@ -707,11 +723,25 @@ export default function App() {
     verificationRequired?: boolean;
     verificationSince?: number;
     verificationMessage?: string;
+    designMode?: boolean;
   }>({ open: false });
+  const [designElements, setDesignElements] = useState<DesignElementContext[]>(
+    [],
+  );
   const [browserAddress, setBrowserAddress] = useState("");
   // Latest reasoning/thinking snippet for the active turn. The renderer keeps
   // it beside the current activity until the next planning phase replaces it.
   useEffect(() => window.kcode?.browser?.onState(setBrowserState), []);
+  useEffect(
+    () =>
+      window.kcode?.browser?.onDesignElement?.((details) => {
+        const { sessionId: _sessionId, ...rest } = details;
+        setDesignElements((all) =>
+          mergeDesignElements(all, rest as DesignElementContext),
+        );
+      }),
+    [],
+  );
   useEffect(
     () => setBrowserAddress(browserState.url || ""),
     [browserState.url],
@@ -750,7 +780,8 @@ export default function App() {
   const [scrollingToBottom, setScrollingToBottom] = useState(false);
   const [historyLoadingTaskId, setHistoryLoadingTaskId] = useState<string>();
   const [summaryOpen, setSummaryOpen] = useState(false);
-  const [checkpoints, setCheckpoints] = useState<AgentCheckpoint[]>([]);
+  const [checkpoints, setCheckpoints] = useState<AgentCheckpoint[]>([])
+  const [editCheckpoints, setEditCheckpoints] = useState<EditCheckpointInfo[]>([]);
   const [summarizingTasks, setSummarizingTasks] = useState<Set<string>>(
     () => new Set(),
   );
@@ -825,12 +856,17 @@ export default function App() {
   const appShellRef = useRef<HTMLDivElement | null>(null);
   const requestStartedRef = useRef<number | undefined>(undefined);
   const composerSubmitRef = useRef<() => void>(() => undefined);
+  const composerSubmitImmediateRef = useRef<() => void>(() => undefined);
   const composerPasteRef = useRef<
     (event: React.ClipboardEvent<HTMLTextAreaElement>) => void
   >(() => undefined);
   const composerInputBusyUntilRef = useRef(0);
   const handleComposerSubmit = useCallback(
     () => composerSubmitRef.current(),
+    [],
+  );
+  const handleComposerSubmitImmediate = useCallback(
+    () => composerSubmitImmediateRef.current(),
     [],
   );
   const handleComposerPaste = useCallback(
@@ -891,6 +927,9 @@ export default function App() {
     composerRef.current?.replaceValue(input);
   }, [input]);
   const contextByMessageRef = useRef(new Map<string, ContextFile[]>());
+  const designByMessageRef = useRef(
+    new Map<string, DesignElementContext[]>(),
+  );
   const sendRef = useRef<((override?: string) => Promise<void>) | undefined>(
     undefined,
   );
@@ -2095,13 +2134,18 @@ export default function App() {
   function selectModel(value: string) {
     setSelected(value);
     const currentCollaboration = activeTask?.collaboration;
+    if (currentCollaboration?.mode === "plan-confirm") {
+      patchActiveTask({ modelSelection: value, collaboration: currentCollaboration });
+      return;
+    }
     const executorSelection = currentCollaboration?.executorModelSelection;
     const fallbackExecutor = models.find(
       ({ provider, model }) =>
         provider.hasApiKey && `${provider.id}|${model.id}` !== value,
     );
     const collaboration =
-      currentCollaboration && executorSelection === value
+      currentCollaboration?.mode === "planner-executor" &&
+      executorSelection === value
         ? fallbackExecutor
           ? {
               mode: "planner-executor" as const,
@@ -3336,6 +3380,7 @@ export default function App() {
     );
     requestStartedRef.current = undefined;
     contextByMessageRef.current.clear();
+    designByMessageRef.current.clear();
     autoFollowRef.current = true;
   }
 
@@ -3499,6 +3544,7 @@ export default function App() {
     setRunningId(undefined);
     requestStartedRef.current = undefined;
     contextByMessageRef.current.clear();
+    designByMessageRef.current.clear();
     autoFollowRef.current = true;
     setWorkspaceView("editor");
     setStatusOpen(false);
@@ -3540,6 +3586,7 @@ export default function App() {
     setRunningId(undefined);
     requestStartedRef.current = undefined;
     contextByMessageRef.current.clear();
+    designByMessageRef.current.clear();
     autoFollowRef.current = true;
     setPendingFolder(null);
     setNewTaskName("");
@@ -3700,6 +3747,7 @@ export default function App() {
     setUsedContextCount(task.usedContextCount ?? 0);
     setAttachedImages(attachmentDraft?.images ?? []);
     contextByMessageRef.current.clear();
+    designByMessageRef.current.clear();
     autoFollowRef.current = targetScroll.atBottom;
     conversationScrollControllerRef.current.reset();
     setShowScrollToBottom(!targetScroll.atBottom);
@@ -3904,6 +3952,7 @@ export default function App() {
       currentRequest.current = undefined;
       setRunningId(undefined);
       contextByMessageRef.current.clear();
+    designByMessageRef.current.clear();
       pendingScrollRestoreRef.current = undefined;
       autoFollowRef.current = true;
       setShowScrollToBottom(false);
@@ -3967,6 +4016,7 @@ export default function App() {
       setRunningId(undefined);
       requestStartedRef.current = undefined;
       contextByMessageRef.current.clear();
+    designByMessageRef.current.clear();
       autoFollowRef.current = true;
       setShowScrollToBottom(false);
       flashContextToast("已从当前会话创建分支");
@@ -4605,21 +4655,31 @@ export default function App() {
     flashContextToast("已恢复所选摘要版本");
   }
 
-  function queueMessage() {
+  function queueMessage(options?: { silent?: boolean }): string | undefined {
     const text = readComposerValue().trim();
-    if ((!text && !attachedImages.length) || !activeTask || summaryBusy) return;
+    if ((!text && !attachedImages.length && !designElements.length) || !activeTask || summaryBusy)
+      return undefined;
     const user: QueuedChatMessage = {
       id: uid(),
       role: "user",
-      content: text || "请分析这些图片",
+      content: text || (designElements.length ? "请根据选中的设计元素修改界面" : "请分析这些图片"),
       createdAt: Date.now(),
       images: attachedImages,
       contextAttachments: attachedFiles.length
         ? attachedFiles.map(({ name, size }) => ({ name, size }))
         : undefined,
+      designAttachments: designElements.length
+        ? designElements.map((item) => ({
+            id: item.id,
+            label: designElementChipLabel(item),
+            tagName: item.tagName,
+            cssSelector: item.cssSelector,
+          }))
+        : undefined,
       queued: true,
     };
     contextByMessageRef.current.set(user.id, attachedFiles);
+    designByMessageRef.current.set(user.id, designElements);
     setMessages((all) => [...all, user]);
     setTasks((all) =>
       all.map((task) =>
@@ -4636,11 +4696,34 @@ export default function App() {
     setInput("");
     setAttachedFiles([]);
     setAttachedImages([]);
+    setDesignElements([]);
     attachmentDraftsRef.current.delete(activeTask.id);
     autoFollowRef.current = true;
     scrollAfterSendRef.current = true;
     setShowScrollToBottom(false);
-    flashContextToast("消息已排队，将在当前回复完成后发送");
+    if (!options?.silent)
+      flashContextToast("消息已排队，将在当前回复完成后发送");
+    return user.id;
+  }
+
+  async function sendImmediately() {
+    if (!activeTask || summaryBusy) return;
+    const action = resolveComposerSubmitAction({
+      running: Boolean(runningId),
+      immediate: true,
+    });
+    if (action !== "send-immediate") return;
+    if (!runningId) {
+      void send();
+      return;
+    }
+    // Interrupt path: enqueue as next, stop the live turn, then let the
+    // existing auto-dequeue effect send one-at-a-time (avoids racing send()).
+    const queuedId = queueMessage({ silent: true });
+    if (!queuedId) return;
+    prioritizeQueuedMessage(queuedId);
+    flashContextToast("已中断当前回复，正在立即发送");
+    await cancel();
   }
 
   function removeQueuedMessage(messageId: string) {
@@ -4710,24 +4793,8 @@ export default function App() {
 
   function prioritizeQueuedMessage(messageId: string) {
     if (!activeTask) return;
-    const moveFirst = (all: ChatMessage[]) => {
-      const item = all.find((message) => message.id === messageId);
-      if (!item) return all;
-      return [
-        ...all.filter(
-          (message) =>
-            message.id !== messageId &&
-            !(message.role === "user" && (message as QueuedChatMessage).queued),
-        ),
-        item,
-        ...all.filter(
-          (message) =>
-            message.id !== messageId &&
-            message.role === "user" &&
-            (message as QueuedChatMessage).queued,
-        ),
-      ];
-    };
+    const moveFirst = (all: ChatMessage[]) =>
+      prioritizeQueuedInMessages(all, messageId);
     setMessages(moveFirst);
     setTasks((all) =>
       all.map((task) =>
@@ -4854,40 +4921,52 @@ export default function App() {
       }
     }
     const requestedCollaboration = requestTask.collaboration;
-    const executorTarget = requestedCollaboration
-      ? models.find(
-          (item) =>
-            `${item.provider.id}|${item.model.id}` ===
-            requestedCollaboration.executorModelSelection,
-        )
-      : undefined;
-    if (
-      requestedCollaboration &&
-      (!executorTarget ||
-        !executorTarget.provider.hasApiKey ||
-        requestedCollaboration.executorModelSelection === taskSelection)
-    ) {
-      setContextError("协作模式的执行模型不可用，请重新选择执行模型");
-      return;
-    }
-    const collaboration = executorTarget
-      ? {
-          mode: "planner-executor" as const,
+    let collaboration:
+      | {
+          mode: "planner-executor";
           executor: {
-            providerId: executorTarget.provider.id,
-            modelId: executorTarget.model.modelId,
-            displayName: executorTarget.model.displayName,
-            reasoningEffort: normalizeEffort(
-              requestedCollaboration?.executorReasoningEffort ?? "auto",
-              reasoningEffortsForModel(executorTarget.model),
-            ),
-            contextWindow: resolveModelContextWindow(
-              executorTarget.model.modelId,
-              executorTarget.model.contextWindow,
-            ),
-          },
+            providerId: string;
+            modelId: string;
+            displayName: string;
+            reasoningEffort: ReturnType<typeof normalizeEffort>;
+            contextWindow?: number;
+          };
         }
-      : undefined;
+      | { mode: "plan-confirm" }
+      | undefined;
+    if (requestedCollaboration?.mode === "plan-confirm") {
+      collaboration = { mode: "plan-confirm" };
+    } else if (requestedCollaboration?.mode === "planner-executor") {
+      const executorTarget = models.find(
+        (item) =>
+          `${item.provider.id}|${item.model.id}` ===
+          requestedCollaboration.executorModelSelection,
+      );
+      if (
+        !executorTarget ||
+        !executorTarget.provider.hasApiKey ||
+        requestedCollaboration.executorModelSelection === taskSelection
+      ) {
+        setContextError("协作模式的执行模型不可用，请重新选择执行模型");
+        return;
+      }
+      collaboration = {
+        mode: "planner-executor",
+        executor: {
+          providerId: executorTarget.provider.id,
+          modelId: executorTarget.model.modelId,
+          displayName: executorTarget.model.displayName,
+          reasoningEffort: normalizeEffort(
+            requestedCollaboration.executorReasoningEffort ?? "auto",
+            reasoningEffortsForModel(executorTarget.model),
+          ),
+          contextWindow: resolveModelContextWindow(
+            executorTarget.model.modelId,
+            executorTarget.model.contextWindow,
+          ),
+        },
+      };
+    }
     if (!queuedMessageId && !taskIsCurrent()) {
       setContextError("任务切换尚未完成，请重新发送");
       return;
@@ -4965,17 +5044,26 @@ export default function App() {
           createdAt: queuedMessage.createdAt,
           images: queuedMessage.images,
           contextAttachments: queuedMessage.contextAttachments,
+          designAttachments: queuedMessage.designAttachments,
         }
       : retrying && cleanMessages.at(-1)?.role === "user"
         ? (cleanMessages.at(-1) as ChatMessage)
         : {
             id: uid(),
             role: "user",
-            content: text || "请分析这些图片",
+            content: text || (designElements.length ? "请根据选中的设计元素修改界面" : "请分析这些图片"),
             createdAt: Date.now(),
             images: attachedImages,
             contextAttachments: attachedFiles.length
               ? attachedFiles.map(({ name, size }) => ({ name, size }))
+              : undefined,
+            designAttachments: designElements.length
+              ? designElements.map((item) => ({
+                  id: item.id,
+                  label: designElementChipLabel(item),
+                  tagName: item.tagName,
+                  cssSelector: item.cssSelector,
+                }))
               : undefined,
           };
     const nextMessages = queuedMessage
@@ -4993,8 +5081,10 @@ export default function App() {
     const requestFiles = queuedMessage
       ? (contextByMessageRef.current.get(user.id) ?? [])
       : attachedFiles;
-    if (!retrying && !queuedMessage)
+    if (!retrying && !queuedMessage) {
       contextByMessageRef.current.set(user.id, requestFiles);
+      designByMessageRef.current.set(user.id, designElements);
+    }
     const requestContextWindow = resolveModelContextWindow(
       target.model.modelId,
       target.model.contextWindow,
@@ -5158,19 +5248,22 @@ export default function App() {
     const history = requestMessages.map(({ id, role, content, images }) => {
       const files =
         role === "user" ? (contextByMessageRef.current.get(id) ?? []) : [];
+      const designs =
+        role === "user" ? (designByMessageRef.current.get(id) ?? []) : [];
       const fileContext = files
         .map(
           (file) =>
             `<context_file name="${file.name}">\n${file.content}\n</context_file>`,
         )
         .join("\n\n");
+      const designContext = serializeDesignElementsForAgent(designs);
       const recoveryNotice =
         resumingInterruptedRun && role === "user" && id === user.id
           ? "\n\n<interrupted_turn_recovery>上一轮被停止、暂停或中断。已有助手输出和持久化工具证据仍然有效。若当前要求是总结或给出结论，请直接基于已有结果回答，不要重新执行整轮检查；若要求继续，优先依据恢复检查点中的计划，从第一个失败或未完成步骤接着做。成功工具、文件修改、上传、启动和提交都不得重复；仅在确有必要时做最小的只读核验。</interrupted_turn_recovery>"
           : "";
       return {
         role,
-        content: `${fileContext ? `${content}\n\n${fileContext}` : content}${recoveryNotice}`,
+        content: `${[fileContext ? `${content}\n\n${fileContext}` : content, designContext].filter(Boolean).join("\n\n")}${recoveryNotice}`,
         images,
       };
     });
@@ -5209,6 +5302,7 @@ export default function App() {
         clearTaskDraft(taskId);
         setAttachedFiles([]);
         setAttachedImages([]);
+        setDesignElements([]);
         attachmentDraftsRef.current.delete(taskId);
       }
       if (contextNotice) flashContextToast(contextNotice);
@@ -5365,7 +5459,8 @@ export default function App() {
         localWorkspacePath: localWorkspacePath(requestTask),
         remoteWorkspace: requestTask.remoteWorkspace,
         contextWindow: requestContextWindow,
-        agentRole: collaboration ? "planner" : undefined,
+        agentRole:
+          collaboration?.mode === "planner-executor" ? "planner" : undefined,
         collaboration,
         recoveryContext: interruptedRecoveryContext,
         recoveryPlan: interruptedRecoveryPlan,
@@ -5787,6 +5882,143 @@ export default function App() {
     })();
   };
 
+  async function refreshEditCheckpoints(requestId?: string) {
+    if (!window.kcode?.chat.editCheckpoints) {
+      setEditCheckpoints([]);
+      return;
+    }
+    try {
+      const items = await window.kcode.chat.editCheckpoints(requestId);
+      setEditCheckpoints(items);
+    } catch {
+      setEditCheckpoints([]);
+    }
+  }
+
+  function activityTouchesPaths(activity: AgentActivity, paths: Set<string>) {
+    if (!paths.size) return false;
+    if (activity.path && paths.has(activity.path.replaceAll("\\", "/")))
+      return true;
+    return Boolean(
+      activity.fileChanges?.some((change) =>
+        paths.has(change.path.replaceAll("\\", "/")),
+      ),
+    );
+  }
+
+  function applyActivityReviewState(input: {
+    activityIds?: string[];
+    requestId?: string;
+    paths?: string[];
+    patch: Partial<AgentActivity>;
+  }) {
+    const idSet = new Set(input.activityIds ?? []);
+    const pathSet = new Set(
+      (input.paths ?? []).map((item) => item.replaceAll("\\", "/")),
+    );
+    if (!idSet.size && !pathSet.size) return;
+    const match = (activity: AgentActivity) => {
+      if (idSet.has(activity.id)) return true;
+      if (input.requestId && activity.requestId !== input.requestId)
+        return false;
+      return activityTouchesPaths(activity, pathSet);
+    };
+    setActivities((all) =>
+      all.map((activity) =>
+        match(activity) ? { ...activity, ...input.patch } : activity,
+      ),
+    );
+    setTasks((all) =>
+      all.map((task) =>
+        task.id !== activeTaskId
+          ? task
+          : {
+              ...task,
+              activities: task.activities.map((activity) =>
+                match(activity) ? { ...activity, ...input.patch } : activity,
+              ),
+            },
+      ),
+    );
+  }
+
+  async function keepFileChanges(paths?: string[]) {
+    const workspacePath = activeTask ? localWorkspacePath(activeTask) : undefined;
+    const requestId =
+      runningId ||
+      activeTask?.runningId ||
+      activities.at(-1)?.requestId;
+    if (!window.kcode?.chat.keepFiles || !workspacePath || !requestId) return;
+    const result = await window.kcode.chat.keepFiles(
+      workspacePath,
+      requestId,
+      paths,
+    );
+    if (result.success) {
+      const fallbackPaths =
+        result.paths.length > 0
+          ? result.paths
+          : paths?.length
+            ? paths
+            : summarizeStatusActivities(
+                latestRequestActivities(activities, requestId),
+              )
+                .fileChanges.filter((change) => change.pending && !change.kept)
+                .map((change) => change.path);
+      applyActivityReviewState({
+        activityIds: result.activityIds,
+        requestId,
+        paths: fallbackPaths,
+        patch: { kept: true, undoable: false },
+      });
+      await refreshEditCheckpoints(requestId);
+      void refreshGitState();
+    }
+  }
+
+  async function undoFileChanges(paths?: string[]) {
+    const workspacePath = activeTask ? localWorkspacePath(activeTask) : undefined;
+    const requestId =
+      runningId ||
+      activeTask?.runningId ||
+      activities.at(-1)?.requestId;
+    if (!window.kcode?.chat.undoFiles || !workspacePath || !requestId) return;
+    const result = await window.kcode.chat.undoFiles(
+      workspacePath,
+      requestId,
+      paths,
+    );
+    if (result.success) {
+      applyActivityReviewState({
+        activityIds: result.activityIds,
+        requestId,
+        paths: result.paths.length ? result.paths : paths,
+        patch: { undone: true, undoable: false, kept: false },
+      });
+      await refreshEditCheckpoints(requestId);
+      void refreshGitState(true);
+    }
+  }
+
+  async function restoreEditCheckpoint(checkpointId: string) {
+    if (!window.kcode?.chat.restoreEditCheckpoint) return;
+    const result = await window.kcode.chat.restoreEditCheckpoint(checkpointId);
+    if (result.success) {
+      const requestId =
+        editCheckpoints.find((item) => item.id === checkpointId)?.requestId ||
+        runningId ||
+        activities.at(-1)?.requestId;
+      applyActivityReviewState({
+        activityIds: result.activityIds,
+        requestId,
+        paths: result.paths,
+        patch: { undone: true, undoable: false, kept: false },
+      });
+      await refreshEditCheckpoints(requestId);
+      void refreshGitState(true);
+    }
+  }
+
   async function resumeCheckpoint(checkpoint: AgentCheckpoint) {
     if (!activeTask || runningId || summaryBusy) return;
     let task: TaskRecord;
@@ -5912,12 +6144,18 @@ export default function App() {
   );
   const collaborationExecutorTarget = useMemo(
     () =>
-      models.find(
-        (item) =>
-          `${item.provider.id}|${item.model.id}` ===
-          activeTask?.collaboration?.executorModelSelection,
-      ),
-    [activeTask?.collaboration?.executorModelSelection, models],
+      activeTask?.collaboration?.mode === "planner-executor"
+        ? models.find(
+            (item) =>
+              `${item.provider.id}|${item.model.id}` ===
+              activeTask.collaboration?.executorModelSelection,
+          )
+        : undefined,
+    [
+      activeTask?.collaboration?.mode,
+      activeTask?.collaboration?.executorModelSelection,
+      models,
+    ],
   );
   const selectedContextWindow = resolveModelContextWindow(
     selectedTarget?.model.modelId || "",
@@ -6061,6 +6299,12 @@ export default function App() {
       latestRequestActivities(activities, runningId ?? activeTask?.runningId),
     [activeTask?.runningId, activities, runningId],
   );
+  useEffect(() => {
+    const requestId =
+      runningId ?? activeTask?.runningId ?? statusActivities.at(-1)?.requestId;
+    void refreshEditCheckpoints(requestId);
+  }, [activeTask?.runningId, runningId, statusActivities]);
+
   function handleModelMenuKeyDown(event: React.KeyboardEvent) {
     if (!modelMenuOpen) {
       if (["ArrowDown", "ArrowUp", "Enter", " "].includes(event.key)) {
@@ -6107,9 +6351,17 @@ export default function App() {
     }
   }
 
+  const modifierKeyLabel = composerModifierKeyLabel();
   composerSubmitRef.current = () => {
-    if (runningId) queueMessage();
+    const action = resolveComposerSubmitAction({
+      running: Boolean(runningId),
+      immediate: false,
+    });
+    if (action === "queue") queueMessage();
     else void send();
+  };
+  composerSubmitImmediateRef.current = () => {
+    void sendImmediately();
   };
   composerPasteRef.current = (event) => {
     void pasteImages(event);
@@ -6482,6 +6734,40 @@ export default function App() {
                   ))}
                 </div>
               )}
+              {designElements.length > 0 && (
+                <div className="context-files design-element-files">
+                  {designElements.map((element) => (
+                    <div
+                      key={element.id}
+                      className="context-file design-element-chip"
+                      title={`${element.cssSelector}\n${element.xpath}`}
+                    >
+                      <span className="file-icon">
+                        <Crosshair size={14} />
+                      </span>
+                      <span>
+                        <strong>{designElementChipLabel(element)}</strong>
+                        <small>
+                          {element.pageTitle || element.pageUrl || "设计元素"}
+                          {element.textSnippet
+                            ? ` · ${element.textSnippet.slice(0, 24)}`
+                            : ""}
+                        </small>
+                      </span>
+                      <button
+                        title={`移除 ${designElementChipLabel(element)}`}
+                        onClick={() =>
+                          setDesignElements((items) =>
+                            items.filter((item) => item.id !== element.id),
+                          )
+                        }
+                      >
+                        <X size={13} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
               {contextError && (
                 <div className="context-error">
                   <CircleAlert size={13} />
@@ -6505,6 +6791,12 @@ export default function App() {
                     </span>
                     <small>{queuedMessages.length} 条</small>
                   </header>
+                  <p className="queued-message-hint">
+                    当前回复结束后按顺序自动发送；可撤回。
+                    {runningId
+                      ? ` ${modifierKeyLabel}+Enter 可中断并立即发送输入框内容。`
+                      : ""}
+                  </p>
                   {queuedMessages.map((message, index) => (
                     <div
                       className={`queued-message-row${editingQueuedMessageId === message.id ? " editing" : ""}`}
@@ -6597,12 +6889,15 @@ export default function App() {
                 onBlur={persistTaskDrafts}
                 onPaste={handleComposerPaste}
                 onSubmit={handleComposerSubmit}
+                onSubmitImmediate={handleComposerSubmitImmediate}
                 placeholder={
                   summaryBusy
                     ? "正在压缩上下文，完成后可继续发送"
-                    : models.length
-                      ? "描述一个任务，Enter 发送，Shift + Enter 换行"
-                      : "请先在设置中连接模型"
+                    : !models.length
+                      ? "请先在设置中连接模型"
+                      : runningId
+                        ? `Enter 加入队列 · ${modifierKeyLabel}+Enter 中断并立即发送`
+                        : "描述一个任务，Enter 发送，Shift + Enter 换行"
                 }
               />
               <div className="composer-bar">
@@ -6804,7 +7099,7 @@ export default function App() {
                           efforts.length === 1
                         }
                         title={
-                          activeTask?.collaboration
+                          activeTask?.collaboration?.mode === "planner-executor"
                             ? "规划模型推理强度"
                             : "推理强度"
                         }
@@ -6812,7 +7107,7 @@ export default function App() {
                       >
                       <BrainCircuit size={14} />
                       <span>
-                        {activeTask?.collaboration
+                        {activeTask?.collaboration?.mode === "planner-executor"
                           ? `规划 · ${effortLabels[reasoningEffort]}`
                           : effortLabels[reasoningEffort]}
                       </span>
@@ -6823,13 +7118,13 @@ export default function App() {
                         className="effort-menu"
                         role="menu"
                         aria-label={
-                          activeTask?.collaboration
+                          activeTask?.collaboration?.mode === "planner-executor"
                             ? "规划模型推理强度"
                             : "推理强度"
                         }
                       >
                         <header>
-                          {activeTask?.collaboration
+                          {activeTask?.collaboration?.mode === "planner-executor"
                             ? "规划模型推理强度"
                             : "推理强度"}
                         </header>
@@ -6885,7 +7180,7 @@ export default function App() {
                       summaryBusy
                         ? "正在压缩上下文"
                         : runningId
-                          ? "加入发送队列"
+                          ? `加入发送队列（${modifierKeyLabel}+Enter 立即发送）`
                           : "发送"
                     }
                   >
@@ -6909,6 +7204,10 @@ export default function App() {
             runningId={runningId}
             summaryBusy={summaryBusy}
             resumeCheckpoint={resumeCheckpoint}
+            editCheckpoints={editCheckpoints}
+            keepFileChanges={keepFileChanges}
+            undoFileChanges={undoFileChanges}
+            restoreEditCheckpoint={restoreEditCheckpoint}
             gitRefreshing={gitRefreshing}
             refreshGitState={refreshGitState}
             gitState={gitState}
@@ -6929,6 +7228,8 @@ export default function App() {
             restoreSummarySnapshot={restoreSummarySnapshot}
             rebuildActiveSummary={rebuildActiveSummary}
             restoreFullContext={restoreFullContext}
+            overviewTasks={tasks}
+            onFocusOverviewSession={onSwitchTask}
           />
         )}
         <BrowserPanel
