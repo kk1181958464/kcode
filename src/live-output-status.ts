@@ -92,6 +92,22 @@ function toolGapLabel(activity: AgentActivity) {
   }
 }
 
+
+/** Shorten stream timeout / transport auto-continue progress for the assistant tail. */
+export function formatAutoContinueStatusLabel(message: string): string | undefined {
+  const value = message.trim();
+  if (!value || !/自动继续/.test(value)) return undefined;
+  const count = value.match(/（(\d+\/\d+)）/)?.[1];
+  const suffix = count ? `（${count}）…` : "…";
+  if (/单轮安全边界|持续思考已达/.test(value)) {
+    return `单轮超时，自动继续${suffix}`;
+  }
+  if (/上游响应流中断|响应流中断|上游.*中断/.test(value)) {
+    return `上游中断，自动继续${suffix}`;
+  }
+  return count ? `自动继续${suffix}` : value;
+}
+
 export function deriveLiveGapStatus(
   activities: readonly AgentActivity[] = [],
   progressText = "",
@@ -103,7 +119,13 @@ export function deriveLiveGapStatus(
     return { kind, label: toolGapLabel(active), source: "tool" };
   }
   if (progress) {
-    return { kind, label: progress, source: "progress" };
+    const autoContinueLabel = formatAutoContinueStatusLabel(progress);
+    return {
+      // Keep auto-continue wording as the sole status; skip quiet-chip collapse.
+      kind: autoContinueLabel ? undefined : kind,
+      label: autoContinueLabel ?? progress,
+      source: "progress",
+    };
   }
   const last = activities.at(-1);
   if (last?.status === "failed") {

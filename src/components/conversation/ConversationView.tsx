@@ -1598,11 +1598,17 @@ function AssistantTailState({
   }, [requestId]);
   const gap = deriveLiveGapStatus(activities, progressText);
   if (!reasoningNode && !progressNode && !gap) return null;
+  // When progress itself is the auto-continue hint, prefer the mapped gap label
+  // and skip the raw progress leaf so the explicit wording is not buried.
+  const preferProgressGap =
+    gap?.source === "progress" && /自动继续/.test(progressText);
   return (
     <div className="assistant-tail-state" aria-live="polite">
       <BrainCircuit size={12} />
       <span className="assistant-tail-copy">
-        {requestId ? <QuietStatusChip requestId={requestId} /> : null}
+        {requestId && !preferProgressGap ? (
+          <QuietStatusChip requestId={requestId} />
+        ) : null}
         {!requestId && gap?.kind ? (
           <span className={`quiet-status-chip is-${gap.kind}`} data-kind={gap.kind}>
             {quietStatusLabel(gap.kind)}
@@ -1612,7 +1618,7 @@ function AssistantTailState({
           <span className="assistant-tail-gap">{gap.label}</span>
         ) : null}
         {reasoningNode}
-        {progressNode}
+        {preferProgressGap ? null : progressNode}
         {!gap?.label && (
           <span className="assistant-tail-fallback">正在继续执行…</span>
         )}

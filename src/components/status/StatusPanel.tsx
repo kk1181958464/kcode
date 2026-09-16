@@ -15,7 +15,6 @@ import {
   SquareSplitVertical,
   Terminal,
   TextWrap,
-  Workflow,
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -24,10 +23,6 @@ import { CONTEXT_AUTO_COMPACT_RATIO } from "../../context";
 import { extractGitFileDiff } from "../../git-diff";
 import { normalizeActivity } from "../../activity-view-model";
 import { activityTarget, formatDuration, workingPhase } from "../../lib/format";
-import {
-  normalizeEffort,
-  reasoningEffortsForModel,
-} from "../../lib/model-utils";
 import type { TaskRecord } from "../../models";
 import { localWorkspacePath } from "../../task-workspace";
 import {
@@ -154,9 +149,6 @@ export function StatusPanel({
   runStatus,
   activities,
   selectedTarget,
-  executorTarget,
-  effortLabels,
-  reasoningEffort,
   checkpoints,
   activeTask,
   runningId,
@@ -212,10 +204,6 @@ export function StatusPanel({
     [activities],
   );
   const fileChanges = activitySummary.fileChanges;
-  const executorReasoningEffort = normalizeEffort(
-    activeTask?.collaboration?.executorReasoningEffort ?? "auto",
-    reasoningEffortsForModel(executorTarget?.model),
-  );
   const queuedCount = messages.filter((message) =>
     Boolean((message as ChatMessage & { queued?: boolean }).queued),
   ).length;
@@ -634,29 +622,6 @@ export function StatusPanel({
                 </button>
               )}
             </section>
-          )}
-          {selectedTarget && (
-            <footer
-              className="status-model-line"
-              title={
-                executorTarget
-                  ? `规划：${selectedTarget.provider.name} / ${selectedTarget.model.modelId}（${effortLabels[reasoningEffort]}）· 执行：${executorTarget.provider.name} / ${executorTarget.model.modelId}（${effortLabels[executorReasoningEffort]}）`
-                  : `${selectedTarget.provider.name} / ${selectedTarget.model.modelId}`
-              }
-            >
-              {executorTarget ? <Workflow size={13} /> : <BrainCircuit size={13} />}
-              <span>
-                <strong>
-                  {selectedTarget.model.displayName}
-                  {executorTarget ? ` → ${executorTarget.model.displayName}` : ""}
-                </strong>
-                <small>
-                  {executorTarget
-                    ? `规划 ${effortLabels[reasoningEffort]} / 执行 ${effortLabels[executorReasoningEffort]}`
-                    : effortLabels[reasoningEffort]}
-                </small>
-              </span>
-            </footer>
           )}
           {!showUsage && !selectedTarget && (
             <p className="work-panel-empty is-inline">还没有上下文用量。</p>

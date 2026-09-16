@@ -16,6 +16,9 @@ const KIND_LABEL: Record<QuietStatusKind, string> = {
 export function classifyQuietStatus(message: string): QuietStatusKind | undefined {
   const value = message.trim();
   if (!value) return undefined;
+  // Auto-continue progress must keep its own wording in the assistant tail.
+  // Do not collapse it into a generic quiet chip like "等待模型".
+  if (/自动继续/.test(value)) return undefined;
   if (/子 Agent|子任务|wait_agent|未完成的子/.test(value))
     return "waiting-subagents";
   if (/整理上下文|压缩上下文|交接摘要|context_compaction|接近预算/.test(value))

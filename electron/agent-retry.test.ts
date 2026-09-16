@@ -32,6 +32,12 @@ test("treats generic upstream proxy failures as retryable", () => {
     ),
     true,
   );
+  assert.equal(
+    isRetryableStreamError(
+      new Error("Upstream response stream was interrupted"),
+    ),
+    true,
+  );
 });
 
 test("treats Chromium net:: mid-stream drops as retryable", () => {

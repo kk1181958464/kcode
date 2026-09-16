@@ -22,6 +22,7 @@ import {
   emptyTurnRecovery,
   streamTimeoutRecovery,
   STREAM_TIMEOUT_RECOVERY_CONTENT,
+  STREAM_TRANSPORT_RECOVERY_CONTENT,
   finalizationHistoryContent,
   finalizationProgressMessage,
   finalizationRoleLabel,
@@ -704,6 +705,66 @@ test("streamTimeoutRecovery auto-continues meaningful mid-task timeouts up to th
     { action: "pause" },
   );
   assert.match(STREAM_TIMEOUT_RECOVERY_CONTENT, /单轮安全边界/);
+});
+
+test("streamTimeoutRecovery auto-continues transport interrupts when tools already succeeded", () => {
+  assert.deepEqual(
+    streamTimeoutRecovery({
+      timeoutKind: "transport",
+      hasRecoverableToolEvidence: true,
+      unfinishedWork: false,
+      streamTimeoutRecoveries: 0,
+    }),
+    { action: "auto-continue" },
+  );
+  assert.deepEqual(
+    streamTimeoutRecovery({
+      timeoutKind: "transport",
+      hasRecoverableToolEvidence: true,
+      unfinishedWork: true,
+      streamTimeoutRecoveries: 2,
+    }),
+    { action: "auto-continue" },
+  );
+  assert.deepEqual(
+    streamTimeoutRecovery({
+      timeoutKind: "transport",
+      hasRecoverableToolEvidence: true,
+      unfinishedWork: false,
+      streamTimeoutRecoveries: 3,
+    }),
+    { action: "pause" },
+  );
+  assert.deepEqual(
+    streamTimeoutRecovery({
+      timeoutKind: "transport",
+      hasRecoverableToolEvidence: false,
+      unfinishedWork: true,
+      streamTimeoutRecoveries: 0,
+    }),
+    { action: "pause" },
+  );
+  assert.deepEqual(
+    streamTimeoutRecovery({
+      timeoutKind: "transport",
+      finalizationMode: "evidence-complete",
+      hasRecoverableToolEvidence: true,
+      unfinishedWork: true,
+      streamTimeoutRecoveries: 0,
+    }),
+    { action: "pause" },
+  );
+  assert.deepEqual(
+    streamTimeoutRecovery({
+      timeoutKind: "absolute",
+      hasRecoverableToolEvidence: true,
+      unfinishedWork: true,
+      streamTimeoutRecoveries: 0,
+    }),
+    { action: "pause" },
+  );
+  assert.match(STREAM_TRANSPORT_RECOVERY_CONTENT, /上游响应流中断/);
+  assert.match(STREAM_TRANSPORT_RECOVERY_CONTENT, /不要重做已确认成功的工具/);
 });
 
 

@@ -17296,3 +17296,103 @@ button.execution-summary-tool.inspect-group {
   animation: none !important;
   position: static !important;
 }
+
+/* ========================================================================== */
+/* status-tail-breathe-v1 — no bottom L→R rail; breathe on status copy row    */
+/* User: remove the live-message bottom sweep light; put left→right breathe   */
+/* on the “正在根据结果…” / assistant-tail status line instead.               */
+/* Overrides motion-calm (killed gap shimmer) + running-bottom-rail-v1/v2.    */
+/* ========================================================================== */
+
+.message.assistant.is-running .message-content::before,
+.message.assistant.is-running .message-content::after {
+  content: none !important;
+  display: none !important;
+  animation: none !important;
+  box-shadow: none !important;
+  background: none !important;
+  opacity: 0 !important;
+  width: 0 !important;
+  height: 0 !important;
+  pointer-events: none !important;
+}
+
+@keyframes status-tail-breathe-v1 {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -20% 0;
+  }
+}
+
+.message.assistant.is-running .assistant-tail-gap,
+.assistant-tail-fallback,
+.assistant-tail-state .streaming-progress-leaf:not([hidden]) {
+  animation: status-tail-breathe-v1 1.8s linear infinite !important;
+  will-change: background-position;
+  filter: none !important;
+  transform: none !important;
+}
+
+@supports ((-webkit-background-clip: text) or (background-clip: text)) {
+  .message.assistant.is-running .assistant-tail-gap,
+  .assistant-tail-fallback,
+  .assistant-tail-state .streaming-progress-leaf:not([hidden]) {
+    background: linear-gradient(
+      100deg,
+      var(--muted) 0%,
+      var(--muted) 28%,
+      color-mix(in srgb, var(--ink) 88%, var(--accent)) 46%,
+      var(--accent) 52%,
+      color-mix(in srgb, var(--ink) 88%, var(--accent)) 58%,
+      var(--muted) 72%,
+      var(--muted) 100%
+    ) !important;
+    background-size: 240% 100% !important;
+    background-position: 100% 0 !important;
+    background-image: linear-gradient(
+      100deg,
+      var(--muted) 0%,
+      var(--muted) 28%,
+      color-mix(in srgb, var(--ink) 88%, var(--accent)) 46%,
+      var(--accent) 52%,
+      color-mix(in srgb, var(--ink) 88%, var(--accent)) 58%,
+      var(--muted) 72%,
+      var(--muted) 100%
+    ) !important;
+    -webkit-background-clip: text !important;
+    background-clip: text !important;
+    -webkit-text-fill-color: transparent !important;
+    color: transparent !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .message.assistant.is-running .assistant-tail-gap,
+  .assistant-tail-fallback,
+  .assistant-tail-state .streaming-progress-leaf:not([hidden]) {
+    animation: none !important;
+    background: none !important;
+    background-image: none !important;
+    color: var(--muted) !important;
+    -webkit-text-fill-color: currentColor !important;
+  }
+}
+
+
+
+/* ===== status-model-line-hide-v1 (add-only) =====
+   Right StatusPanel no longer shows the current-model footer.
+   Hide any leftover .status-model-line and reclaim the margin-top:auto gap. */
+.status-model-line {
+  display: none !important;
+}
+.status-usage-section.is-compact .status-model-line,
+.work-panel.is-unified .status-model-line {
+  display: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+}
+

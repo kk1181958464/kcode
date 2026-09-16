@@ -140,6 +140,7 @@ import {
   streamTimeoutRecovery,
   STREAM_TIMEOUT_RECOVERY_LIMIT,
   STREAM_TIMEOUT_RECOVERY_CONTENT,
+  STREAM_TRANSPORT_RECOVERY_CONTENT,
 } from "./agent-round-policy";
 import type {
   PendingUserInput,
@@ -773,39 +774,45 @@ export async function* runAgent(
           // disconnect with no tool evidence yet) must pause instead of
           // failing the task. Auth and invalid-request errors still throw.
           // Meaningful/reasoning-only timeouts with prior tool progress and
-          // unfinished structured work get one outer auto-continue instead of
-          // an immediate scary incomplete pause; absolute wall-clock still pauses.
+          // unfinished structured work, and transport stream interrupts after
+          // tools already succeeded, share an outer auto-continue budget;
+          // absolute wall-clock still pauses immediately.
           if (
             !signal.aborted &&
             (isRetryableStreamError(error) || isModelTurnTimeout(error))
           ) {
-            const timeoutKind = modelTurnTimeoutKind(error);
+            const isTimeout = isModelTurnTimeout(error);
+            const timeoutKind = isTimeout
+              ? modelTurnTimeoutKind(error)
+              : ("transport" as const);
             const unfinishedWork =
               actionablePlanPending ||
               !evidenceComplete ||
               plannerExecutionPending ||
               roundStartSnapshot.missingActionCodingOperations.length > 0;
-            const timeoutRecovery = isModelTurnTimeout(error)
-              ? streamTimeoutRecovery({
-                  timeoutKind,
-                  finalizationMode,
-                  hasRecoverableToolEvidence:
-                    hasRecoverableToolEvidence(evidenceHistory),
-                  unfinishedWork,
-                  streamTimeoutRecoveries: run.budgets.streamTimeoutRecoveries,
-                })
-              : { action: "pause" as const };
+            const timeoutRecovery = streamTimeoutRecovery({
+              timeoutKind,
+              finalizationMode,
+              hasRecoverableToolEvidence:
+                hasRecoverableToolEvidence(evidenceHistory),
+              unfinishedWork,
+              streamTimeoutRecoveries: run.budgets.streamTimeoutRecoveries,
+            });
             if (timeoutRecovery.action === "auto-continue") {
               run.budgets.streamTimeoutRecoveries += 1;
+              const recoveryCount = run.budgets.streamTimeoutRecoveries;
               yield {
                 type: "progress",
-                message:
-                  `模型本轮持续思考已达单轮安全边界，正在基于已有工具结果自动继续（${run.budgets.streamTimeoutRecoveries}/${STREAM_TIMEOUT_RECOVERY_LIMIT}）…`,
+                message: isTimeout
+                  ? `模型本轮持续思考已达单轮安全边界，正在基于已有工具结果自动继续（${recoveryCount}/${STREAM_TIMEOUT_RECOVERY_LIMIT}）…`
+                  : `上游响应流中断，正在基于已有工具结果自动继续（${recoveryCount}/${STREAM_TIMEOUT_RECOVERY_LIMIT}）…`,
               };
               history.push({
                 kind: "message",
                 role: "user",
-                content: STREAM_TIMEOUT_RECOVERY_CONTENT,
+                content: isTimeout
+                  ? STREAM_TIMEOUT_RECOVERY_CONTENT
+                  : STREAM_TRANSPORT_RECOVERY_CONTENT,
               });
               // Break the image-retry loop and continue the outer run loop so
               // round snapshots/budgets refresh like emptyTurnRecovery.
