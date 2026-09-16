@@ -1120,7 +1120,7 @@ test("runAgent still propagates a non-retryable model-stream failure", async () 
   );
 });
 
-test("runAgent pauses and preserves completed tool evidence after a late gateway failure", async () => {
+test("runAgent auto-continues then pauses after repeated late gateway failures with tool evidence", async () => {
   const request = await makeRequest();
   let streamCalls = 0;
   const deps: RunAgentDeps = {
@@ -1161,10 +1161,19 @@ test("runAgent pauses and preserves completed tool evidence after a late gateway
     (event): event is Extract<AgentEvent, { type: "done" }> =>
       event.type === "done",
   );
-  assert.equal(streamCalls, 2);
+  // 1 successful tool round + (STREAM_TIMEOUT_RECOVERY_LIMIT + 1) failing rounds
+  // before the shared transport/timeout budget forces a pause.
+  assert.equal(streamCalls, 5);
   assert.equal(
     events.some((event) => event.type === "error"),
     false,
+  );
+  assert.ok(
+    events.some(
+      (event) =>
+        event.type === "progress" &&
+        String((event as { message?: string }).message ?? "").includes("自动继续"),
+    ),
   );
   assert.equal(done?.outcome, "paused");
   assert.equal(done?.result?.kind, "incomplete");

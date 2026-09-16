@@ -454,7 +454,9 @@ test("right rail uses only the current request changes instead of Git totals", (
   assert.doesNotMatch(markup, /aria-label="本轮差异"|git-diff-layer|查看文件更新/);
   assert.doesNotMatch(markup, /diff --git a\/src\/current\.ts/);
   assert.doesNotMatch(markup, /工作区总计|src\/old\.ts|\+99|-55/);
-  assert.match(markup, /规划 中 \/ 执行 中/);
+  // Current-model footer was removed from the right StatusPanel.
+  assert.doesNotMatch(markup, /status-model-line|规划 中 \/ 执行 中|GPT-5\.5/);
+  assert.doesNotMatch(markup, />GPT-5</);
 });
 
 test("right rail keeps recovery checkpoints on the current-run pane", () => {
