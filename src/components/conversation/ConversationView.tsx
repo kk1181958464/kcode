@@ -1527,46 +1527,6 @@ export const ExecutionSummary = memo(
   },
 );
 
-function AgentWorkingState({
-  activities,
-  hasTrailingText,
-  reasoning,
-  reasoningNode,
-}: {
-  activities: AgentActivity[];
-  hasTrailingText: boolean;
-  reasoning?: string;
-  reasoningNode?: React.ReactNode;
-}) {
-  const visible = activities.length === 0 && !hasTrailingText;
-  // Once a tool exists, the execution summary owns the whole run, including
-  // planning gaps between tools. A second indicator below it would duplicate the
-  // completed step and make the request look like two independent processes.
-  // Pure Q&A also drops this planning state as soon as answer text appears.
-  if (!visible) return null;
-  return (
-    <div className="agent-working">
-      <div className="agent-working-head" aria-live="polite">
-        <span className="agent-working-mark">
-          <BrainCircuit size={13} />
-        </span>
-        <span className="agent-working-copy">
-          <strong>正在规划下一步</strong>
-        </span>
-      </div>
-      {(reasoning || reasoningNode) && (
-        <div
-          className="agent-working-reasoning"
-          aria-live="polite"
-          data-has-static={reasoning ? "true" : "false"}
-        >
-          {reasoning}
-          {reasoningNode}
-        </div>
-      )}
-    </div>
-  );
-}
 
 function AssistantTailState({
   reasoningNode,
@@ -1721,7 +1681,6 @@ const AssistantTimeline = memo(function AssistantTimeline({
   requestId,
   workspacePath,
   onActivityChange,
-  reasoning,
   streamingTail,
   streamingReasoning,
   streamingProgress,
@@ -1809,12 +1768,12 @@ const AssistantTimeline = memo(function AssistantTimeline({
       <>
         {renderText(message.content)}
         {streamingTail}
-        {running && (
-          <AgentWorkingState
+        {shouldShowAssistantTailState(running) && (
+          <AssistantTailState
+            requestId={requestId}
             activities={activities}
-            hasTrailingText={Boolean(message.content)}
-            reasoning={reasoning}
             reasoningNode={streamingReasoning}
+            progressNode={streamingProgress}
           />
         )}
       </>

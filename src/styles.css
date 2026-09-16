@@ -17396,3 +17396,89 @@ button.execution-summary-tool.inspect-group {
   border: 0 !important;
 }
 
+
+/* ========================================================================== */
+/* status-tail-breathe-v2 — real L→R breathe via ::after sweep (not bg-pos)  */
+/* v1 froze background-position with !important, so keyframes could not run, */
+/* and a wide gradient painted empty flex space as vertical stripe bands.    */
+/* Sweep only the short status gap; leave long progress/reasoning plain.     */
+/* ========================================================================== */
+
+/* Flatten broken text-fill shimmer on long progress / fallback rows. */
+.assistant-tail-fallback,
+.assistant-tail-state .streaming-progress-leaf:not([hidden]) {
+  animation: none !important;
+  will-change: auto !important;
+  background: none !important;
+  background-image: none !important;
+  background-size: auto !important;
+  background-position: 0 0 !important;
+  background-clip: border-box !important;
+  -webkit-background-clip: border-box !important;
+  -webkit-text-fill-color: currentColor !important;
+  color: var(--muted) !important;
+  filter: none !important;
+  transform: none !important;
+}
+
+/* Reset the short status to solid muted text (cancel v1 gradient fill). */
+.message.assistant.is-running .assistant-tail-copy > .assistant-tail-gap {
+  display: inline-block !important;
+  width: fit-content !important;
+  max-width: 100% !important;
+  position: relative !important;
+  overflow: hidden !important;
+  vertical-align: baseline;
+  animation: none !important;
+  will-change: auto !important;
+  background: none !important;
+  background-image: none !important;
+  background-size: auto !important;
+  background-position: 0 0 !important;
+  background-clip: border-box !important;
+  -webkit-background-clip: border-box !important;
+  -webkit-text-fill-color: var(--muted) !important;
+  color: var(--muted) !important;
+  filter: none !important;
+  transform: none !important;
+}
+
+@keyframes status-tail-sweep-v2 {
+  from {
+    transform: translateX(-120%);
+  }
+  to {
+    transform: translateX(220%);
+  }
+}
+
+/* Moving highlight across the status glyphs (independent of bg-position). */
+.message.assistant.is-running .assistant-tail-copy > .assistant-tail-gap::after {
+  content: "" !important;
+  position: absolute !important;
+  top: -10% !important;
+  bottom: -10% !important;
+  left: 0 !important;
+  width: 42% !important;
+  pointer-events: none !important;
+  z-index: 1 !important;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--accent) 8%, transparent) 28%,
+    color-mix(in srgb, var(--accent) 55%, white 14%) 50%,
+    color-mix(in srgb, var(--accent) 8%, transparent) 72%,
+    transparent 100%
+  ) !important;
+  transform: translateX(-120%);
+  animation: status-tail-sweep-v2 1.55s linear infinite !important;
+  mix-blend-mode: plus-lighter;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .message.assistant.is-running .assistant-tail-copy > .assistant-tail-gap::after {
+    content: none !important;
+    display: none !important;
+    animation: none !important;
+  }
+}
