@@ -5,7 +5,7 @@ import {
   type Server,
   type Socket,
 } from "node:net";
-import { MongoClient, type Document, type MongoClientOptions } from "mongodb";
+import type { MongoClient, Document, MongoClientOptions } from "mongodb";
 import { openSshForward } from "./ssh";
 
 const MAX_RESULT_DOCUMENTS = 1_000;
@@ -258,7 +258,8 @@ export async function connectMongo(
       authSource: input.authSource?.trim() || undefined,
       directConnection: viaSsh ? true : undefined,
     };
-    client = new MongoClient(uri, options);
+    const { MongoClient: MongoClientCtor } = await import("mongodb");
+    client = new MongoClientCtor(uri, options);
     const abort = () => void client?.close(true);
     signal.addEventListener("abort", abort, { once: true });
     try {

@@ -9,7 +9,11 @@ import {
   successfulCodingEvidence,
   type CodingVerificationHistoryItem,
 } from "./coding-operation-verification";
-import { requiredEvidenceHook } from "./stop-hooks";
+import {
+  REQUIRED_EVIDENCE_FORCE_RETRY_LIMIT,
+  REQUIRED_EVIDENCE_SOFT_RETRY_LIMIT,
+  requiredEvidenceHook,
+} from "./stop-hooks";
 
 const emptyEvidence = {
   toolCalls: 0,
@@ -160,7 +164,7 @@ test("completion evidence is derived from successful structured tool results", (
   });
 });
 
-test("required evidence hook retries once without inspecting assistant text", () => {
+test("required evidence hook keeps forcing tools until the hard retry ceiling", () => {
   const context = {
     requestedOperations: ["coding:modify"],
     observedOperations: [],
@@ -168,12 +172,31 @@ test("required evidence hook retries once without inspecting assistant text", ()
     waitingForUser: false,
   };
 
-  assert.equal(
-    requiredEvidenceHook.evaluate({ ...context, retryCount: 0 }).action,
-    "continue",
+  for (let retryCount = 0; retryCount < REQUIRED_EVIDENCE_FORCE_RETRY_LIMIT; retryCount++) {
+    const result = requiredEvidenceHook.evaluate({ ...context, retryCount });
+    assert.equal(result.action, "continue", `retry ${retryCount} should still demand evidence`);
+    if (result.action === "continue") {
+      assert.equal(result.forceToolCall, true);
+      assert.match(
+        result.inject,
+        retryCount >= REQUIRED_EVIDENCE_SOFT_RETRY_LIMIT ? /禁止只输出总结/ : /不要仅用文字宣称/,
+      );
+      assert.match(result.inject, /完成审计/);
+    }
+  }
+  assert.deepEqual(
+    requiredEvidenceHook.evaluate({
+      ...context,
+      retryCount: REQUIRED_EVIDENCE_FORCE_RETRY_LIMIT,
+    }),
+    { action: "allow" },
   );
   assert.deepEqual(
-    requiredEvidenceHook.evaluate({ ...context, retryCount: 1 }),
+    requiredEvidenceHook.evaluate({
+      ...context,
+      retryCount: 0,
+      allowIncomplete: true,
+    }),
     { action: "allow" },
   );
   assert.deepEqual(
@@ -181,6 +204,14 @@ test("required evidence hook retries once without inspecting assistant text", ()
       ...context,
       retryCount: 0,
       missingOperations: [],
+    }),
+    { action: "allow" },
+  );
+  assert.deepEqual(
+    requiredEvidenceHook.evaluate({
+      ...context,
+      retryCount: 0,
+      waitingForUser: true,
     }),
     { action: "allow" },
   );

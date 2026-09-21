@@ -15,6 +15,7 @@ import {
   missingVerifiedCodingOperations,
   shouldRequireCodingTool,
   structuredToolEvidenceSummary,
+  clearFailedBaselineCodingEvidence,
   successfulCodingEvidence,
   unavailableCodingOperations,
   type CodingOperation,
@@ -644,4 +645,20 @@ test("requires tool evidence only for side effects", () => {
     missingRequestedCodingOperations(requested, new Set(["inspect"])),
     ["modify"],
   );
+});
+
+test("recovered baseline evidence survives a never-executed re-attempt and only drops on failed unproven ops", () => {
+  const baseline = new Set(["modify", "execute"]);
+  // Never-executed path: no failed ops → baseline untouched.
+  clearFailedBaselineCodingEvidence(baseline, [], new Set());
+  assert.deepEqual([...baseline].sort(), ["execute", "modify"]);
+
+  // Failed modify without proof this run drops only modify.
+  clearFailedBaselineCodingEvidence(baseline, ["modify"], new Set(["execute"]));
+  assert.deepEqual([...baseline].sort(), ["execute"]);
+
+  // Proven this run keeps the op even if a failed call listed it.
+  baseline.add("modify");
+  clearFailedBaselineCodingEvidence(baseline, ["modify"], new Set(["modify"]));
+  assert.ok(baseline.has("modify"));
 });

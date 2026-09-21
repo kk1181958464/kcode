@@ -8,8 +8,6 @@ import {
   X,
 } from "lucide-react";
 import type { AppUpdateState } from "../../types";
-import { LinkifiedText } from "../common/LinkifiedText";
-import { openExternalUrl } from "../common/external";
 
 const updateBytes = (value = 0) => {
   if (!Number.isFinite(value) || value <= 0) return "0 B";

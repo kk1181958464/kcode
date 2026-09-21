@@ -75,7 +75,6 @@ export function agentFinalizationMode({
   evidenceComplete: boolean;
   hasPendingInstructions?: boolean;
 }): AgentFinalizationMode | undefined {
-  if (hasPendingInstructions) return undefined;
   const limits =
     agentRole === "executor"
       ? {
@@ -104,8 +103,14 @@ export function agentFinalizationMode({
               softMs: ROOT_SOFT_DURATION_MS,
               hardMs: ROOT_HARD_DURATION_MS,
             };
+  // The hard limit is an absolute backstop and is evaluated FIRST. Pending
+  // parent instructions or uncollected subagent work may defer a graceful
+  // finish, but they must never disable the guardrail: the external-wait stall
+  // counter resets on any child progress, so a chatty-but-unproductive subagent
+  // could otherwise keep a parent run alive indefinitely.
   if (completedRounds >= limits.hardRounds || elapsedMs >= limits.hardMs)
     return "limit-reached";
+  if (hasPendingInstructions) return undefined;
   if (
     evidenceComplete &&
     (completedRounds >= limits.softRounds || elapsedMs >= limits.softMs)

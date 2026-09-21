@@ -14,6 +14,8 @@ export type RunBudgets = {
   autoContinues: number;
   emptyTurns: number;
   reasoningOnlyTurns: number;
+  /** Consecutive empty/reasoning/no-tool rounds (Codex-style fuse). */
+  unproductiveTurns: number;
   /** Outer-run recoveries after a meaningful/reasoning stream timeout. */
   streamTimeoutRecoveries: number;
   planRecoveryNudges: number;
@@ -64,6 +66,8 @@ export type RunState = {
   externalWaitStartedAt: number | undefined;
   externalWorkAbandoned: boolean;
   lastSubagentProgress: string;
+  /** Next model turn must issue a tool call (empty/evidence recovery). */
+  forceToolCall: boolean;
 };
 
 function planFromRecovery(recoveryPlan?: AgentRecoveryPlan): RunPlan {
@@ -105,6 +109,7 @@ export function createRunState(input: {
       autoContinues: 0,
       emptyTurns: 0,
       reasoningOnlyTurns: 0,
+      unproductiveTurns: 0,
       streamTimeoutRecoveries: 0,
       planRecoveryNudges: 0,
     },
@@ -117,6 +122,7 @@ export function createRunState(input: {
     externalWaitStartedAt: undefined,
     externalWorkAbandoned: false,
     lastSubagentProgress: input.lastSubagentProgress ?? "",
+    forceToolCall: false,
   };
   seedRequestedCodingOpsFromPlan(state);
   return state;
@@ -133,6 +139,7 @@ export function resetRunStateAfterSteering(
   state.budgets.autoContinues = 0;
   state.budgets.emptyTurns = 0;
   state.budgets.reasoningOnlyTurns = 0;
+  state.budgets.unproductiveTurns = 0;
   state.budgets.streamTimeoutRecoveries = 0;
   state.budgets.planRecoveryNudges = 0;
   state.stalledRounds = 0;
@@ -150,6 +157,7 @@ export function resetRunStateAfterSteering(
   state.plan.cursor = 0;
   state.plan.requirementsDeclared = true;
   state.planConfirmed = false;
+  state.forceToolCall = false;
 }
 
 export function applyPlanUpdate(state: RunState, planUpdate: RunPlanUpdate) {

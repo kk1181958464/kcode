@@ -1,13 +1,10 @@
 import {
-  forwardRef,
   lazy,
-  memo,
   startTransition,
   Suspense,
   useCallback,
   useDeferredValue,
   useEffect,
-  useImperativeHandle,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -15,70 +12,31 @@ import {
   useSyncExternalStore,
   type WheelEvent,
 } from "react";
-import { createPortal } from "react-dom";
 import {
-  Archive,
-  ArchiveRestore,
   ArrowDown,
-  ArrowLeft,
-  ArrowRight,
   ArrowUp,
-  Bot,
-  Blocks,
   BrainCircuit,
   Check,
   CheckCircle2,
   ChevronDown,
   CircleAlert,
-  CircleHelp,
-  CloudDownload,
-  Clock3,
-  Code2,
-  Copy,
   Crosshair,
   Cpu,
-  Download,
-  ExternalLink,
   FileCode2,
-  FolderOpen,
-  GitBranch,
-  GitCompareArrows,
   GripHorizontal,
-  GripVertical,
-  LockOpen,
   ListOrdered,
   LoaderCircle,
-  Monitor,
-  Minus,
-  Minimize2,
-  PanelLeftClose,
-  PanelLeftOpen,
-  PanelRightClose,
-  PanelRightOpen,
   Paperclip,
   Pencil,
-  Plus,
-  RefreshCw,
-  RotateCcw,
   Send,
-  Search,
   Settings,
-  ShieldCheck,
-  SlidersHorizontal,
   Square,
-  Sun,
-  Terminal,
   Trash2,
   Upload,
-  UserRound,
-  Moon,
   FolderSearch,
   X,
 } from "lucide-react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import appLogo from "../build/icon.png";
-import { inferReasoningConfig, resolveModelContextWindow } from "./types";
+import { resolveModelContextWindow } from "./types";
 import type {
   RemoteCommandEnvelope,
   RemoteControlState,
@@ -114,7 +72,6 @@ import {
   estimateTextTokens,
   retainedCompactionContext,
 } from "./context";
-import type { ContextLedger } from "./context";
 import {
   assistantRequestId,
   buildInterruptedRunRecoveryContext,
@@ -131,7 +88,6 @@ import {
 } from "./context-window";
 import {
   ACCENT_OPTIONS,
-  EMPTY_ACTIVITIES,
   initialTask,
   storedTaskDrafts,
   uid,
@@ -180,10 +136,8 @@ import {
   savedEfforts,
 } from "./lib/model-utils";
 import {
-  clipWorkingText,
   errorMessage,
   formatBytes,
-  formatDuration,
 } from "./lib/format";
 import {
   latestRequestActivities,
@@ -295,9 +249,6 @@ import {
   isTaskViewCurrent,
   isRetryableDisconnectError,
   nextQueuedMessageId,
-  recoverOrphanedFailure,
-  recoverInterruptedActivities,
-  recoverTaskRunStatus,
   type TaskRunStatus,
 } from "./task-status";
 import { truncateAssistantMessageForTextReset } from "./conversation-rendering";
@@ -306,12 +257,9 @@ import type {
   AgentActivity,
   AgentCheckpoint,
   EditCheckpointInfo,
-  AgentToolName,
   AppUpdateState,
-  BrowserRecordingFile,
   ChatMessage,
   ContextFile,
-  ModelConfig,
   ProviderConfig,
   PermissionMode,
   PermissionPolicy,
@@ -319,8 +267,6 @@ import type {
   WorkspaceFolder,
   GitWorkspaceState,
   ImageAttachment,
-  ReasoningMode,
-  SkillStoreItem,
   ScheduledTask,
   TaskWindow,
 } from "./types";
@@ -645,7 +591,7 @@ export default function App() {
   const [contextDirectory, setContextDirectory] = useState(
     () => localStorage.getItem("kcode.contextDirectory") || "",
   );
-  const [scheduledTasks, setScheduledTasks] = useState<ScheduledTask[]>([]);
+  const [, setScheduledTasks] = useState<ScheduledTask[]>([]);
   const scheduledTasksRef = useRef<ScheduledTask[]>([]);
   const scheduledRunsRef = useRef(new Set<string>());
   const [contextError, setContextError] = useState("");
@@ -2819,9 +2765,6 @@ export default function App() {
           event.type !== "error" &&
           event.type !== "activity_output"
         ) {
-          const startedAt =
-            tasksRef.current.find((task) => task.id === taskId)?.startedAt ??
-            Date.now();
           taskRuntimeStore.applyEvent(taskId, id, event);
         }
         if (event.type === "activity_output") {
@@ -3347,42 +3290,6 @@ export default function App() {
     activities.length,
     conversationTurns.length,
   ]);
-
-  async function clearCurrentConversation() {
-    const requestId = currentRequest.current;
-    if (requestId && window.kcode) await window.kcode.chat.cancel(requestId);
-    if (requestId && activeTask?.id)
-      taskRuntimeStore.finish(activeTask.id, requestId);
-    if (previewTimerRef.current) window.clearInterval(previewTimerRef.current);
-    currentRequest.current = undefined;
-    setRunningId(undefined);
-    setMessages([]);
-    setActivities([]);
-    setInput("");
-    setAttachedFiles([]);
-    setAttachedImages([]);
-    if (activeTask?.id) attachmentDraftsRef.current.delete(activeTask.id);
-    setContextError("");
-    setUsedContextCount(0);
-    setUsage({ input: 0, output: 0, cached: 0 });
-    setUsageResolved(false);
-    setDurationMs(0);
-    const currentModelId = models.find(
-      (item) => `${item.provider.id}|${item.model.id}` === selected,
-    )?.model.modelId;
-    setReasoningEffort(
-      normalizeEffort(
-        defaultReasoningEffort,
-        reasoningEffortsForModel(
-          models.find((item) => item.model.modelId === currentModelId)?.model,
-        ),
-      ),
-    );
-    requestStartedRef.current = undefined;
-    contextByMessageRef.current.clear();
-    designByMessageRef.current.clear();
-    autoFollowRef.current = true;
-  }
 
   function startNewTask() {
     setContextError("");
@@ -6433,6 +6340,18 @@ export default function App() {
       );
   });
   const onUpdateStatusPanel = useEventCallback(updateStatusPanel);
+  const onForkTask = useEventCallback(() => void forkTask());
+  const onExportTask = useEventCallback(
+    (format: "md" | "json") => void exportActiveTask(format),
+  );
+  // ConversationArea is the most expensive memoized child (it owns the whole
+  // message list). These handlers were plain function declarations, so a new
+  // identity was created on every App render and memo() never held.
+  const onConversationScroll = useEventCallback(handleConversationScroll);
+  const onConversationWheel = useEventCallback(handleConversationWheel);
+  const onInterruptBottomSettle = useEventCallback(interruptBottomSettle);
+  const onScrollToTurn = useEventCallback(scrollToTurn);
+  const onWriteInput = useEventCallback(setInput);
   const onSetSidebarDeleteTarget = useEventCallback(
     (
       target:
@@ -6527,8 +6446,8 @@ export default function App() {
             )}
             workspaceView={workspaceView}
             setWorkspaceView={onWorkspaceViewChange}
-            forkTask={() => void forkTask()}
-            exportTask={(format) => void exportActiveTask(format)}
+            forkTask={onForkTask}
+            exportTask={onExportTask}
           />
           {workspaceView === "editor" && activeTask?.remoteWorkspace && (
             <Suspense
@@ -6578,23 +6497,23 @@ export default function App() {
           />
           <ConversationArea
             conversationRef={conversationRef}
-            handleConversationScroll={handleConversationScroll}
-            handleConversationWheel={handleConversationWheel}
-            interruptBottomSettle={interruptBottomSettle}
+            handleConversationScroll={onConversationScroll}
+            handleConversationWheel={onConversationWheel}
+            interruptBottomSettle={onInterruptBottomSettle}
             conversationTurns={conversationTurns}
             turnRailRef={turnRailRef}
             turnRailOverflow={turnRailOverflow}
             updateTurnRailOverflow={updateTurnRailOverflow}
             turnButtonRefs={turnButtonRefs}
             activeConversationTurnRef={activeConversationTurnRef}
-            scrollToTurn={scrollToTurn}
+            scrollToTurn={onScrollToTurn}
             messages={visibleMessages}
             hasOlderMessages={hasOlderMessages}
             olderMessagesLoading={historyLoadingTaskId === activeTaskId}
             hasNewerMessages={hasNewerMessages}
             models={models}
-            writeInput={setInput}
-            openSettings={openSettings}
+            writeInput={onWriteInput}
+            openSettings={onOpenSettings}
             activitiesByRequest={activitiesByRequest}
             runningId={runningId}
             activeTaskWorkspacePath={

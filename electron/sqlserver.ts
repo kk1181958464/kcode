@@ -1,6 +1,9 @@
 import { isIP } from "node:net";
 import type { Socket } from "node:net";
-import mssql, { type config as SqlServerConfig } from "mssql";
+import type {
+  config as SqlServerConfig,
+  ConnectionPool as SqlServerConnectionPool,
+} from "mssql";
 import { openSshForward } from "./ssh";
 import {
   assertSingleSqlServerStatement,
@@ -11,7 +14,7 @@ const MAX_RESULT_CHARS = 200_000;
 export const DEFAULT_SQL_SERVER_QUERY_TIMEOUT_MS = 60_000;
 
 type SqlServerSession = {
-  pool: mssql.ConnectionPool;
+  pool: SqlServerConnectionPool;
   requestId: string;
   host: string;
   port: number;
@@ -111,7 +114,7 @@ function getSession(sessionId: string, requestId: string) {
   return session;
 }
 
-function closePool(pool: mssql.ConnectionPool) {
+function closePool(pool: SqlServerConnectionPool) {
   return pool.close().catch(() => undefined);
 }
 
@@ -163,7 +166,8 @@ export async function connectSqlServer(
     options,
     pool: { min: 0, max: 1, idleTimeoutMillis: 30_000 },
   };
-  const pool = new mssql.ConnectionPool(config);
+  const { ConnectionPool } = await import("mssql");
+  const pool = new ConnectionPool(config);
   pool.on("error", () => {
     for (const [key, value] of sessions)
       if (value.pool === pool) sessions.delete(key);

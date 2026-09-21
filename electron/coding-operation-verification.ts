@@ -645,6 +645,21 @@ export function isInspectionCommand(command: string) {
 }
 
 /** Successful native tool results generated during this Agent run. */
+/**
+ * Drop recovered baseline ops only for calls that this round attempted and
+ * failed, and that nothing in this run has since proven. A successful or
+ * never-executed re-attempt leaves the earlier fact intact.
+ */
+export function clearFailedBaselineCodingEvidence(
+  baseline: Set<CodingOperation>,
+  failedOperations: Iterable<CodingOperation>,
+  provenThisRun: ReadonlySet<CodingOperation>,
+) {
+  for (const operation of failedOperations)
+    if (operation !== "connect" && !provenThisRun.has(operation))
+      baseline.delete(operation);
+}
+
 export function successfulCodingEvidence(
   history: CodingVerificationHistoryItem[],
 ) {

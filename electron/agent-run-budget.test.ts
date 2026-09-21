@@ -172,7 +172,26 @@ test("detects a child wait that has exceeded its no-progress guard", () => {
   );
 });
 
-test("defers finalization for a newly queued parent instruction", () => {
+test("defers soft finalization for a newly queued parent instruction", () => {
+  // A queued instruction postpones a graceful soft-limit finish...
+  assert.equal(
+    agentFinalizationMode({
+      agentRole: "executor",
+      completedRounds: EXECUTOR_SOFT_ROUND_LIMIT,
+      elapsedMs: EXECUTOR_SOFT_DURATION_MS,
+      evidenceComplete: true,
+      hasPendingInstructions: true,
+    }),
+    undefined,
+  );
+});
+
+test("pending instructions never disable the hard run limit", () => {
+  // ...but the hard limit is an absolute backstop. externalWaitLimitReached's
+  // stall counter and duration clock both reset on any child progress
+  // (nextExternalWaitStall), so if pending work could suppress the hard limit a
+  // subagent that emits something every few rounds would keep the parent run
+  // alive forever.
   assert.equal(
     agentFinalizationMode({
       agentRole: "executor",
@@ -181,6 +200,27 @@ test("defers finalization for a newly queued parent instruction", () => {
       evidenceComplete: true,
       hasPendingInstructions: true,
     }),
-    undefined,
+    "limit-reached",
+  );
+  assert.equal(
+    agentFinalizationMode({
+      agentRole: undefined,
+      completedRounds: ROOT_HARD_ROUND_LIMIT,
+      elapsedMs: 1,
+      evidenceComplete: false,
+      hasPendingInstructions: true,
+    }),
+    "limit-reached",
+  );
+  // Duration alone must also trip it, independent of round count.
+  assert.equal(
+    agentFinalizationMode({
+      agentRole: undefined,
+      completedRounds: 1,
+      elapsedMs: ROOT_HARD_DURATION_MS,
+      evidenceComplete: false,
+      hasPendingInstructions: true,
+    }),
+    "limit-reached",
   );
 });

@@ -55,6 +55,8 @@ import {
   latestUserRequestContent,
   shouldRequireCodingTool,
   structuredToolEvidenceSummary,
+  clearFailedBaselineCodingEvidence,
+  successfulCodingEvidence,
   successfulToolNames,
   type CodingOperation,
 } from "./coding-operation-verification";
@@ -130,6 +132,7 @@ import {
   buildRoundEvidenceSnapshot,
   classifyToolRoundProgress,
   completionOperationKeys,
+  EMPTY_TURN_FORCE_TOOL_CONTENT,
   EMPTY_TURN_RETRY_CONTENT,
   emptyTurnRecovery,
   finalizationHistoryContent,
@@ -137,8 +140,10 @@ import {
   nextExternalWaitStall,
   noToolAutoContinue,
   planRecoveryContent,
+  REASONING_ONLY_FORCE_TOOL_CONTENT,
   REASONING_ONLY_RETRY_CONTENT,
   REPETITION_RECOVERY_CONTENT,
+  shouldForceToolAfterEmptyRecovery,
   roundStallDecision,
   runDoneOutcome,
   stallFinalizeProgressMessage,
@@ -703,7 +708,8 @@ export async function* runAgent(
           toolsEnabled: finalizationMode ? false : toolsEnabled,
           requireToolCall: finalizationMode
             ? false
-            : actionablePlanPending ||
+            : run.forceToolCall ||
+              actionablePlanPending ||
               shouldRequireCodingTool(
                 request.modelId,
                 run.requestedCodingEvidenceOps,
@@ -939,16 +945,31 @@ export async function* runAgent(
         hasRecoverableToolEvidence: hasRecoverableToolEvidence(evidenceHistory),
       });
       if (recovery?.action === "retry-reasoning") {
+        const priorRetries = run.budgets.reasoningOnlyTurns;
         run.budgets.reasoningOnlyTurns += 1;
+        run.budgets.unproductiveTurns += 1;
+        const forceTool = shouldForceToolAfterEmptyRecovery({
+          toolsEnabled: Boolean(toolsEnabled && !finalizationMode),
+          hasRecoverableToolEvidence:
+            hasRecoverableToolEvidence(evidenceHistory),
+          actionablePlanPending,
+          hasRequestedCodingOps: run.requestedCodingEvidenceOps.size > 0,
+          hasUncollectedAgentWork,
+          priorEmptyOrReasoningRetries: priorRetries,
+        });
+        if (forceTool) run.forceToolCall = true;
         yield {
           type: "progress",
-          message:
-            "上游本轮只返回内部思考，正在要求它结束本轮并输出正文或调用工具（仅自动重试一次）…",
+          message: forceTool
+            ? "上游本轮只返回内部思考，正在强制下一轮调用工具继续执行…"
+            : "上游本轮只返回内部思考，正在要求它结束本轮并输出正文或调用工具…",
         };
         history.push({
           kind: "message",
           role: "user",
-          content: REASONING_ONLY_RETRY_CONTENT,
+          content: forceTool
+            ? REASONING_ONLY_FORCE_TOOL_CONTENT
+            : REASONING_ONLY_RETRY_CONTENT,
         });
         continue;
       }
@@ -1017,15 +1038,31 @@ export async function* runAgent(
         return;
       }
       if (recovery?.action === "retry-empty") {
+        const priorRetries = run.budgets.emptyTurns;
         run.budgets.emptyTurns += 1;
+        run.budgets.unproductiveTurns += 1;
+        const forceTool = shouldForceToolAfterEmptyRecovery({
+          toolsEnabled: Boolean(toolsEnabled && !finalizationMode),
+          hasRecoverableToolEvidence:
+            hasRecoverableToolEvidence(evidenceHistory),
+          actionablePlanPending,
+          hasRequestedCodingOps: run.requestedCodingEvidenceOps.size > 0,
+          hasUncollectedAgentWork,
+          priorEmptyOrReasoningRetries: priorRetries,
+        });
+        if (forceTool) run.forceToolCall = true;
         yield {
           type: "progress",
-          message: `上游返回空响应，正在自动恢复（第 ${run.budgets.emptyTurns} 次尝试）…`,
+          message: forceTool
+            ? `上游返回空响应，正在强制调用工具继续（第 ${run.budgets.emptyTurns} 次）…`
+            : `上游返回空响应，正在自动恢复（第 ${run.budgets.emptyTurns} 次尝试）…`,
         };
         history.push({
           kind: "message",
           role: "user",
-          content: EMPTY_TURN_RETRY_CONTENT,
+          content: forceTool
+            ? EMPTY_TURN_FORCE_TOOL_CONTENT
+            : EMPTY_TURN_RETRY_CONTENT,
         });
         continue;
       }
@@ -1137,6 +1174,8 @@ export async function* runAgent(
         : { action: "allow" as const };
     if (stopHookResult.action === "continue") {
       run.budgets.completionRetries += 1;
+      run.budgets.unproductiveTurns += 1;
+      if (stopHookResult.forceToolCall !== false) run.forceToolCall = true;
       if (turn.text)
         history.push({
           kind: "message",
@@ -1221,15 +1260,24 @@ export async function* runAgent(
       };
       return;
     }
-    // A productive round refreshes the auto-continue budget.
+    // A productive round refreshes the auto-continue budget and clears the
+    // empty/evidence force-tool latch — the model did issue calls this turn.
     run.budgets.autoContinues = 0;
+    run.budgets.emptyTurns = 0;
+    run.budgets.reasoningOnlyTurns = 0;
+    run.budgets.unproductiveTurns = 0;
+    run.budgets.completionRetries = 0;
+    run.forceToolCall = false;
     history.push({ kind: "calls", calls: turn.calls, rawCalls: turn.rawCalls });
     for (const operation of codingOperationsRequiredByCalls(turn.calls)) {
       run.requestedCodingEvidenceOps.add(operation);
-      // A new attempt must be proven by this request. Keep a recovered
-      // connection fact, but do not let an old mutation/command/transfer
-      // satisfy a newly attempted operation that later fails.
-      if (operation !== "connect") baselineCodingEvidence.delete(operation);
+      // Recovered evidence is NOT invalidated here. A new attempt must be
+      // proven by this request, but that can only be judged once the round's
+      // tool results exist — see the deferred invalidation after turnRecords
+      // below. Dropping it at call-registration time erased a previous run's
+      // proven work whenever the round produced no result at all (permission
+      // denial, abort, or a mid-round stream failure), so genuinely completed
+      // work was reported as never done.
     }
     for (const operation of browserOperationsRequiredByCalls(turn.calls)) {
       run.requestedBrowserOps.add(operation);
@@ -1723,6 +1771,25 @@ export async function* runAgent(
         activity.errorSummary = failure.errorSummary;
         activity.liveStatus = undefined;
         toolRegistry.fail(toolTrace.callId, failure.failureOutput, failure.cancelled);
+        // Thrown tool failures must still enter turnRecords so deferred
+        // baseline invalidation can drop recovered evidence that this round
+        // actually attempted and failed (otherwise a bad apply_patch leaves
+        // coding:modify "proven" forever and the run reports changed).
+        turnRecords.push({
+          toolName: call.name,
+          callId: call.id,
+          primaryArg: String(
+            (call.input as Record<string, unknown>).file_path ??
+              (call.input as Record<string, unknown>).path ??
+              (call.input as Record<string, unknown>).command ??
+              (call.input as Record<string, unknown>).query ??
+              (call.input as Record<string, unknown>).patch ??
+              "",
+          ),
+          success: false,
+          error: activity.errorSummary,
+        });
+        toolStats.finishCall(call.id, call.name, false, {});
         await agentHooks.run(
           "AfterTool",
           {
@@ -1844,6 +1911,23 @@ export async function* runAgent(
         rec.toolName,
         rec.success,
         rec.exitCode != null ? `exit ${rec.exitCode}` : undefined,
+      );
+    }
+    // Deferred baseline invalidation (see the call-registration loop above).
+    // Only an operation that this round actually ATTEMPTED AND FAILED, and that
+    // nothing in this run has since proven, loses its recovered evidence. A
+    // successful or never-executed re-attempt leaves the earlier fact intact,
+    // so a failed retry can no longer erase work that really was completed.
+    const failedCallIds = new Set(
+      turnRecords.filter((rec) => !rec.success).map((rec) => rec.callId),
+    );
+    if (failedCallIds.size) {
+      clearFailedBaselineCodingEvidence(
+        baselineCodingEvidence,
+        codingOperationsRequiredByCalls(
+          turn.calls.filter((call) => failedCallIds.has(call.id)),
+        ),
+        successfulCodingEvidence(evidenceHistory),
       );
     }
     run.prevRound.activity = roundLastActivity;

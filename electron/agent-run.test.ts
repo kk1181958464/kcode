@@ -6,6 +6,11 @@ import path from "node:path";
 import { runAgent, resolveApproval, type RunAgentDeps } from "./agent";
 import type { AgentEvent, ModelRequest } from "../src/types";
 import { UpstreamHttpError } from "./request-guard";
+import {
+  EMPTY_TURN_RETRY_LIMIT,
+  REASONING_ONLY_RETRY_LIMIT,
+} from "./agent-round-policy";
+import { REQUIRED_EVIDENCE_FORCE_RETRY_LIMIT } from "./stop-hooks";
 
 /**
  * First integration test for runAgent, made possible by the ModelStreamFn
@@ -177,7 +182,7 @@ test("bounds consecutive terminal reasoning-only turns", async () => {
     ),
   );
 
-  assert.equal(rounds, 2, "a reasoning-only response gets one recovery turn");
+  assert.equal(rounds, REASONING_ONLY_RETRY_LIMIT + 1, "reasoning-only responses get a bounded number of recovery turns");
   assert.ok(
     events.some(
       (event) =>
@@ -854,7 +859,7 @@ test("runAgent pauses an empty stream when recoverable tool evidence already exi
       deps,
     ),
   );
-  assert.equal(round, 3);
+  assert.equal(round, 1 + EMPTY_TURN_RETRY_LIMIT + 1);
   assert.equal(
     events.some((event) => event.type === "error"),
     false,
@@ -929,10 +934,12 @@ test("runAgent retries a side effect after its actual tool call fails", async ()
   const request = await makeRequest();
   request.messages = [{ role: "user", content: "处理这个任务" }];
   let streamCalls = 0;
+  const requireToolCallSeen: boolean[] = [];
   const deps: RunAgentDeps = {
     getProvider: fakeProvider("fake-model"),
-    async *streamTurn() {
+    async *streamTurn(args) {
       streamCalls += 1;
+      requireToolCallSeen.push(Boolean(args.requireToolCall));
       if (streamCalls === 1) {
         yield {
           type: "complete",
@@ -972,7 +979,11 @@ test("runAgent retries a side effect after its actual tool call fails", async ()
       deps,
     ),
   );
-  assert.equal(streamCalls, 3);
+  assert.equal(streamCalls, 1 + REQUIRED_EVIDENCE_FORCE_RETRY_LIMIT + 1);
+  assert.ok(
+    requireToolCallSeen.slice(1).every(Boolean),
+    `expected forced tool calls after the failed attempt, got ${requireToolCallSeen.join(",")}`,
+  );
   const done = events.find(
     (event): event is Extract<AgentEvent, { type: "done" }> =>
       event.type === "done",

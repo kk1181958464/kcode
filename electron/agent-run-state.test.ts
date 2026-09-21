@@ -39,6 +39,7 @@ test("createRunState defaults an empty run and leaves plan undeclared-open", () 
     autoContinues: 0,
     emptyTurns: 0,
     reasoningOnlyTurns: 0,
+    unproductiveTurns: 0,
     streamTimeoutRecoveries: 0,
     planRecoveryNudges: 0,
   });
@@ -126,6 +127,7 @@ test("resetRunStateAfterSteering clears obligations and preserves timeline", () 
     autoContinues: 0,
     emptyTurns: 0,
     reasoningOnlyTurns: 0,
+    unproductiveTurns: 0,
     streamTimeoutRecoveries: 0,
     planRecoveryNudges: 0,
   });

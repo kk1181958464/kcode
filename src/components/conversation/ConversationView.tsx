@@ -428,7 +428,7 @@ const StreamingActivityOutputLeaf = memo(function StreamingActivityOutputLeaf({
       }
     });
   }, [activityId]);
-  return <pre ref={nodeRef} className="activity-live-output" />;
+  return <pre ref={nodeRef} className="activity-live-output activity-result-panel" />;
 });
 
 const ActivityItem = memo(function ActivityItem({
@@ -598,7 +598,7 @@ const ActivityItem = memo(function ActivityItem({
             {activity.undone ? "已恢复" : undoing ? "恢复中" : "恢复"}
           </button>
         )}
-        <span className="activity-status">{activityView.statusLabel}</span>
+        <span className="activity-status activity-status-badge">{activityView.statusLabel}</span>
         <ChevronDown size={14} />
       </div>
       {expanded && (
@@ -606,7 +606,7 @@ const ActivityItem = memo(function ActivityItem({
           <div className="activity-purpose">
             <BrainCircuit size={14} />
             <span>
-              <strong>执行说明</strong>
+              <strong className="activity-section-label">执行说明</strong>
               <small>{executionNarrative}</small>
             </span>
           </div>

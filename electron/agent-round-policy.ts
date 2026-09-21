@@ -437,6 +437,16 @@ export function autoContinueVerificationContent(input: {
   return `<runtime_verification>${reason}请立即调用相应工具继续执行，不要只输出总结。</runtime_verification>`;
 }
 
+/**
+ * Empty/reasoning-only rounds are often transient upstream hiccups. Soft
+ * retries absorb a flaky chunk; the runner then arms forceToolCall so the next
+ * turn cannot keep thinking with no tools. Budgets reset on the first
+ * productive round (agent-runner.ts).
+ */
+/** Soft empty/reasoning retries before error/pause (aligned with Codex's 3 consecutive empty fuse). */
+export const REASONING_ONLY_RETRY_LIMIT = 2;
+export const EMPTY_TURN_RETRY_LIMIT = 2;
+
 export function emptyTurnRecovery(input: {
   hasText: boolean;
   hasCalls: boolean;
@@ -449,13 +459,14 @@ export function emptyTurnRecovery(input: {
 }): EmptyTurnRecovery | undefined {
   if (input.hasText || input.hasCalls) return undefined;
   if (input.hasReasoning) {
-    if (input.reasoningOnlyTurns < 1) return { action: "retry-reasoning" };
+    if (input.reasoningOnlyTurns < REASONING_ONLY_RETRY_LIMIT)
+      return { action: "retry-reasoning" };
     if (input.hasUncollectedAgentWork && !input.externalWorkAbandoned)
       return { action: "abandon-subagents" };
     if (input.hasRecoverableToolEvidence) return { action: "pause-reasoning" };
     return { action: "error-reasoning" };
   }
-  if (input.emptyTurns < 1)
+  if (input.emptyTurns < EMPTY_TURN_RETRY_LIMIT)
     return { action: "retry-empty", attempt: input.emptyTurns + 1 };
   if (input.hasUncollectedAgentWork && !input.externalWorkAbandoned)
     return { action: "abandon-subagents" };
@@ -468,6 +479,39 @@ export const REASONING_ONLY_RETRY_CONTENT =
 
 export const EMPTY_TURN_RETRY_CONTENT =
   "<runtime_verification>上一轮上游返回了空响应：没有正文，也没有工具调用。任务尚未完成。请从现有历史和工具结果继续，输出最终结论或立即调用下一步工具，不要再次返回空内容。</runtime_verification>";
+
+/** Used once empty/reasoning recovery has armed forceToolCall. */
+export const REASONING_ONLY_FORCE_TOOL_CONTENT =
+  "<runtime_verification>上一轮只返回了内部思考，没有工具调用。任务尚未完成。下一轮必须调用一项具体工具推进（或在证据已齐时给出最终结论）；禁止继续只输出思考过程。完成前须用当前权威状态核对交付物；计划/todo/总结不算证据。同一 blocker 不要空转复述。</runtime_verification>";
+
+export const EMPTY_TURN_FORCE_TOOL_CONTENT =
+  "<runtime_verification>上一轮上游返回了空响应。任务尚未完成。下一轮必须调用下一项具体工具继续执行，或在证据已齐时给出最终结论；不要再次返回空内容。完成前须用当前权威状态核对交付物；计划/todo/总结不算证据。同一 blocker 不要空转复述。</runtime_verification>";
+
+/**
+ * Empty/reasoning recovery should compel a tool once the run already owes
+ * structured work, or after the first soft retry of a flaky empty turn.
+ */
+export function shouldForceToolAfterEmptyRecovery(input: {
+  toolsEnabled: boolean;
+  hasRecoverableToolEvidence: boolean;
+  actionablePlanPending: boolean;
+  hasRequestedCodingOps: boolean;
+  hasUncollectedAgentWork: boolean;
+  priorEmptyOrReasoningRetries: number;
+}): boolean {
+  if (!input.toolsEnabled) return false;
+  if (
+    input.hasRecoverableToolEvidence ||
+    input.actionablePlanPending ||
+    input.hasRequestedCodingOps ||
+    input.hasUncollectedAgentWork
+  )
+    return true;
+  // Any empty/reasoning recovery already burned one unproductive turn.
+  // Force a tool on the first retry so "empty thinking" cannot burn the
+  // whole soft budget on prose-only loops before requireToolCall arms.
+  return true;
+}
 
 export const STREAM_TIMEOUT_RECOVERY_LIMIT = 3;
 

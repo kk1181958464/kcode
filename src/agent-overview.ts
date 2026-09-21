@@ -1,6 +1,5 @@
 import type { TaskCollaboration, TaskRecord } from "./models";
 import type { TaskRunStatus } from "./task-status";
-import type { AgentActivity } from "./types";
 import type { SshRemoteWorkspace } from "./ssh-remote-types";
 
 /** Where the session executes from the user's point of view. */

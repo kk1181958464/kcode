@@ -1881,10 +1881,10 @@ button:not(:disabled) {
   pointer-events: none;
 }
 .agent-activity {
-  margin: -14px 0 22px 41px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--surface-raised);
+  margin: -8px 0 12px 41px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   overflow: hidden;
 }
 .execution-summary {
@@ -2249,9 +2249,9 @@ button:not(:disabled) {
   gap: 6px;
 }
 .activity-title strong {
-  color: var(--ink);
+  color: var(--muted);
   font-size: 11px;
-  font-weight: 650;
+  font-weight: 550;
 }
 .activity-title-line > strong {
   min-width: 0;
@@ -2623,9 +2623,10 @@ button:not(:disabled) {
 
 .execution-narration-preview {
   max-width: 760px;
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.55;
+  color: var(--ink);
+  font-size: 14.5px;
+  font-weight: 550;
+  line-height: 1.65;
 }
 .streaming-message-text[data-truncated="true"]::before {
   content: "较早的流式内容已暂时折叠，任务完成后会恢复完整内容";
@@ -5343,12 +5344,6 @@ select:focus {
     box-shadow 0.15s;
 }
 
-.agent-activity {
-  box-shadow: var(--shadow-soft);
-}
-.execution-summary-icon {
-  box-shadow: var(--shadow-soft);
-}
 .model-menu,
 .effort-menu {
   border-color: var(--line);
@@ -5709,10 +5704,8 @@ select:focus {
 :root[data-theme="dark"] .connect-model,
 :root[data-theme="dark"] .turn-preview,
 :root[data-theme="dark"] .file-changes-summary,
-:root[data-theme="dark"] .agent-activity,
 :root[data-theme="dark"] .execution-summary-detail,
 :root[data-theme="dark"] .activity-detail,
-:root[data-theme="dark"] .activity-icon,
 :root[data-theme="dark"] .approval-actions button,
 :root[data-theme="dark"] .message-avatar,
 :root[data-theme="dark"] .message-images button,
@@ -6173,45 +6166,51 @@ select:focus-visible {
 }
 
 /* Tool execution and file changes */
-.execution-summary-detail,
-.agent-activity {
+.execution-summary-detail {
   border-color: var(--line);
   border-radius: var(--radius-md);
   background: var(--surface-raised);
   box-shadow: var(--shadow-soft);
 }
 
+/* Tool calls are footnotes to the prose, so the card chrome is gone. Status
+   used to ride on a 3px colored left border; it now rides on the icon. */
 .agent-activity {
   position: relative;
-  border-left: 3px solid var(--line);
+  border: 0;
 }
 
-.agent-activity.running {
-  border-left-color: var(--accent);
+.agent-activity.running .activity-icon {
+  color: var(--accent);
 }
 
-.agent-activity.success,
-.agent-activity.completed {
-  border-left-color: var(--success);
+.agent-activity.success .activity-icon,
+.agent-activity.completed .activity-icon {
+  color: var(--success);
 }
 
-.agent-activity.waiting {
-  border-color: var(--line);
-  border-left-color: var(--warning);
-  background: var(--surface-raised);
+.agent-activity.waiting .activity-icon {
+  color: var(--warning);
 }
 
-.agent-activity.failed,
-.agent-activity.denied {
-  border-color: var(--line);
-  border-left-color: var(--danger);
+.agent-activity.failed .activity-icon,
+.agent-activity.denied .activity-icon {
+  color: var(--danger);
 }
 
-.activity-icon,
 .execution-summary-icon {
-  border-color: var(--line);
-  border-radius: var(--radius-sm);
-  background: var(--surface-muted);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  box-shadow: none;
+}
+
+/* Bare glyph, no chip. Colour is set by the status rules above. */
+.activity-icon {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   color: var(--muted);
   box-shadow: none;
 }
@@ -10357,7 +10356,6 @@ button[aria-busy="true"] {
 :root[data-theme="dark"] .run-metrics > div,
 :root[data-theme="dark"] .context-usage,
 :root[data-theme="dark"] .resume-checkpoint,
-:root[data-theme="dark"] .agent-activity,
 :root[data-theme="dark"] .execution-summary-detail,
 :root[data-theme="dark"] .activity-detail,
 :root[data-theme="dark"] .turn-preview,
@@ -10437,10 +10435,9 @@ button[aria-busy="true"] {
   -webkit-backdrop-filter: none;
 }
 :root[data-theme="dark"] .message-avatar,
-:root[data-theme="dark"] .activity-icon,
 :root[data-theme="dark"] .execution-summary-icon {
-  background: var(--ui-elevated);
-  border-color: var(--ui-border);
+  background: transparent;
+  border: 0;
   box-shadow: none;
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
@@ -12379,9 +12376,11 @@ select:focus-visible {
   color: var(--ui-text-secondary);
 }
 
+/* Prose is the primary content: full-contrast ink, not the dimmed secondary
+   token. Tool cards below are deliberately quieter than this. */
 .message-body {
-  color: var(--ui-text-secondary);
-  font-size: 13px;
+  color: var(--ui-text);
+  font-size: 14px;
   line-height: 1.72;
 }
 
@@ -12656,13 +12655,14 @@ select:focus-visible {
   background: color-mix(in srgb, var(--accent) 7%, transparent);
 }
 
+/* Bare glyph, no chip — the summary row is a footnote, not a card. */
 .execution-summary-icon,
 :root[data-theme="dark"] .execution-summary-icon {
   width: 19px;
   height: 19px;
   border: 0;
-  border-radius: 5px;
-  background: var(--ui-inset);
+  border-radius: 0;
+  background: transparent;
   color: var(--ui-text-tertiary);
 }
 
@@ -12699,11 +12699,12 @@ select:focus-visible {
   border-bottom: 1px solid var(--ui-border);
 }
 
+/* Borderless tool rows: no panel skin, no elevation. */
 .agent-activity,
 :root[data-theme="dark"] .agent-activity {
-  border-color: var(--ui-border);
-  border-radius: var(--ui-radius-control);
-  background: var(--ui-elevated);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   box-shadow: none;
 }
 
@@ -12726,9 +12727,9 @@ select:focus-visible {
 
 .activity-icon,
 :root[data-theme="dark"] .activity-icon {
-  border-color: var(--ui-border);
-  border-radius: 5px;
-  background: var(--ui-inset);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
 }
 
 .activity-detail,
@@ -15151,8 +15152,8 @@ body.resizing-composer * {
 }
 
 :root:not([data-theme="dark"]) .agent-activity {
-  background: var(--ui-elevated);
-  border-color: var(--ui-border);
+  background: transparent;
+  border: 0;
 }
 
 /* --- 侧栏：折叠/拖拽/搜索高亮 --- */
@@ -16627,24 +16628,26 @@ button.primary:active {
 /* Finish bloom stays short and rare — leave as-is if defined earlier */
 
 
-/* ===== execution-summary-compact-v1（默认一行摘要） ===== */
+/* ===== execution-summary-compact-v1（默认一行摘要） =====
+   Tool summaries are footnotes to the prose: no card, no elevation. */
 .execution-summary {
-  margin: 8px 0;
-  border: 1px solid color-mix(in srgb, var(--ui-border, var(--line)) 88%, transparent);
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--ui-elevated, var(--surface-raised)) 86%, transparent);
+  margin: 2px 0 6px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   overflow: hidden;
 }
 
 .execution-summary-head {
-  min-height: 34px;
+  min-height: 26px;
   gap: 8px;
-  padding: 6px 10px;
+  padding: 2px 0;
 }
 
 .execution-summary-copy strong {
-  font-size: 12px;
-  font-weight: 600;
+  color: var(--ui-text-tertiary, var(--muted));
+  font-size: 11px;
+  font-weight: 550;
 }
 
 .execution-summary-statline {
@@ -17247,17 +17250,21 @@ button.execution-summary-tool.inspect-group {
   isolation: isolate;
 }
 
-.execution-summary,
+.execution-summary {
+  position: relative;
+  z-index: 2;
+  isolation: isolate;
+  overflow: hidden;
+  background: transparent;
+}
+
+/* Card background intentionally omitted — see the borderless rules above. */
 .agent-activity {
   position: relative;
   z-index: 2;
   isolation: isolate;
   overflow: hidden;
-  background: color-mix(
-    in srgb,
-    var(--ui-elevated, var(--surface-raised)) 94%,
-    transparent
-  );
+  background: transparent;
 }
 
 .execution-summary-tool,
@@ -17891,4 +17898,415 @@ button.agent-overview-row:hover {
 .assistant-tail-copy > .assistant-tail-gap {
   flex: 1 1 auto;
   min-width: 0;
+}
+
+
+/* ==========================================================================
+ * zcode-inspired-intermediate-v1
+ * Learned from zai-org/ZCode DESIGN.md + ai-elements tool/reasoning:
+ * calm dense cards, status pills, left-rail reasoning, monospace tech values,
+ * quiet surfaces over decorative motion.
+ * ========================================================================== */
+
+/* Tool / activity cards: bordered rounded-md surface (ZCode Tool shell) */
+.agent-activity {
+  margin: 4px 0 10px 41px !important;
+  border: 1px solid var(--line) !important;
+  border-radius: 6px !important;
+  background: color-mix(in srgb, var(--surface-raised) 92%, transparent) !important;
+  overflow: hidden !important;
+}
+
+.agent-activity.running,
+.agent-activity.waiting {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--line)) !important;
+  background: color-mix(in srgb, var(--accent) 6%, var(--surface-raised)) !important;
+}
+
+.agent-activity.failed:not(.recoverable) {
+  border-color: color-mix(in srgb, var(--danger) 40%, var(--line)) !important;
+}
+
+.agent-activity.waiting {
+  /* ZCode waiting badges share one confirmation treatment */
+  border-color: color-mix(in srgb, var(--success) 40%, var(--line)) !important;
+  background: color-mix(in srgb, var(--success) 7%, var(--surface-raised)) !important;
+}
+
+.activity-head {
+  padding: 8px 10px !important;
+  gap: 8px !important;
+  align-items: center !important;
+  min-height: 0 !important;
+}
+
+.activity-title strong {
+  color: var(--ink) !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+}
+
+.activity-title small {
+  font-size: 11px !important;
+  color: var(--muted) !important;
+}
+
+.activity-icon {
+  width: 24px !important;
+  height: 24px !important;
+  border-radius: 5px !important;
+  color: var(--muted) !important;
+}
+
+/* Status pill (ZCode Badge secondary + rounded-full) */
+.activity-status-badge {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 4px !important;
+  flex: 0 0 auto !important;
+  min-height: 20px !important;
+  padding: 1px 8px !important;
+  border: 1px solid color-mix(in srgb, var(--line) 88%, transparent) !important;
+  border-radius: 999px !important;
+  background: color-mix(in srgb, var(--surface-muted, var(--surface)) 80%, transparent) !important;
+  color: var(--muted) !important;
+  font-size: 10px !important;
+  font-weight: 560 !important;
+  letter-spacing: 0.01em !important;
+  white-space: nowrap !important;
+}
+
+.agent-activity.success .activity-status-badge,
+.agent-activity.completed .activity-status-badge {
+  color: var(--success) !important;
+  border-color: color-mix(in srgb, var(--success) 35%, var(--line)) !important;
+  background: color-mix(in srgb, var(--success) 10%, transparent) !important;
+}
+
+.agent-activity.running .activity-status-badge {
+  color: var(--accent-strong, var(--accent)) !important;
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--line)) !important;
+  background: color-mix(in srgb, var(--accent) 10%, transparent) !important;
+}
+
+.agent-activity.waiting .activity-status-badge {
+  color: var(--success) !important;
+  border-color: color-mix(in srgb, var(--success) 40%, var(--line)) !important;
+  background: color-mix(in srgb, var(--success) 12%, transparent) !important;
+}
+
+.agent-activity.failed .activity-status-badge,
+.agent-activity.denied .activity-status-badge {
+  color: var(--danger) !important;
+  border-color: color-mix(in srgb, var(--danger) 35%, var(--line)) !important;
+  background: color-mix(in srgb, var(--danger) 10%, transparent) !important;
+}
+
+.agent-activity.failed.recoverable .activity-status-badge {
+  color: var(--warning) !important;
+  border-color: color-mix(in srgb, var(--warning) 35%, var(--line)) !important;
+  background: color-mix(in srgb, var(--warning) 10%, transparent) !important;
+}
+
+/* Detail: ZCode ToolContent-like sections */
+.activity-detail {
+  border-top: 1px solid var(--line) !important;
+  background: color-mix(in srgb, var(--surface-muted, var(--surface)) 55%, transparent) !important;
+  padding: 10px 12px 12px !important;
+}
+
+.activity-section-label,
+.activity-purpose strong {
+  display: block !important;
+  margin-bottom: 2px !important;
+  color: var(--muted) !important;
+  font-size: 10px !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.06em !important;
+  text-transform: uppercase !important;
+}
+
+.activity-purpose {
+  border: 0 !important;
+  background: transparent !important;
+  padding: 0 0 8px !important;
+  margin: 0 0 8px !important;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 70%, transparent) !important;
+}
+
+.activity-purpose small {
+  color: var(--ink) !important;
+  font-size: 12px !important;
+  line-height: 1.55 !important;
+}
+
+.activity-detail pre,
+.activity-live-output,
+.activity-result-panel {
+  max-height: 240px !important;
+  margin: 0 !important;
+  padding: 10px !important;
+  border: 0 !important;
+  border-radius: 6px !important;
+  background: color-mix(in srgb, var(--surface-muted, var(--panel)) 70%, transparent) !important;
+  color: var(--ink) !important;
+  font: 11.5px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace !important;
+}
+
+.activity-error-reason {
+  border-radius: 6px !important;
+  border: 1px solid color-mix(in srgb, var(--danger) 28%, var(--line)) !important;
+  background: color-mix(in srgb, var(--danger) 8%, transparent) !important;
+}
+
+/* Inline tool chips in execution summary → compact bordered pills */
+.execution-summary-tool,
+button.execution-summary-tool.inspect-group {
+  min-height: 24px !important;
+  padding: 2px 8px !important;
+  border: 1px solid color-mix(in srgb, var(--line) 90%, transparent) !important;
+  border-radius: 6px !important;
+  background: color-mix(in srgb, var(--surface-raised) 88%, transparent) !important;
+  gap: 6px !important;
+}
+
+.execution-summary-tool.running,
+.execution-summary-tool.waiting,
+button.execution-summary-tool.inspect-group.running,
+button.execution-summary-tool.inspect-group.waiting {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--line)) !important;
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface-raised)) !important;
+}
+
+.execution-summary-tool.waiting,
+button.execution-summary-tool.inspect-group.waiting {
+  border-color: color-mix(in srgb, var(--success) 40%, var(--line)) !important;
+  background: color-mix(in srgb, var(--success) 8%, var(--surface-raised)) !important;
+}
+
+.execution-summary-tool.failed,
+.execution-summary-tool.denied {
+  border-color: color-mix(in srgb, var(--danger) 36%, var(--line)) !important;
+}
+
+.execution-summary-tool > i {
+  width: 6px !important;
+  height: 6px !important;
+  animation: none !important;
+}
+
+.execution-summary-tool b {
+  color: var(--ink) !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+}
+
+.execution-summary-tool code {
+  font-size: 10.5px !important;
+}
+
+/* Reasoning / live narrative: ZCode left rail + subtlest copy */
+.execution-summary-narrative,
+.assistant-tail-state {
+  margin-left: 2px !important;
+  padding-left: 12px !important;
+  border-left: 2px solid color-mix(in srgb, var(--line) 85%, transparent) !important;
+  color: color-mix(in srgb, var(--muted) 88%, var(--ink)) !important;
+}
+
+.execution-summary-narrative-label {
+  display: block !important;
+  margin-bottom: 2px !important;
+  color: var(--muted) !important;
+  font-size: 10px !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.06em !important;
+  text-transform: uppercase !important;
+}
+
+.execution-summary-narrative-copy,
+.execution-summary-narrative-fallback,
+.assistant-tail-gap,
+.assistant-tail-fallback {
+  color: color-mix(in srgb, var(--muted) 92%, var(--ink)) !important;
+  font-size: 12px !important;
+  line-height: 1.55 !important;
+}
+
+/* Prefer calm status text over decorative shimmer (ZCode motion rule) */
+.message.assistant.is-running .assistant-tail-gap,
+.assistant-tail-fallback,
+.assistant-tail-state .streaming-progress-leaf:not([hidden]) {
+  animation: none !important;
+  background: none !important;
+  background-image: none !important;
+  -webkit-text-fill-color: currentColor !important;
+  color: color-mix(in srgb, var(--muted) 92%, var(--ink)) !important;
+}
+
+.message.assistant.is-running .message-content {
+  box-shadow: inset 2px 0 0 0 color-mix(in srgb, var(--accent) 55%, transparent) !important;
+}
+
+
+/* ==========================================================================
+ * codex-hierarchy-v1
+ * Screenshot reference: agent intent sentence is large; mid-run tool rows
+ * (read file / run command) stay compact and muted underneath.
+ * ========================================================================== */
+
+/* Primary: conversational narration while tools run */
+.message.assistant .execution-narration-preview,
+.message.assistant .streaming-message-text.execution-narration-preview {
+  color: var(--ink) !important;
+  font-size: 14.5px !important;
+  font-weight: 550 !important;
+  line-height: 1.65 !important;
+  margin: 2px 0 10px !important;
+}
+
+.message.assistant .message-body,
+.message.assistant .markdown-block,
+.message.assistant .streaming-message-text:not(.execution-narration-preview) {
+  font-size: 14px;
+  line-height: 1.65;
+  color: var(--ink);
+}
+
+/* Secondary: mid-run tool / command / file rows — Codex small block */
+.execution-summary-toolline {
+  margin: 2px 0 6px 8px !important;
+  padding-left: 10px !important;
+  border-left: 0 !important;
+  gap: 4px !important;
+}
+
+.execution-summary-tool,
+button.execution-summary-tool.inspect-group {
+  min-height: 0 !important;
+  padding: 1px 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  color: var(--muted) !important;
+  font-size: 11px !important;
+  line-height: 1.4 !important;
+  gap: 5px !important;
+}
+
+.execution-summary-tool b {
+  color: var(--muted) !important;
+  font-size: 11px !important;
+  font-weight: 500 !important;
+}
+
+.execution-summary-tool code {
+  color: color-mix(in srgb, var(--muted) 88%, var(--ink)) !important;
+  font-size: 10.5px !important;
+}
+
+.execution-summary-tool-model,
+.execution-summary-tool-count,
+.execution-summary-toolline > small {
+  color: color-mix(in srgb, var(--muted) 92%, transparent) !important;
+  font-size: 10px !important;
+  font-weight: 450 !important;
+}
+
+.execution-summary-tool > i {
+  width: 5px !important;
+  height: 5px !important;
+  opacity: 0.85;
+}
+
+.execution-summary-live,
+.execution-summary-statline,
+.execution-summary-copy small {
+  color: var(--muted) !important;
+  font-size: 10.5px !important;
+}
+
+/* Keep expanded activity cards quieter than the big narration */
+.agent-activity {
+  margin: 2px 0 8px 28px !important;
+  border: 0 !important;
+  border-left: 2px solid color-mix(in srgb, var(--line) 80%, transparent) !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+}
+
+.agent-activity.running,
+.agent-activity.waiting,
+.agent-activity.failed:not(.recoverable) {
+  background: transparent !important;
+}
+
+.activity-head {
+  padding: 4px 0 4px 8px !important;
+  min-height: 0 !important;
+}
+
+.activity-title strong {
+  color: var(--muted) !important;
+  font-size: 11px !important;
+  font-weight: 500 !important;
+}
+
+.activity-title small {
+  font-size: 10px !important;
+}
+
+.activity-icon {
+  width: 18px !important;
+  height: 18px !important;
+  border: 0 !important;
+  background: transparent !important;
+  color: var(--muted) !important;
+}
+
+.activity-status-badge {
+  min-height: 16px !important;
+  padding: 0 6px !important;
+  font-size: 9.5px !important;
+  background: transparent !important;
+}
+
+.activity-detail {
+  margin-left: 8px !important;
+  padding: 6px 8px 8px !important;
+  background: color-mix(in srgb, var(--surface-muted, var(--surface)) 40%, transparent) !important;
+}
+
+.activity-detail pre,
+.activity-live-output,
+.activity-result-panel {
+  font-size: 10.5px !important;
+  max-height: 180px !important;
+}
+
+/* Mid-run status / reasoning rail stays subordinate to the big sentence */
+.execution-summary-narrative,
+.assistant-tail-state {
+  color: var(--muted) !important;
+  font-size: 11px !important;
+}
+
+.execution-summary-narrative-copy,
+.execution-summary-narrative-fallback,
+.assistant-tail-gap,
+.assistant-tail-fallback {
+  color: var(--muted) !important;
+  font-size: 11px !important;
+  font-weight: 400 !important;
+}
+
+.completed-process-trigger {
+  font-size: 12px !important;
+  color: var(--muted) !important;
+}
+
+.completed-process-state strong {
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  color: var(--ink) !important;
 }

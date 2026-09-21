@@ -23,9 +23,14 @@ test("defaults public direct MySQL to TLS but not private or tunneled hosts", ()
 test("cancels a pending MySQL handshake without registering a session", async () => {
   let closeSocket: (() => void) | undefined;
   let socketClosed: Promise<void> | undefined;
+  let accepted: () => void = () => undefined;
+  const sawAccept = new Promise<void>((resolve) => {
+    accepted = resolve;
+  });
   const server = createNetServer((socket) => {
     closeSocket = () => socket.destroy();
     socketClosed = new Promise((resolve) => socket.once("close", resolve));
+    accepted();
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
@@ -43,12 +48,15 @@ test("cancels a pending MySQL handshake without registering a session", async ()
     false,
     controller.signal,
   );
-  setTimeout(() => controller.abort(), 25);
+  // Abort only after the TCP accept so the close assertion is meaningful under
+  // a busy full-suite schedule (early abort never opens a socket).
+  await sawAccept;
+  controller.abort();
   await assert.rejects(connecting, /已取消/);
   assert.equal(await disconnectMysql("cancel-task"), false);
   const closedQuickly = await Promise.race([
     socketClosed?.then(() => true) ?? Promise.resolve(false),
-    new Promise<false>((resolve) => setTimeout(() => resolve(false), 500)),
+    new Promise<false>((resolve) => setTimeout(() => resolve(false), 1000)),
   ]);
   closeSocket?.();
   await new Promise<void>((resolve) => server.close(() => resolve()));

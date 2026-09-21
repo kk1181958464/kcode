@@ -19,7 +19,10 @@ import {
   classifyToolRoundProgress,
   completionOperationKeys,
   EMPTY_TURN_RETRY_CONTENT,
+  EMPTY_TURN_RETRY_LIMIT,
   emptyTurnRecovery,
+  shouldForceToolAfterEmptyRecovery,
+  REASONING_ONLY_RETRY_LIMIT,
   streamTimeoutRecovery,
   STREAM_TIMEOUT_RECOVERY_CONTENT,
   STREAM_TRANSPORT_RECOVERY_CONTENT,
@@ -539,7 +542,7 @@ test("emptyTurnRecovery retries then pauses, errors or abandons subagents", () =
       hasText: false,
       hasCalls: false,
       hasReasoning: true,
-      reasoningOnlyTurns: 1,
+      reasoningOnlyTurns: REASONING_ONLY_RETRY_LIMIT,
       emptyTurns: 0,
       hasUncollectedAgentWork: true,
       externalWorkAbandoned: false,
@@ -552,7 +555,7 @@ test("emptyTurnRecovery retries then pauses, errors or abandons subagents", () =
       hasText: false,
       hasCalls: false,
       hasReasoning: true,
-      reasoningOnlyTurns: 1,
+      reasoningOnlyTurns: REASONING_ONLY_RETRY_LIMIT,
       emptyTurns: 0,
       hasUncollectedAgentWork: false,
       externalWorkAbandoned: false,
@@ -565,7 +568,7 @@ test("emptyTurnRecovery retries then pauses, errors or abandons subagents", () =
       hasText: false,
       hasCalls: false,
       hasReasoning: true,
-      reasoningOnlyTurns: 1,
+      reasoningOnlyTurns: REASONING_ONLY_RETRY_LIMIT,
       emptyTurns: 0,
       hasUncollectedAgentWork: false,
       externalWorkAbandoned: false,
@@ -579,7 +582,7 @@ test("emptyTurnRecovery retries then pauses, errors or abandons subagents", () =
       hasCalls: false,
       hasReasoning: false,
       reasoningOnlyTurns: 0,
-      emptyTurns: 1,
+      emptyTurns: EMPTY_TURN_RETRY_LIMIT,
       hasUncollectedAgentWork: false,
       externalWorkAbandoned: false,
       hasRecoverableToolEvidence: false,
@@ -592,7 +595,7 @@ test("emptyTurnRecovery retries then pauses, errors or abandons subagents", () =
       hasCalls: false,
       hasReasoning: false,
       reasoningOnlyTurns: 0,
-      emptyTurns: 1,
+      emptyTurns: EMPTY_TURN_RETRY_LIMIT,
       hasUncollectedAgentWork: false,
       externalWorkAbandoned: false,
       hasRecoverableToolEvidence: true,
@@ -605,7 +608,7 @@ test("emptyTurnRecovery retries then pauses, errors or abandons subagents", () =
       hasCalls: false,
       hasReasoning: false,
       reasoningOnlyTurns: 0,
-      emptyTurns: 1,
+      emptyTurns: EMPTY_TURN_RETRY_LIMIT,
       hasUncollectedAgentWork: true,
       externalWorkAbandoned: false,
       hasRecoverableToolEvidence: true,
@@ -628,6 +631,90 @@ test("emptyTurnRecovery retries then pauses, errors or abandons subagents", () =
   assert.match(REASONING_ONLY_RETRY_CONTENT, /只返回了内部思考/);
   assert.match(EMPTY_TURN_RETRY_CONTENT, /空响应/);
   assert.match(REPETITION_RECOVERY_CONTENT, /不要再次原样重试/);
+});
+
+test("a single flaky empty round does not abort the run", () => {
+  // One retry was too aggressive: a lone bad chunk from the provider killed the
+  // whole run. Everything strictly below the limit must still retry.
+  assert.ok(REASONING_ONLY_RETRY_LIMIT >= 2);
+  assert.ok(EMPTY_TURN_RETRY_LIMIT >= 2);
+  for (let attempted = 0; attempted < REASONING_ONLY_RETRY_LIMIT; attempted++)
+    assert.deepEqual(
+      emptyTurnRecovery({
+        hasText: false,
+        hasCalls: false,
+        hasReasoning: true,
+        reasoningOnlyTurns: attempted,
+        emptyTurns: 0,
+        hasUncollectedAgentWork: false,
+        externalWorkAbandoned: false,
+        hasRecoverableToolEvidence: false,
+      }),
+      { action: "retry-reasoning" },
+      `reasoning-only turn ${attempted} should still retry`,
+    );
+  for (let attempted = 0; attempted < EMPTY_TURN_RETRY_LIMIT; attempted++)
+    assert.deepEqual(
+      emptyTurnRecovery({
+        hasText: false,
+        hasCalls: false,
+        hasReasoning: false,
+        reasoningOnlyTurns: 0,
+        emptyTurns: attempted,
+        hasUncollectedAgentWork: false,
+        externalWorkAbandoned: false,
+        hasRecoverableToolEvidence: false,
+      }),
+      { action: "retry-empty", attempt: attempted + 1 },
+      `empty turn ${attempted} should still retry`,
+    );
+});
+
+test("empty/reasoning recovery arms force-tool once tools are enabled on empty recovery", () => {
+  assert.equal(
+    shouldForceToolAfterEmptyRecovery({
+      toolsEnabled: true,
+      hasRecoverableToolEvidence: false,
+      actionablePlanPending: false,
+      hasRequestedCodingOps: false,
+      hasUncollectedAgentWork: false,
+      priorEmptyOrReasoningRetries: 0,
+    }),
+    true,
+  );
+  assert.equal(
+    shouldForceToolAfterEmptyRecovery({
+      toolsEnabled: true,
+      hasRecoverableToolEvidence: false,
+      actionablePlanPending: false,
+      hasRequestedCodingOps: false,
+      hasUncollectedAgentWork: false,
+      priorEmptyOrReasoningRetries: 1,
+    }),
+    true,
+  );
+  assert.equal(
+    shouldForceToolAfterEmptyRecovery({
+      toolsEnabled: true,
+      hasRecoverableToolEvidence: true,
+      actionablePlanPending: false,
+      hasRequestedCodingOps: false,
+      hasUncollectedAgentWork: false,
+      priorEmptyOrReasoningRetries: 0,
+    }),
+    true,
+  );
+  assert.equal(
+    shouldForceToolAfterEmptyRecovery({
+      toolsEnabled: false,
+      hasRecoverableToolEvidence: true,
+      actionablePlanPending: true,
+      hasRequestedCodingOps: true,
+      hasUncollectedAgentWork: true,
+      priorEmptyOrReasoningRetries: 3,
+    }),
+    false,
+  );
 });
 
 test("streamTimeoutRecovery auto-continues meaningful mid-task timeouts up to the limit", () => {

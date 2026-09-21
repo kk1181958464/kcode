@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { REQUIRED_EVIDENCE_FORCE_RETRY_LIMIT } from "./stop-hooks";
 import { EXTERNAL_WAIT_STALL_ROUNDS } from "./agent-run-budget";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -1706,7 +1707,10 @@ test("planner coordinator cannot complete without spawning an executor", async (
   ))
     events.push(event);
 
-  assert.ok(rounds <= 8, `expected bounded planner recovery, received ${rounds}`);
+  assert.ok(
+    rounds <= 1 + REQUIRED_EVIDENCE_FORCE_RETRY_LIMIT + 5,
+    `expected bounded planner recovery, received ${rounds}`,
+  );
   assert.equal(spawnRequested, true);
   assert.equal(
     events.some(

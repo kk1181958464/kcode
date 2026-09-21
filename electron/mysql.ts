@@ -1,10 +1,5 @@
 import { isIP } from "node:net";
-import {
-  createConnection,
-  type Connection,
-  type ConnectionOptions,
-  type FieldPacket,
-} from "mysql2";
+import type { Connection, ConnectionOptions, FieldPacket } from "mysql2";
 import { openSshForward } from "./ssh";
 
 const MAX_RESULT_ROWS = 1_000;
@@ -144,6 +139,7 @@ export async function connectMysql(
 
   let connection: Connection;
   try {
+    const { createConnection } = await import("mysql2");
     connection = createConnection(options);
   } catch (error) {
     stream?.destroy();
