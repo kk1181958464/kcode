@@ -1,4 +1,4 @@
-import { app, BrowserWindow, safeStorage } from "electron";
+import { app, safeStorage } from "electron";
 import { randomUUID } from "node:crypto";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { hostname } from "node:os";

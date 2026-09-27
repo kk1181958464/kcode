@@ -301,6 +301,35 @@ function sessionRow(
  * Build a Windsurf-like Command Center lite board from local task/session
  * models (+ optional cloud rows). Only running/waiting rows (plus live subagents). Does not invent cloud agents.
  */
+type TaskBoardRows = {
+  activeTaskId: string | undefined;
+  session?: AgentOverviewRow;
+  subs: AgentOverviewRow[];
+};
+// Tasks are immutable, and the board is rebuilt on every agent event, so
+// reuse the per-task scan (which walks all activities) for unchanged tasks.
+const taskRowsCache = new WeakMap<object, TaskBoardRows>();
+
+function boardRowsForTask(
+  task: BuildAgentOverviewOptions["tasks"][number],
+  activeTaskId: string | undefined,
+): TaskBoardRows {
+  const cached = taskRowsCache.get(task);
+  if (cached && cached.activeTaskId === activeTaskId) return cached;
+  const row = sessionRow(task, activeTaskId);
+  // Only running / waiting — do not flood with done/stopped/idle sessions.
+  const subs = subagentRowsFromActivities(task, activeTaskId).filter((sub) =>
+    isBoardPhase(sub.phase),
+  );
+  const rows: TaskBoardRows = {
+    activeTaskId,
+    session: isBoardPhase(row.phase) || subs.length > 0 ? row : undefined,
+    subs,
+  };
+  taskRowsCache.set(task, rows);
+  return rows;
+}
+
 export function buildAgentOverviewBoard(
   options: BuildAgentOverviewOptions,
 ): AgentOverviewBoard {
@@ -314,13 +343,9 @@ export function buildAgentOverviewBoard(
 
   for (const task of options.tasks) {
     if (task.archived) continue;
-    const row = sessionRow(task, activeTaskId);
-    const subs = subagentRowsFromActivities(task, activeTaskId);
-    // Only running / waiting — do not flood with done/stopped/idle sessions.
-    const liveSubs = subs.filter((sub) => isBoardPhase(sub.phase));
-    const keepSession = isBoardPhase(row.phase) || liveSubs.length > 0;
-    if (keepSession) sessionRows.push(row);
-    subRows.push(...liveSubs);
+    const rows = boardRowsForTask(task, activeTaskId);
+    if (rows.session) sessionRows.push(rows.session);
+    subRows.push(...rows.subs);
   }
 
   const merged = [...sessionRows, ...subRows, ...cloudAgents].sort((a, b) => {

@@ -1,4 +1,9 @@
 import { networkFetch } from "./network";
+import {
+  classifyStructuredRuntimeError,
+  isPrematureStreamEndError,
+  isTransientGenerationError,
+} from "../src/runtime-errors";
 import { ModelAttemptBudget } from "./model-attempt-budget";
 import {
   isDirectNetworkTransportError,
@@ -286,6 +291,8 @@ export async function readResponseText(
 // Chromium net:: errors that surface when a relay drops a chunked SSE stream
 // before its terminating chunk (ERR_INCOMPLETE_CHUNKED_ENCODING and friends).
 export function isRetryableStreamError(error: unknown) {
+  const structured = classifyStructuredRuntimeError(error);
+  if (structured) return structured.retryable;
   if (error instanceof UpstreamHttpError)
     return (
       error.status === 408 ||
@@ -309,6 +316,8 @@ export function isRetryableStreamError(error: unknown) {
     return true;
   const message = networkTransportErrorText(error);
   return (
+    isTransientGenerationError(message) ||
+    isPrematureStreamEndError(message) ||
     isDirectNetworkTransportError(error) ||
     /overload|rate.?limit|too many requests|429|50[0-9]|bad gateway|service unavailable|gateway time|upstream( request)? (failed|error)|upstream failed|proxy error|temporarily|stream[_ ]?read[_ ]?error|stream error|upstream response stream was interrupted|(response )?stream was interrupted|connection (reset|closed|error)|ECONNRESET|ECONNREFUSED|ETIMEDOUT|socket hang up|network|fetch failed|ERR_INCOMPLETE_CHUNKED_ENCODING|ERR_CONTENT_LENGTH_MISMATCH|ERR_CONNECTION_(CLOSED|RESET|ABORTED|FAILED)|ERR_NETWORK_CHANGED|ERR_HTTP2_PROTOCOL_ERROR|ERR_QUIC_PROTOCOL_ERROR|ERR_EMPTY_RESPONSE|ERR_RESPONSE_HEADERS_TRUNCATED|长时间没有新数据|超时|连接|意外中断|未收到完整响应|工具调用参数不完整|上游网关|网关错误|服务暂时不可用|模型服务暂时不可用|上游服务不可用|上游错误/i.test(
       message,

@@ -23,13 +23,18 @@ test("keeps the sidebar projection stable for message and activity changes", () 
     [
       {
         ...firstTask,
-        messages: [{ id: "message-a", role: "assistant", content: "new" }],
+        messages: [
+          { id: "message-a", role: "assistant", content: "new", createdAt: 1 },
+        ],
         activities: [
           {
             id: "activity-a",
-            type: "command",
+            requestId: "request-a",
+            tool: "run_command",
             title: "运行命令",
             status: "running",
+            startedAt: 1,
+            input: {},
           },
         ],
         usage: { input: 100, output: 20, cached: 0 },

@@ -293,3 +293,15 @@ test("StatusPanel renders 智能体总览 and focuses session on click affordanc
   assert.match(markup, /切换到会话：并行修复/);
   assert.match(markup, /agent-overview-board/);
 });
+
+test("board reflects active task changes and task updates across rebuilds", () => {
+  const a = task({ id: "a", name: "A", runStatus: "running", runningId: "r1" });
+  const b = task({ id: "b", name: "B", runStatus: "running", runningId: "r2" });
+  const first = buildAgentOverviewBoard({ tasks: [a, b], activeTaskId: "a" });
+  assert.equal(first.rows.find((row) => row.active)?.name, "A");
+  const switched = buildAgentOverviewBoard({ tasks: [a, b], activeTaskId: "b" });
+  assert.equal(switched.rows.find((row) => row.active)?.name, "B");
+  const finished = { ...a, runStatus: "completed" as const, runningId: undefined };
+  const updated = buildAgentOverviewBoard({ tasks: [finished, b], activeTaskId: "b" });
+  assert.deepEqual(updated.rows.map((row) => row.name), ["B"]);
+});

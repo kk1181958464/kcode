@@ -112,3 +112,37 @@ test("restore edit checkpoint rolls files back without clearing other state", as
   assert.ok(result.activityIds.includes("act-old"));
   assert.ok(result.activityIds.includes("act-new"));
 });
+
+test("undo refuses to overwrite user edits made after the agent's edit", async () => {
+  resetEditReviewForTests();
+  const root = await mkdtemp(path.join(os.tmpdir(), "kcode-edit-review-"));
+  const edited = path.join(root, "edited.ts");
+  const untouched = path.join(root, "untouched.ts");
+  await writeFile(edited, "agent\n", "utf8");
+  await writeFile(untouched, "agent\n", "utf8");
+  for (const [file, activityId] of [
+    [edited, "act-1"],
+    [untouched, "act-2"],
+  ] as const)
+    recordPendingEdit({
+      root,
+      requestId: "req-1",
+      activityId,
+      file,
+      before: "original\n",
+      existed: true,
+      after: "agent\n",
+    });
+  await writeFile(edited, "user\n", "utf8");
+
+  const result = await undoPendingFiles(root, "req-1");
+  assert.equal(result.success, true);
+  assert.equal(result.conflict, true);
+  assert.deepEqual(result.conflictPaths, ["edited.ts"]);
+  assert.equal(await readFile(edited, "utf8"), "user\n");
+  assert.equal(await readFile(untouched, "utf8"), "original\n");
+
+  const forced = await undoPendingFiles(root, "req-1", ["edited.ts"], true);
+  assert.equal(forced.success, true);
+  assert.equal(await readFile(edited, "utf8"), "original\n");
+});

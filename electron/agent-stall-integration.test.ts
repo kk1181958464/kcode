@@ -432,96 +432,98 @@ test("does not execute stale tool calls after entering finalization", async () =
   );
 });
 
-test("marks a reasoning-only finalization fallback as paused", async () => {
-  const workspacePath = await mkdtemp(
-    path.join(os.tmpdir(), "kcode-finalization-fallback-"),
-  );
-  await writeFile(
-    path.join(workspacePath, "probe.txt"),
-    Array.from({ length: 12 }, (_, index) => `line-${index + 1}`).join("\n"),
-    "utf8",
-  );
-  const request: ModelRequest = {
-    providerId: "fake",
-    modelId: "fake-model",
-    messages: [{ role: "user", content: "修改并检查 probe.txt" }],
-    permissionMode: "full-access",
-    workspacePath,
-  };
-  let rounds = 0;
-  const events: AgentEvent[] = [];
-  for await (const event of runAgent(
-    "finalization-fallback-integration",
-    request,
-    new AbortController().signal,
-    {
-      getProvider: fakeProvider(),
-      async *streamTurn(args) {
-        rounds += 1;
-        if (!args.toolsEnabled)
-          throw new Error(
-            "模型收尾阶段持续只有思考内容，未返回正文或工具调用。",
-          );
-        const calls =
-          rounds === 1
-            ? [
-                {
-                  id: "failed-mutation-before-fallback",
-                  name: "apply_patch" as const,
-                  input: { patch: "not a patch" },
-                },
-              ]
-            : [
-                {
-                  id: `fallback-read-${rounds}`,
-                  name: "read_file" as const,
-                  input: {
-                    path: "probe.txt",
-                    startLine: rounds,
-                    endLine: rounds,
+for (const finalizationError of [
+  "模型收尾阶段持续只有思考内容，未返回正文或工具调用。",
+  "Internal error during token generation",
+]) {
+  test(`keeps incomplete evidence paused after finalization failure: ${finalizationError}`, async () => {
+    const workspacePath = await mkdtemp(
+      path.join(os.tmpdir(), "kcode-finalization-fallback-"),
+    );
+    await writeFile(
+      path.join(workspacePath, "probe.txt"),
+      Array.from({ length: 12 }, (_, index) => `line-${index + 1}`).join("\n"),
+      "utf8",
+    );
+    const request: ModelRequest = {
+      providerId: "fake",
+      modelId: "fake-model",
+      messages: [{ role: "user", content: "修改并检查 probe.txt" }],
+      permissionMode: "full-access",
+      workspacePath,
+    };
+    let rounds = 0;
+    const events: AgentEvent[] = [];
+    for await (const event of runAgent(
+      "finalization-fallback-integration",
+      request,
+      new AbortController().signal,
+      {
+        getProvider: fakeProvider(),
+        async *streamTurn(args) {
+          rounds += 1;
+          if (!args.toolsEnabled) throw new Error(finalizationError);
+          const calls =
+            rounds === 1
+              ? [
+                  {
+                    id: "failed-mutation-before-fallback",
+                    name: "apply_patch" as const,
+                    input: { patch: "not a patch" },
                   },
-                },
-              ];
-        yield {
-          type: "complete",
-          turn: {
-            text: "继续核对。",
-            calls,
-            rawCalls: [],
-            usage: { input: 10, output: 5, cached: 0 },
-          },
-        };
+                ]
+              : [
+                  {
+                    id: `fallback-read-${rounds}`,
+                    name: "read_file" as const,
+                    input: {
+                      path: "probe.txt",
+                      startLine: rounds,
+                      endLine: rounds,
+                    },
+                  },
+                ];
+          yield {
+            type: "complete",
+            turn: {
+              text: "继续核对。",
+              calls,
+              rawCalls: [],
+              usage: { input: 10, output: 5, cached: 0 },
+            },
+          };
+        },
       },
-    },
-  ))
-    events.push(event);
+    ))
+      events.push(event);
 
-  assert.equal(rounds, 11);
-  assert.equal(
-    events.some((event) => event.type === "error"),
-    false,
-  );
-  const done = events.find(
-    (event): event is Extract<AgentEvent, { type: "done" }> =>
-      event.type === "done",
-  );
-  assert.equal(done?.outcome, "paused");
-  assert.equal(done?.result?.kind, "incomplete");
-  assert.match(done?.result?.notice ?? "", /没有返回最终正文/);
-  assert.ok(
-    events.some(
-      (event) =>
-        event.type === "text" && event.delta.includes("本轮已安全暂停"),
-    ),
-  );
-  assert.equal(
-    events.some(
-      (event) =>
-        event.type === "text" && event.delta.includes("最近一次成功结果"),
-    ),
-    false,
-  );
-});
+    assert.equal(rounds, 11);
+    assert.equal(
+      events.some((event) => event.type === "error"),
+      false,
+    );
+    const done = events.find(
+      (event): event is Extract<AgentEvent, { type: "done" }> =>
+        event.type === "done",
+    );
+    assert.equal(done?.outcome, "paused");
+    assert.equal(done?.result?.kind, "incomplete");
+    assert.match(done?.result?.notice ?? "", /没有返回最终正文/);
+    assert.ok(
+      events.some(
+        (event) =>
+          event.type === "text" && event.delta.includes("本轮已安全暂停"),
+      ),
+    );
+    assert.equal(
+      events.some(
+        (event) =>
+          event.type === "text" && event.delta.includes("最近一次成功结果"),
+      ),
+      false,
+    );
+  });
+}
 
 test("finalizes a completed plan after repeated post-change checks", async () => {
   const workspacePath = await mkdtemp(path.join(os.tmpdir(), "kcode-closing-"));
@@ -666,6 +668,7 @@ test("reopens execution after a completed plan lacks mutation evidence", async (
       async *streamTurn(args) {
         rounds += 1;
         toolsDisabled ||= !args.toolsEnabled;
+        if (rounds < 6) assert.equal(args.toolsEnabled, true);
         recoveryInstructionSeen ||= args.history.some(
           (item) =>
             item.kind === "message" &&
@@ -739,7 +742,11 @@ test("reopens execution after a completed plan lacks mutation evidence", async (
 
   assert.equal(rounds, 6);
   assert.equal(recoveryInstructionSeen, true);
-  assert.equal(toolsDisabled, false);
+  assert.equal(
+    toolsDisabled,
+    true,
+    "finalize only after the missing write succeeds",
+  );
   assert.equal(
     await readFile(path.join(workspacePath, "first.txt"), "utf8"),
     "changed\n",
@@ -1015,6 +1022,11 @@ test("keeps executing after a successful build resets semantic stall state", asy
         ).length;
         if (!args.toolsEnabled) {
           finalizationSeen = true;
+          assert.equal(
+            finished,
+            true,
+            "unfinished deployment must keep tools enabled",
+          );
           yield {
             type: "complete",
             turn: {
@@ -1154,7 +1166,7 @@ test("keeps executing after a successful build resets semantic stall state", asy
   ))
     events.push(event);
 
-  assert.equal(finalizationSeen, false);
+  assert.equal(finalizationSeen, true);
   assert.equal(
     await readFile(path.join(workspacePath, "target.txt"), "utf8"),
     "after\n",

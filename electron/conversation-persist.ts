@@ -68,7 +68,6 @@ export class ConversationWriter {
   private fd: number | null = null;
   private seq = 0;
   private eventCount = 0;
-  private lastEventAt = "";
 
   constructor(
     private requestId: string,
@@ -225,7 +224,6 @@ export class ConversationWriter {
       }
       fs.writeSync(this.fd, line);
       this.eventCount++;
-      this.lastEventAt = now;
     } catch {
       // Non-critical — don't crash the agent for persistence failures
     }

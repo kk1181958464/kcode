@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { AgentToolName, Protocol } from "../src/types";
+import { upstreamStreamError } from "../src/upstream-stream-error";
 
 export type AssembledTurn = {
   text: string;
@@ -71,17 +72,8 @@ export class AgentStreamAssembler {
   ) {}
   consume(event: any) {
     const meaningfulOutputBefore = this.meaningfulOutputVersion;
-    if (
-      event.error?.message ||
-      event.type === "error" ||
-      event.type === "response.failed"
-    )
-      throw new Error(
-        event.error?.message ||
-          event.response?.error?.message ||
-          event.message ||
-          "模型流式请求失败",
-      );
+    const error = upstreamStreamError(event);
+    if (error) throw error;
     // Protocol-level completion markers. Without these, a quiet upstream
     // disconnect looks identical to a finished answer.
     if (event.type === "__sse_done") this.completed = true;

@@ -12,6 +12,17 @@ import {
   shouldUseMysqlTls,
 } from "./mysql";
 
+// mysql2 typings declare a required handler for createServer and a port-only
+// listen(), but the runtime accepts no handler and forwards all listen() args
+// to net.Server.listen.
+type MysqlTestServer = ReturnType<typeof createMysqlServer> & {
+  listen(port: number, host: string, callback: () => void): unknown;
+};
+
+function createTestMysqlServer(): MysqlTestServer {
+  return (createMysqlServer as unknown as () => MysqlTestServer)();
+}
+
 test("defaults public direct MySQL to TLS but not private or tunneled hosts", () => {
   assert.equal(shouldUseMysqlTls("db.example.com", false), true);
   assert.equal(shouldUseMysqlTls("8.8.8.8", false), true);
@@ -64,7 +75,7 @@ test("cancels a pending MySQL handshake without registering a session", async ()
 });
 
 test("streams and truncates a real MySQL protocol result set", async () => {
-  const server = createMysqlServer();
+  const server = createTestMysqlServer();
   const serverConnections = new Set<MysqlServerConnection>();
   server.on("connection", (connection) => {
     serverConnections.add(connection);
@@ -143,7 +154,7 @@ test("streams and truncates a real MySQL protocol result set", async () => {
 });
 
 test("times out a stalled MySQL query and closes the session", async () => {
-  const server = createMysqlServer();
+  const server = createTestMysqlServer();
   const serverConnections = new Set<MysqlServerConnection>();
   server.on("connection", (connection) => {
     serverConnections.add(connection);

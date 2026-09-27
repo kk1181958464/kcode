@@ -423,11 +423,6 @@
 
 /* Navigation */
 
-.task-filter:focus-within {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--focus-ring);
-}
-
 .task-row:not(.dragging):hover {
   background: var(--surface-hover);
 }
@@ -452,7 +447,6 @@
 
 .composer {
   overflow: visible;
-  background: var(--surface-raised);
 }
 
 /* Menus and overlays */
@@ -634,17 +628,9 @@
   --accent-soft: color-mix(in srgb, #5c7fa3 12%, #f7f7f4);
   --accent-ink: #fafaf7;
   --link: #4f7194;
-  --danger: #ef4444;
-  --danger-soft: #fef2f2;
-  --warning: #f59e0b;
-  --warning-soft: #fffbeb;
-  --success: #10b981;
-  --success-soft: #ecfdf5;
   --success-hover: #059669;
   --danger-hover: #dc2626;
   /* Minimal elevation — borders do the work, shadows only for floats. */
-  --surface-selected: #e8f0fe;
-  --focus-ring: rgb(37 99 235 / 26%);
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
@@ -905,14 +891,6 @@ button:not(:disabled) {
 .workspace-flat-row {
   padding-right: 4px;
 }
-.workspace-flat-row.dragging,
-.task-flat-row.dragging {
-  opacity: 0.42;
-}
-.workspace-flat-row.drop-target,
-.task-flat-row.drop-target {
-  box-shadow: inset 0 2px 0 var(--accent);
-}
 .workspace-header {
   display: grid;
   grid-template-columns: 14px 22px 18px minmax(0, 1fr) auto 27px 27px;
@@ -988,9 +966,6 @@ button:not(:disabled) {
   font-size: 11px;
   font-weight: 650;
 }
-.workspace-collapse.collapsed svg {
-  transform: rotate(-90deg);
-}
 .task-flat-row {
   /* Indent is owned by the redesign block (.task-row.task-flat-row). */
   margin: 0 2px 0 0;
@@ -1057,9 +1032,6 @@ button:not(:disabled) {
   cursor: grab;
   opacity: 0;
   pointer-events: none;
-}
-.workspace-collapse svg {
-  transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
 }
 .workspace-collapse[aria-expanded="false"] svg {
   transform: rotate(-90deg);
@@ -1315,7 +1287,6 @@ button:not(:disabled) {
   float: left;
   height: calc(100vh - 32px - 64px - 24px);
   max-height: calc(100% - 24px);
-  padding: 12px 0;
   overflow-y: auto;
   overflow-x: visible;
   overscroll-behavior: contain;
@@ -1330,46 +1301,14 @@ button:not(:disabled) {
   z-index: 8;
   display: grid;
   place-items: center;
-  margin-bottom: -28px;
   padding: 0;
-  border: 1px solid color-mix(in srgb, var(--accent) 48%, var(--line));
-  border-radius: 50%;
   opacity: 0;
   visibility: hidden;
   cursor: pointer;
   pointer-events: none;
-  transform: scale(0.84);
-  transition:
-    opacity 160ms ease,
-    visibility 160ms ease,
-    transform 160ms ease,
-    border-color 120ms ease,
-    background 120ms ease,
-    color 120ms ease;
-}
-.turn-rail-cue.up {
-  top: 5px;
-}
-.turn-rail-cue:hover {
-  border-color: var(--accent);
-  background: var(--surface-raised);
-  color: var(--ink);
-  box-shadow:
-    0 0 0 4px color-mix(in srgb, var(--accent) 16%, transparent),
-    0 5px 14px rgb(0 0 0 / 24%);
-}
-.turn-rail-cue:active {
-  transform: scale(0.93);
-}
-.turn-rail-cue:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
 }
 .turn-rail-cue.up svg {
   animation: turn-rail-cue-up 1.5s ease-in-out infinite;
-}
-.turn-rail-cue.down {
-  top: calc(100% - 33px);
 }
 .turn-rail-cue.down svg {
   animation: turn-rail-cue-down 1.5s ease-in-out infinite;
@@ -1653,13 +1592,9 @@ button:not(:disabled) {
   position: absolute;
   top: 0;
   height: max(100vh, calc(var(--turn-count, 1) * 28px));
-  width: 1px;
 }
 .turn-rail-turn {
   position: relative;
-  width: 40px;
-  height: 28px;
-  min-height: 28px;
   display: block;
   padding: 0;
   border: 0;
@@ -1669,15 +1604,6 @@ button:not(:disabled) {
 .turn-tick {
   position: absolute;
   top: 50%;
-  width: 9px;
-  height: 1px;
-  transition:
-    width 0.12s,
-    height 0.12s,
-    background 0.12s;
-}
-.turn-rail-turn.active .turn-tick {
-  height: 2px;
 }
 .turn-preview {
   position: fixed;
@@ -1880,18 +1806,6 @@ button:not(:disabled) {
   width: 40px;
   pointer-events: none;
 }
-.agent-activity {
-  margin: -8px 0 12px 41px;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  overflow: hidden;
-}
-.execution-summary {
-  overflow: visible;
-  border: 0;
-  background: transparent;
-}
 .execution-summary.has-failures > .execution-summary-head {
   color: var(--danger);
 }
@@ -1934,9 +1848,6 @@ button:not(:disabled) {
   border-radius: 0;
   box-shadow: none;
 }
-.execution-summary-detail .agent-activity:last-child {
-  border-bottom: 0;
-}
 .execution-history-more {
   width: 100%;
   min-height: 40px;
@@ -1963,21 +1874,11 @@ button:not(:disabled) {
 .assistant-timeline {
   min-width: 0;
 }
-.completed-process {
-  margin: 1px 0 13px;
-  border-bottom: 1px solid var(--line);
-}
 .completed-process-trigger {
   width: 100%;
-  min-height: 32px;
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 9px;
-  padding: 2px 0 7px;
   border: 0;
   background: transparent;
-  font-size: 10.5px;
   text-align: left;
 }
 .completed-process-state,
@@ -1989,25 +1890,18 @@ button:not(:disabled) {
   align-items: center;
 }
 .completed-process-state {
-  gap: 5px;
   white-space: nowrap;
 }
 .completed-process-state > svg {
   color: var(--success);
-}
-.completed-process-state strong {
-  font-weight: 600;
 }
 .completed-process-trigger time {
   color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
 .completed-process-metrics {
-  gap: 0;
-  overflow: hidden;
   color: var(--muted);
   font-size: 9.5px;
-  white-space: nowrap;
 }
 .completed-process-metrics > span {
   flex: 0 0 auto;
@@ -2036,7 +1930,6 @@ button:not(:disabled) {
   text-overflow: ellipsis;
 }
 .completed-process-chevron {
-  flex: none;
   transition: transform 160ms ease;
 }
 .completed-process.expanded .completed-process-chevron {
@@ -2053,12 +1946,6 @@ button:not(:disabled) {
 .completed-process.blocked .completed-process-state > svg,
 .completed-process.blocked .completed-process-state strong {
   color: var(--accent-strong);
-}
-.completed-process-body {
-  padding: 3px 0 10px;
-}
-.completed-process + .markdown-block {
-  margin-top: 0;
 }
 @media (max-width: 860px) {
   .completed-process-executor {
@@ -2107,8 +1994,6 @@ button:not(:disabled) {
 .activity-head {
   width: 100%;
   display: flex;
-  align-items: center;
-  gap: 9px;
   border: 0;
   background: transparent;
   text-align: left;
@@ -2227,14 +2112,8 @@ button:not(:disabled) {
   transform: rotate(180deg);
 }
 .activity-icon {
-  width: 27px;
-  height: 27px;
   display: grid;
   place-items: center;
-  border: 1px solid var(--line);
-  border-radius: 5px;
-  background: var(--surface-raised);
-  color: var(--muted);
 }
 .activity-title {
   min-width: 0;
@@ -2245,13 +2124,7 @@ button:not(:disabled) {
 .activity-title-line {
   min-width: 0;
   display: flex;
-  align-items: center;
   gap: 6px;
-}
-.activity-title strong {
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 550;
 }
 .activity-title-line > strong {
   min-width: 0;
@@ -2286,9 +2159,7 @@ button:not(:disabled) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--muted);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 10px;
 }
 .activity-status {
   color: var(--muted);
@@ -2312,16 +2183,10 @@ button:not(:disabled) {
 .diff-count i {
   font-style: normal;
 }
-.activity-detail {
-  border-top: 1px solid var(--line);
-  background: var(--surface-raised);
-}
 .activity-purpose {
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--line);
   color: var(--accent);
 }
 .activity-purpose > svg {
@@ -2338,9 +2203,6 @@ button:not(:disabled) {
   font-size: 10px;
 }
 .activity-purpose small {
-  color: var(--muted);
-  font-size: 10px;
-  line-height: 1.5;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -2349,7 +2211,6 @@ button:not(:disabled) {
   align-items: flex-start;
   gap: 8px;
   padding: 10px 12px;
-  background: var(--danger-soft);
   color: var(--danger);
 }
 .activity-error-reason > svg {
@@ -2588,10 +2449,7 @@ button:not(:disabled) {
   font-size: 10px !important;
 }
 .run-state i {
-  width: 5px;
-  height: 5px;
   border-radius: 50%;
-  animation: pulse 1.2s ease-in-out infinite;
 }
 .error-state {
   background: var(--danger-soft);
@@ -2617,9 +2475,6 @@ button:not(:disabled) {
 
 /* Direct text-node appends do not schedule React. Hide the initial planning
    state as soon as the first visible answer character lands. */
-.streaming-message-text:not(:empty) + .agent-working {
-  display: none;
-}
 
 .execution-narration-preview {
   max-width: 760px;
@@ -2882,7 +2737,6 @@ button:not(:disabled) {
   height: 5px;
   border-radius: 50%;
   background: var(--accent);
-  animation: thinking-dot 1s ease-in-out infinite;
 }
 .thinking span:nth-child(2) {
   animation-delay: 0.14s;
@@ -2892,92 +2746,6 @@ button:not(:disabled) {
   margin-right: 4px;
 }
 @keyframes thinking-dot {
-  0%,
-  80%,
-  100% {
-    opacity: 0.35;
-    transform: translateY(0);
-  }
-  40% {
-    opacity: 1;
-    transform: translateY(-3px);
-  }
-}
-.agent-working {
-  width: min(100%, 620px);
-  display: grid;
-  gap: 0;
-  margin: 6px 0 2px;
-  padding: 0;
-}
-.agent-working-head {
-  position: relative;
-  isolation: isolate;
-  width: 100%;
-  min-height: 40px;
-  overflow: hidden;
-  display: grid;
-  grid-template-columns: 20px minmax(0, 1fr);
-  align-items: center;
-  gap: 7px;
-  padding: 4px 6px;
-  border-radius: 6px;
-  background: color-mix(in srgb, var(--surface-muted) 58%, transparent);
-}
-.agent-working-head::before {
-  content: "";
-  position: absolute;
-  inset: 0 auto 0 -38%;
-  z-index: 0;
-  width: 38%;
-  pointer-events: none;
-  background: linear-gradient(
-    90deg,
-    transparent,
-    color-mix(in srgb, var(--accent) 13%, transparent),
-    transparent
-  );
-  opacity: 0;
-  animation: execution-summary-sweep 2.15s ease-in-out infinite;
-}
-.agent-working-head > * {
-  position: relative;
-  z-index: 1;
-}
-.agent-working-mark {
-  width: 20px;
-  height: 20px;
-  display: grid;
-  place-items: center;
-  border-radius: 5px;
-}
-.agent-working-copy {
-  min-width: 0;
-  display: flex;
-  align-items: center;
-}
-.agent-working-head strong {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--ink);
-  font-size: 11px;
-  font-weight: 620;
-  line-height: 1.25;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.agent-working-reasoning {
-  max-height: 48px;
-  margin: 2px 6px 0 33px;
-  padding: 0;
-  overflow: hidden;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  font-size: 10px;
-  line-height: 1.5;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
 }
 .live-dot {
   flex: 0 0 auto;
@@ -3118,14 +2886,9 @@ button:not(:disabled) {
   align-items: center;
 }
 .context-button {
-  height: 30px;
   display: flex;
   align-items: center;
   gap: 6px;
-  border: 0;
-  border-radius: 5px;
-  background: transparent;
-  color: var(--muted);
   font-size: 11px;
 }
 .context-button:hover:not(:disabled) {
@@ -3470,10 +3233,6 @@ button:not(:disabled) {
   animation: menu-in 0.12s ease-out;
 }
 @keyframes menu-in {
-  from {
-    opacity: 0.4;
-    transform: translateY(4px);
-  }
 }
 .model-menu [role="listbox"] section + section {
   margin-top: 6px;
@@ -3562,10 +3321,6 @@ button:not(:disabled) {
   height: 100%;
 }
 @keyframes submenu-in {
-  from {
-    opacity: 0.5;
-    transform: translateX(-3px);
-  }
 }
 .model-menu [role="listbox"] section > header {
   height: 27px;
@@ -4324,12 +4079,6 @@ button:not(:disabled) {
   align-items: flex-start;
 }
 @keyframes overlay-in {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
 }
 .settings-panel > header {
   height: 94px;
@@ -5122,10 +4871,6 @@ button:not(:disabled) {
   background: var(--danger-hover);
 }
 @keyframes modal-in {
-  from {
-    transform: translateY(6px);
-    opacity: 0.5;
-  }
 }
 .form-grid {
   display: grid;
@@ -5137,7 +4882,6 @@ button:not(:disabled) {
   flex-direction: column;
   gap: 6px;
   font-size: 11px;
-  color: var(--muted);
 }
 .form-grid .wide {
   grid-column: 1 / -1;
@@ -5246,7 +4990,6 @@ select:focus {
 }
 .primary {
   border: 1px solid var(--accent);
-  background: var(--accent);
   color: var(--accent-ink);
 }
 .danger-button {
@@ -5644,7 +5387,6 @@ select:focus {
   border-color: var(--line);
 }
 :root[data-theme="dark"] .sidebar {
-  background: var(--sidebar-surface);
   border-color: var(--line);
 }
 :root[data-theme="dark"] .settings-layer {
@@ -5666,9 +5408,6 @@ select:focus {
 :root[data-theme="dark"] .update-dialog > header,
 :root[data-theme="dark"] .update-dialog > footer {
   border-color: var(--line);
-}
-:root[data-theme="dark"] .topbar {
-  box-shadow: none;
 }
 :root[data-theme="dark"] .window-titlebar > span,
 :root[data-theme="dark"] .window-controls button,
@@ -5729,16 +5468,6 @@ select:focus {
   background: var(--surface-raised);
   color: var(--ink);
 }
-:root[data-theme="dark"] .composer-wrap {
-  background: linear-gradient(to top, var(--surface) 78%, transparent);
-}
-:root[data-theme="dark"] .composer {
-  box-shadow: 0 8px 26px rgb(0 0 0 / 18%);
-}
-:root[data-theme="dark"] .composer:focus-within {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px var(--focus-ring);
-}
 :root[data-theme="dark"] .message.assistant .message-body,
 :root[data-theme="dark"] .message-body {
   color: var(--ink);
@@ -5756,8 +5485,6 @@ select:focus {
   background: var(--surface-muted);
 }
 :root[data-theme="dark"] .code-block {
-  border-color: var(--line);
-  background: var(--code-surface);
   color: var(--code-ink);
 }
 :root[data-theme="dark"] .code-toolbar {
@@ -5996,12 +5723,6 @@ select:focus-visible {
   min-width: 0;
 }
 
-.agent-working-reasoning:not([data-has-static="true"]):not(
-    :has(.streaming-status-leaf:not([hidden]))
-  ) {
-  display: none;
-}
-
 /* Button system — maps to the classes used by App.tsx */
 .primary,
 .secondary,
@@ -6119,12 +5840,10 @@ select:focus-visible {
   width: 30px;
   height: 30px;
   border-radius: var(--radius-sm);
-  background: var(--surface-raised);
 }
 
 .message.assistant .message-body {
   padding: 2px 0;
-  color: var(--ink);
 }
 
 .run-state,
@@ -6134,10 +5853,6 @@ select:focus-visible {
 
 .run-state {
   background: var(--accent-soft);
-}
-
-.run-state i {
-  background: var(--accent);
 }
 
 .message-body a {
@@ -6168,17 +5883,10 @@ select:focus-visible {
 /* Tool execution and file changes */
 .execution-summary-detail {
   border-color: var(--line);
-  border-radius: var(--radius-md);
-  background: var(--surface-raised);
-  box-shadow: var(--shadow-soft);
 }
 
 /* Tool calls are footnotes to the prose, so the card chrome is gone. Status
    used to ride on a 3px colored left border; it now rides on the icon. */
-.agent-activity {
-  position: relative;
-  border: 0;
-}
 
 .agent-activity.running .activity-icon {
   color: var(--accent);
@@ -6199,19 +5907,11 @@ select:focus-visible {
 }
 
 .execution-summary-icon {
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  color: var(--muted);
   box-shadow: none;
 }
 
 /* Bare glyph, no chip. Colour is set by the status rules above. */
 .activity-icon {
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  color: var(--muted);
   box-shadow: none;
 }
 
@@ -6247,7 +5947,6 @@ select:focus-visible {
 /* Composer */
 
 .composer {
-  max-width: 900px;
   padding: 0;
 }
 
@@ -6465,9 +6164,6 @@ select:focus-visible {
 }
 
 /* Dark theme is a full surface system, not a filter. */
-:root[data-theme="dark"] .topbar {
-  background: color-mix(in srgb, var(--surface-raised) 90%, transparent);
-}
 
 :root[data-theme="dark"] .settings-panel,
 :root[data-theme="dark"] .settings-layout,
@@ -6484,45 +6180,18 @@ select:focus-visible {
   color: var(--ink);
 }
 
-:root[data-theme="dark"] .message.user .message-body {
-  border-color: color-mix(in srgb, var(--accent) 20%, var(--line));
-  background: var(--surface-selected);
-}
-
 :root[data-theme="dark"] .activity-error-reason small,
 :root[data-theme="dark"] .activity-exit-note small {
   color: inherit;
 }
 
 @keyframes kcode-overlay-in {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
 }
 
 @keyframes kcode-dialog-in {
-  from {
-    opacity: 0;
-    transform: translateY(8px) scale(0.985);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
 }
 
 @keyframes kcode-menu-in {
-  from {
-    opacity: 0;
-    transform: translateY(5px) scale(0.985);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
 }
 
 @media (max-width: 620px) {
@@ -6984,13 +6653,6 @@ button[aria-busy="true"] {
   cursor: progress;
 }
 
-.turn-rail-cue.visible {
-  opacity: 1;
-  visibility: visible;
-  pointer-events: auto;
-  transform: scale(1);
-}
-
 @media (max-width: 860px) {
   .app-shell:not(.browser-open) {
     position: relative;
@@ -7190,16 +6852,6 @@ button[aria-busy="true"] {
   box-shadow: 0 0 0 2px var(--success-soft);
 }
 /* --- Agent working indicator (was warm green) --- */
-.agent-working {
-  color: var(--muted);
-}
-.agent-working-mark {
-  background: transparent;
-  color: var(--accent);
-}
-.agent-working-reasoning {
-  color: var(--muted);
-}
 .thinking span,
 .live-dot,
 .conversation-history-loader span {
@@ -7208,7 +6860,6 @@ button[aria-busy="true"] {
 
 /* --- Assistant avatar mark --- */
 .message-avatar {
-  border-color: var(--line);
   color: var(--muted);
 }
 
@@ -7301,7 +6952,7 @@ button[aria-busy="true"] {
 .restore-dialog footer {
   border-top-color: var(--line);
 }
-.task-name-field,
+
 .form-grid label {
   color: var(--muted);
 }
@@ -7364,17 +7015,6 @@ button[aria-busy="true"] {
 /* ========================================================================== */
 
 /* 1) User message: solid accent bubble with white text (ChatGPT-style) */
-.message.user .message-body {
-  padding: 12px 15px !important;
-  border: 0 !important;
-  border-radius: 16px 16px 4px 16px !important;
-  background: var(--accent) !important;
-  color: #fff !important;
-  box-shadow: 0 4px 14px var(--focus-ring) !important;
-}
-.message.user .message-body a {
-  text-decoration: underline;
-}
 
 /* 2) Assistant avatar: solid accent square, brand-forward */
 .message-avatar.assistant,
@@ -7454,16 +7094,12 @@ button[aria-busy="true"] {
 .message.assistant .message-avatar {
   color: var(--accent-ink) !important;
 }
-.message.user .message-body a {
-  color: var(--accent-ink) !important;
-}
 .message.user .message-body :not(pre) > code {
   border-color: color-mix(
     in srgb,
     var(--accent-ink) 26%,
     transparent
   ) !important;
-  background: color-mix(in srgb, var(--accent-ink) 14%, transparent) !important;
   color: var(--accent-ink) !important;
 }
 /* Danger fills always take white ink (danger stays red in both themes). */
@@ -7776,10 +7412,6 @@ button[aria-busy="true"] {
   padding-top: 8px;
 }
 
-.main {
-  background: var(--surface);
-}
-
 .topbar {
   height: 56px;
   padding-inline: 18px 14px;
@@ -8066,7 +7698,6 @@ button[aria-busy="true"] {
   isolation: isolate;
   overflow: hidden;
   grid-template-columns: 20px minmax(0, 1fr) 14px;
-  gap: 7px;
 }
 
 .execution-summary-head::before {
@@ -8148,11 +7779,8 @@ button[aria-busy="true"] {
 
 .execution-summary-statline {
   min-width: 0;
-  display: flex;
   align-items: center;
   overflow: hidden;
-  color: var(--muted);
-  font-size: 9px;
   line-height: 1.2;
   white-space: nowrap;
 }
@@ -8213,11 +7841,6 @@ button[aria-busy="true"] {
 
 .execution-summary-toolline {
   min-width: 0;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 3px 9px;
-  margin: 0 6px 4px 33px;
   color: var(--muted);
   font-size: 9.5px;
   line-height: 1.45;
@@ -8232,8 +7855,6 @@ button[aria-busy="true"] {
 }
 
 .execution-summary-tool > i {
-  width: 5px;
-  height: 5px;
   flex: 0 0 auto;
   border-radius: 50%;
   background: var(--muted);
@@ -8277,13 +7898,6 @@ button[aria-busy="true"] {
   animation: pulse 1.3s ease-in-out infinite;
 }
 
-.execution-summary-tool b {
-  flex: 0 0 auto;
-  color: var(--muted);
-  font-size: 9.5px;
-  font-weight: 550;
-}
-
 .execution-summary-tool-model {
   display: inline-flex;
   align-items: center;
@@ -8297,7 +7911,6 @@ button[aria-busy="true"] {
 .execution-summary-tool code {
   min-width: 0;
   overflow: hidden;
-  color: var(--muted);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -8440,10 +8053,6 @@ button[aria-busy="true"] {
   font-size: 9px;
 }
 
-.execution-plan-spinner {
-  animation: execution-plan-spin 1.1s linear infinite;
-}
-
 @keyframes execution-plan-spin {
   to {
     transform: rotate(360deg);
@@ -8471,9 +8080,6 @@ button[aria-busy="true"] {
 .execution-summary-narrative-label {
   flex: 0 0 auto;
   padding-top: 1px;
-  color: var(--accent);
-  font-size: 9px;
-  font-weight: 650;
   white-space: nowrap;
 }
 
@@ -8508,7 +8114,6 @@ button[aria-busy="true"] {
 .assistant-tail-state > svg {
   flex: 0 0 auto;
   margin-top: 2px;
-  color: var(--accent);
 }
 
 .assistant-tail-state > span {
@@ -8552,31 +8157,9 @@ button[aria-busy="true"] {
 .streaming-progress-leaf:not([hidden]),
 .assistant-tail-fallback {
   color: var(--muted);
-  animation: streaming-progress-breathe 2.1s linear infinite;
-  will-change: background-position;
 }
 
 @supports ((-webkit-background-clip: text) or (background-clip: text)) {
-  .streaming-progress-leaf:not([hidden]),
-  .assistant-tail-fallback {
-    background: repeating-linear-gradient(
-      90deg,
-      var(--muted) 0%,
-      var(--muted) 16%,
-      var(--ink) 25%,
-      var(--muted) 34%,
-      var(--muted) 50%
-    );
-    background-size: 200% 100%;
-    background-position: 100% 0;
-    -webkit-background-clip: text;
-    background-clip: text;
-    -webkit-text-fill-color: transparent;
-  }
-}
-
-.assistant-tail-state > svg {
-  animation: pulse 1.45s ease-in-out infinite;
 }
 
 .assistant-tail-state:has(.streaming-status-leaf:not([hidden]))
@@ -8740,17 +8323,9 @@ button[aria-busy="true"] {
 }
 
 @keyframes execution-summary-sweep {
-  0% {
-    opacity: 0;
-    transform: translateX(0);
-  }
   18%,
   76% {
     opacity: 1;
-  }
-  100% {
-    opacity: 0;
-    transform: translateX(365%);
   }
 }
 
@@ -9019,12 +8594,6 @@ button[aria-busy="true"] {
 }
 
 @keyframes streaming-progress-breathe {
-  from {
-    background-position: 100% 0;
-  }
-  to {
-    background-position: 0 0;
-  }
 }
 
 @media (max-width: 620px) {
@@ -9050,18 +8619,10 @@ button[aria-busy="true"] {
 
 @media (prefers-reduced-motion: reduce) {
   .execution-summary.is-active > .execution-summary-head::before,
-  .agent-working-head::before,
   .streaming-progress-leaf:not([hidden]),
   .assistant-tail-fallback,
   .assistant-tail-state > svg {
     animation: none;
-  }
-
-  .streaming-progress-leaf:not([hidden]),
-  .assistant-tail-fallback {
-    background: none;
-    color: var(--muted);
-    -webkit-text-fill-color: currentColor;
   }
 }
 
@@ -9135,10 +8696,6 @@ button[aria-busy="true"] {
   width: 42%;
   opacity: 0;
   pointer-events: none;
-}
-
-.status-run-overview.is-running::before {
-  animation: status-rail-sweep 2.4s ease-in-out infinite;
 }
 
 .status-run-overview.is-running .status-section-heading > span {
@@ -9289,22 +8846,7 @@ button[aria-busy="true"] {
 
 .status-file-row {
   min-width: 0;
-  width: 100%;
-  display: grid;
-  grid-template-columns: 14px minmax(0, 1fr) auto 13px;
-  align-items: center;
-  gap: 6px;
-  padding: 0 3px;
-  border: 0;
-  background: transparent;
-  text-align: left;
   cursor: pointer;
-}
-
-.status-file-row:hover,
-.status-file-row.is-active {
-  background: var(--surface-hover);
-  color: var(--ink);
 }
 
 .status-file-row > span {
@@ -9325,17 +8867,6 @@ button[aria-busy="true"] {
 .status-file-row:hover > svg:last-child,
 .status-file-row.is-active > svg:last-child {
   opacity: 1;
-}
-
-.status-changes-section .git-diff-toggle {
-  min-height: 29px;
-  margin-top: 8px;
-  border-color: var(--line);
-  background: transparent !important;
-}
-
-.status-changes-section .git-diff-toggle:hover {
-  background: var(--surface-hover) !important;
 }
 
 .git-diff-layer {
@@ -9594,10 +9125,6 @@ button[aria-busy="true"] {
   color: var(--danger);
 }
 
-.status-result-row.active > svg {
-  color: var(--accent);
-}
-
 .status-result-row > span {
   min-width: 0;
   display: grid;
@@ -9700,47 +9227,6 @@ button[aria-busy="true"] {
   background: var(--surface-hover) !important;
 }
 
-.status-model-line {
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: auto;
-}
-
-.status-model-line > svg {
-  flex: 0 0 auto;
-}
-
-.status-model-line > span {
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  overflow: hidden;
-  font-size: 9px;
-}
-
-.status-model-line strong {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--muted);
-  font-weight: 550;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.status-model-line small {
-  flex: 0 0 auto;
-  color: color-mix(in srgb, var(--muted) 72%, transparent);
-  font-size: 8.5px;
-}
-
-.status-model-line small::before {
-  content: "·";
-  margin-right: 5px;
-}
-
 @keyframes status-rail-sweep {
   0% {
     opacity: 0;
@@ -9778,7 +9264,6 @@ button[aria-busy="true"] {
 .composer-chips {
   display: flex;
   align-items: center;
-  gap: 6px;
   min-width: 0;
   flex: 1 1 auto;
   /* Must stay visible: model/effort/permission menus open upward with
@@ -9847,7 +9332,6 @@ button[aria-busy="true"] {
 }
 
 .model-trigger {
-  width: 100%;
   min-width: 0;
 }
 
@@ -10273,9 +9757,6 @@ button[aria-busy="true"] {
   color: var(--ui-text-secondary);
   background: var(--ui-canvas);
 }
-:root[data-theme="dark"] body {
-  background: var(--ui-canvas);
-}
 :root[data-theme="dark"] .composer-wrap {
   background: transparent;
 }
@@ -10540,7 +10021,6 @@ button[aria-busy="true"] {
    Sidebar is slightly recessed vs the main cream canvas — same hierarchy as dark. */
 :root {
   --ui-titlebar-height: 34px;
-  --ui-topbar-height: 58px;
   --ui-status-width: 288px;
   --ui-reading-width: 920px;
   --ui-base: #26251e;
@@ -10564,10 +10044,6 @@ button[aria-busy="true"] {
   --ui-shadow-input: none;
   --ui-radius-control: 6px;
   --ui-radius-panel: 8px;
-  --ui-motion-fast: 110ms;
-  --ui-motion: 170ms;
-  --ui-motion-slow: 240ms;
-  --ui-ease: cubic-bezier(0.22, 1, 0.36, 1);
 
   --ink: var(--ui-text);
   --muted: var(--ui-text-tertiary);
@@ -10591,10 +10067,6 @@ button[aria-busy="true"] {
   --radius-sm: var(--ui-radius-control);
   --radius-md: var(--ui-radius-panel);
   --radius-lg: var(--ui-radius-panel);
-  --motion-fast: var(--ui-motion-fast);
-  --motion-standard: var(--ui-motion);
-  --motion-slow: var(--ui-motion-slow);
-  --motion-ease: var(--ui-ease);
   --success: #3fa266;
   --success-soft: color-mix(in srgb, var(--success) 12%, transparent);
   --warning: #d2943e;
@@ -10691,34 +10163,18 @@ button[aria-busy="true"] {
 .workspace-view-switch {
   display: flex;
   align-items: center;
-  gap: 2px;
-  padding: 2px;
-  border: 1px solid var(--ui-border);
-  border-radius: var(--ui-radius-control);
-  background: var(--ui-inset);
 }
 
 .workspace-view-switch > button {
-  height: 27px;
   display: flex;
   align-items: center;
-  gap: 5px;
-  padding: 0 10px;
   border: 0;
-  border-radius: 4px;
   background: transparent;
   color: var(--ui-text-tertiary);
-  font-size: 10px;
 }
 
 .workspace-view-switch > button:hover {
   color: var(--ui-text);
-}
-
-.workspace-view-switch > button.active {
-  background: var(--ui-elevated);
-  color: var(--ui-text);
-  box-shadow: 0 1px 3px rgb(0 0 0 / 10%);
 }
 
 .ssh-remote-dialog-layer {
@@ -12128,9 +11584,6 @@ select:focus-visible {
 
 .topbar,
 :root[data-theme="dark"] .topbar {
-  min-height: var(--ui-topbar-height);
-  height: var(--ui-topbar-height);
-  padding: 0 14px;
   border-bottom: 1px solid var(--ui-border);
   background: color-mix(in srgb, var(--ui-canvas) 96%, var(--ui-elevated));
   box-shadow: none;
@@ -12144,20 +11597,14 @@ select:focus-visible {
 .topbar h1,
 :root[data-theme="dark"] .topbar h1 {
   max-width: min(52vw, 620px);
-  margin: 0 0 3px;
   overflow: hidden;
   color: var(--ui-text);
-  font-size: 13px;
-  font-weight: 650;
-  line-height: 1.25;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .topbar span {
-  gap: 4px;
   color: var(--ui-text-tertiary);
-  font-size: 9.5px;
 }
 
 .topbar span i {
@@ -12294,16 +11741,8 @@ select:focus-visible {
   scrollbar-gutter: stable;
 }
 
-.message-list {
-  width: min(100%, var(--ui-reading-width));
-  max-width: var(--ui-reading-width);
-  padding: 30px 30px 124px 54px;
-}
-
 .message {
   grid-template-columns: 28px minmax(0, 1fr);
-  gap: 11px;
-  margin-bottom: 28px;
 }
 
 .message.user {
@@ -12577,40 +12016,8 @@ select:focus-visible {
   color: var(--success);
 }
 
-.turn-rail {
-  width: 38px;
-  margin-right: -38px;
-}
-
-.turn-rail-line::before {
-  left: 13px;
-  background: var(--ui-border);
-}
-
-.turn-tick {
-  left: 9px;
-  background: var(--ui-border-strong);
-}
-
-.turn-rail-turn:hover .turn-tick {
-  width: 16px;
-  background: var(--ui-text-tertiary);
-}
-
-.turn-rail-turn.active .turn-tick {
-  left: 7px;
-  width: 16px;
-  background: var(--accent);
-}
-
 .turn-rail-cue {
-  left: 4px;
-  width: 28px;
-  height: 28px;
   border-color: color-mix(in srgb, var(--accent) 40%, var(--ui-border));
-  background: var(--ui-elevated);
-  color: var(--accent);
-  box-shadow: var(--ui-shadow-input);
 }
 
 .turn-preview,
@@ -12633,13 +12040,8 @@ select:focus-visible {
 }
 
 /* Execution timeline */
-.execution-summary {
-  margin: 2px 0 7px;
-}
 
 .execution-summary-head {
-  min-height: 36px;
-  padding: 4px 6px;
   border-radius: var(--ui-radius-control);
   color: var(--ui-text-secondary);
 }
@@ -12708,19 +12110,6 @@ select:focus-visible {
   box-shadow: none;
 }
 
-.execution-summary-detail .agent-activity,
-:root[data-theme="dark"] .execution-summary-detail .agent-activity {
-  border: 0;
-  border-bottom: 1px solid var(--ui-border);
-  border-radius: 0;
-  background: transparent;
-}
-
-.activity-head {
-  min-height: 40px;
-  padding: 6px 8px;
-}
-
 .activity-head:hover {
   background: var(--ui-hover);
 }
@@ -12762,18 +12151,6 @@ select:focus-visible {
   border-bottom-color: var(--ui-border);
 }
 
-.completed-process-trigger {
-  color: var(--ui-text-tertiary);
-}
-
-.completed-process-trigger:hover {
-  color: var(--ui-text);
-}
-
-.completed-process-state strong {
-  color: var(--ui-text);
-}
-
 :root[data-theme="dark"] .file-changes-summary {
   border-color: var(--ui-border);
   border-radius: var(--ui-radius-panel);
@@ -12798,7 +12175,6 @@ select:focus-visible {
 /* Composer */
 .composer-wrap {
   z-index: 15;
-  padding: 0 18px 14px;
   background: transparent;
 }
 
@@ -12923,10 +12299,6 @@ body.resizing-composer * {
 }
 
 .composer-tools {
-  gap: 6px;
-}
-
-.composer-chips {
   gap: 6px;
 }
 
@@ -13112,14 +12484,6 @@ body.resizing-composer * {
 }
 
 @keyframes ui-pop-in {
-  from {
-    opacity: 0;
-    transform: translateY(4px) scale(0.985);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
 }
 
 @media (max-width: 700px) {
@@ -13266,8 +12630,6 @@ body.resizing-composer * {
 
 .status-file-row {
   min-height: 32px;
-  border-radius: 4px;
-  color: var(--ui-text-secondary);
 }
 
 .status-file-row:hover,
@@ -13375,12 +12737,6 @@ body.resizing-composer * {
   color: var(--ui-text-tertiary);
 }
 
-.context-auto-compact-note {
-  color: var(--warning);
-  font-size: 8.5px;
-  text-align: right;
-}
-
 .compact-context-button,
 :root[data-theme="dark"] .compact-context-button {
   min-height: 31px;
@@ -13397,68 +12753,6 @@ body.resizing-composer * {
   color: var(--ui-text);
 }
 
-.status-model-line {
-  min-height: 36px;
-  padding: 7px 6px 3px;
-  color: var(--ui-text-tertiary);
-}
-
-.work-panel-header {
-  position: sticky;
-  top: 0;
-  z-index: 2;
-  flex: 0 0 auto;
-  padding: 2px 0 8px !important;
-  border-bottom: 1px solid var(--ui-border);
-  background: var(--ui-panel);
-}
-
-.work-panel-tabs {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 3px;
-  padding: 3px;
-  border: 1px solid var(--ui-border);
-  border-radius: 999px;
-  background: var(--ui-inset);
-}
-
-.work-panel-tabs > button {
-  min-height: 26px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  padding: 0 8px;
-  border: 0;
-  border-radius: 999px;
-  background: transparent;
-  color: var(--ui-text-tertiary);
-  font-size: 11px;
-}
-
-.work-panel-tabs > button:hover {
-  color: var(--ui-text);
-}
-
-.work-panel-tabs > button.is-active {
-  background: var(--ui-elevated);
-  color: var(--ui-text);
-  box-shadow: 0 1px 2px color-mix(in srgb, var(--ink) 9%, transparent);
-}
-
-.work-panel-tabs > button > b {
-  min-width: 14px;
-  height: 14px;
-  padding: 0 4px;
-  border-radius: 7px;
-  background: color-mix(in srgb, var(--accent) 16%, transparent);
-  color: var(--accent);
-  font-size: 9px;
-  font-weight: 650;
-  line-height: 14px;
-}
-
 .work-panel-body {
   min-height: 0;
   flex: 1 1 auto;
@@ -13466,14 +12760,7 @@ body.resizing-composer * {
   overscroll-behavior: contain;
 }
 
-.work-panel-pane[hidden] {
-  display: none;
-}
-
 .work-panel-empty {
-  margin: 18px 6px;
-  color: var(--ui-text-tertiary);
-  font-size: 11px;
   line-height: 1.5;
 }
 
@@ -13500,26 +12787,7 @@ body.resizing-composer * {
   color: var(--ui-text);
 }
 
-.work-panel-diff .diff-view {
-  margin: 0;
-  border: 0;
-  border-radius: 0;
-}
-
-.work-panel-diff .git-diff-loading,
-.work-panel-diff .git-diff-empty {
-  min-height: 180px;
-}
-
 @keyframes ui-rail-in {
-  from {
-    opacity: 0;
-    transform: translateX(8px);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
 }
 
 /* Browser workspace */
@@ -14304,25 +13572,9 @@ body.resizing-composer * {
 }
 
 @keyframes ui-sheet-in {
-  from {
-    opacity: 0;
-    transform: translateX(18px);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
 }
 
 @keyframes ui-dialog-in {
-  from {
-    opacity: 0;
-    transform: translateY(7px) scale(0.985);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
 }
 
 @media (max-width: 700px) {
@@ -14616,16 +13868,6 @@ body.resizing-composer * {
   box-shadow: none;
 }
 
-.message.user .message-content {
-  max-width: min(640px, 88%);
-  padding: 10px 14px;
-  border: 0;
-  border-radius: 14px 14px 4px 14px;
-  background: var(--accent);
-  color: var(--accent-ink);
-  box-shadow: none;
-}
-
 .message.user .message-content a {
   color: #dbeafe;
 }
@@ -14638,28 +13880,6 @@ body.resizing-composer * {
 .message-avatar {
   border-color: transparent;
   background: transparent;
-}
-
-.completed-process {
-  margin: 0 0 10px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--surface-raised) 82%, transparent);
-}
-
-.completed-process-trigger {
-  min-height: 34px;
-  gap: 8px;
-  padding: 6px 10px;
-  font-size: 11px;
-}
-
-.completed-process-body {
-  padding: 0 10px 8px;
-}
-
-.completed-process + .markdown-block {
-  margin-top: 8px;
 }
 
 /* Composer: floating restrained bar */
@@ -14706,10 +13926,7 @@ body.resizing-composer * {
 .status-file-row {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto auto;
-  align-items: center;
-  gap: 8px;
   width: 100%;
-  padding: 7px 8px;
   border: 0;
   border-radius: 8px;
   background: transparent;
@@ -14726,33 +13943,19 @@ body.resizing-composer * {
 .status-file-row-name {
   min-width: 0;
   display: grid;
-  gap: 1px;
 }
 
 .status-file-row-name strong {
   overflow: hidden;
-  font-size: 11px;
-  font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: inherit;
 }
 
 .status-file-row-name em {
   overflow: hidden;
   font-style: normal;
-  font-size: 9px;
-  opacity: 0.62;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.work-panel-tabs button {
-  font-weight: 550;
-}
-
-.work-panel-tabs button.is-active {
-  color: var(--accent);
 }
 
 .sidebar {
@@ -14765,21 +13968,8 @@ body.resizing-composer * {
 
 /* ===== kCode redesign polish v2 ===== */
 
-.completed-process {
-  margin: 0 0 12px !important;
-  border: 0 !important;
-  border-radius: 0 !important;
-  background: transparent !important;
-  box-shadow: none !important;
-  border-bottom: 1px solid color-mix(in srgb, var(--line) 70%, transparent) !important;
-}
-
 .completed-process-trigger {
-  min-height: 28px !important;
   gap: 6px !important;
-  padding: 4px 0 8px !important;
-  font-size: 11px !important;
-  color: var(--muted) !important;
 }
 
 .completed-process-trigger:hover {
@@ -14788,11 +13978,6 @@ body.resizing-composer * {
 
 .completed-process-state {
   gap: 4px !important;
-}
-
-.completed-process-state strong {
-  font-size: 11px !important;
-  font-weight: 600 !important;
 }
 
 .completed-process-metrics,
@@ -14814,10 +13999,7 @@ body.resizing-composer * {
 }
 
 .message-list {
-  width: min(100%, var(--ui-reading-width));
-  max-width: var(--ui-reading-width);
   /* left 54px keeps avatars clear of the turn-rail (40px) */
-  padding: 30px 28px 124px 54px;
 }
 
 .message {
@@ -14907,10 +14089,6 @@ body.resizing-composer * {
   margin-top: 1px;
 }
 
-.work-panel-tabs button.is-active {
-  color: var(--accent) !important;
-}
-
 /* polish v2b — keep status / metrics / chevron on one row */
 .completed-process-trigger {
   grid-template-columns: auto minmax(0, 1fr) auto !important;
@@ -14960,25 +14138,9 @@ body.resizing-composer * {
 
 /* Mid-pane task switch: soft horizontal slide + fade */
 @keyframes task-switch-enter-from-right {
-  from {
-    opacity: 0.12;
-    transform: translateX(22px);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
 }
 
 @keyframes task-switch-enter-from-left {
-  from {
-    opacity: 0.12;
-    transform: translateX(-22px);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
 }
 
 .conversation.is-task-entering {
@@ -15147,10 +14309,6 @@ body.resizing-composer * {
   box-shadow: inset 2px 0 var(--accent);
 }
 
-:root:not([data-theme="dark"]) .work-panel-tabs > button.is-active {
-  color: var(--accent);
-}
-
 :root:not([data-theme="dark"]) .agent-activity {
   background: transparent;
   border: 0;
@@ -15249,40 +14407,9 @@ body.resizing-composer * {
 }
 
 /* Running turn: continuous indeterminate rail so gaps never feel frozen */
-.message.assistant.is-running .message-content {
-  position: relative;
-}
 
 .message.assistant.is-running .message-content::after {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: -2px;
-  height: 2px;
-  border-radius: 999px;
   overflow: hidden;
-  background: color-mix(in srgb, var(--accent) 16%, transparent);
-  pointer-events: none;
-}
-
-.message.assistant.is-running .message-content::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  bottom: -2px;
-  z-index: 1;
-  width: 34%;
-  height: 2px;
-  border-radius: 999px;
-  background: linear-gradient(
-    90deg,
-    transparent,
-    var(--accent),
-    transparent
-  );
-  pointer-events: none;
-  animation: stream-rail-run 1.15s linear infinite;
 }
 
 @keyframes stream-rail-run {
@@ -15301,10 +14428,6 @@ body.resizing-composer * {
 }
 
 /* Avatar + "生成中" stay visibly pulsing while live */
-.message.assistant.is-running .message-avatar {
-  animation: stream-avatar-pulse 1.4s ease-in-out infinite;
-  box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 35%, transparent);
-}
 
 @keyframes stream-avatar-pulse {
   0%,
@@ -15320,7 +14443,6 @@ body.resizing-composer * {
   width: 6px;
   height: 6px;
   background: var(--accent);
-  animation: stream-run-dot 0.9s ease-in-out infinite;
 }
 
 @keyframes stream-run-dot {
@@ -15373,16 +14495,6 @@ body.resizing-composer * {
 }
 
 /* Working head sweep: always noticeable */
-.agent-working-head::before {
-  width: 42%;
-  background: linear-gradient(
-    90deg,
-    transparent,
-    color-mix(in srgb, var(--accent) 22%, transparent),
-    transparent
-  );
-  animation: execution-summary-sweep 1.55s ease-in-out infinite;
-}
 
 @keyframes execution-summary-sweep {
   0% {
@@ -15399,12 +14511,6 @@ body.resizing-composer * {
   }
 }
 
-.assistant-tail-state > svg,
-.agent-working-mark svg {
-  animation: stream-icon-pulse 1.1s ease-in-out infinite;
-  color: var(--accent);
-}
-
 @keyframes stream-icon-pulse {
   0%,
   100% {
@@ -15415,10 +14521,6 @@ body.resizing-composer * {
     opacity: 1;
     transform: scale(1.08);
   }
-}
-
-.thinking span {
-  animation: thinking-dot 0.85s ease-in-out infinite;
 }
 
 @keyframes thinking-dot {
@@ -15434,25 +14536,12 @@ body.resizing-composer * {
   }
 }
 
-.execution-plan-spinner {
-  animation: execution-plan-spin 0.85s linear infinite;
-  opacity: 1;
-  color: var(--accent);
-}
-
 /* Live caret: stays mostly on, with accent glow — never "dead" */
 .streaming-message-text.is-live::after,
 .streaming-md-open::after {
   content: "";
   display: inline-block;
-  width: 2px;
-  height: 1em;
-  margin-left: 3px;
   vertical-align: -0.15em;
-  border-radius: 1px;
-  background: var(--stream-caret);
-  box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 55%, transparent);
-  animation: stream-caret-alive 0.85s ease-in-out infinite;
 }
 
 .streaming-md-open {
@@ -15461,10 +14550,6 @@ body.resizing-composer * {
 
 .streaming-md-open::after {
   position: static;
-}
-
-.streaming-md-sealed {
-  animation: stream-block-settle 140ms var(--stream-ease);
 }
 
 @keyframes stream-caret-alive {
@@ -15489,9 +14574,6 @@ body.resizing-composer * {
 }
 
 /* Running activity: left edge breathes so tool waits still feel live */
-.agent-activity.running {
-  animation: stream-activity-border 1.35s ease-in-out infinite;
-}
 
 @keyframes stream-activity-border {
   0%,
@@ -15513,11 +14595,9 @@ body.resizing-composer * {
 
 .execution-plan-step.current,
 .execution-plan-step.running {
-  border-radius: 6px;
   background: color-mix(in srgb, var(--accent) 8%, transparent);
   padding-inline: 4px;
   margin-inline: -4px;
-  animation: stream-plan-current 1.5s ease-in-out infinite;
 }
 
 @keyframes stream-plan-current {
@@ -15535,12 +14615,6 @@ body.resizing-composer * {
     border-color 140ms var(--stream-ease),
     color 140ms var(--stream-ease),
     background-color 140ms var(--stream-ease);
-}
-
-.execution-plan-step.running .execution-plan-step-mark,
-.execution-plan-step.current .execution-plan-step-mark {
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
-  animation: stream-plan-mark 1.1s ease-in-out infinite;
 }
 
 @keyframes stream-plan-mark {
@@ -15565,7 +14639,6 @@ body.resizing-composer * {
   .streaming-progress-leaf:not([hidden]),
   .assistant-tail-fallback,
   .assistant-tail-state > svg,
-  .agent-working-head::before,
   .thinking span,
   .execution-plan-spinner,
   .streaming-message-text.is-live::after,
@@ -15584,12 +14657,6 @@ body.resizing-composer * {
     background: none;
     color: var(--muted);
     -webkit-text-fill-color: currentColor;
-  }
-
-  .streaming-message-text.is-live::after,
-  .streaming-md-open::after {
-    opacity: 1;
-    box-shadow: none;
   }
 
   .message.assistant.is-running .message-content::before {
@@ -15640,14 +14707,6 @@ body.resizing-composer * {
 }
 
 /* ===== work-panel cursor polish ===== */
-.work-panel-tabs > button > b.is-danger {
-  background: color-mix(in srgb, var(--danger, #e06c75) 18%, transparent);
-  color: var(--danger, #e06c75);
-}
-.work-panel-tabs > button > b.is-warn {
-  background: color-mix(in srgb, var(--warning, #e5c07b) 20%, transparent);
-  color: var(--warning, #d19a66);
-}
 
 .status-changes-section.is-compact {
   gap: 8px;
@@ -15824,50 +14883,6 @@ body.resizing-composer * {
 }
 
 /* ---- Live message: slow luminous rail ---- */
-.message.assistant.is-running .message-content {
-  position: relative;
-}
-
-.message.assistant.is-running .message-content::after {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: -2px;
-  height: 1.5px;
-  border-radius: 999px;
-  pointer-events: none;
-  background: linear-gradient(
-    90deg,
-    transparent 0%,
-    color-mix(in srgb, var(--accent) 16%, transparent) 22%,
-    color-mix(in srgb, var(--accent) 36%, transparent) 50%,
-    color-mix(in srgb, var(--accent) 16%, transparent) 78%,
-    transparent 100%
-  );
-}
-
-.message.assistant.is-running .message-content::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  bottom: -2px;
-  z-index: 1;
-  width: 30%;
-  height: 1.5px;
-  border-radius: 999px;
-  pointer-events: none;
-  background: linear-gradient(
-    90deg,
-    transparent,
-    color-mix(in srgb, var(--accent) 50%, white 12%),
-    var(--accent),
-    color-mix(in srgb, var(--accent) 50%, white 12%),
-    transparent
-  );
-  box-shadow: 0 0 8px 0 var(--stream-glow);
-  animation: ios-rail 2.8s var(--motion-ios-soft) infinite;
-}
 
 @keyframes ios-rail {
   0% {
@@ -15889,9 +14904,6 @@ body.resizing-composer * {
 /* Avatar: slow breathe */
 .message.assistant.is-running .message-avatar {
   animation: ios-avatar 2.8s var(--motion-ios-soft) infinite;
-  box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent),
-    0 0 10px -2px var(--stream-glow);
 }
 
 @keyframes ios-avatar {
@@ -15965,21 +14977,7 @@ body.resizing-composer * {
   }
 }
 
-.agent-working-head::before {
-  width: 38%;
-  animation: execution-summary-sweep 2.8s var(--motion-ios-soft) infinite;
-  background: linear-gradient(
-    90deg,
-    transparent,
-    color-mix(in srgb, var(--accent) 20%, transparent),
-    color-mix(in srgb, var(--accent) 36%, white 6%),
-    color-mix(in srgb, var(--accent) 20%, transparent),
-    transparent
-  );
-}
-
-.assistant-tail-state > svg,
-.agent-working-mark svg {
+.assistant-tail-state > svg {
   animation: ios-icon 2.4s var(--motion-ios-soft) infinite;
   color: var(--accent);
   filter: drop-shadow(0 0 3px var(--stream-glow));
@@ -16029,10 +15027,6 @@ body.resizing-composer * {
   margin-left: 2px;
   border-radius: 1px;
   background: color-mix(in srgb, var(--accent) 90%, white 8%);
-  box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--accent) 16%, transparent),
-    0 0 8px 0 var(--stream-glow);
-  animation: ios-caret 1.35s var(--motion-ios-ease) infinite;
 }
 
 @keyframes ios-caret {
@@ -16096,8 +15090,6 @@ body.resizing-composer * {
 .execution-plan-step.running .execution-plan-step-mark,
 .execution-plan-step.current .execution-plan-step-mark {
   animation: ios-plan-mark 2.2s var(--motion-ios-soft) infinite;
-  background: color-mix(in srgb, var(--accent) 16%, transparent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
 @keyframes ios-plan-mark {
@@ -16330,14 +15322,13 @@ body.resizing-composer * {
 
 /* Force common enter animations onto the slower iOS clock */
 [class*="menu"]:not(.composer-menu-open),
-.kcode-menu,
 .git-diff-layer,
 .git-diff-dialog {
   animation-duration: var(--ui-motion-slow);
   animation-timing-function: var(--ui-ease);
 }
 
-.composer-send:active,
+
 .composer button.primary:active,
 button.primary:active {
   transform: scale(0.98);
@@ -16359,9 +15350,7 @@ button.primary:active {
   .streaming-progress-leaf:not([hidden]),
   .assistant-tail-fallback,
   .message.assistant.is-running .assistant-tail-gap,
-  .agent-working-head::before,
   .assistant-tail-state > svg,
-  .agent-working-mark svg,
   .thinking span,
   .execution-plan-spinner,
   .streaming-message-text.is-live::after,
@@ -16406,7 +15395,7 @@ button.primary:active {
     box-shadow: none;
   }
 
-  .composer-send:active,
+
   .composer button.primary:active,
   button.primary:active {
     transform: none;
@@ -16521,9 +15510,7 @@ button.primary:active {
 .streaming-progress-leaf:not([hidden]),
 .assistant-tail-fallback,
 .message.assistant.is-running .assistant-tail-gap,
-.agent-working-head::before,
 .assistant-tail-state > svg,
-.agent-working-mark svg,
 .thinking span,
 .execution-plan-spinner,
 .agent-activity.running,
@@ -16559,16 +15546,12 @@ button.primary:active {
 .message.assistant.is-running .message-content::before,
 .message.assistant.is-running .message-content::after,
 .status-run-overview.is-running::before,
-.status-run-overview.is-running::after,
-.agent-working-head::before {
+.status-run-overview.is-running::after {
   content: none !important;
   display: none !important;
 }
 
 /* One calm running cue: thin static accent edge on the live message */
-.message.assistant.is-running .message-content {
-  box-shadow: inset 2px 0 0 0 color-mix(in srgb, var(--accent) 70%, transparent);
-}
 
 .message.assistant.is-running .message-avatar {
   box-shadow:
@@ -16582,7 +15565,6 @@ button.primary:active {
 }
 
 .assistant-tail-state > svg,
-.agent-working-mark svg,
 .status-result-row.active > svg {
   color: var(--accent);
   opacity: 0.8;
@@ -16634,8 +15616,6 @@ button.primary:active {
   margin: 2px 0 6px;
   border: 0;
   border-radius: 0;
-  background: transparent;
-  overflow: hidden;
 }
 
 .execution-summary-head {
@@ -16710,9 +15690,7 @@ button.primary:active {
   flex-direction: column !important;
   flex-wrap: nowrap !important;
   align-items: stretch !important;
-  gap: 5px !important;
   margin-right: 6px;
-  overflow: visible !important;
 }
 
 .execution-summary-tool,
@@ -16722,7 +15700,6 @@ button.execution-summary-tool.inspect-group {
   align-items: flex-start !important;
   max-width: 100% !important;
   white-space: normal !important;
-  overflow: visible !important;
 }
 
 .execution-summary-tool b {
@@ -16774,9 +15751,7 @@ button.execution-summary-tool.inspect-group {
 }
 
 .activity-head {
-  align-items: flex-start !important;
   height: auto !important;
-  min-height: 40px;
 }
 
 .execution-summary-copy strong,
@@ -16908,14 +15883,6 @@ button.execution-summary-tool.inspect-group {
   width: 18px !important;
   background: var(--accent) !important;
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
-}
-
-.turn-rail-cue {
-  left: 8px !important;
-  width: 26px !important;
-  height: 26px !important;
-  border-radius: 999px !important;
-  backdrop-filter: blur(8px);
 }
 
 /* Keep avatars clear of the slightly wider rail */
@@ -17050,11 +16017,6 @@ button.execution-summary-tool.inspect-group {
   box-shadow: none !important;
   border-left: 0 !important;
 }
-.message.assistant.is-running .message-content::before,
-.message.assistant.is-running .message-content::after {
-  content: none !important;
-  display: none !important;
-}
 
 
 /* ========================================================================== */
@@ -17068,19 +16030,9 @@ button.execution-summary-tool.inspect-group {
 }
 
 .message.assistant.is-running .message-content::after {
-  content: "" !important;
-  display: block !important;
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: -2px;
   z-index: 0;
-  width: auto;
-  height: 1.5px;
   border-radius: 999px;
   pointer-events: none;
-  animation: none !important;
-  transform: none !important;
   box-shadow: none !important;
   background: linear-gradient(
     90deg,
@@ -17090,30 +16042,6 @@ button.execution-summary-tool.inspect-group {
     color-mix(in srgb, var(--accent) 16%, transparent) 78%,
     transparent 100%
   ) !important;
-}
-
-.message.assistant.is-running .message-content::before {
-  content: "" !important;
-  display: block !important;
-  position: absolute;
-  left: 0;
-  bottom: -2px;
-  z-index: 1;
-  width: 30%;
-  height: 1.5px;
-  border-radius: 999px;
-  pointer-events: none;
-  background: linear-gradient(
-    90deg,
-    transparent,
-    color-mix(in srgb, var(--accent) 50%, white 12%),
-    var(--accent),
-    color-mix(in srgb, var(--accent) 50%, white 12%),
-    transparent
-  ) !important;
-  box-shadow: 0 0 8px 0 var(--stream-glow, color-mix(in srgb, var(--accent) 28%, transparent));
-  animation: ios-rail 2.8s var(--motion-ios-soft, cubic-bezier(0.33, 1, 0.68, 1)) infinite !important;
-  filter: none !important;
 }
 
 
@@ -17263,8 +16191,6 @@ button.execution-summary-tool.inspect-group {
   position: relative;
   z-index: 2;
   isolation: isolate;
-  overflow: hidden;
-  background: transparent;
 }
 
 .execution-summary-tool,
@@ -17336,7 +16262,6 @@ button.execution-summary-tool.inspect-group {
 .message.assistant.is-running .assistant-tail-gap,
 .assistant-tail-fallback,
 .assistant-tail-state .streaming-progress-leaf:not([hidden]) {
-  animation: status-tail-breathe-v1 1.8s linear infinite !important;
   will-change: background-position;
   filter: none !important;
   transform: none !important;
@@ -17392,9 +16317,6 @@ button.execution-summary-tool.inspect-group {
 /* ===== status-model-line-hide-v1 (add-only) =====
    Right StatusPanel no longer shows the current-model footer.
    Hide any leftover .status-model-line and reclaim the margin-top:auto gap. */
-.status-model-line {
-  display: none !important;
-}
 .status-usage-section.is-compact .status-model-line,
 .work-panel.is-unified .status-model-line {
   display: none !important;
@@ -17807,11 +16729,6 @@ button.agent-overview-row:hover {
   color: color-mix(in srgb, var(--accent) 70%, var(--text));
 }
 
-.activity-card:has(.plan-confirm-actions) .activity-status,
-.activity-row:has(.plan-confirm-actions) .activity-status {
-  color: #e0b14a;
-}
-
 :root[data-theme="dark"] .plan-confirm-actions {
   background: color-mix(in srgb, var(--accent) 12%, #12161d);
 }
@@ -17910,10 +16827,6 @@ button.agent-overview-row:hover {
 
 /* Tool / activity cards: bordered rounded-md surface (ZCode Tool shell) */
 .agent-activity {
-  margin: 4px 0 10px 41px !important;
-  border: 1px solid var(--line) !important;
-  border-radius: 6px !important;
-  background: color-mix(in srgb, var(--surface-raised) 92%, transparent) !important;
   overflow: hidden !important;
 }
 
@@ -17934,28 +16847,16 @@ button.agent-overview-row:hover {
 }
 
 .activity-head {
-  padding: 8px 10px !important;
   gap: 8px !important;
   align-items: center !important;
-  min-height: 0 !important;
-}
-
-.activity-title strong {
-  color: var(--ink) !important;
-  font-size: 12px !important;
-  font-weight: 600 !important;
 }
 
 .activity-title small {
-  font-size: 11px !important;
   color: var(--muted) !important;
 }
 
 .activity-icon {
-  width: 24px !important;
-  height: 24px !important;
   border-radius: 5px !important;
-  color: var(--muted) !important;
 }
 
 /* Status pill (ZCode Badge secondary + rounded-full) */
@@ -17964,13 +16865,9 @@ button.agent-overview-row:hover {
   align-items: center !important;
   gap: 4px !important;
   flex: 0 0 auto !important;
-  min-height: 20px !important;
-  padding: 1px 8px !important;
   border: 1px solid color-mix(in srgb, var(--line) 88%, transparent) !important;
   border-radius: 999px !important;
-  background: color-mix(in srgb, var(--surface-muted, var(--surface)) 80%, transparent) !important;
   color: var(--muted) !important;
-  font-size: 10px !important;
   font-weight: 560 !important;
   letter-spacing: 0.01em !important;
   white-space: nowrap !important;
@@ -18011,8 +16908,6 @@ button.agent-overview-row:hover {
 /* Detail: ZCode ToolContent-like sections */
 .activity-detail {
   border-top: 1px solid var(--line) !important;
-  background: color-mix(in srgb, var(--surface-muted, var(--surface)) 55%, transparent) !important;
-  padding: 10px 12px 12px !important;
 }
 
 .activity-section-label,
@@ -18043,7 +16938,6 @@ button.agent-overview-row:hover {
 .activity-detail pre,
 .activity-live-output,
 .activity-result-panel {
-  max-height: 240px !important;
   margin: 0 !important;
   padding: 10px !important;
   border: 0 !important;
@@ -18060,15 +16954,6 @@ button.agent-overview-row:hover {
 }
 
 /* Inline tool chips in execution summary → compact bordered pills */
-.execution-summary-tool,
-button.execution-summary-tool.inspect-group {
-  min-height: 24px !important;
-  padding: 2px 8px !important;
-  border: 1px solid color-mix(in srgb, var(--line) 90%, transparent) !important;
-  border-radius: 6px !important;
-  background: color-mix(in srgb, var(--surface-raised) 88%, transparent) !important;
-  gap: 6px !important;
-}
 
 .execution-summary-tool.running,
 .execution-summary-tool.waiting,
@@ -18090,19 +16975,7 @@ button.execution-summary-tool.inspect-group.waiting {
 }
 
 .execution-summary-tool > i {
-  width: 6px !important;
-  height: 6px !important;
   animation: none !important;
-}
-
-.execution-summary-tool b {
-  color: var(--ink) !important;
-  font-size: 11px !important;
-  font-weight: 600 !important;
-}
-
-.execution-summary-tool code {
-  font-size: 10.5px !important;
 }
 
 /* Reasoning / live narrative: ZCode left rail + subtlest copy */
@@ -18111,7 +16984,6 @@ button.execution-summary-tool.inspect-group.waiting {
   margin-left: 2px !important;
   padding-left: 12px !important;
   border-left: 2px solid color-mix(in srgb, var(--line) 85%, transparent) !important;
-  color: color-mix(in srgb, var(--muted) 88%, var(--ink)) !important;
 }
 
 .execution-summary-narrative-label {
@@ -18128,8 +17000,6 @@ button.execution-summary-tool.inspect-group.waiting {
 .execution-summary-narrative-fallback,
 .assistant-tail-gap,
 .assistant-tail-fallback {
-  color: color-mix(in srgb, var(--muted) 92%, var(--ink)) !important;
-  font-size: 12px !important;
   line-height: 1.55 !important;
 }
 

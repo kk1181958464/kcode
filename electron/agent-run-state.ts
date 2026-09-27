@@ -45,6 +45,8 @@ export type RunPlanUpdate = {
 
 export type RunState = {
   timelineTextLength: number;
+  /** Older request_user_input results were answered by subsequent steering. */
+  userInputEvidenceStart: number;
   requestedGitOps: Set<GitOperation>;
   requestedCodingEvidenceOps: Set<CodingOperation>;
   requestedBrowserOps: Set<BrowserOperation>;
@@ -94,6 +96,7 @@ export function createRunState(input: {
 } = {}): RunState {
   const state: RunState = {
     timelineTextLength: 0,
+    userInputEvidenceStart: 0,
     requestedGitOps: new Set<GitOperation>(),
     requestedCodingEvidenceOps: new Set<CodingOperation>(),
     requestedBrowserOps: new Set<BrowserOperation>(),
@@ -131,7 +134,9 @@ export function createRunState(input: {
 export function resetRunStateAfterSteering(
   state: RunState,
   lastSubagentProgress: string,
+  evidenceHistoryLength = 0,
 ) {
+  state.userInputEvidenceStart = evidenceHistoryLength;
   state.requestedGitOps = new Set<GitOperation>();
   state.requestedCodingEvidenceOps = new Set<CodingOperation>();
   state.requestedBrowserOps = new Set<BrowserOperation>();

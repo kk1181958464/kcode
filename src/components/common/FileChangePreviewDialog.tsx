@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 import { copyWithToast } from "../../lib/toast";
 import { revealLocalPath } from "../../lib/reveal-path";
-import { DiffView } from "./DiffView";
+import { DiffView } from "./LazyDiffView";
 
 export type FileChangePreviewItem = {
   path: string;

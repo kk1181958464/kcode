@@ -6,7 +6,7 @@ import {
 } from "../src/config-layer";
 
 test("resolves effective values while retaining their source layer", () => {
-  const result = resolveLayeredConfig([
+  const result = resolveLayeredConfig<{ model: string; confirm: boolean }>([
     { name: "defaults", values: { model: "default", confirm: true } },
     { name: "user", values: { model: "user" }, version: "u1" },
     { name: "task", values: { model: "task" } },

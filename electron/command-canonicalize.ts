@@ -85,7 +85,6 @@ function shellTokenize(command: string): string[] {
   let current = "";
   let inSingle = false;
   let inDouble = false;
-  let quotedMultiWord = false;
 
   for (const char of command) {
     if (char === "'" && !inDouble) {
@@ -102,11 +101,9 @@ function shellTokenize(command: string): string[] {
       if (current) {
         tokens.push(current);
         current = "";
-        quotedMultiWord = false;
       }
       continue;
     }
-    if (inSingle || inDouble) quotedMultiWord = true;
     current += char;
   }
   if (current) tokens.push(current);

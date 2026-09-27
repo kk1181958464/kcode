@@ -695,6 +695,7 @@ export function releaseSubagentRecords(parentRequestId: string) {
       messageQueues.delete(agent.requestId);
     }
   for (const requestId of ids) descendantRequestIds.delete(requestId);
+  descendantRequestIds.delete(parentRequestId);
   mutationOwners.delete(parentRequestId);
 }
 

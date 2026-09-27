@@ -44,7 +44,7 @@ export class FileHistoryManager {
   private initialized = false;
 
   constructor(
-    private sessionId: string,
+    readonly sessionId: string,
     private workspaceRoot: string,
   ) {
     this.sessionDir = path.join(
@@ -257,12 +257,28 @@ export class FileHistoryManager {
   }
 }
 
-/** Singleton instance — lazily initialized per workspace. */
-let _instance: FileHistoryManager | null = null;
+/** One manager per (workspace, run); released when the run finishes. */
+const instances = new Map<string, FileHistoryManager>();
 
-export function fileHistory(workspaceRoot: string, sessionId?: string): FileHistoryManager {
-  if (!_instance || _instance["workspaceRoot"] !== workspaceRoot) {
-    _instance = new FileHistoryManager(workspaceRoot, sessionId || "default");
+export function fileHistory(
+  workspaceRoot: string,
+  sessionId = "default",
+): FileHistoryManager {
+  const key = JSON.stringify([workspaceRoot, sessionId]);
+  let instance = instances.get(key);
+  if (!instance) {
+    instance = new FileHistoryManager(safeSessionDirName(sessionId), workspaceRoot);
+    instances.set(key, instance);
   }
-  return _instance;
+  return instance;
+}
+
+/** Drop in-memory snapshot indexes for finished runs. Files stay on disk until cleanup(). */
+export function releaseFileHistory(sessionId: string): void {
+  for (const [key, instance] of instances)
+    if (instance.sessionId === safeSessionDirName(sessionId)) instances.delete(key);
+}
+
+function safeSessionDirName(sessionId: string) {
+  return sessionId.replace(/[^a-zA-Z0-9._-]/g, "_") || "default";
 }

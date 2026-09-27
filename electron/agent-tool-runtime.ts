@@ -1,4 +1,5 @@
 import { command } from "./agent-command";
+import { BoundedSnapshotMap, textSnapshotBytes } from "./bounded-snapshot-map";
 import { approvalCache } from "./approval-cache";
 import { FileReadCache } from "./file-read-cache";
 import { backgroundProcessManager } from "./background-process-manager";
@@ -47,19 +48,19 @@ import {
   undoPendingFiles,
 } from "./edit-review";
 
-export const approvals = new Map<string, (allowed: boolean) => void>();
+import { approvals } from "./agent-approval";
+export { approvals } from "./agent-approval";
 
-const undoSnapshots = new Map<
-  string,
-  {
-    root: string;
-    requestId: string;
-    file: string;
-    before: string;
-    after: string;
-    existed: boolean;
-  }
->();
+// Oldest undo records are dropped past this budget (full file contents).
+const UNDO_SNAPSHOT_BUDGET_BYTES = 128 * 1024 * 1024;
+const undoSnapshots = new BoundedSnapshotMap<{
+  root: string;
+  requestId: string;
+  file: string;
+  before: string;
+  after: string;
+  existed: boolean;
+}>(UNDO_SNAPSHOT_BUDGET_BYTES, textSnapshotBytes);
 
 export async function cleanupAgentRecords(
   requestIds: string[],
@@ -264,6 +265,7 @@ export async function execute(
   onProgress: (output: string) => void = () => undefined,
   waitTimeoutOverrideMs?: number,
 ): Promise<ToolResult> {
+  if (signal.aborted) throw new Error("任务已取消");
   if (call.name === "list_directory") {
     if (signal.aborted) throw new Error("任务已取消");
     return listDirectory(root, call.input.path, Boolean(call.input.recursive));
@@ -375,6 +377,7 @@ export async function execute(
           file,
           before,
           existed,
+          after,
         });
       },
       diff: diffFor,
@@ -393,6 +396,7 @@ export async function execute(
           file: change.file,
           before: change.before,
           existed: change.existed,
+          after: change.action === "Delete" ? null : change.after,
         }),
       diff: diffFor,
     });

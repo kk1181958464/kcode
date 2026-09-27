@@ -1,4 +1,4 @@
-﻿name: CI
+name: CI
 
 on:
   push:
@@ -6,6 +6,21 @@ on:
   pull_request:
 
 jobs:
+  # OS-independent checks run once.
+  static:
+    runs-on: ubuntu-latest
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+
   verify:
     strategy:
       fail-fast: false
@@ -19,6 +34,6 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm run typecheck
       - run: npm test
-      - run: npm run build
+      # Type errors are reported by the static job; this only checks the build.
+      - run: npm run build:app

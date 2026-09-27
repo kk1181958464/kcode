@@ -5,27 +5,7 @@ export default defineConfig({
   base: "./",
   plugins: [react()],
   server: { port: 5173, strictPort: true },
-  build: {
-    rollupOptions: {
-      output: {
-        // Split heavy vendor libs into their own chunks so they cache
-        // independently and don't bloat the app's critical-path bundle.
-        manualChunks(id) {
-          if (!id.includes("node_modules")) return;
-          if (id.includes("react-markdown") || id.includes("remark"))
-            return "markdown";
-          if (id.includes("mermaid")) return "mermaid";
-          if (id.includes("katex") || id.includes("rehype-katex"))
-            return "math";
-          if (id.includes("@codemirror") || id.includes("codemirror"))
-            return "editor";
-          if (id.includes("lucide-react")) return "icons";
-          if (
-            /node_modules[/\\](react|react-dom|scheduler)[/\\]/.test(id)
-          )
-            return "react";
-        },
-      },
-    },
-  },
+  // Preserve dynamic import boundaries with automatic chunking. Manual vendor
+  // groups pulled shared dependencies into the editor/Mermaid chunks, making
+  // the entry eagerly import those otherwise lazy features.
 });

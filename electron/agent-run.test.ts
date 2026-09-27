@@ -465,7 +465,7 @@ test("assistant action wording cannot force an informational turn into verificat
   assert.deepEqual(done?.result?.operations, []);
 });
 
-test("runAgent pauses on confirm mode and resumes on resolveApproval", async () => {
+test("runAgent pauses on confirm mode and resumes on immediate resolveApproval", { timeout: 5_000 }, async () => {
   const request = await makeRequest();
   request.permissionMode = "confirm";
   request.messages = [{ role: "user", content: "创建 hello.txt" }];
@@ -515,14 +515,10 @@ test("runAgent pauses on confirm mode and resumes on resolveApproval", async () 
     deps,
   )) {
     events.push(event);
-    // The write_file tool must pause for approval. The approval key is only
-    // registered once the generator resumes PAST this yield, so defer the
-    // resolve to a later tick (setImmediate) — resolving synchronously here
-    // would miss the not-yet-registered key and deadlock.
+    // The renderer may approve immediately after receiving the waiting event.
     if (event.type === "activity" && event.activity.status === "waiting") {
       approved = true;
-      const id = event.activity.id;
-      setImmediate(() => resolveApproval(reqId, id, true));
+      resolveApproval(reqId, event.activity.id, true);
     }
   }
 

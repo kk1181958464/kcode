@@ -648,7 +648,7 @@ test("requires tool evidence only for side effects", () => {
 });
 
 test("recovered baseline evidence survives a never-executed re-attempt and only drops on failed unproven ops", () => {
-  const baseline = new Set(["modify", "execute"]);
+  const baseline = new Set<CodingOperation>(["modify", "execute"]);
   // Never-executed path: no failed ops → baseline untouched.
   clearFailedBaselineCodingEvidence(baseline, [], new Set());
   assert.deepEqual([...baseline].sort(), ["execute", "modify"]);

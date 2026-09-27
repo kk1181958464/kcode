@@ -55,7 +55,7 @@ export function SshRemoteDialog({
     };
   }, []);
 
-  async function useProfile(profile: SshRemoteProfile) {
+  async function applyProfile(profile: SshRemoteProfile) {
     setBusy(profile.id);
     setError("");
     try {
@@ -178,7 +178,7 @@ export function SshRemoteDialog({
                     type="button"
                     className="ssh-saved-profile-main"
                     disabled={Boolean(busy)}
-                    onClick={() => void useProfile(profile)}
+                    onClick={() => void applyProfile(profile)}
                   >
                     <Server size={15} />
                     <span>

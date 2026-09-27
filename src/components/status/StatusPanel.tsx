@@ -52,7 +52,7 @@ import type {
   ProviderConfig,
   ReasoningEffort,
 } from "../../types";
-import { DiffView } from "../common/DiffView";
+import { DiffView } from "../common/LazyDiffView";
 
 interface UsageInfo {
   input: number;
@@ -286,6 +286,27 @@ function AgentOverviewRowButton({
   );
 }
 
+// Ticks on its own so the rest of the panel does not re-render every second.
+function LiveDuration({
+  startedAt,
+  durationMs,
+}: {
+  startedAt?: number;
+  durationMs: number;
+}) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!startedAt) return;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [startedAt]);
+  return <>{formatDuration(startedAt ? now - startedAt : durationMs)}</>;
+}
+
+/** workingPhase only reads elapsed time for this threshold when rendered. */
+const SLOW_PLANNING_MS = 12_000;
+
 export function StatusPanel({
   runStatus,
   activities,
@@ -322,7 +343,8 @@ export function StatusPanel({
   overviewTasks,
   onFocusOverviewSession,
 }: StatusPanelProps) {
-  const [liveDurationMs, setLiveDurationMs] = useState(durationMs);
+  const liveStartedAt = runningId ? activeTask?.startedAt : undefined;
+  const [slowPlanning, setSlowPlanning] = useState(false);
   const [diffOpen, setDiffOpen] = useState(false);
   const [selectedDiffPath, setSelectedDiffPath] = useState<string>();
   const [loadedFileDiff, setLoadedFileDiff] = useState("");
@@ -337,15 +359,17 @@ export function StatusPanel({
     ? localWorkspacePath(activeTask)
     : undefined;
   useEffect(() => {
-    if (!runningId || !activeTask?.startedAt) {
-      setLiveDurationMs(durationMs);
+    if (!liveStartedAt) {
+      setSlowPlanning(durationMs > SLOW_PLANNING_MS);
       return;
     }
-    const update = () => setLiveDurationMs(Date.now() - activeTask.startedAt!);
-    update();
-    const timer = window.setInterval(update, 1_000);
-    return () => window.clearInterval(timer);
-  }, [activeTask?.startedAt, durationMs, runningId]);
+    const remaining = liveStartedAt + SLOW_PLANNING_MS + 1 - Date.now();
+    setSlowPlanning(remaining <= 0);
+    if (remaining <= 0) return;
+    const timer = window.setTimeout(() => setSlowPlanning(true), remaining);
+    return () => window.clearTimeout(timer);
+  }, [durationMs, liveStartedAt]);
+  const hasElapsed = Boolean(liveStartedAt) || durationMs > 0;
 
   const activitySummary = useMemo(
     () => summarizeStatusActivities(activities),
@@ -376,7 +400,12 @@ export function StatusPanel({
     : 0;
   const autoCompactPercent = Math.round(CONTEXT_AUTO_COMPACT_RATIO * 100);
   const totalTokens = usage.input + usage.output;
-  const currentPhase = workingPhase(activities, liveDurationMs);
+  // Elapsed time only affects the rendered phase through the slow-planning
+  // threshold: the ssh_run "已等待" detail is hidden while an activity is active.
+  const currentPhase = workingPhase(
+    activities,
+    slowPlanning ? SLOW_PLANNING_MS + 1 : 0,
+  );
   const running = runStatus === "running";
   const overviewTone = statusOverviewTone(runStatus);
   const headline = running
@@ -386,7 +415,7 @@ export function StatusPanel({
     runningId ||
     activities.length ||
     queuedCount ||
-    (runStatus !== "idle" && liveDurationMs > 0),
+    (runStatus !== "idle" && hasElapsed),
   );
   const resultSource = activitySummary.validations.length
     ? activitySummary.validations
@@ -436,10 +465,15 @@ export function StatusPanel({
   const selectedDiffChange = fileChanges.find(
     (change) => change.path === selectedDiffPath,
   );
+  const selectedGitFileDiff = useMemo(
+    () =>
+      selectedDiffPath ? extractGitFileDiff(gitState.diff, selectedDiffPath) : "",
+    [gitState.diff, selectedDiffPath],
+  );
   const selectedDiffText = selectedDiffChange?.diffs.length
     ? selectedDiffChange.diffs.join("\n\n")
     : selectedDiffPath
-      ? loadedFileDiff || extractGitFileDiff(gitState.diff, selectedDiffPath)
+      ? loadedFileDiff || selectedGitFileDiff
       : gitState.diff;
   const openDiff = (path?: string) => {
     const nextPath = path || fileChanges[0]?.path;
@@ -466,7 +500,7 @@ export function StatusPanel({
       !diffOpen ||
       !selectedDiffPath ||
       selectedDiffChange?.diffs.length ||
-      extractGitFileDiff(gitState.diff, selectedDiffPath) ||
+      selectedGitFileDiff ||
       !gitWorkspacePath ||
       !window.kcode?.workspace.gitFileDiff
     )
@@ -519,7 +553,7 @@ export function StatusPanel({
   }, [diffOpen, selectedDiffPath, selectedDiffText]);
 
   const showUsage =
-    runStatus !== "idle" || liveDurationMs > 0 || messages.length > 0;
+    runStatus !== "idle" || hasElapsed || messages.length > 0;
   const runEmpty =
     !showRunOverview &&
     resultActivities.length === 0 &&
@@ -720,7 +754,12 @@ export function StatusPanel({
                   )}
                   <strong>{headline}</strong>
                 </span>
-                <time>{formatDuration(liveDurationMs)}</time>
+                <time>
+                  <LiveDuration
+                    startedAt={liveStartedAt}
+                    durationMs={durationMs}
+                  />
+                </time>
               </div>
               {running && activitySummary.active && (
                 <code title={activityTarget(activitySummary.active)}>
@@ -879,7 +918,12 @@ export function StatusPanel({
                   <Clock3 size={14} />
                   <span>
                     <small>耗时</small>
-                    <strong>{formatDuration(liveDurationMs)}</strong>
+                    <strong>
+                      <LiveDuration
+                        startedAt={liveStartedAt}
+                        durationMs={durationMs}
+                      />
+                    </strong>
                   </span>
                 </div>
                 <div>

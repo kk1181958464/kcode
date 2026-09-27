@@ -410,6 +410,8 @@ export type TaskWindow = {
 
 export type SaveTaskOptions = {
   preserveUnloadedItems?: boolean;
+  changedMessageIds?: string[];
+  changedActivityIds?: string[];
 };
 
 export type AgentRole = "planner" | "executor";
@@ -604,6 +606,8 @@ export type EditReviewBatchResult = {
   success: boolean;
   message: string;
   conflict?: boolean;
+  /** Files skipped because they changed after the agent's edit. */
+  conflictPaths?: string[];
   paths: string[];
   activityIds: string[];
 };

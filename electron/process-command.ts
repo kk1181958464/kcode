@@ -1,4 +1,4 @@
-﻿import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { middleOutTruncate } from "./middle-out-truncate";
 
 const FORCE_RESOLVE_AFTER_KILL_MS = 4_000;
@@ -11,12 +11,6 @@ const OUTPUT_PROGRESS_INTERVAL_MS = 250;
  * (which controls how much we *keep* after truncation).
  */
 const DEFAULT_MAX_TOTAL_BYTES = 10 * 1024 * 1024; // 10 MB
-/**
- * After sending SIGTERM/taskkill, wait this long for any remaining buffered
- * IO to arrive before force-resolving. Shorter than FORCE_RESOLVE_AFTER_KILL_MS
- * because we only need the final flush, not a graceful shutdown.
- */
-const IO_DRAIN_TIMEOUT_MS = 500;
 export const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
 export const LONG_COMMAND_TIMEOUT_MS = 300_000;
 export const NETWORK_IDLE_TIMEOUT_MS = 90_000;

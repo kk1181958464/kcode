@@ -691,7 +691,10 @@ export function planRecoveryContent(input: {
   planRequirementsPending: boolean;
   missing: readonly CodingOperation[];
 }) {
-  return `<runtime_repetition_recovery><runtime_execution_recovery>${input.pendingStepLabel}尚未完成。${input.planRequirementsPending ? "请先用 update_plan 为每一步补齐 requires（纯说明步骤用 []）。" : planRequirementRecoveryLabel(input.missing)}不要再次读取同一内容，不要只输出“已完成”；现在必须调用对应的原生工具。若外部环境确实不可用，调用 request_user_input 说明需要的具体信息，或在确认无需修改后调用 report_no_change。</runtime_execution_recovery></runtime_repetition_recovery>`;
+  const validationReminder = input.missing.includes("validate")
+    ? "若验证后又执行了修改或临时文件清理，请在所有写操作结束后补一次只读核验；不要重做已确认成功的修改。"
+    : "";
+  return `<runtime_repetition_recovery><runtime_execution_recovery>${input.pendingStepLabel}尚未完成。${input.planRequirementsPending ? "请先用 update_plan 为每一步补齐 requires（纯说明步骤用 []）。" : planRequirementRecoveryLabel(input.missing)}${validationReminder}不要再次读取同一内容，不要只输出“已完成”；现在必须调用对应的原生工具。若外部环境确实不可用，调用 request_user_input 说明需要的具体信息，或在确认无需修改后调用 report_no_change。</runtime_execution_recovery></runtime_repetition_recovery>`;
 }
 
 export function stallFinalizeProgressMessage(input: {
@@ -718,6 +721,7 @@ export function roundStallDecision(input: {
     | "actionablePlanPending"
     | "evidenceComplete"
     | "planCompleted"
+    | "planStatusesCompleted"
     | "hasMutationEvidence"
     | "planRequirementsPending"
     | "nextRequiredPlanStep"
@@ -732,12 +736,34 @@ export function roundStallDecision(input: {
   const completedPlanReadyToFinalize = Boolean(
     input.snapshot.planCompleted &&
       input.snapshot.evidenceComplete &&
-      input.progress.unchangedPlanMaintenanceRound &&
+      (input.snapshot.planStatusesCompleted ||
+        input.progress.unchangedPlanMaintenanceRound) &&
       !input.roundFailed &&
       !input.pendingUserInput &&
       !input.hasUncollectedAgentWork,
   );
   if (completedPlanReadyToFinalize) return { action: "finalize-completed-plan" };
+  // A completed checklist cannot replace validation after the final mutation.
+  // Request only the missing check, without reopening successful writes or
+  // waiting for repeated tool rounds to trigger stall recovery.
+  if (
+    input.snapshot.planStatusesCompleted &&
+    !input.snapshot.planCompleted &&
+    input.snapshot.hasMutationEvidence &&
+    input.snapshot.nextRequiredPlanStep >= 0 &&
+    input.snapshot.missingActionCodingOperations.length === 1 &&
+    input.snapshot.missingActionCodingOperations[0] === "validate" &&
+    input.state.budgets.planRecoveryNudges < MAX_PLAN_RECOVERY_NUDGES &&
+    !input.roundFailed &&
+    !input.pendingUserInput &&
+    !input.hasUncollectedAgentWork
+  )
+    return {
+      action: "plan-recovery",
+      pendingStepLabel: pendingPlanStepLabel(input.plan, input.snapshot),
+      missing: ["validate"],
+      planRequirementsPending: false,
+    };
   const validationStallReached =
     input.state.validationStallRounds >= VALIDATION_STALL_ROUNDS;
   const semanticStallReached =

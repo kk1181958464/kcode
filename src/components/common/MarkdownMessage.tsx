@@ -2,10 +2,9 @@ import React, { memo, useEffect, useId, useMemo, useState } from "react";
 import ReactMarkdown, {
   defaultUrlTransform,
   type Components,
+  type Options as MarkdownOptions,
 } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import remarkMath from "remark-math";
-import rehypeKatex from "rehype-katex";
 import { Code2, Copy } from "lucide-react";
 import { copyWithToast } from "../../lib/toast";
 import {
@@ -13,6 +12,50 @@ import {
   revealLocalPath,
 } from "../../lib/reveal-path";
 import { openExternalUrl } from "./external";
+
+// KaTeX (JS + CSS + fonts) is large and most messages have no math, so the
+// math plugins load on first use and are shared by every block afterwards.
+type PluggableList = NonNullable<MarkdownOptions["remarkPlugins"]>;
+type MathPlugins = { remark: PluggableList; rehype: PluggableList };
+let mathPlugins: MathPlugins | null = null;
+let mathPluginsPending: Promise<MathPlugins> | null = null;
+const NO_REHYPE_PLUGINS: PluggableList = [];
+const GFM_ONLY: PluggableList = [remarkGfm];
+
+export function mayContainMath(content: string) {
+  return content.includes("$") || /\\[([]/.test(content);
+}
+
+function loadMathPlugins() {
+  mathPluginsPending ??= Promise.all([
+    import("remark-math"),
+    import("rehype-katex"),
+    import("katex/dist/katex.min.css"),
+  ]).then(([remarkMath, rehypeKatex]) => {
+    mathPlugins = {
+      remark: [remarkGfm, remarkMath.default],
+      rehype: [rehypeKatex.default],
+    };
+    return mathPlugins;
+  });
+  return mathPluginsPending;
+}
+
+function useMathPlugins(content: string) {
+  const needed = mayContainMath(content);
+  const [loaded, setLoaded] = useState(mathPlugins);
+  useEffect(() => {
+    if (!needed || loaded) return;
+    let active = true;
+    void loadMathPlugins().then((plugins) => {
+      if (active) setLoaded(plugins);
+    });
+    return () => {
+      active = false;
+    };
+  }, [needed, loaded]);
+  return needed ? loaded : null;
+}
 
 const MERMAID_CACHE_LIMIT = 32;
 const mermaidSvgCache = new Map<string, string>();
@@ -154,7 +197,10 @@ export function splitMarkdownBlocks(src: string): string[] {
  * The open fence / unfinished last block stays in the append-only text leaf
  * so bottom-follow does not bounce on every token.
  */
-export function partitionStreamingMarkdown(src: string): {
+export function partitionStreamingMarkdown(
+  src: string,
+  from = 0,
+): {
   sealedContent: string;
   sealedEnd: number;
 } {
@@ -162,35 +208,40 @@ export function partitionStreamingMarkdown(src: string): {
   // Same flush rules as splitMarkdownBlocks: a blank line outside a fence
   // seals the preceding block. The unfinished last block (and any open fence)
   // stays in the append-only text leaf.
-  const lines = src.split("\n");
+  //
+  // `from` must be a sealedEnd previously returned for a prefix of `src`.
+  // Sealed boundaries are always outside a fence with no pending content, so
+  // scanning can resume there instead of rescanning the whole answer.
+  const resume = from > 0 && from <= src.length ? from : 0;
   let fence: string | null = null;
-  let sealedEnd = 0;
-  let cursor = 0;
+  let sealedEnd = resume;
+  let cursor = resume;
   let hasContent = false;
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const lineLen = line.length + (i < lines.length - 1 ? 1 : 0);
+  // Visit every "\n"-separated segment, including a trailing empty one, to
+  // match src.split("\n").
+  for (;;) {
+    const newline = src.indexOf("\n", cursor);
+    const lineEnd = newline === -1 ? src.length : newline;
+    const line = src.slice(cursor, lineEnd);
+    const lineLen = lineEnd - cursor + (newline === -1 ? 0 : 1);
     const marker = /^\s*(```+|~~~+)/.exec(line);
     if (marker) {
       const kind = marker[1][0];
       if (!fence) fence = kind;
       else if (fence === kind) fence = null;
       hasContent = true;
-      cursor += lineLen;
-      continue;
-    }
-    if (!fence && line.trim() === "") {
+    } else if (!fence && line.trim() === "") {
       if (hasContent) {
         sealedEnd = cursor + lineLen;
         hasContent = false;
       } else if (sealedEnd > 0) {
         sealedEnd = cursor + lineLen;
       }
-      cursor += lineLen;
-      continue;
+    } else {
+      hasContent = true;
     }
-    hasContent = true;
     cursor += lineLen;
+    if (newline === -1) break;
   }
   if (sealedEnd <= 0) return { sealedContent: "", sealedEnd: 0 };
   const sealedContent = src.slice(0, sealedEnd);
@@ -270,11 +321,12 @@ const MarkdownBlock = memo(function MarkdownBlock({
     }),
     [workspacePath],
   );
+  const math = useMathPlugins(content);
   return (
     <div className="markdown-block">
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkMath]}
-        rehypePlugins={[rehypeKatex]}
+        remarkPlugins={math?.remark ?? GFM_ONLY}
+        rehypePlugins={math?.rehype ?? NO_REHYPE_PLUGINS}
         components={components}
         urlTransform={(url) =>
           localPathFromMarkdownHref(url) ? url : defaultUrlTransform(url)
@@ -299,23 +351,37 @@ export const MarkdownMessage = memo(function MarkdownMessage({
   const blocks = useMemo(() => splitMarkdownBlocks(content), [content]);
   const [expanded, setExpanded] = useState(false);
   const hiddenCount = Math.max(0, blocks.length - MAX_INITIAL_BLOCKS);
-  const visibleBlocks =
-    expanded || hiddenCount === 0
-      ? blocks
-      : [
-          ...blocks.slice(0, MAX_INITIAL_BLOCKS - INITIAL_TAIL_BLOCKS),
-          `> 省略了 ${hiddenCount} 个较早内容块，点击下方按钮展开。`,
-          ...blocks.slice(-INITIAL_TAIL_BLOCKS),
-        ];
+  // Key blocks by their position in `blocks`: with index keys, every new block
+  // shifts the truncated tail and forces all of it to re-parse.
+  const truncated = !expanded && hiddenCount > 0;
+  const headCount = truncated ? MAX_INITIAL_BLOCKS - INITIAL_TAIL_BLOCKS : 0;
+  const tailStart = truncated ? blocks.length - INITIAL_TAIL_BLOCKS : 0;
+  const renderBlock = (block: string, index: number) => (
+    <MarkdownBlock
+      key={`block-${index}`}
+      content={block}
+      workspacePath={workspacePath}
+    />
+  );
   return (
     <>
-      {visibleBlocks.map((block, index) => (
-        <MarkdownBlock
-          key={index}
-          content={block}
-          workspacePath={workspacePath}
-        />
-      ))}
+      {truncated ? (
+        <>
+          {blocks
+            .slice(0, headCount)
+            .map((block, index) => renderBlock(block, index))}
+          <MarkdownBlock
+            key="omitted"
+            content={`> 省略了 ${hiddenCount} 个较早内容块，点击下方按钮展开。`}
+            workspacePath={workspacePath}
+          />
+          {blocks
+            .slice(tailStart)
+            .map((block, index) => renderBlock(block, tailStart + index))}
+        </>
+      ) : (
+        blocks.map(renderBlock)
+      )}
       {hiddenCount > 0 && (
         <button
           type="button"

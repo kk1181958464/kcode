@@ -6,6 +6,7 @@ import {
   interruptStaleRuntimeEventsInDatabase,
   loadRuntimeEventsFromDatabase,
   loadRuntimeTaskStatusesFromDatabase,
+  pruneRuntimeEventsInDatabase,
 } from "./state-db";
 import { createRuntimeEventEnvelope } from "../src/runtime-protocol";
 
@@ -174,4 +175,31 @@ test("a paused turn is not treated as waiting-for-input", () => {
   // Neither turn is left in progress, so startup does not interrupt them.
   assert.equal(interruptStaleRuntimeEventsInDatabase(database, 30), 0);
   database.close();
+});
+
+test("pruning keeps only each task's most recent requests", () => {
+  const database = runtimeDatabase();
+  const event = (taskId: string, requestId: string, emittedAt: number) =>
+    createRuntimeEventEnvelope(
+      { type: "done" },
+      { taskId, requestId, sequence: 1, emittedAt },
+    );
+  appendRuntimeEventsToDatabase(database, [
+    event("task-1", "r1", 1),
+    event("task-1", "r2", 2),
+    event("task-2", "other", 3),
+    event("task-1", "r3", 4),
+  ]);
+  assert.equal(pruneRuntimeEventsInDatabase(database, 2), 1);
+  const remaining = database
+    .prepare("SELECT request_id FROM runtime_events ORDER BY event_order")
+    .all()
+    .map((row) => row.request_id);
+  assert.deepEqual(remaining, ["r2", "other", "r3"]);
+  assert.deepEqual(
+    loadRuntimeTaskStatusesFromDatabase(database)
+      .map((status) => status.requestId)
+      .sort(),
+    ["other", "r3"],
+  );
 });

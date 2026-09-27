@@ -93,29 +93,27 @@ function extractPatchPaths(root: string, patch: string): string[] {
   return paths;
 }
 
-function hashFile(filePath: string): string | null {
-  try {
-    const content = fs.readFileSync(filePath);
-    return createHash("sha256").update(content).digest("hex").slice(0, 16);
-  } catch {
-    return null;
-  }
-}
-
-function countLines(filePath: string): number {
-  try {
-    const content = fs.readFileSync(filePath, "utf8");
-    return content.split("\n").length;
-  } catch {
-    return 0;
-  }
-}
-
+/** Hash and line count from a single read (missing file: null hash, 0 lines). */
 function snapshotFile(filePath: string): FileSnapshot {
+  let content: Buffer;
+  try {
+    content = fs.readFileSync(filePath);
+  } catch {
+    return { path: filePath, hash: null, lineCount: 0 };
+  }
+  // 0x0A never occurs inside a multi-byte UTF-8 sequence, so this matches
+  // content.toString("utf8").split("\n").length.
+  let lineCount = 1;
+  for (
+    let index = content.indexOf(10);
+    index !== -1;
+    index = content.indexOf(10, index + 1)
+  )
+    lineCount++;
   return {
     path: filePath,
-    hash: hashFile(filePath),
-    lineCount: countLines(filePath),
+    hash: createHash("sha256").update(content).digest("hex").slice(0, 16),
+    lineCount,
   };
 }
 
@@ -140,7 +138,7 @@ export class TurnDiffTracker {
    */
   beforeTool(
     toolName: string,
-    callId: string,
+    _callId: string,
     input: Record<string, unknown>,
   ): void {
     const paths = predictAffectedPaths(this.root, toolName, input);
@@ -165,8 +163,7 @@ export class TurnDiffTracker {
 
     for (const p of paths) {
       const before = this.preSnapshots.get(p);
-      const afterHash = hashFile(p);
-      const afterLines = countLines(p);
+      const { hash: afterHash, lineCount: afterLines } = snapshotFile(p);
       const relativePath = path.relative(this.root, p).replace(/\\/g, "/");
 
       if (!before || before.hash === null) {

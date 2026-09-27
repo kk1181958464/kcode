@@ -17,6 +17,8 @@ export const taskItemPageOptionsSchema = z
   });
 export const saveTaskOptionsSchema = z.object({
   preserveUnloadedItems: z.boolean().optional(),
+  changedMessageIds: z.array(z.string().max(512)).max(100_000).optional(),
+  changedActivityIds: z.array(z.string().max(512)).max(100_000).optional(),
 });
 export const taskRequestIdsSchema = z.array(idSchema).max(100);
 export const runtimeEventPageOptionsSchema = z.object({

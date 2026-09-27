@@ -7,7 +7,7 @@ import {
   type AgentPlanStepStatus,
   type AgentToolName,
 } from "../src/types";
-import { UpstreamHttpError } from "./request-guard";
+import { isRetryableStreamError, UpstreamHttpError } from "./request-guard";
 import {
   missingRequestedGitOperations,
   successfulGitEvidence,
@@ -62,9 +62,7 @@ export function codingEvidenceWithBaseline(
   history: HistoryItem[],
   baseline: ReadonlySet<CodingOperation>,
 ) {
-  const evidence = successfulCodingEvidence(history);
-  for (const operation of baseline) evidence.add(operation);
-  return evidence;
+  return successfulCodingEvidence(history, baseline);
 }
 
 const ACTIONABLE_PLAN_REQUIREMENTS = new Set<AgentPlanRequirement>([
@@ -169,6 +167,7 @@ export function planRequirementRecoveryLabel(
 
 export function buildPausedCompletionResult({
   evidenceHistory,
+  userInputEvidenceStart = 0,
   baselineCodingEvidence,
   requestedCodingEvidenceOps,
   requestedBrowserOps,
@@ -182,6 +181,7 @@ export function buildPausedCompletionResult({
   pauseReason,
 }: {
   evidenceHistory: HistoryItem[];
+  userInputEvidenceStart?: number;
   baselineCodingEvidence: ReadonlySet<CodingOperation>;
   requestedCodingEvidenceOps: Set<CodingOperation>;
   requestedBrowserOps: Set<BrowserOperation>;
@@ -257,7 +257,9 @@ export function buildPausedCompletionResult({
     observedOperations,
     missingOperations,
     evidence: structuredToolEvidenceSummary(evidenceHistory),
-    waitingForUser: hasRequestedUserInputEvidence(evidenceHistory),
+    waitingForUser: hasRequestedUserInputEvidence(
+      evidenceHistory.slice(userInputEvidenceStart),
+    ),
     verifiedNoChange: hasVerifiedNoChangeReport(evidenceHistory),
   });
   const hasMissing = missingOperations.length > 0;
@@ -280,7 +282,8 @@ export function buildPausedCompletionResult({
   };
 }
 
-export function isFinalizationReasoningFailure(error: unknown) {
+export function isRecoverableFinalizationError(error: unknown) {
+  if (isRetryableStreamError(error) || isModelTurnTimeout(error)) return true;
   const message = error instanceof Error ? error.message : String(error);
   return /收尾阶段持续只有思考内容|连续只输出思考内容|持续没有正文或工具调用|模型单轮响应超过安全时限/.test(
     message,

@@ -8,6 +8,7 @@ import {
 } from "./openai-chat-stream";
 import type { Turn } from "./agent-types";
 import { validCalls } from "./agent-tool-schema";
+import { upstreamStreamError } from "../src/upstream-stream-error";
 
 export async function parseStreamedTurn(
   protocol: string,
@@ -43,10 +44,8 @@ export async function parseStreamedTurn(
   const responseItems: any[] = [],
     anthropicBlocks: any[] = [];
   for await (const event of watchModelSse(response, signal)) {
-    if (event.error?.message || event.type === "error")
-      throw new Error(
-        event.error?.message || event.message || "模型流式请求失败",
-      );
+    const error = upstreamStreamError(event);
+    if (error) throw error;
     if (protocol === "openai-chat") {
       const next = applyOpenAiChatDelta({
         event,

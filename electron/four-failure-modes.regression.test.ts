@@ -20,7 +20,6 @@ import { clearFailedBaselineCodingEvidence } from "./coding-operation-verificati
 import {
   CONSECUTIVE_UNPRODUCTIVE_TURN_LIMIT,
   REQUIRED_EVIDENCE_FORCE_RETRY_LIMIT,
-  REQUIRED_EVIDENCE_SOFT_RETRY_LIMIT,
   requiredEvidenceHook,
 } from "./stop-hooks";
 

@@ -5,12 +5,24 @@
  */
 export const RUNTIME_PROMPT_OVERHEAD_TOKENS = 48_000;
 
+// History items are replaced rather than mutated, and the budget is estimated
+// several times per round, so cache each item's serialized length.
+const serializedLengths = new WeakMap<object, number>();
+
 function serializedLength(value: unknown) {
-  try {
-    return JSON.stringify(value)?.length ?? 0;
-  } catch {
-    return String(value).length;
+  const cacheable = typeof value === "object" && value !== null;
+  if (cacheable) {
+    const cached = serializedLengths.get(value);
+    if (cached !== undefined) return cached;
   }
+  let length: number;
+  try {
+    length = JSON.stringify(value)?.length ?? 0;
+  } catch {
+    length = String(value).length;
+  }
+  if (cacheable) serializedLengths.set(value, length);
+  return length;
 }
 
 export function estimateRuntimeHistoryTokens(history: readonly unknown[]) {

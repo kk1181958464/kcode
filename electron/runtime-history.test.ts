@@ -14,6 +14,13 @@ import {
   type HistoryItem,
 } from "./agent";
 
+type MessageHistoryItem = Extract<HistoryItem, { kind: "message" }>;
+
+function messageContaining(marker: string) {
+  return (item: HistoryItem): item is MessageHistoryItem =>
+    item.kind === "message" && item.content.includes(marker);
+}
+
 test(
   "recognizes a structured API protocol without treating ordinary URLs as one",
   () => {
@@ -67,11 +74,7 @@ test("keeps the full protocol document when runtime history is compacted", () =>
   ];
 
   assert.equal(compactRuntimeHistory(history), true);
-  const retained = history.find(
-    (item) =>
-      item.kind === "message" &&
-      item.content.includes("<runtime_retained_protocol_context>"),
-  );
+  const retained = history.find(messageContaining("<runtime_retained_protocol_context>"));
   assert.ok(retained);
   assert.match(retained.content, /\/videos\/generations/);
   assert.match(retained.content, /\/videos\/\{JOB_ID\}/);
@@ -81,11 +84,7 @@ test("keeps the full protocol document when runtime history is compacted", () =>
   // A second compaction must reuse the retained block instead of nesting it
   // or retaining the same protocol more than once.
   assert.equal(compactRuntimeHistory(history), true);
-  const retainedBlocks = history.filter(
-    (item) =>
-      item.kind === "message" &&
-      item.content.includes("<runtime_retained_protocol_context>"),
-  );
+  const retainedBlocks = history.filter(messageContaining("<runtime_retained_protocol_context>"));
   assert.equal(retainedBlocks.length, 1);
   assert.equal(
     (
@@ -273,11 +272,7 @@ test("uses a model-generated handoff for runtime compaction", async () => {
   assert.equal(result.changed, true);
   assert.match(receivedSource, /jobs|status=succeeded/);
   assert.ok(receivedSource.includes("src/app.ts"));
-  const modelSummary = history.find(
-    (item) =>
-      item.kind === "message" &&
-      item.content.includes("<runtime_model_compaction>"),
-  );
+  const modelSummary = history.find(messageContaining("<runtime_model_compaction>"));
   assert.ok(modelSummary);
   assert.match(modelSummary.content, /模型整理：接口轮询约束/);
   assert.match(modelSummary.content, /runtime_verified_evidence/);
@@ -428,10 +423,7 @@ test("runtime compaction keeps unfinished obligations in source, ledger and summ
     "启动执行模型 (agent:spawn_executor)",
   ]);
   assert.equal(compactRuntimeHistory(history, false, [], 8, undefined, pending), true);
-  const fallback = history.find(
-    (item) =>
-      item.kind === "message" && item.content.includes("<runtime_compaction>"),
-  );
+  const fallback = history.find(messageContaining("<runtime_compaction>"));
   assert.ok(fallback);
   assert.match(fallback.content, /未完成义务/);
   assert.match(fallback.content, /coding:modify/);
@@ -463,10 +455,7 @@ test("second runtime compaction does not recover unfinished obligations from han
     compactRuntimeHistory(history, false, [], 8, undefined, []),
     true,
   );
-  const next = history.find(
-    (item) =>
-      item.kind === "message" && item.content.includes("<runtime_compaction>"),
-  );
+  const next = history.find(messageContaining("<runtime_compaction>"));
   assert.ok(next);
   assert.doesNotMatch(next.content, /runtime_pending_obligations/);
   assert.doesNotMatch(next.content, /coding:modify/);
@@ -530,10 +519,7 @@ test("second runtime compaction keeps unfinished obligations from the previous h
     compactRuntimeHistory(history, false, [], 8, undefined, pending),
     true,
   );
-  const next = history.find(
-    (item) =>
-      item.kind === "message" && item.content.includes("<runtime_compaction>"),
-  );
+  const next = history.find(messageContaining("<runtime_compaction>"));
   assert.ok(next);
   assert.match(next.content, /未完成义务/);
   assert.match(next.content, /coding:modify/);
@@ -587,10 +573,7 @@ test("second runtime compaction keeps the previous handoff outside the rolling f
     compactRuntimeHistory(history, false, [], 8, undefined, pending),
     true,
   );
-  const next = history.find(
-    (item) =>
-      item.kind === "message" && item.content.includes("<runtime_compaction>"),
-  );
+  const next = history.find(messageContaining("<runtime_compaction>"));
   assert.ok(next);
   assert.match(next.content, /上次交接/);
   assert.match(next.content, /登录页修改尚未落地/);
@@ -625,11 +608,7 @@ test("model compaction summary keeps structured unfinished obligations", async (
     },
   });
   assert.equal(result.strategy, "model");
-  const summary = history.find(
-    (item) =>
-      item.kind === "message" &&
-      item.content.includes("<runtime_model_compaction>"),
-  );
+  const summary = history.find(messageContaining("<runtime_model_compaction>"));
   assert.ok(summary);
   assert.match(summary.content, /runtime_pending_obligations/);
   assert.match(summary.content, /coding:modify/);

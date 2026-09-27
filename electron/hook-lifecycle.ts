@@ -24,7 +24,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { execSync } from "node:child_process";
+import { exec } from "node:child_process";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -76,8 +76,11 @@ const HOOKS_DIR = ".kcode";
 const DEFAULT_TIMEOUT = 10_000;
 const MAX_OUTPUT_LENGTH = 4_000;
 
-let cachedConfig: { config: HookConfig; loadedAt: number; root: string } | null =
-  null;
+let cachedConfig: {
+  config: HookConfig | null;
+  loadedAt: number;
+  root: string;
+} | null = null;
 const CONFIG_TTL_MS = 30_000;
 
 /**
@@ -94,6 +97,14 @@ export function loadHookConfig(workspaceRoot: string): HookConfig | null {
     return cachedConfig.config;
   }
 
+  // Cache misses too: this runs before every tool call, and most workspaces
+  // have no hooks.json.
+  const config = readHookConfig(workspaceRoot);
+  cachedConfig = { config, root: workspaceRoot, loadedAt: now };
+  return config;
+}
+
+function readHookConfig(workspaceRoot: string): HookConfig | null {
   const configPath = path.join(workspaceRoot, HOOKS_DIR, HOOKS_FILENAME);
   try {
     if (!fs.existsSync(configPath)) return null;
@@ -102,8 +113,6 @@ export function loadHookConfig(workspaceRoot: string): HookConfig | null {
 
     // Basic validation
     if (!parsed.hooks || typeof parsed.hooks !== "object") return null;
-
-    cachedConfig = { config: parsed, root: workspaceRoot, loadedAt: now };
     return parsed;
   } catch {
     return null;
@@ -132,6 +141,8 @@ export interface HookContext {
   responseText?: string;
   /** Session/request ID */
   requestId?: string;
+  /** Cancellation shared with the owning agent run. */
+  signal?: AbortSignal;
   /** Environment variables to pass to commands */
   env?: Record<string, string>;
 }
@@ -143,6 +154,7 @@ export async function runHooks(
   event: HookEvent,
   context: HookContext,
 ): Promise<HookExecutionResult[]> {
+  context.signal?.throwIfAborted();
   const config = loadHookConfig(context.workspaceRoot);
   if (!config) return [];
 
@@ -152,6 +164,7 @@ export async function runHooks(
   const results: HookExecutionResult[] = [];
 
   for (const handler of handlers) {
+    context.signal?.throwIfAborted();
     // Check matcher for tool-specific hooks
     if (
       (event === "PreToolUse" || event === "PostToolUse") &&
@@ -164,6 +177,8 @@ export async function runHooks(
     }
 
     const result = await executeHandler(handler, event, context);
+    // Cancellation stops the run even when the hook is non-blocking.
+    context.signal?.throwIfAborted();
     results.push(result);
 
     // If blocking hook rejects, stop processing further hooks
@@ -198,15 +213,55 @@ async function executeHandler(
   return { allowed: true, handler };
 }
 
+interface CommandOutcome {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+  error?: Error;
+}
+
+/**
+ * Run a shell command without blocking the main process. Never rejects.
+ */
+function runCommand(
+  command: string,
+  options: {
+    cwd: string;
+    timeout: number;
+    env: Record<string, string>;
+    signal?: AbortSignal;
+  },
+): Promise<CommandOutcome> {
+  return new Promise((resolve) => {
+    exec(
+      command,
+      {
+        ...options,
+        encoding: "utf-8",
+        maxBuffer: 1024 * 1024, // 1MB
+        windowsHide: true,
+      },
+      (error, stdout, stderr) => {
+        if (!error) {
+          resolve({ exitCode: 0, stdout, stderr });
+          return;
+        }
+        const exitCode = typeof error.code === "number" ? error.code : 1;
+        resolve({ exitCode, stdout, stderr, error });
+      },
+    );
+  });
+}
+
 /**
  * Execute a command-type hook handler.
  * The command receives context via environment variables.
  */
-function executeCommandHandler(
+async function executeCommandHandler(
   handler: HookHandler,
   event: HookEvent,
   context: HookContext,
-): HookExecutionResult {
+): Promise<HookExecutionResult> {
   if (!handler.command) {
     return { allowed: true, handler, error: "No command specified" };
   }
@@ -232,55 +287,39 @@ function executeCommandHandler(
     ...(context.env || {}),
   };
 
-  try {
-    const output = execSync(handler.command, {
-      cwd: context.workspaceRoot,
-      timeout,
-      env,
-      encoding: "utf-8",
-      stdio: ["pipe", "pipe", "pipe"],
-      maxBuffer: 1024 * 1024, // 1MB
-    });
+  const result = await runCommand(handler.command, {
+    cwd: context.workspaceRoot,
+    timeout,
+    env,
+    signal: context.signal,
+  });
 
-    const trimmedOutput = output.trim().slice(0, MAX_OUTPUT_LENGTH);
-
-    // Parse structured output if JSON
-    let inject: string | undefined;
-    let allowed = true;
-    try {
-      const parsed = JSON.parse(trimmedOutput);
-      if (typeof parsed === "object" && parsed !== null) {
-        allowed = parsed.allowed !== false;
-        inject = parsed.inject || parsed.message || undefined;
-      }
-    } catch {
-      // Not JSON — treat as plain text injection
-      if (trimmedOutput) inject = trimmedOutput;
-    }
-
-    return { allowed, output: trimmedOutput, inject, handler };
-  } catch (err: unknown) {
-    const error = err instanceof Error ? err.message : String(err);
-    // Non-zero exit = hook rejects (for blocking hooks)
-    const exitCode =
-      err && typeof err === "object" && "status" in err
-        ? (err as { status: number }).status
-        : 1;
-
-    // For blocking hooks, non-zero exit means rejection
-    const allowed = !handler.blocking || exitCode === 0;
-
-    // Try to extract stderr for context
-    let output: string | undefined;
-    if (err && typeof err === "object" && "stderr" in err) {
-      output = String((err as { stderr: unknown }).stderr).slice(
-        0,
-        MAX_OUTPUT_LENGTH,
-      );
-    }
-
-    return { allowed, output, error, handler };
+  if (result.error) {
+    // Non-zero exit (or timeout) = hook rejects (for blocking hooks)
+    const allowed = !handler.blocking || result.exitCode === 0;
+    const output = result.stderr
+      ? result.stderr.slice(0, MAX_OUTPUT_LENGTH)
+      : undefined;
+    return { allowed, output, error: result.error.message, handler };
   }
+
+  const trimmedOutput = result.stdout.trim().slice(0, MAX_OUTPUT_LENGTH);
+
+  // Parse structured output if JSON
+  let inject: string | undefined;
+  let allowed = true;
+  try {
+    const parsed = JSON.parse(trimmedOutput);
+    if (typeof parsed === "object" && parsed !== null) {
+      allowed = parsed.allowed !== false;
+      inject = parsed.inject || parsed.message || undefined;
+    }
+  } catch {
+    // Not JSON — treat as plain text injection
+    if (trimmedOutput) inject = trimmedOutput;
+  }
+
+  return { allowed, output: trimmedOutput, inject, handler };
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

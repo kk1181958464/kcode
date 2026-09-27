@@ -38,6 +38,8 @@ test.describe("KCode workbench smoke flow", () => {
       "上下拖动调整输入框高度",
     );
 
+    // Raw mouse events do not wait for overlays like locator actions do.
+    await expect(page.locator("#kcode-boot")).toHaveCount(0);
     const beforeDrag = await textarea.boundingBox();
     const handleBox = await resizeHandle.boundingBox();
     expect(beforeDrag).not.toBeNull();

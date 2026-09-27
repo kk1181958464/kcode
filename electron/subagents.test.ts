@@ -524,7 +524,7 @@ test("new steering input interrupts only the wait, not the subagent", async () =
       );
     },
   );
-  let steer = () => undefined;
+  let steer: () => void = () => undefined;
   let steeringSubscribed = false;
   const wait = waitForSubagents("steering-parent", [child.id], {
     timeoutMs: 5_000,

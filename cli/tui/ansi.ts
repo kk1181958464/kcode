@@ -141,7 +141,7 @@ export function wrapText(input: string, width: number): string[] {
 }
 
 /** Number of source chars in `rest` that produced the visible prefix `head`. */
-function sliceLengthForVisible(rest: string, head: string): number {
+function sliceLengthForVisible(_rest: string, head: string): number {
   // head is a prefix of rest minus a possible trailing reset we appended.
   const reset = "\x1b[0m";
   const body = head.endsWith(reset) ? head.slice(0, -reset.length) : head;

@@ -139,6 +139,8 @@ export function syncTaskItems(
   taskId: string,
   items: unknown[],
   mode: TaskItemSyncMode = "replace",
+  /** Ids known to have changed; other items are skipped if their position holds. */
+  changedIds?: ReadonlySet<string>,
 ) {
   const upsert = connection.prepare(
     `INSERT INTO ${table}(task_id,id,position,value,updated_at) VALUES(?,?,?,?,?)
@@ -173,6 +175,12 @@ export function syncTaskItems(
       mode === "merge"
         ? (existingPositions.get(id) ?? nextPosition++)
         : position;
+    if (
+      changedIds &&
+      !changedIds.has(id) &&
+      existingPositions.get(id) === storedPosition
+    )
+      return;
     upsert.run(taskId, id, storedPosition, JSON.stringify(item), now);
   });
   if (mode === "merge") return;
@@ -266,7 +274,7 @@ function taskHeader(task: unknown) {
   const {
     messages: _messages,
     activities: _activities,
-    _taskItemsStorageVersion: _taskItemsStorageVersion,
+    _taskItemsStorageVersion,
     contextSummary: _contextSummary,
     contextLedger: _contextLedger,
     summarySnapshots: _summarySnapshots,
@@ -788,6 +796,36 @@ export function interruptStaleRuntimeEventsInDatabase(
   return stale.length;
 }
 
+/**
+ * The journal is append-only and nothing replays finished turns, so keep only
+ * each task's most recent requests. The latest event per task (used to restore
+ * runtime status) always belongs to a kept request.
+ */
+export function pruneRuntimeEventsInDatabase(
+  connection: DatabaseSync,
+  keepRequestsPerTask = 3,
+) {
+  const result = connection
+    .prepare(
+      `DELETE FROM runtime_events WHERE request_id IN (
+         SELECT request_id FROM (
+           SELECT request_id,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY task_id ORDER BY MAX(event_order) DESC
+                  ) AS recency
+           FROM runtime_events
+           GROUP BY task_id, request_id
+         ) WHERE recency > ?
+       )`,
+    )
+    .run(keepRequestsPerTask);
+  return Number(result.changes);
+}
+
+export function pruneRuntimeEvents() {
+  return pruneRuntimeEventsInDatabase(db());
+}
+
 export function interruptStaleRuntimeEvents(now = Date.now()) {
   return interruptStaleRuntimeEventsInDatabase(db(), now);
 }
@@ -851,7 +889,15 @@ export function loadActivityPayload(activityId: string): unknown | null {
   return row?.value ? JSON.parse(row.value) : null;
 }
 
-export type SaveTaskOptions = { preserveUnloadedItems?: boolean };
+export type SaveTaskOptions = {
+  preserveUnloadedItems?: boolean;
+  /**
+   * When present, only these items (plus new or moved ones) are serialized and
+   * written. The renderer derives them from immutable-update identity.
+   */
+  changedMessageIds?: string[];
+  changedActivityIds?: string[];
+};
 
 export function saveTask(
   id: string,
@@ -866,6 +912,15 @@ export function saveTask(
     throw new Error("任务数据与任务 ID 不匹配");
   const connection = db();
   const compacted = compactTaskActivityPayloads(value);
+  const changedMessages = options.changedMessageIds
+    ? new Set(options.changedMessageIds)
+    : undefined;
+  const changedActivities = options.changedActivityIds
+    ? new Set(options.changedActivityIds)
+    : undefined;
+  const payloads = changedActivities
+    ? compacted.payloads.filter((item) => changedActivities.has(item.activityId))
+    : compacted.payloads;
   const current = connection
     .prepare("SELECT position FROM tasks WHERE id = ?")
     .get(id) as { position: number } | undefined;
@@ -899,6 +954,7 @@ export function saveTask(
       id,
       taskItems(compacted.task, "messages"),
       options.preserveUnloadedItems ? "merge" : "replace",
+      changedMessages,
     );
     syncTaskItems(
       connection,
@@ -906,8 +962,9 @@ export function saveTask(
       id,
       taskItems(compacted.task, "activities"),
       options.preserveUnloadedItems ? "merge" : "replace",
+      changedActivities,
     );
-    saveActivityPayloads(connection, id, compacted.payloads);
+    saveActivityPayloads(connection, id, payloads);
     connection.exec("COMMIT");
   } catch (error) {
     connection.exec("ROLLBACK");

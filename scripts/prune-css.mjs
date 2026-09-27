@@ -65,8 +65,13 @@ const [result] = await new PurgeCSS().purge({
       "blue",
       "orange",
       "mono",
+      // Elements emitted by react-markdown, never written in our own source.
+      ...["p", "a", "em", "strong", "del", "code", "pre", "blockquote", "hr",
+        "img", "input", "ul", "ol", "li", "table", "thead", "tbody", "tr",
+        "th", "td", "h1", "h2", "h3", "h4", "h5", "h6", "sup", "sub", "br"],
     ],
-    deep: [/^cm-/, /^diff-/, /^hljs-/, /^virtuoso/, /^katex/],
+    // Classes assembled at runtime, e.g. `theme-${theme}` or `is-${kind}`.
+    deep: [/^cm-/, /^diff-/, /^hljs-/, /^virtuoso/, /^katex/, /^theme-/, /^is-/],
     greedy: [/data-theme/, /data-accent/, /data-truncated/, /data-has-static/],
     variables: [],
     keyframes: [],

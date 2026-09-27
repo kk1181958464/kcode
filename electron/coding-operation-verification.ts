@@ -662,9 +662,13 @@ export function clearFailedBaselineCodingEvidence(
 
 export function successfulCodingEvidence(
   history: CodingVerificationHistoryItem[],
+  baseline?: ReadonlySet<CodingOperation>,
 ) {
   const parsed = parsedResults(history);
-  const operations = new Set<CodingOperation>();
+  const operations = new Set<CodingOperation>(baseline);
+  // Recovered validation precedes every result in this run. Recompute its
+  // validity in the same ordered ledger as new mutations and validations.
+  operations.delete("validate");
   const inspectTools = new Set([
     "list_directory",
     "glob_files",
@@ -712,7 +716,7 @@ export function successfulCodingEvidence(
 
   let sequence = 0;
   let lastMutation = -1;
-  let lastValidation = -1;
+  let lastValidation = baseline?.has("validate") ? 0 : -1;
   for (const item of history) {
     if (item.kind !== "result") continue;
     sequence += 1;

@@ -37,7 +37,6 @@ export class LiveView {
   private rows: Row[] = [];
   private spinnerFrame = 0;
   private spinnerTimer: ReturnType<typeof setInterval> | undefined;
-  private hasActiveWork = false;
   private answerTranscript = "";
 
   constructor(private readonly sink: WriteSink) {
@@ -63,7 +62,7 @@ export class LiveView {
             0,
             Math.floor(Number(event.textOffset) || 0),
           );
-          this.rows = this.rows.flatMap((row) => {
+          this.rows = this.rows.flatMap<Row>((row) => {
             if (row.kind !== "answer") return [row];
             if (remaining <= 0) return [];
             const retained = row.text.slice(0, remaining);
@@ -260,7 +259,6 @@ export class LiveView {
   }
 
   private startSpinner(): void {
-    this.hasActiveWork = true;
     if (this.spinnerTimer) return;
     this.spinnerTimer = setInterval(() => {
       this.spinnerFrame += 1;
@@ -272,7 +270,6 @@ export class LiveView {
   }
 
   private stopSpinner(): void {
-    this.hasActiveWork = false;
     if (this.spinnerTimer) {
       clearInterval(this.spinnerTimer);
       this.spinnerTimer = undefined;

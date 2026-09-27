@@ -60,7 +60,7 @@ import { copyWithToast } from "../../lib/toast";
 import { revealLocalPath } from "../../lib/reveal-path";
 import { effortLabels } from "../../lib/model-utils";
 import { MarkdownMessage, isOpenMarkdownFence, closeOpenMarkdownFence, partitionStreamingMarkdown } from "../common/MarkdownMessage";
-import { DiffView } from "../common/DiffView";
+import { DiffView } from "../common/LazyDiffView";
 import {
   FileChangePreviewDialog,
   type FileChangePreviewItem,
@@ -398,6 +398,7 @@ const MessageItem = memo(function MessageItem({
     previous.workspacePath === next.workspacePath &&
     previous.attachments === next.attachments &&
     previous.assistantBody === next.assistantBody &&
+    previous.justFinished === next.justFinished &&
     previous.onRetry === next.onRetry;
 });
 
@@ -431,6 +432,38 @@ const StreamingActivityOutputLeaf = memo(function StreamingActivityOutputLeaf({
   return <pre ref={nodeRef} className="activity-live-output activity-result-panel" />;
 });
 
+// Ticks on its own so a running activity does not re-render the whole item.
+function ActivityElapsed({
+  startedAt,
+  completedAt,
+  running,
+}: {
+  startedAt: number;
+  completedAt?: number;
+  running: boolean;
+}) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!running) return;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [running]);
+  const end = running ? now : (completedAt ?? now);
+  return <>{formatDuration(Math.max(0, end - startedAt))}</>;
+}
+
+export function readableActivityFailure(activity: AgentActivity) {
+  const raw =
+    activity.errorSummary ||
+    (activity.output && !/[\uFFFD□]/.test(activity.output)
+      ? activity.output
+      : activity.tool === "run_command"
+        ? "命令执行失败，请查看详细输出。"
+        : "工具执行失败，请查看详细输出。");
+  return raw.length > 2_000 ? `... ${raw.slice(-2_000)}` : raw;
+}
+
 const ActivityItem = memo(function ActivityItem({
   activity,
   requestId,
@@ -447,26 +480,20 @@ const ActivityItem = memo(function ActivityItem({
   );
   const [undoing, setUndoing] = useState(false);
   const [restoreConflict, setRestoreConflict] = useState(false);
-  const [elapsedMs, setElapsedMs] = useState(() =>
-    Math.max(0, (activity.completedAt ?? Date.now()) - activity.startedAt),
-  );
-  const activityView = normalizeActivity(activity);
+  const activityView = useMemo(() => normalizeActivity(activity), [activity]);
   const pending = activity.status === "waiting";
   const detail = activity.diff || activity.output;
-  const rawReadableFailure =
-    activity.errorSummary ||
-    (activity.output && !/[\uFFFD]{1,}|[□�]{1,}/.test(activity.output)
-      ? activity.output
-      : activity.tool === "run_command"
-        ? "命令执行失败，请查看详细输出。"
-        : "工具执行失败，请查看详细输出。");
-  const readableFailure =
-    rawReadableFailure.length > 2_000
-      ? `... ${rawReadableFailure.slice(-2_000)}`
-      : rawReadableFailure;
+  const readableFailure = useMemo(
+    () =>
+      activity.status === "failed" ? readableActivityFailure(activity) : "",
+    [activity],
+  );
   const renderedDetail =
     expanded && detail ? renderedActivityDetail(detail) : undefined;
-  const executionNarrative = activityExecutionNarrative(activity);
+  const executionNarrative = useMemo(
+    () => activityExecutionNarrative(activity),
+    [activity],
+  );
   const liveOutput = activity.status === "running" && !detail;
   const executionModel =
     activity.agentRole === "executor" ? activityView.model : undefined;
@@ -476,18 +503,6 @@ const ActivityItem = memo(function ActivityItem({
     // Keep long-running commands expanded so heartbeats/live output stay visible.
     if (activity.status === "running" && activity.output) setExpanded(true);
   }, [activity.status, activity.output]);
-  useEffect(() => {
-    if (activity.status !== "running") {
-      setElapsedMs(
-        Math.max(0, (activity.completedAt ?? Date.now()) - activity.startedAt),
-      );
-      return;
-    }
-    const update = () => setElapsedMs(Date.now() - activity.startedAt);
-    update();
-    const timer = window.setInterval(update, 1_000);
-    return () => window.clearInterval(timer);
-  }, [activity.status, activity.startedAt, activity.completedAt]);
   async function restore(event?: React.MouseEvent, force = false) {
     event?.stopPropagation();
     if (!window.kcode || undoing || activity.undone) return;
@@ -735,7 +750,14 @@ const ActivityItem = memo(function ActivityItem({
                           ? "命令执行中，无输出时也会显示进度心跳"
                           : "操作正在执行"}
                 </strong>
-                <small>已运行 {formatDuration(elapsedMs)}</small>
+                <small>
+                  已运行{" "}
+                  <ActivityElapsed
+                    startedAt={activity.startedAt}
+                    completedAt={activity.completedAt}
+                    running={activity.status === "running"}
+                  />
+                </small>
               </span>
             </div>
           )}
@@ -1752,7 +1774,6 @@ const AssistantTimeline = memo(function AssistantTimeline({
   requestId?: string;
   workspacePath: string;
   onActivityChange(activity: AgentActivity): void;
-  reasoning?: string;
   streamingTail?: React.ReactNode;
   streamingReasoning?: React.ReactNode;
   streamingProgress?: React.ReactNode;
@@ -1998,6 +2019,9 @@ const StreamingMarkdownTail = memo(function StreamingMarkdownTail({
 
   useLayoutEffect(() => {
     sealedEndRef.current = 0;
+    // Appends keep the sealed prefix intact, so partitioning can resume at
+    // sealedEnd; a replace may rewrite it and needs a full rescan.
+    let rescan = true;
     const apply = (text: string) => {
       latestTextRef.current = text;
       if (!text) {
@@ -2006,7 +2030,11 @@ const StreamingMarkdownTail = memo(function StreamingMarkdownTail({
         setOpenText("");
         return;
       }
-      const next = partitionStreamingMarkdown(text);
+      const next = partitionStreamingMarkdown(
+        text,
+        rescan ? 0 : sealedEndRef.current,
+      );
+      rescan = false;
       const end =
         next.sealedEnd > sealedEndRef.current
           ? next.sealedEnd
@@ -2035,6 +2063,7 @@ const StreamingMarkdownTail = memo(function StreamingMarkdownTail({
         apply("");
         return;
       }
+      if (change.type === "replace") rescan = true;
       schedule(getStreamingText(requestId));
     });
     return () => {
@@ -2303,7 +2332,6 @@ const StreamingAssistantTimeline = memo(function StreamingAssistantTimeline({
   requestId,
   workspacePath,
   onActivityChange,
-  reasoning,
 }: {
   message: ChatMessage;
   activities: AgentActivity[];
@@ -2311,7 +2339,6 @@ const StreamingAssistantTimeline = memo(function StreamingAssistantTimeline({
   requestId: string;
   workspacePath: string;
   onActivityChange(activity: AgentActivity): void;
-  reasoning?: string;
 }) {
   // Promote sealed markdown blocks while streaming; only the open tail stays in
   // an append-only text node so bottom-follow does not bounce on every token.
@@ -2324,7 +2351,6 @@ const StreamingAssistantTimeline = memo(function StreamingAssistantTimeline({
       requestId={running ? requestId : undefined}
       workspacePath={workspacePath}
       onActivityChange={onActivityChange}
-      reasoning={reasoning}
       streamingReasoning={
         running ? <StreamingReasoningLeaf requestId={requestId} /> : undefined
       }
@@ -2355,7 +2381,6 @@ const ConversationMessage = memo(
     onRetry,
     onActivityChange,
     registerTurn,
-    reasoning,
   }: {
     message: ChatMessage;
     activities: AgentActivity[];
@@ -2366,7 +2391,6 @@ const ConversationMessage = memo(
     onRetry(content: string): void;
     onActivityChange(activity: AgentActivity): void;
     registerTurn(id: string, element: HTMLDivElement | null): void;
-    reasoning?: string;
   }) {
     const requestId = message.id.startsWith("assistant:")
       ? message.id.slice("assistant:".length)
@@ -2400,14 +2424,12 @@ const ConversationMessage = memo(
             requestId={requestId}
             workspacePath={workspacePath}
             onActivityChange={onActivityChange}
-            reasoning={reasoning}
           />
         ) : undefined,
       [
         activities,
         message,
         onActivityChange,
-        reasoning,
         requestId,
         running,
         workspacePath,
@@ -2442,7 +2464,6 @@ const ConversationMessage = memo(
       previous.onRetry !== next.onRetry ||
       previous.onActivityChange !== next.onActivityChange ||
       previous.registerTurn !== next.registerTurn ||
-      previous.reasoning !== next.reasoning ||
       previous.activities.length !== next.activities.length
     )
       return false;
@@ -2467,7 +2488,6 @@ export const ConversationHistory = memo(
     onActivityChange,
     registerTurn,
     endRef,
-    reasoning,
   }: {
     messages: ChatMessage[];
     hasOlderMessages: boolean;
@@ -2482,7 +2502,6 @@ export const ConversationHistory = memo(
     onActivityChange(activity: AgentActivity): void;
     registerTurn(id: string, element: HTMLDivElement | null): void;
     endRef: React.RefObject<HTMLDivElement | null>;
-    reasoning?: string;
   }) {
     return (
       <div className="message-list" aria-live="polite">
@@ -2515,11 +2534,6 @@ export const ConversationHistory = memo(
               onRetry={onRetry}
               onActivityChange={onActivityChange}
               registerTurn={registerTurn}
-              reasoning={
-                Boolean(requestId) && requestId === runningId
-                  ? reasoning
-                  : undefined
-              }
             />
           );
         })}
@@ -2532,24 +2546,6 @@ export const ConversationHistory = memo(
         <div ref={endRef} />
       </div>
     );
-  },
-  (prev, next) => {
-    if (prev.messages.length !== next.messages.length) return false;
-    if (prev.runningId !== next.runningId) return false;
-    if (prev.reasoning !== next.reasoning) return false;
-    if (prev.hasOlderMessages !== next.hasOlderMessages) return false;
-    if (prev.olderMessagesLoading !== next.olderMessagesLoading) return false;
-    if (prev.hasNewerMessages !== next.hasNewerMessages) return false;
-    if (prev.retryContent !== next.retryContent) return false;
-    if (prev.workspacePath !== next.workspacePath) return false;
-    const prevLast = prev.messages[prev.messages.length - 1];
-    const nextLast = next.messages[next.messages.length - 1];
-    if (prevLast && nextLast) {
-      if ((prevLast.content?.length ?? 0) !== (nextLast.content?.length ?? 0))
-        return false;
-    }
-    if (prev.activitiesByRequest !== next.activitiesByRequest) return false;
-    return true;
   },
 );
 

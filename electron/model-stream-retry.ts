@@ -2,6 +2,8 @@ import { FirstByteTimeoutError, UpstreamHttpError } from "./request-guard";
 import { SseStreamTimeoutError } from "./sse-stream";
 
 export const MODEL_STREAM_MAX_ATTEMPTS = 6;
+// Summary-only turns can fall back to recorded tool results after one retry.
+export const FINALIZATION_STREAM_MAX_ATTEMPTS = 2;
 export const MODEL_TURN_HTTP_ATTEMPTS = 10;
 // A single model sampling request must have a wall-clock boundary even when a
 // relay keeps sending heartbeats or duplicate chunks. Tool execution happens

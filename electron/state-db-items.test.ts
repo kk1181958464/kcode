@@ -320,3 +320,43 @@ test("loads all activities belonging to the visible message requests", () => {
   );
   database.close();
 });
+
+test("sync with changed ids only rewrites changed, new, and moved items", () => {
+  const database = itemDatabase();
+  const a = { id: "a", content: "one" };
+  const b = { id: "b", content: "two" };
+  syncTaskItems(database, "task_messages", "task", [a, b]);
+  database.exec("UPDATE task_messages SET updated_at = 0");
+
+  const edited = { id: "b", content: "two edited" };
+  const added = { id: "c", content: "three" };
+  syncTaskItems(
+    database,
+    "task_messages",
+    "task",
+    [a, edited, added],
+    "replace",
+    new Set(["b", "c"]),
+  );
+  const rows = database
+    .prepare("SELECT id,position,value,updated_at FROM task_messages ORDER BY position")
+    .all() as { id: string; position: number; value: string; updated_at: number }[];
+  assert.deepEqual(
+    rows.map((row) => [row.id, row.position, JSON.parse(row.value).content, row.updated_at > 0]),
+    [
+      ["a", 0, "one", false],
+      ["b", 1, "two edited", true],
+      ["c", 2, "three", true],
+    ],
+  );
+
+  // Removing "a" shifts positions: unchanged "b" and "c" must still move.
+  syncTaskItems(database, "task_messages", "task", [edited, added], "replace", new Set());
+  assert.deepEqual(
+    storedMessages(database).map((row) => [row.id, row.position]),
+    [
+      ["b", 0],
+      ["c", 1],
+    ],
+  );
+});

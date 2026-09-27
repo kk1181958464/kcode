@@ -7,10 +7,12 @@ import {
   networkTransportErrorText,
 } from "./model-network-transport";
 import { isRetryableStreamError } from "./request-guard";
+import { UpstreamStreamError } from "../src/upstream-stream-error";
 import { AsyncQueue } from "./async-queue";
 import { SseStreamTimeoutError } from "./sse-stream";
 import {
   FINALIZATION_TURN_MAX_DURATION_MS,
+  FINALIZATION_STREAM_MAX_ATTEMPTS,
   MODEL_TURN_MAX_DURATION_MS,
   MODEL_STREAM_MAX_ATTEMPTS,
   modelStreamMaxAttempts,
@@ -49,13 +51,20 @@ async function* streamModelTurn(
   requestId: string,
   request: ModelRequest,
   history: HistoryItem[],
-  signal: AbortSignal,
+  outerSignal: AbortSignal,
   toolsEnabled: boolean,
   requireToolCall: boolean,
   runtime: ModelTurnRuntime,
   attemptBudget: ModelAttemptBudget,
   sampleTurn: typeof modelTurn,
 ): AsyncGenerator<TurnStreamEvent> {
+  // run() below is detached from the consumer. If the consumer stops iterating
+  // early, abort it too instead of letting it retry until the run is cancelled.
+  const controller = new AbortController();
+  const signal = controller.signal;
+  const forwardAbort = () => controller.abort(outerSignal.reason);
+  if (outerSignal.aborted) forwardAbort();
+  else outerSignal.addEventListener("abort", forwardAbort, { once: true });
   const queue = new AsyncQueue<TurnStreamEvent>();
   let turn: Turn | undefined;
   let reasoningOnlyRecoveryAttempted = false;
@@ -110,6 +119,7 @@ async function* streamModelTurn(
     new Promise<void>((resolve) => {
       const timer = setTimeout(finish, ms);
       function finish() {
+        clearTimeout(timer);
         signal.removeEventListener("abort", finish);
         resolve();
       }
@@ -198,7 +208,9 @@ async function* streamModelTurn(
         }
         const retryable = isRetryableStreamError(error);
         const maxAttempts = Math.min(
-          MODEL_STREAM_MAX_ATTEMPTS,
+          toolsEnabled
+            ? MODEL_STREAM_MAX_ATTEMPTS
+            : FINALIZATION_STREAM_MAX_ATTEMPTS,
           modelStreamMaxAttempts(error),
         );
         if (
@@ -221,6 +233,10 @@ async function* streamModelTurn(
           transport: modelNetworkTransportLabel(currentTransport),
           nextTransport: modelNetworkTransportLabel(nextTransport),
           error: networkTransportErrorText(error),
+          ...(error instanceof UpstreamStreamError ? {
+            code: error.code, type: error.type, status: error.status,
+            upstreamRequestId: error.requestId,
+          } : {}),
         });
         if (nextTransport !== currentTransport)
           pushProgress(
@@ -237,7 +253,7 @@ async function* streamModelTurn(
           Math.max(1, remaining),
         );
         pushProgress(
-          `上游连接中断，正在重连（${attempt}/${Math.max(1, maxAttempts - 1)}），${Math.ceil(delay / 1_000)} 秒后继续；已有输出和工具结果会保留…`,
+          `上游响应异常，正在重试（${attempt}/${Math.max(1, maxAttempts - 1)}），${Math.ceil(delay / 1_000)} 秒后继续；已有输出和工具结果会保留…`,
         );
         await sleep(delay);
         if (signal.aborted) throw error;
@@ -250,6 +266,13 @@ async function* streamModelTurn(
       queue.close();
     })
     .catch((error) => queue.fail(error));
-  for await (const event of queue) yield event;
-  yield { type: "complete", turn: turn! };
+  let completed = false;
+  try {
+    for await (const event of queue) yield event;
+    completed = true;
+    yield { type: "complete", turn: turn! };
+  } finally {
+    outerSignal.removeEventListener("abort", forwardAbort);
+    if (!completed) controller.abort(new Error("模型流已被调用方关闭"));
+  }
 }

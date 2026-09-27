@@ -6,6 +6,9 @@
     "outDir": "../dist-electron",
     "rootDir": "..",
     "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "types": ["node"]

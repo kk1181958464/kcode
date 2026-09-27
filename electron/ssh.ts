@@ -1,4 +1,5 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
+import { BoundedSnapshotMap, textSnapshotBytes } from "./bounded-snapshot-map";
 import {
   mkdirSync,
   statSync,
@@ -81,7 +82,11 @@ export function sshSessionRecovery(sessionId: string) {
 }
 
 const sessions = new Map<string, SshSession>();
-const remoteUndoSnapshots = new Map<string, RemoteUndoSnapshot>();
+const REMOTE_UNDO_SNAPSHOT_BUDGET_BYTES = 64 * 1024 * 1024;
+const remoteUndoSnapshots = new BoundedSnapshotMap<RemoteUndoSnapshot>(
+  REMOTE_UNDO_SNAPSHOT_BUDGET_BYTES,
+  textSnapshotBytes,
+);
 
 type SshCredentialKind = "password" | "private-key" | "password-and-key";
 

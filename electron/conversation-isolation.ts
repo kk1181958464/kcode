@@ -26,5 +26,10 @@ export function createConversationIsolation(
 }
 
 export function historyFingerprint(history: unknown) {
-  return digest(JSON.stringify(history)).slice(0, 24);
+  return textFingerprint(JSON.stringify(history));
+}
+
+/** Fingerprint of an already-serialized payload (avoids re-serializing). */
+export function textFingerprint(text: string) {
+  return digest(text).slice(0, 24);
 }

@@ -21,3 +21,8 @@ cli/*.tgz
 tmp-*
 *.bak
 *.bak-*
+
+# test output
+test-results/
+playwright-report/
+release-check/

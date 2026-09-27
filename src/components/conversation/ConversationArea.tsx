@@ -56,7 +56,6 @@ export interface ConversationAreaProps {
   handleActivityChange(activity: AgentActivity): void;
   registerTurn(messageId: string, element: HTMLDivElement | null): void;
   endRef: RefObject<HTMLDivElement | null>;
-  agentReasoning: string;
   /** When this changes, play a short enter transition on the conversation pane. */
   switchKey?: string;
   /** 1 = next task below in list (enter from right); -1 = above (from left). */
@@ -94,7 +93,6 @@ export const ConversationArea = memo(function ConversationArea({
   handleActivityChange,
   registerTurn,
   endRef,
-  agentReasoning,
   switchKey,
   switchDirection = 1,
 }: ConversationAreaProps) {
@@ -400,7 +398,6 @@ export const ConversationArea = memo(function ConversationArea({
           onActivityChange={handleActivityChange}
           registerTurn={registerTurn}
           endRef={endRef}
-          reasoning={agentReasoning}
         />
       )}
     </section>

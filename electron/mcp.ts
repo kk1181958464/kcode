@@ -99,6 +99,10 @@ function normalizeConfig(value: McpServerConfig): McpServerConfig {
   };
 }
 
+const HEADER_SEPARATOR = Buffer.from("\r\n\r\n");
+/** A server that never completes a message must not grow memory forever. */
+const MAX_STDIO_BUFFER_BYTES = 16 * 1024 * 1024;
+
 class StdioSession {
   private readonly pending = new Map<number, PendingRequest>();
   private nextId = 1;
@@ -121,6 +125,8 @@ class StdioSession {
     child.on("error", (error) => this.fail(error));
     child.on("exit", (code, signal) => {
       this.started = false;
+      // Drop the dead session so the next call spawns a fresh server.
+      if (sessions.get(config.id) === this) sessions.delete(config.id);
       this.fail(
         new Error(
           `MCP 服务 ${config.name} 已退出（${code ?? signal ?? "未知"}）`,
@@ -140,8 +146,14 @@ class StdioSession {
 
   private consume(chunk: Buffer) {
     this.buffer = Buffer.concat([this.buffer, chunk]);
+    if (this.buffer.length > MAX_STDIO_BUFFER_BYTES) {
+      this.buffer = Buffer.alloc(0);
+      writeLog("warn", "mcp.stdout-overflow", { server: this.config.id });
+      this.close();
+      return;
+    }
     while (this.buffer.length) {
-      const headerEnd = this.buffer.indexOf(Buffer.from("\r\n\r\n"));
+      const headerEnd = this.buffer.indexOf(HEADER_SEPARATOR);
       if (
         headerEnd >= 0 &&
         /^content-length\s*:/im.test(

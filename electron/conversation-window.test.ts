@@ -1,4 +1,4 @@
-﻿import assert from "node:assert/strict";
+import assert from "node:assert/strict";
 import test from "node:test";
 import {
   appendConversationWindow,
@@ -9,6 +9,7 @@ import {
   windowContainingTurn,
   offsetWithinScrollContainer,
 } from "../src/conversation-window";
+import type { ChatMessage } from "../src/types";
 
 test("detects whether the conversation is showing its real bottom", () => {
   assert.equal(
@@ -81,7 +82,7 @@ test("builds concise hover previews from each turn's assistant reply", () => {
       content: "继续处理",
       createdAt: 3,
       queued: true,
-    },
+    } as ChatMessage & { queued: boolean },
   ]);
 
   assert.deepEqual(turns, [

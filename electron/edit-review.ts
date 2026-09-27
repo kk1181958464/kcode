@@ -15,6 +15,12 @@ export type PendingEditRecord = {
   /** Content before the first mutation in this request. */
   before: string;
   existed: boolean;
+  /**
+   * Content the agent's latest mutation left behind (null = deleted). Undo
+   * refuses to overwrite a file that no longer matches it unless forced.
+   * Undefined when unknown (e.g. records rebuilt from a checkpoint).
+   */
+  after?: string | null;
   activityIds: string[];
   status: "pending" | "kept" | "undone";
 };
@@ -41,6 +47,8 @@ export type EditReviewBatchResult = {
   success: boolean;
   message: string;
   conflict?: boolean;
+  /** Files skipped because they changed after the agent's edit. */
+  conflictPaths?: string[];
   paths: string[];
   activityIds: string[];
 };
@@ -102,6 +110,8 @@ export function recordPendingEdit(input: {
   file: string;
   before: string;
   existed: boolean;
+  /** Content after this mutation; null when the mutation deleted the file. */
+  after?: string | null;
 }) {
   const root = path.resolve(input.root);
   const absolutePath = path.isAbsolute(input.file)
@@ -113,6 +123,7 @@ export function recordPendingEdit(input: {
   if (existing) {
     if (!existing.activityIds.includes(input.activityId))
       existing.activityIds.push(input.activityId);
+    existing.after = input.after;
     // Keep the earliest baseline; later mutations only attach activity ids.
     if (existing.status === "kept" || existing.status === "undone") {
       existing.status = "pending";
@@ -143,6 +154,7 @@ export function recordPendingEdit(input: {
     absolutePath,
     before: input.before,
     existed: input.existed,
+    after: input.after,
     activityIds: [input.activityId],
     status: "pending",
   };
@@ -206,22 +218,29 @@ async function restoreRecord(
   record: PendingEditRecord,
   force: boolean,
 ): Promise<{ ok: boolean; conflict?: boolean; message: string }> {
-  let current = "";
-  let currentExists = true;
+  let current: string | null = null;
   try {
     current = await readFile(record.absolutePath, "utf8");
   } catch {
-    currentExists = false;
+    current = null;
   }
+  const currentExists = current !== null;
 
   if (!force) {
-    // Soft conflict: file differs from what we last thought was the end state
-    // of pending edits. Callers that know the activity after-image can force.
     if (record.status === "kept") {
       return { ok: false, message: "该文件已标记为保留" };
     }
     if (record.status === "undone") {
       return { ok: false, message: "该文件已经撤销" };
+    }
+    // Soft conflict: the file was changed after the agent's last edit (e.g. by
+    // the user). Restoring would silently discard that work, so ask first.
+    if (record.after !== undefined && current !== record.after) {
+      return {
+        ok: false,
+        conflict: true,
+        message: "文件在智能体修改之后又被改动过",
+      };
     }
   }
 
@@ -297,7 +316,7 @@ export async function undoPendingFiles(
   const activityIds = new Set<string>();
   const undonePaths: string[] = [];
   const failures: string[] = [];
-  let conflict = false;
+  const conflictPaths: string[] = [];
 
   for (const record of records) {
     if (record.status === "kept" && !force) {
@@ -308,7 +327,7 @@ export async function undoPendingFiles(
     const result = await restoreRecord(record, force);
     if (!result.ok) {
       failures.push(`${record.relativePath}: ${result.message}`);
-      if (result.conflict) conflict = true;
+      if (result.conflict) conflictPaths.push(record.relativePath);
       continue;
     }
     undonePaths.push(record.relativePath);
@@ -318,7 +337,8 @@ export async function undoPendingFiles(
   if (!undonePaths.length) {
     return {
       success: false,
-      conflict,
+      conflict: conflictPaths.length > 0 || undefined,
+      conflictPaths,
       message: failures[0] || "撤销失败",
       paths: [],
       activityIds: [],
@@ -327,7 +347,8 @@ export async function undoPendingFiles(
 
   return {
     success: true,
-    conflict: failures.length > 0 ? conflict : undefined,
+    conflict: conflictPaths.length > 0 || undefined,
+    conflictPaths,
     message:
       failures.length > 0
         ? `已撤销 ${undonePaths.length} 个文件；${failures.length} 个失败`

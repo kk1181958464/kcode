@@ -81,7 +81,13 @@ export class TaskRuntimeStore {
     );
     if (nextState === current.state) return;
     this.active.set(taskId, { ...current, state: nextState });
-    this.publish();
+    // Keep sequence/timestamp tracking current without invalidating the UI for
+    // every text delta. Subscribers project lifecycle state, not stream data.
+    if (
+      nextState.threadStatus !== current.state.threadStatus ||
+      nextState.turnStatus !== current.state.turnStatus
+    )
+      this.publish();
   }
 
   finish(taskId: string, requestId: string) {

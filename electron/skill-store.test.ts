@@ -13,7 +13,11 @@ import path from "node:path";
 import test from "node:test";
 import { createSkillStore, type SkillStoreFetch } from "./skill-store";
 
-function response(body: unknown, ok = true, status = ok ? 200 : 500) {
+function response(
+  body: unknown,
+  ok = true,
+  status = ok ? 200 : 500,
+): Awaited<ReturnType<SkillStoreFetch>> {
   const bytes = Buffer.from(
     typeof body === "string" ? body : JSON.stringify(body),
   );
@@ -21,7 +25,7 @@ function response(body: unknown, ok = true, status = ok ? 200 : 500) {
     ok,
     status,
     json: async () => JSON.parse(bytes.toString("utf8")),
-    arrayBuffer: async () => bytes,
+    arrayBuffer: async () => new Uint8Array(bytes).buffer,
   };
 }
 

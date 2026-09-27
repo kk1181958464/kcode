@@ -26,16 +26,10 @@ function exactMatch(a: string, b: string): boolean {
 function normalizeWhitespace(s: string): string {
   return s.replace(/\s+/g, " ").trim();
 }
-function whitespaceMatch(a: string, b: string): boolean {
-  return normalizeWhitespace(a) === normalizeWhitespace(b);
-}
 
 /** Level 3: Indentation-ignored (strip leading whitespace, exact rest) */
 function stripIndent(s: string): string {
   return s.trimStart();
-}
-function indentMatch(a: string, b: string): boolean {
-  return stripIndent(a) === stripIndent(b);
 }
 
 /** Level 4: Levenshtein distance within threshold (for typos / minor edits) */
@@ -74,14 +68,6 @@ function levenshteinDistance(a: string, b: string): number {
  * 0.25 means up to 25% of the shorter string's length can differ.
  */
 const FUZZY_THRESHOLD_RATIO = 0.25;
-
-function fuzzyMatch(a: string, b: string): boolean {
-  const maxLen = Math.max(a.length, b.length);
-  if (maxLen === 0) return true;
-  const threshold = Math.max(3, Math.floor(maxLen * FUZZY_THRESHOLD_RATIO));
-  const distance = levenshteinDistance(a, b);
-  return distance <= threshold;
-}
 
 /**
  * Four-level fuzzy seek: find the best match for `value` in `source[start..end)`.

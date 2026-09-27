@@ -101,7 +101,7 @@ function memoryDb(overrides: Partial<DatabaseToolDeps> = {}): DatabaseToolDeps &
     async sshRemoteState() {
       return { connected: sshConnected, profile: sshProfile };
     },
-    async connectSsh(sessionId, requestId, input) {
+    async connectSsh(sessionId, _requestId, input) {
       calls.push(`sshConnect:${sessionId}:${input.host}`);
       sshConnected = true;
       return { connected: true };
@@ -119,7 +119,7 @@ function memoryDb(overrides: Partial<DatabaseToolDeps> = {}): DatabaseToolDeps &
       sshConnected = false;
       return true;
     },
-    async connectMysql(sessionId, requestId, input, viaSsh) {
+    async connectMysql(sessionId, _requestId, input, viaSsh) {
       calls.push(`mysqlConnect:${sessionId}:${input.host}:${viaSsh}`);
       mysql[sessionId] = input;
       return {

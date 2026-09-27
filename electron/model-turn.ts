@@ -1,5 +1,4 @@
 import { apiKeyCooldownPool } from "./api-key-cooldown";
-import { WorldStateDiffTracker, buildSegments } from "./world-state-diff";
 import { normalizeHistory } from "./history-normalize";
 import { loadProjectInstructions } from "./project-instructions";
 import path from "node:path";
@@ -12,7 +11,7 @@ import {
 import { imageInputSupport } from "../src/model-capabilities";
 import {
   createConversationIsolation,
-  historyFingerprint,
+  textFingerprint,
 } from "./conversation-isolation";
 import { writeLog } from "./logger";
 import { directNetworkFetch, networkFetch } from "./network";
@@ -68,7 +67,6 @@ import { parseStreamedTurn, parseModelResponse } from "./model-response-parser";
 
 const base64Data = (dataUrl: string) => dataUrl.slice(dataUrl.indexOf(",") + 1);
 
-const worldStateTracker = new WorldStateDiffTracker();
 
 export async function modelTurn(
   root: string,
@@ -265,33 +263,12 @@ export async function modelTurn(
     `File tool paths accept absolute paths, including other drives (for example D:\\B on Windows); use them to read or write files the user explicitly points to outside ${root}, and resolve relative paths against ${root}.`,
     localToolPathInstruction,
   );
-  const projectInstructions = localProjectAttached
+  // Already wrapped in <project_instructions> by loadProjectInstructions.
+  const projectInstructionsSection = localProjectAttached
     ? loadProjectInstructions(root)
-    : "";
-  const projectInstructionsSection = projectInstructions
-    ? `\n\n<project_instructions>\n${projectInstructions}\n</project_instructions>`
     : "";
   
   const payloadSystem = `${adjustedSystem}${recoveryPlanInstruction}${suppliedVerificationCodeNotice}${imageInputNotice}${projectInstructionsSection}${requiredToolInstruction}`;
-  // Track system prompt segment changes for cache optimization analytics
-  worldStateTracker.recordRound(
-    buildSegments([
-      { name: "identity", content: isolation.boundary },
-      { name: "tools", content: "tools" }, // stable — schema is constant per request
-      {
-        name: "permissions",
-        content: request.permissionPolicy
-          ? JSON.stringify(request.permissionPolicy)
-          : "",
-      },
-      { name: "workspace", content: root },
-      { name: "skills", content: activeSkills },
-      {
-        name: "notices",
-        content: `${suppliedVerificationCodeNotice}${imageInputNotice}`,
-      },
-    ]),
-  );
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...isolation.headers,
@@ -665,7 +642,7 @@ export async function modelTurn(
     status: response.status,
     requestBytes: Buffer.byteLength(serializedBody, "utf8"),
     toolCount: runtimeTools.length,
-    historyHash: historyFingerprint(payloadHistory),
+    requestHash: textFingerprint(serializedBody),
     upstreamRequestId:
       response.headers.get("x-request-id") ??
       response.headers.get("request-id") ??

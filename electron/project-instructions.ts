@@ -33,7 +33,7 @@ const CACHE_TTL_MS = 30_000; // Refresh every 30s
  * Returns empty string if no instructions found.
  */
 export function loadProjectInstructions(root: string): string {
-  const files = findInstructionFiles(root);
+  const files = cachedInstructionFiles(root);
   if (!files.length) return "";
 
   const sections: string[] = [];
@@ -52,6 +52,18 @@ export function loadProjectInstructions(root: string): string {
       : merged;
 
   return `\n\n<project_instructions>\n${truncated}\n</project_instructions>`;
+}
+
+/** Discovery cache: the upward walk runs before every model turn. */
+const fileListCache = new Map<string, { files: string[]; loadedAt: number }>();
+
+function cachedInstructionFiles(root: string): string[] {
+  const now = Date.now();
+  const cached = fileListCache.get(root);
+  if (cached && now - cached.loadedAt < CACHE_TTL_MS) return cached.files;
+  const files = findInstructionFiles(root);
+  fileListCache.set(root, { files, loadedAt: now });
+  return files;
 }
 
 /**
@@ -116,8 +128,10 @@ function readCached(filePath: string): string | null {
 export function invalidateInstructionsCache(root?: string): void {
   if (!root) {
     cache.clear();
+    fileListCache.clear();
     return;
   }
+  fileListCache.delete(root);
   for (const key of cache.keys()) {
     if (key.startsWith(root)) cache.delete(key);
   }

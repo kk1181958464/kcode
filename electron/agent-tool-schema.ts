@@ -827,7 +827,7 @@ export const tools = [
   {
     name: "update_plan",
     description:
-      "Update the task checklist using structured step statuses. Use this for multi-step work instead of writing a numbered plan in prose. Every step must declare requires: use an empty array for explanation-only steps; use modify, execute, validate, connect, upload, or download for real runtime obligations. At most one step may be in_progress, and never mark an obligated step completed before its native tool result succeeds.",
+      "Update the task checklist using structured step statuses. Use this for multi-step work instead of writing a numbered plan in prose. Every step must declare requires: use an empty array for explanation-only steps; use modify, execute, validate, connect, upload, or download for real runtime obligations. At most one step may be in_progress, and never mark an obligated step completed before its native tool result succeeds. Finish all writes, including temporary-file cleanup, before the final read-only validation. Only mark the entire plan completed when no further tools are needed; this starts the summary-only turn.",
     parameters: {
       type: "object",
       properties: {

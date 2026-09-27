@@ -89,6 +89,7 @@ const completeSnapshot = (
   actionablePlanPending: false,
   evidenceComplete: true,
   planCompleted: true,
+  planStatusesCompleted: false,
   hasMutationEvidence: true,
   ...overrides,
 });

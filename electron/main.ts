@@ -8,8 +8,9 @@ import {
   nativeImage,
   Notification,
   Tray,
-  nativeTheme,
 } from "electron";
+import { appendCheckpointEvent } from "./checkpoint-events";
+import { FileHistoryManager, releaseFileHistory } from "./file-history";
 import {
   mkdir,
   readFile,
@@ -90,6 +91,7 @@ import {
   loadTaskWindow,
   loadState,
   loadRuntimeEvents,
+  pruneRuntimeEvents,
   loadRuntimeTaskStatuses,
   renameTask,
   renameWorkspace,
@@ -101,6 +103,7 @@ import {
 import { RuntimeEventJournal } from "./runtime-event-journal";
 import { agentRuntimeService } from "./runtime-service";
 import { classifyRuntimeError } from "../src/runtime-errors";
+import { UpstreamStreamError } from "../src/upstream-stream-error";
 import { installProcessLogging, logsDirectory, writeLog } from "./logger";
 import {
   activateBrowserSession,
@@ -169,11 +172,8 @@ import { countTextLines, parseGitNumstat } from "./git-workspace-state";
 import {
   CONTEXT_FILE_DIALOG_EXTENSIONS,
   MAX_CONTEXT_FILES,
-  MAX_CONTEXT_FILE_BYTES,
-  MAX_CONTEXT_SOURCE_BYTES,
   MAX_CONTEXT_TOTAL_SOURCE_BYTES,
   MAX_CONTEXT_TOTAL_BYTES,
-  isSupportedContextFile,
 } from "../src/attachments";
 import { parseContextFile } from "./document-parser";
 import {
@@ -199,9 +199,17 @@ import {
 const controllers = new Map<string, AbortController>();
 // Turn raw upstream/proxy error codes into a readable message for the user.
 // The original text still reaches the logs; only the surfaced message changes.
-function friendlyModelError(raw: string): string {
-  const text = raw.trim();
-  const classification = classifyRuntimeError(text);
+function friendlyModelError(raw: unknown): string {
+  const text = (raw instanceof Error ? raw.message : String(raw)).trim();
+  const classification = classifyRuntimeError(raw);
+  if (classification.kind === "authentication")
+    return "模型供应商认证失败，请检查 API Key 或切换供应商。";
+  if (classification.kind === "invalid_request")
+    return "上游拒绝了请求参数，请检查模型能力、图片附件和消息格式。";
+  if (classification.kind === "provider_unavailable" && !classification.retryable)
+    return "模型供应商额度不足或计费受限，请检查账户额度或切换供应商。";
+  if (classification.kind === "rate_limit")
+    return "模型服务当前繁忙或达到频率限制，请稍后重试。";
   if (/意外中断|未收到完整响应|工具调用参数不完整/i.test(text))
     return "模型响应流意外中断（上游可能断流），请重试或点击继续。若频繁出现，可压缩上下文或换模型/供应商。";
   if (/stream[_ ]?read[_ ]?error|stream error/i.test(text))
@@ -227,10 +235,6 @@ function friendlyModelError(raw: string): string {
   )
     return "网络连接异常，请检查网络后重试。";
   if (/等待响应超时|长时间没有新数据|超时/i.test(text)) return text;
-  if (classification.kind === "authentication")
-    return "模型供应商认证失败，请检查 API Key 或切换供应商。";
-  if (classification.kind === "invalid_request")
-    return "上游拒绝了请求参数，请检查模型能力、图片附件和消息格式。";
   return text;
 }
 installProcessLogging();
@@ -631,6 +635,9 @@ app.whenReady().then(async () => {
     writeLog("warn", "runtime.stale-runs-interrupted", {
       count: interruptedRuns,
     });
+  const prunedRuntimeEvents = pruneRuntimeEvents();
+  if (prunedRuntimeEvents)
+    writeLog("info", "runtime.events-pruned", { count: prunedRuntimeEvents });
   // Rebuild the in-memory projection from the durable journal so runtime
   // status remains available immediately after a main-process restart.
   agentRuntimeService.restore(loadRuntimeTaskStatuses());
@@ -638,6 +645,8 @@ app.whenReady().then(async () => {
     app.getPath("userData"),
   );
   startManagedProcessSupervisor();
+  // Snapshot files are never read back after a run; keep them bounded.
+  setTimeout(() => FileHistoryManager.cleanup(), 30_000).unref();
   if (recoveredProcesses)
     writeLog("warn", "process.recovered", { count: recoveredProcesses });
   await removeLegacyDevelopmentShortcut();
@@ -1120,24 +1129,36 @@ app.whenReady().then(async () => {
     const folderPath = path.resolve(result.filePaths[0]);
     return { name: path.basename(folderPath), path: folderPath };
   });
+  // Only local read-only commands (branch/status/diff) go through here; a hung
+  // git (lock contention, prompts) must not leave the IPC call pending forever.
+  const GIT_TIMEOUT_MS = 30_000;
   const runGit = (root: string, args: string[]) =>
     new Promise<{ code: number; output: string }>((resolve) => {
       const child = spawn(resolveGitExecutable(), args, {
         cwd: root,
         windowsHide: true,
         shell: false,
+        env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
       });
       let output = "";
+      const timer = setTimeout(() => {
+        child.kill();
+        resolve({ code: -1, output: `git ${args[0]} 超时（${GIT_TIMEOUT_MS / 1000} 秒）` });
+      }, GIT_TIMEOUT_MS);
       child.stdout.on("data", (chunk) => {
         output = (output + chunk.toString("utf8")).slice(-200_000);
       });
       child.stderr.on("data", (chunk) => {
         output = (output + chunk.toString("utf8")).slice(-200_000);
       });
-      child.on("error", (error) =>
-        resolve({ code: -1, output: error.message }),
-      );
-      child.on("close", (code) => resolve({ code: code ?? -1, output }));
+      child.on("error", (error) => {
+        clearTimeout(timer);
+        resolve({ code: -1, output: error.message });
+      });
+      child.on("close", (code) => {
+        clearTimeout(timer);
+        resolve({ code: code ?? -1, output });
+      });
     });
   const resolveWorkspaceFile = (root: string, rawPath: string) => {
     const value = workspacePathSchema.parse(rawPath);
@@ -1578,7 +1599,7 @@ app.whenReady().then(async () => {
       subagents: [],
     });
     void (async () => {
-      const events: unknown[] = [];
+      const events: AgentEvent[] = [];
       let checkpointStatus: "running" | "paused" | "done" = "running";
       const checkpointWriter = new LatestWriteQueue((snapshot: unknown) =>
         writeCheckpoint(id, snapshot),
@@ -1599,14 +1620,23 @@ app.whenReady().then(async () => {
         };
         checkpointWriter.enqueue(snapshot);
       };
+      // Synthesized error when the run ends without its own done/error event.
+      const emitFallbackTerminal = (
+        item: Parameters<typeof compactCheckpointEvent>[0],
+      ) => {
+        terminalEventSent = true;
+        checkpointStatus = "paused";
+        appendCheckpointEvent(events, compactCheckpointEvent(item));
+        queueCheckpoint(true);
+        rendererEvents.push(item);
+      };
       try {
         await checkpointReady;
         for await (const item of runAgent(id, request, controller.signal)) {
           if (item.type === "done" || item.type === "error")
             terminalEventSent = true;
           if (item.type !== "activity_output") {
-            events.push(compactCheckpointEvent(item));
-            if (events.length > 100) events.shift();
+            appendCheckpointEvent(events, compactCheckpointEvent(item));
           }
           checkpointStatus =
             item.type === "done"
@@ -1635,13 +1665,7 @@ app.whenReady().then(async () => {
         if (!controller.signal.aborted && !terminalEventSent) {
           const message =
             "Agent 运行已意外结束，但没有返回完成或错误状态。任务已安全暂停，请重试。";
-          const item = { type: "error" as const, message };
-          events.push(compactCheckpointEvent(item));
-          if (events.length > 100) events.shift();
-          checkpointStatus = "paused";
-          terminalEventSent = true;
-          queueCheckpoint(true);
-          rendererEvents.push(item);
+          emitFallbackTerminal({ type: "error", message });
           notifyTask("paused", message);
           writeLog("error", "agent.missingTerminalEvent", {
             id,
@@ -1654,43 +1678,40 @@ app.whenReady().then(async () => {
           taskId: request.taskId,
           error:
             error instanceof Error
-              ? { message: error.message, stack: error.stack }
+              ? {
+                  message: error.message,
+                  stack: error.stack,
+                  ...(error instanceof UpstreamStreamError ? {
+                    code: error.code, type: error.type, status: error.status,
+                    requestId: error.requestId, eventType: error.eventType,
+                  } : {}),
+                }
               : String(error),
         });
         if (!controller.signal.aborted && !terminalEventSent) {
-          const friendly = friendlyModelError(
-            error instanceof Error ? error.message : String(error),
-          );
-          const item = {
+          const friendly = friendlyModelError(error);
+          const classification = classifyRuntimeError(error);
+          emitFallbackTerminal({
             type: "error",
             message: friendly,
-          } as const;
-          terminalEventSent = true;
-          checkpointStatus = "paused";
-          events.push(compactCheckpointEvent(item));
-          if (events.length > 100) events.shift();
-          queueCheckpoint(true);
-          rendererEvents.push(item);
+            code: classification.kind,
+            retryable: classification.retryable,
+            userAction: classification.userAction,
+          });
           notifyTask(
-            classifyRuntimeError(friendly).retryable ? "paused" : "error",
+            classification.retryable ? "paused" : "error",
             friendly,
           );
         }
       } finally {
         if (controller.signal.aborted && !terminalEventSent) {
-          const item = {
+          emitFallbackTerminal({
             type: "error",
             message: "任务已停止",
             code: "cancelled",
             retryable: false,
             userAction: "none",
-          } as const;
-          terminalEventSent = true;
-          checkpointStatus = "paused";
-          events.push(compactCheckpointEvent(item));
-          if (events.length > 100) events.shift();
-          queueCheckpoint(true);
-          rendererEvents.push(item);
+          });
         }
         await stopSubagentsForParent(id, false);
         try {
@@ -1715,6 +1736,7 @@ app.whenReady().then(async () => {
           }
         }
         releaseSubagentRecords(id);
+        releaseFileHistory(id);
         agentRuntimeService.markInactive(id);
         clearAgentSteering(id);
         clearAgentToolTraces(id);

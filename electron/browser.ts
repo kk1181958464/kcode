@@ -312,8 +312,12 @@ export function setBrowserHost(
       void stopBrowserRecording(sessionId, "interrupted").catch(
         () => undefined,
       );
-    for (const [sessionId, session] of sessions)
+    for (const [sessionId, session] of sessions) {
       disposeBrowserAutomation(sessionId, session.view);
+      // WebContentsView pages are not destroyed with their window.
+      if (!session.view.webContents.isDestroyed())
+        session.view.webContents.close();
+    }
     for (const sessionId of [...designModeEnabled])
       detachDesignModeListener(sessionId);
     designModeEnabled.clear();

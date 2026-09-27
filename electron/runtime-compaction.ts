@@ -1,4 +1,4 @@
-import type { AgentToolName, ContextLedger, ContextSummaryResult, ImageAttachment, ModelRequest } from "../src/types";
+import type { ContextLedger, ContextSummaryResult, ImageAttachment, ModelRequest } from "../src/types";
 import { effectiveOpenAiProtocol } from "./protocol-fallback";
 import { boundedContextSource, containsDurableProtocolDetails, redactSensitiveText } from "../src/context";
 import { pendingOperationLabel } from "./agent-completion";

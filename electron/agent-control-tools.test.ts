@@ -119,7 +119,18 @@ function memorySubagent(
     },
     messageSubagent(parentRequestId, agentId, message) {
       calls.push(`message:${parentRequestId}:${agentId}:${message}`);
-      return { id: agentId, status: "running", message };
+      return {
+        id: agentId,
+        name: "代码",
+        task: "检查代码",
+        status: "running" as const,
+        startedAt: 1,
+        completedAt: undefined,
+        usage: { input: 0, output: 0, cached: 0 },
+        collected: false,
+        error: undefined,
+        executionTarget: undefined,
+      };
     },
     async waitForSubagents(parentRequestId, agentIds, options) {
       calls.push(
@@ -142,10 +153,12 @@ function memorySubagent(
             completedAt: 2,
             usage: { input: 10, output: 4, cached: 2 },
             collected: true,
+            error: undefined,
+            executionTarget: undefined,
             transcript: "done",
             instructions: [],
             activities: [],
-            activityRecords: [child],
+            activityRecords: [{ ...child, subagentId: "child-1", subagentName: "代码" }],
             usageDelta: { input: 10, output: 4, cached: 2 },
           },
         ],
@@ -164,10 +177,12 @@ function memorySubagent(
         completedAt: 3,
         usage: { input: 3, output: 1, cached: 0 },
         collected: true,
+        error: undefined,
+        executionTarget: undefined,
         transcript: "partial",
         instructions: [],
         activities: [],
-        activityRecords: [child],
+        activityRecords: [{ ...child, subagentId: "child-1", subagentName: "代码" }],
         usageDelta: { input: 3, output: 1, cached: 0 },
       };
     },

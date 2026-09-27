@@ -13,9 +13,7 @@ function activity(
   overrides: Partial<AgentActivity> & Pick<AgentActivity, "id" | "tool">,
 ): AgentActivity {
   return {
-    id: overrides.id,
     requestId: "request-1",
-    tool: overrides.tool,
     status: "success",
     title: "步骤",
     startedAt: 1,

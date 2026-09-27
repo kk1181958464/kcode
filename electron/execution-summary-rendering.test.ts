@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import {
   ConversationHistory,
   ExecutionSummary,
+  readableActivityFailure,
 } from "../src/components/conversation/ConversationView";
 import { StatusPanel } from "../src/components/status/StatusPanel";
 import type { AgentActivity } from "../src/types";
@@ -42,6 +43,7 @@ function renderConversationRun(running: boolean, finalResponse = false) {
         },
       ],
       hasOlderMessages: false,
+      olderMessagesLoading: false,
       hasNewerMessages: false,
       activitiesByRequest: new Map([["request-process", [activity]]]),
       runningId: running ? "request-process" : undefined,
@@ -117,6 +119,7 @@ test("uses structured completion evidence for paused file totals", () => {
         },
       ],
       hasOlderMessages: false,
+      olderMessagesLoading: false,
       hasNewerMessages: false,
       activitiesByRequest: new Map([["request-paused-summary", [activity]]]),
       workspacePath: "D:/project/kcode",
@@ -162,6 +165,7 @@ test("collapses a corrected text-only attempt above the final answer", () => {
         },
       ],
       hasOlderMessages: false,
+      olderMessagesLoading: false,
       hasNewerMessages: false,
       activitiesByRequest: new Map(),
       workspacePath: "D:/project/kcode",
@@ -197,6 +201,7 @@ test("keeps ordinary text auto-continuation fully visible", () => {
         },
       ],
       hasOlderMessages: false,
+      olderMessagesLoading: false,
       hasNewerMessages: false,
       activitiesByRequest: new Map(),
       workspacePath: "D:/project/kcode",
@@ -429,6 +434,9 @@ test("right rail uses only the current request changes instead of Git totals", (
       usedContextCount: 0,
       selectedContextWindow: undefined,
       contextTokens: 0,
+      contextTokenSource: "estimated",
+      nextRequestTokens: 0,
+      contextWindowEstimated: false,
       calibrationFactor: 1,
       compactActiveConversation() {},
       summaryOpen: false,
@@ -501,6 +509,9 @@ test("right rail keeps recovery checkpoints on the current-run pane", () => {
       usedContextCount: 0,
       selectedContextWindow: undefined,
       contextTokens: 0,
+      contextTokenSource: "estimated",
+      nextRequestTokens: 0,
+      contextWindowEstimated: false,
       calibrationFactor: 1,
       compactActiveConversation() {},
       summaryOpen: false,
@@ -588,6 +599,9 @@ test("changes pane exposes per-file Keep/Undo and edit checkpoints", () => {
       usedContextCount: 0,
       selectedContextWindow: undefined,
       contextTokens: 0,
+      contextTokenSource: "estimated",
+      nextRequestTokens: 0,
+      contextWindowEstimated: false,
       calibrationFactor: 1,
       compactActiveConversation() {},
       summaryOpen: false,
@@ -732,4 +746,26 @@ test("settled execution summary uses a past-tense receipt headline", () => {
   );
   assert.match(markup, /读了 3 个文件/);
   assert.match(markup, /跑了测试/);
+});
+
+test("activity failures preserve English errors and Windows paths", () => {
+  const activity: AgentActivity = {
+    id: "failure", requestId: "request-failure", tool: "run_command",
+    status: "failed", title: "运行命令", startedAt: 1, input: {},
+  };
+  for (const output of [
+    "File not found",
+    "HTTP 404 Not Found",
+    "ENOENT: open D:/project/file",
+    "Permission denied",
+  ]) {
+    assert.equal(readableActivityFailure({ ...activity, output }), output);
+  }
+  for (const output of ["invalid \uFFFD output", "invalid □ output"]) {
+    assert.equal(readableActivityFailure({ ...activity, output }), "命令执行失败，请查看详细输出。");
+    assert.equal(readableActivityFailure({ ...activity, tool: "read_file", output }), "工具执行失败，请查看详细输出。");
+  }
+  assert.equal(readableActivityFailure({
+    ...activity, output: "invalid \uFFFD output", errorSummary: "Concrete failure",
+  }), "Concrete failure");
 });

@@ -95,7 +95,20 @@ function snapshotMessage(message: TaskRecord["messages"][number]) {
   };
 }
 
+// Tasks are updated immutably and the snapshot depends only on the task, so
+// unchanged tasks reuse their snapshot across the frequent remote syncs.
+const snapshotCache = new WeakMap<TaskRecord, RemoteTaskSnapshot>();
+
 export function remoteTaskSnapshot(task: TaskRecord): RemoteTaskSnapshot {
+  let snapshot = snapshotCache.get(task);
+  if (!snapshot) {
+    snapshot = buildRemoteTaskSnapshot(task);
+    snapshotCache.set(task, snapshot);
+  }
+  return snapshot;
+}
+
+function buildRemoteTaskSnapshot(task: TaskRecord): RemoteTaskSnapshot {
   return {
     id: task.id,
     name: task.name.slice(0, 240),
