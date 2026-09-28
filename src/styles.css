@@ -17014,11 +17014,6 @@ button.execution-summary-tool.inspect-group.waiting {
   color: color-mix(in srgb, var(--muted) 92%, var(--ink)) !important;
 }
 
-.message.assistant.is-running .message-content {
-  box-shadow: inset 2px 0 0 0 color-mix(in srgb, var(--accent) 55%, transparent) !important;
-}
-
-
 /* ==========================================================================
  * codex-hierarchy-v1
  * Screenshot reference: agent intent sentence is large; mid-run tool rows
