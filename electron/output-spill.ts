@@ -48,7 +48,7 @@ export interface SpillResult {
  * Process command output — spill to disk if too large, return compact summary.
  * If output is small enough, returns it unchanged.
  */
-export function processLargeOutput(
+export async function processLargeOutput(
   output: string,
   meta: {
     command?: string;
@@ -56,7 +56,7 @@ export function processLargeOutput(
     callId?: string;
     requestId?: string;
   } = {},
-): SpillResult {
+): Promise<SpillResult> {
   const originalSize = Buffer.byteLength(output, "utf-8");
   const lineCount = countLines(output);
 
@@ -71,7 +71,7 @@ export function processLargeOutput(
   }
 
   // Spill to disk
-  const spillPath = writeSpillFile(output, meta);
+  const spillPath = await writeSpillFile(output, meta);
 
   // Build compact summary
   const summary = buildSpillSummary(output, {
@@ -93,12 +93,11 @@ export function processLargeOutput(
 /**
  * Write the full output to a temporary spill file.
  */
-function writeSpillFile(
+async function writeSpillFile(
   content: string,
   meta: { callId?: string; requestId?: string },
-): string {
+): Promise<string> {
   const dir = spillDir();
-  fs.mkdirSync(dir, { recursive: true });
 
   const hash = crypto
     .createHash("sha256")
@@ -110,7 +109,8 @@ function writeSpillFile(
   const filePath = path.join(dir, filename);
 
   try {
-    fs.writeFileSync(filePath, content, "utf-8");
+    await fs.promises.mkdir(dir, { recursive: true });
+    await fs.promises.writeFile(filePath, content, "utf-8");
   } catch {
     // If write fails, return a fallback path
     return "(写入失败)";
@@ -134,7 +134,8 @@ function buildSpillSummary(
   const head = output.slice(0, SUMMARY_HEAD_BYTES);
   const tail = output.slice(-SUMMARY_TAIL_BYTES);
 
-  const omittedBytes = info.originalSize - SUMMARY_HEAD_BYTES - SUMMARY_TAIL_BYTES;
+  const omittedBytes =
+    info.originalSize - SUMMARY_HEAD_BYTES - SUMMARY_TAIL_BYTES;
   const omittedLines = Math.max(
     0,
     info.lineCount - countLines(head) - countLines(tail),

@@ -374,7 +374,7 @@ export async function* executeAgentToolTurn(
         root,
         mutationPaths(call),
       );
-      turnDiffTracker.beforeTool(
+      await turnDiffTracker.beforeTool(
         call.name,
         call.id,
         call.input as Record<string, unknown>,
@@ -384,7 +384,7 @@ export async function* executeAgentToolTurn(
         const abs = path.isAbsolute(snapshotPath)
           ? snapshotPath
           : path.join(root, snapshotPath);
-        fileHistory(root, requestId).snapshot(abs);
+        await fileHistory(root, requestId).snapshot(abs);
       }
       // Lightweight admin tool: get_context_remaining — no external execution needed
       if (call.name === "get_context_remaining") {
@@ -393,7 +393,7 @@ export async function* executeAgentToolTurn(
           effectiveRuntimePromptTokens(history, run.lastPromptTokens),
         );
         finishMutationClaim?.(true);
-        turnDiffTracker.afterTool(
+        await turnDiffTracker.afterTool(
           call.name,
           call.id,
           call.input as Record<string, unknown>,
@@ -471,7 +471,7 @@ export async function* executeAgentToolTurn(
         activity.output = nextOutput;
       }
       finishMutationClaim?.(true);
-      turnDiffTracker.afterTool(
+      await turnDiffTracker.afterTool(
         call.name,
         call.id,
         call.input as Record<string, unknown>,
@@ -704,7 +704,7 @@ export async function* executeAgentToolTurn(
       roundFailedActivity = activity;
     // Spill large output to disk to preserve context tokens
     const spillResult = activity.output
-      ? processLargeOutput(activity.output, {
+      ? await processLargeOutput(activity.output, {
           command: activity.command,
           toolName: call.name,
           callId: call.id,
@@ -746,7 +746,7 @@ export async function* executeAgentToolTurn(
       (call.name === "run_command" || call.name === "start_process") &&
       activity.status === "success"
     ) {
-      const staleHint = getStaleFileHint(fileReadCache);
+      const staleHint = await getStaleFileHint(fileReadCache);
       if (staleHint) {
         history.push({
           kind: "result",

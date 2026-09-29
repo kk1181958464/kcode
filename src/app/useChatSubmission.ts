@@ -543,7 +543,7 @@ export function useChatSubmission({
     if (!window.kcode) {
       if (!taskIsCurrent()) return;
       const id = `preview:${uid()}`;
-      const response = `我已经检查了当前项目${requestFiles.length ? `和 **${requestFiles.length} 个上下文文件**` : ""}。当前使用${effortLabels[requestReasoningEffort]}推理强度，下一步建议优先完成：\n\n1. 接入工作区文件读取与代码搜索\n2. 建立工具调用的权限确认流程\n3. 在任务右侧展示实时执行进度\n\n\`\`\`ts\nconst result = await agent.run({\n  workspace: \"D:/project/kcode\",\n  model: \"${target.model.modelId}\",\n});\n\`\`\`\n\n> 当前模型通道正常，桌面端可以继续接入 Agent 工具循环。`;
+      const response = `我已经检查了当前项目${requestFiles.length ? `和 **${requestFiles.length} 个上下文文件**` : ""}。当前使用${effortLabels[requestReasoningEffort]}推理强度，下一步建议优先完成：\n\n1. 接入工作区文件读取与代码搜索\n2. 建立工具调用的权限确认流程\n3. 在任务右侧展示实时执行进度\n\n\`\`\`ts\nconst result = await agent.run({\n  workspace: "D:/project/kcode",\n  model: "${target.model.modelId}",\n});\n\`\`\`\n\n> 当前模型通道正常，桌面端可以继续接入 Agent 工具循环。`;
       const chunks = response.match(/[\s\S]{1,12}/g) ?? [response];
       currentRequest.current = id;
       taskRuntimeStore.start(taskId, id, requestStartedAt);

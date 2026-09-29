@@ -776,7 +776,7 @@ export function StatusPanel({
                     <b>{activitySummary.completed}</b>/{activitySummary.total} 步
                   </span>
                 ) : (
-                  <span>正在准备步骤</span>
+                  <span>{running ? "正在准备步骤" : "未调用工具"}</span>
                 )}
                 {activitySummary.commands > 0 && (
                   <span>{activitySummary.commands} 个命令</span>

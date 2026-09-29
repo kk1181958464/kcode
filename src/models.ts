@@ -27,11 +27,11 @@ export const ACCENT_OPTIONS: {
   swatch: string;
 }[] = [
   { value: "blue", label: "蓝色", swatch: "#2563eb" },
-  { value: "indigo", label: "靛蓝", swatch: "#5b6cff" },
+  { value: "indigo", label: "靛蓝", swatch: "#4f46e5" },
   { value: "violet", label: "紫罗兰", swatch: "#7c3aed" },
-  { value: "emerald", label: "翡翠绿", swatch: "#10a37f" },
-  { value: "orange", label: "陶土橙", swatch: "#e0663a" },
-  { value: "mono", label: "纯净黑白", swatch: "#171717" },
+  { value: "emerald", label: "翡翠绿", swatch: "#059669" },
+  { value: "orange", label: "陶土橙", swatch: "#ea580c" },
+  { value: "mono", label: "纯净黑白", swatch: "#18181b" },
 ];
 export type QueuedChatMessage = ChatMessage & { queued?: boolean };
 export type TaskDrafts = Record<string, string>;

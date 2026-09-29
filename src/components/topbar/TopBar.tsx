@@ -93,12 +93,16 @@ export const TopBar = memo(function TopBar({
           ) : (
             <span>
               <GitBranch size={13} />{" "}
-              {gitState.available ? gitState.branch : "未初始化 Git"} <i />
-              {gitState.available
-                ? gitState.files
-                  ? `${gitState.files} 个文件有变更`
-                  : "工作区无未提交变更"
-                : gitState.error || "未初始化 Git"}
+              {gitState.available ? (
+                <>
+                  {gitState.branch} <i />
+                  {gitState.files
+                    ? `${gitState.files} 个文件有变更`
+                    : "工作区无未提交变更"}
+                </>
+              ) : (
+                gitState.error || "未初始化 Git"
+              )}
             </span>
           )}
         </div>

@@ -144,7 +144,7 @@ export function windowsCommandIssue(command: string) {
     );
 
   if (
-    /(?:^|[;\r\n])\s*&?\s*(?:python|python3|py|node|php)(?:\.exe)?\s+(?:-\s*)?<<\s*['\"]?[A-Za-z_]/i.test(
+    /(?:^|[;\r\n])\s*&?\s*(?:python|python3|py|node|php)(?:\.exe)?\s+(?:-\s*)?<<\s*['"]?[A-Za-z_]/i.test(
       command,
     )
   )

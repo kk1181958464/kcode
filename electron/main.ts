@@ -261,12 +261,13 @@ const svgImage = (svg: string) =>
   nativeImage.createFromDataURL(
     `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`,
   );
-const iconFileName = "80f2649b913c028210842f9ffd752179.png";
+// Pre-cropped 512px icon produced by `npm run icons` (build/icon.png),
+// shipped as resources/icon.png.
 const iconPath = () =>
   [
-    path.join(process.resourcesPath, iconFileName),
-    path.join(app.getAppPath(), iconFileName),
-    path.resolve(__dirname, "../../", iconFileName),
+    path.join(process.resourcesPath, "icon.png"),
+    path.join(app.getAppPath(), "build", "icon.png"),
+    path.resolve(__dirname, "../../build/icon.png"),
   ].find(existsSync);
 const windowIcon = () => appIcon(256);
 function configureWindowsTaskbar(win: BrowserWindow, icon = windowIcon()) {
@@ -342,24 +343,25 @@ async function repairWindowsShortcuts() {
     }),
   );
 }
+// Decoded once: the tray refreshes its icon on every unread-count change.
+let appIconSource: Electron.NativeImage | undefined;
+const appIconBySize = new Map<number, Electron.NativeImage>();
 const appIcon = (size = 32) => {
-  const file = iconPath();
-  const image = file
-    ? nativeImage.createFromPath(file)
-    : nativeImage.createEmpty();
-  if (image.isEmpty())
-    return svgImage(
-      `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}"><rect width="${size}" height="${size}" rx="6" fill="#242b26"/><text x="50%" y="68%" text-anchor="middle" font-family="Segoe UI,Arial" font-size="${Math.round(size * 0.5)}" font-weight="700" fill="white">K</text></svg>`,
-    );
-  const source = image.getSize();
-  const cropSize = Math.round(Math.min(source.width, source.height) * 0.527);
-  const cropped = image.crop({
-    x: Math.round(source.width * 0.238),
-    y: Math.round(source.height * 0.17),
-    width: cropSize,
-    height: cropSize,
-  });
-  return cropped.resize({ width: size, height: size, quality: "best" });
+  const cached = appIconBySize.get(size);
+  if (cached) return cached;
+  if (!appIconSource) {
+    const file = iconPath();
+    appIconSource = file
+      ? nativeImage.createFromPath(file)
+      : nativeImage.createEmpty();
+  }
+  const icon = appIconSource.isEmpty()
+    ? svgImage(
+        `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}"><rect width="${size}" height="${size}" rx="6" fill="#242b26"/><text x="50%" y="68%" text-anchor="middle" font-family="Segoe UI,Arial" font-size="${Math.round(size * 0.5)}" font-weight="700" fill="white">K</text></svg>`,
+      )
+    : appIconSource.resize({ width: size, height: size, quality: "best" });
+  appIconBySize.set(size, icon);
+  return icon;
 };
 const badgeIcon = (count: number) =>
   svgImage(
@@ -520,7 +522,7 @@ function createWindow() {
     frame: false,
     show: false,
     autoHideMenuBar: true,
-    backgroundColor: "#181818",
+    backgroundColor: "#18181b",
     icon,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
@@ -646,7 +648,7 @@ app.whenReady().then(async () => {
   );
   startManagedProcessSupervisor();
   // Snapshot files are never read back after a run; keep them bounded.
-  setTimeout(() => FileHistoryManager.cleanup(), 30_000).unref();
+  setTimeout(() => void FileHistoryManager.cleanup(), 30_000).unref();
   if (recoveredProcesses)
     writeLog("warn", "process.recovered", { count: recoveredProcesses });
   await removeLegacyDevelopmentShortcut();
@@ -1516,7 +1518,7 @@ app.whenReady().then(async () => {
         throw new Error("导出内容超过 20 MB");
       const safeName =
         String(suggestedName || "kcode-export")
-          .replace(/[<>:\"/\\|?*\x00-\x1F]/g, "-")
+          .replace(/[<>:"/\\|?*\x00-\x1F]/g, "-")
           .replace(/\.+$/g, "") || "kcode-export";
       const extension = format === "json" ? ".json" : ".md";
       const result = await dialog.showSaveDialog(owner, {

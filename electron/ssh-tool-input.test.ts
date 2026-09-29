@@ -13,7 +13,7 @@ test("accepts an absolute SSH key path explicitly supplied by the user", async (
   const keyPath = path.join(directory, "id_ed25519");
   await writeFile(keyPath, "private-key-content", "utf8");
   const messages = [
-    { role: "user" as const, content: `私钥：\"${keyPath}\"` },
+    { role: "user" as const, content: `私钥："${keyPath}"` },
   ];
   assert.equal(userSuppliedSshPrivateKeyPath(messages, keyPath), true);
   assert.equal(

@@ -42,6 +42,8 @@ export class FileHistoryManager {
   private sessionDir: string;
   private snapshots: Map<string, FileSnapshot[]> = new Map();
   private initialized = false;
+  /** Serializes snapshot/undo so version numbers stay monotonic per file. */
+  private queue: Promise<unknown> = Promise.resolve();
 
   constructor(
     readonly sessionId: string,
@@ -55,10 +57,10 @@ export class FileHistoryManager {
   }
 
   /** Ensure the storage directory exists. */
-  private ensureDir(): void {
+  private async ensureDir(): Promise<void> {
     if (this.initialized) return;
     try {
-      fs.mkdirSync(this.sessionDir, { recursive: true });
+      await fs.promises.mkdir(this.sessionDir, { recursive: true });
       this.initialized = true;
     } catch {
       // Best effort — non-critical feature
@@ -68,9 +70,20 @@ export class FileHistoryManager {
   /**
    * Take a snapshot of a file before it's modified.
    * Returns the snapshot metadata, or null if the file doesn't exist (new file creation).
+   * The file is read asynchronously: await this before mutating the file.
    */
-  snapshot(filePath: string): FileSnapshot | null {
-    this.ensureDir();
+  snapshot(filePath: string): Promise<FileSnapshot | null> {
+    return this.enqueue(() => this.takeSnapshot(filePath));
+  }
+
+  private enqueue<T>(task: () => Promise<T>): Promise<T> {
+    const next = this.queue.then(task, task);
+    this.queue = next.catch(() => undefined);
+    return next;
+  }
+
+  private async takeSnapshot(filePath: string): Promise<FileSnapshot | null> {
+    await this.ensureDir();
 
     const absolutePath = path.isAbsolute(filePath)
       ? filePath
@@ -80,7 +93,7 @@ export class FileHistoryManager {
     let content: Buffer;
     let existed = true;
     try {
-      content = fs.readFileSync(absolutePath);
+      content = await fs.promises.readFile(absolutePath);
     } catch {
       // File doesn't exist yet — record that it was newly created
       existed = false;
@@ -119,7 +132,7 @@ export class FileHistoryManager {
     const snapshotPath = path.join(this.sessionDir, snapshotFilename);
 
     try {
-      fs.writeFileSync(snapshotPath, content);
+      await fs.promises.writeFile(snapshotPath, content);
     } catch {
       return null; // Storage failed — non-critical
     }
@@ -144,7 +157,11 @@ export class FileHistoryManager {
    * Undo the last modification to a file.
    * Restores from the most recent snapshot.
    */
-  undo(filePath: string): UndoResult {
+  undo(filePath: string): Promise<UndoResult> {
+    return this.enqueue(() => this.restoreLast(filePath));
+  }
+
+  private async restoreLast(filePath: string): Promise<UndoResult> {
     const absolutePath = path.isAbsolute(filePath)
       ? filePath
       : path.resolve(this.workspaceRoot, filePath);
@@ -164,7 +181,7 @@ export class FileHistoryManager {
     // If file was newly created (didn't exist before), delete it
     if (!lastSnapshot.existed) {
       try {
-        fs.unlinkSync(absolutePath);
+        await fs.promises.unlink(absolutePath);
         versions.pop();
         return {
           success: true,
@@ -184,8 +201,8 @@ export class FileHistoryManager {
 
     // Restore from snapshot
     try {
-      const content = fs.readFileSync(lastSnapshot.snapshotPath);
-      fs.writeFileSync(absolutePath, content);
+      const content = await fs.promises.readFile(lastSnapshot.snapshotPath);
+      await fs.promises.writeFile(absolutePath, content);
       versions.pop();
       return {
         success: true,
@@ -235,17 +252,17 @@ export class FileHistoryManager {
    * Clean up old session data.
    * Removes snapshot directories older than maxAge.
    */
-  static cleanup(maxAgeDays = 30): void {
+  static async cleanup(maxAgeDays = 30): Promise<void> {
     const historyRoot = path.join(app.getPath("userData"), "file-history");
     try {
-      const sessions = fs.readdirSync(historyRoot);
+      const sessions = await fs.promises.readdir(historyRoot);
       const cutoff = Date.now() - maxAgeDays * 24 * 60 * 60 * 1000;
       for (const session of sessions) {
         const sessionPath = path.join(historyRoot, session);
         try {
-          const stat = fs.statSync(sessionPath);
+          const stat = await fs.promises.stat(sessionPath);
           if (stat.isDirectory() && stat.mtimeMs < cutoff) {
-            fs.rmSync(sessionPath, { recursive: true, force: true });
+            await fs.promises.rm(sessionPath, { recursive: true, force: true });
           }
         } catch {
           // Skip inaccessible directories
@@ -267,7 +284,10 @@ export function fileHistory(
   const key = JSON.stringify([workspaceRoot, sessionId]);
   let instance = instances.get(key);
   if (!instance) {
-    instance = new FileHistoryManager(safeSessionDirName(sessionId), workspaceRoot);
+    instance = new FileHistoryManager(
+      safeSessionDirName(sessionId),
+      workspaceRoot,
+    );
     instances.set(key, instance);
   }
   return instance;
@@ -276,7 +296,8 @@ export function fileHistory(
 /** Drop in-memory snapshot indexes for finished runs. Files stay on disk until cleanup(). */
 export function releaseFileHistory(sessionId: string): void {
   for (const [key, instance] of instances)
-    if (instance.sessionId === safeSessionDirName(sessionId)) instances.delete(key);
+    if (instance.sessionId === safeSessionDirName(sessionId))
+      instances.delete(key);
 }
 
 function safeSessionDirName(sessionId: string) {

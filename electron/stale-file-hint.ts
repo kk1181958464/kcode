@@ -24,32 +24,44 @@ export interface StaleFileResult {
  * Check all previously-read files against their current disk content.
  * Returns which files have become stale (modified or deleted externally).
  */
-export function detectStaleFiles(cache: FileReadCache): StaleFileResult {
+export async function detectStaleFiles(
+  cache: FileReadCache,
+): Promise<StaleFileResult> {
   const readFiles = cache.getReadFiles();
   const staleFiles: string[] = [];
   const deletedFiles: string[] = [];
 
-  for (const filePath of readFiles) {
-    const cachedHash = cache.getHash(filePath);
-    if (!cachedHash) continue;
-
-    try {
-      const currentContent = fs.readFileSync(filePath, "utf-8");
-      const currentHash = crypto
-        .createHash("sha256")
-        .update(currentContent)
-        .digest("hex");
-
-      if (currentHash !== cachedHash) {
-        staleFiles.push(filePath);
-        // Invalidate so next read gets fresh content
-        cache.invalidate(filePath);
+  // Runs in the Electron main process after every command: read in parallel
+  // off the event loop instead of blocking IPC on each file in turn.
+  const checks = await Promise.all(
+    readFiles.map(async (filePath) => {
+      const cachedHash = cache.getHash(filePath);
+      if (!cachedHash) return { filePath, state: "fresh" as const };
+      try {
+        const currentContent = await fs.promises.readFile(filePath, "utf-8");
+        const currentHash = crypto
+          .createHash("sha256")
+          .update(currentContent)
+          .digest("hex");
+        return {
+          filePath,
+          state:
+            currentHash !== cachedHash
+              ? ("stale" as const)
+              : ("fresh" as const),
+        };
+      } catch {
+        // File no longer readable (deleted or permissions changed)
+        return { filePath, state: "deleted" as const };
       }
-    } catch {
-      // File no longer readable (deleted or permissions changed)
-      deletedFiles.push(filePath);
-      cache.invalidate(filePath);
-    }
+    }),
+  );
+
+  for (const { filePath, state } of checks) {
+    if (state === "fresh") continue;
+    (state === "stale" ? staleFiles : deletedFiles).push(filePath);
+    // Invalidate so next read gets fresh content
+    cache.invalidate(filePath);
   }
 
   return { staleFiles, deletedFiles, checkedCount: readFiles.length };
@@ -67,18 +79,14 @@ export function formatStaleFileHint(result: StaleFileResult): string {
   const parts: string[] = [];
 
   if (result.staleFiles.length > 0) {
-    const fileList = result.staleFiles
-      .map((f) => `  - ${f}`)
-      .join("\n");
+    const fileList = result.staleFiles.map((f) => `  - ${f}`).join("\n");
     parts.push(
       `以下文件在命令执行后已被修改，缓存内容已过期，请在操作前重新读取：\n${fileList}`,
     );
   }
 
   if (result.deletedFiles.length > 0) {
-    const fileList = result.deletedFiles
-      .map((f) => `  - ${f}`)
-      .join("\n");
+    const fileList = result.deletedFiles.map((f) => `  - ${f}`).join("\n");
     parts.push(`以下文件已被删除或不可读：\n${fileList}`);
   }
 
@@ -89,7 +97,7 @@ export function formatStaleFileHint(result: StaleFileResult): string {
  * Convenience: detect + format in one call.
  * Returns empty string if nothing is stale.
  */
-export function getStaleFileHint(cache: FileReadCache): string {
-  const result = detectStaleFiles(cache);
+export async function getStaleFileHint(cache: FileReadCache): Promise<string> {
+  const result = await detectStaleFiles(cache);
   return formatStaleFileHint(result);
 }

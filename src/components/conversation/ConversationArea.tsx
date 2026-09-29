@@ -345,9 +345,14 @@ export const ConversationArea = memo(function ConversationArea({
         )}
       {messages.length === 0 ? (
         <div className="welcome">
-          <div className="welcome-context">
+          <div
+            className={`welcome-context${activeTaskWorkspacePath ? "" : " is-unbound"}`}
+            title={activeTaskWorkspacePath || undefined}
+          >
             <span className="context-dot" />
-            工作区已连接
+            {activeTaskWorkspacePath
+              ? activeTaskWorkspacePath.split(/[\\/]/).filter(Boolean).pop()
+              : "未关联工作区"}
           </div>
           <div className="logo-large">
             <Bot size={25} />

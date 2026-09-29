@@ -94,10 +94,10 @@ function extractPatchPaths(root: string, patch: string): string[] {
 }
 
 /** Hash and line count from a single read (missing file: null hash, 0 lines). */
-function snapshotFile(filePath: string): FileSnapshot {
+async function snapshotFile(filePath: string): Promise<FileSnapshot> {
   let content: Buffer;
   try {
-    content = fs.readFileSync(filePath);
+    content = await fs.promises.readFile(filePath);
   } catch {
     return { path: filePath, hash: null, lineCount: 0 };
   }
@@ -136,34 +136,36 @@ export class TurnDiffTracker {
    * Call BEFORE a tool executes. Snapshots files predicted to be affected.
    * Returns a snapshot key to use in afterTool().
    */
-  beforeTool(
+  async beforeTool(
     toolName: string,
     _callId: string,
     input: Record<string, unknown>,
-  ): void {
-    const paths = predictAffectedPaths(this.root, toolName, input);
-    for (const p of paths) {
-      if (!this.preSnapshots.has(p)) {
-        this.preSnapshots.set(p, snapshotFile(p));
-      }
-    }
+  ): Promise<void> {
+    const paths = predictAffectedPaths(this.root, toolName, input).filter(
+      (p) => !this.preSnapshots.has(p),
+    );
+    const snapshots = await Promise.all(paths.map(snapshotFile));
+    for (const snapshot of snapshots)
+      if (!this.preSnapshots.has(snapshot.path))
+        this.preSnapshots.set(snapshot.path, snapshot);
   }
 
   /**
    * Call AFTER a tool executes. Compares current state to pre-snapshot.
    */
-  afterTool(
+  async afterTool(
     toolName: string,
     callId: string,
     input: Record<string, unknown>,
     exitCode?: number,
-  ): ToolCallDiff {
+  ): Promise<ToolCallDiff> {
     const paths = predictAffectedPaths(this.root, toolName, input);
     const diffs: FileDiff[] = [];
+    const afterSnapshots = await Promise.all(paths.map(snapshotFile));
 
-    for (const p of paths) {
+    for (const [index, p] of paths.entries()) {
       const before = this.preSnapshots.get(p);
-      const { hash: afterHash, lineCount: afterLines } = snapshotFile(p);
+      const { hash: afterHash, lineCount: afterLines } = afterSnapshots[index];
       const relativePath = path.relative(this.root, p).replace(/\\/g, "/");
 
       if (!before || before.hash === null) {

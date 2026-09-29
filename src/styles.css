@@ -617,17 +617,19 @@
 
 /* Recovery overlay: current uncommitted styles */
 :root {
-  font-family: Inter, "Segoe UI", sans-serif;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI",
+    "PingFang SC", "Microsoft YaHei UI", "Noto Sans SC", sans-serif;
   color: #18181b;
   background: #ffffff;
   font-synthesis: none;
   /* Neutral zinc scale — cool, flat, Linear/Vercel-grade. */
   /* Default accent (Indigo). Overridden per [data-accent] palette below. */
-  --accent: #5c7fa3;
-  --accent-hover: #4f7194;
-  --accent-soft: color-mix(in srgb, #5c7fa3 12%, #f7f7f4);
-  --accent-ink: #fafaf7;
-  --link: #4f7194;
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-soft: color-mix(in srgb, #2563eb 10%, transparent);
+  --accent-ink: #ffffff;
+  --link: #1d4ed8;
   --success-hover: #059669;
   --danger-hover: #dc2626;
   /* Minimal elevation — borders do the work, shadows only for floats. */
@@ -656,7 +658,7 @@ body {
   -webkit-app-region: drag;
 }
 .window-titlebar > span {
-  font-weight: 550;
+  font-weight: 500;
 }
 .window-controls {
   height: 100%;
@@ -910,7 +912,7 @@ button:not(:disabled) {
   display: inline-flex;
   align-items: center;
   color: var(--muted);
-  font-size: 9px;
+  font-size: 11px;
 }
 .workspace-meta {
   display: inline-flex;
@@ -964,7 +966,7 @@ button:not(:disabled) {
   padding: 0 3px;
   color: var(--ink);
   font-size: 11px;
-  font-weight: 650;
+  font-weight: 600;
 }
 .task-flat-row {
   /* Indent is owned by the redesign block (.task-row.task-flat-row). */
@@ -1130,10 +1132,32 @@ button:not(:disabled) {
   background: var(--danger);
   color: #fff;
 }
+/* Hidden row actions must not reserve width: collapse them until the row is
+   hovered or focused so the task name gets the full row. */
+.workspace-tree .task-row:not(:hover):not(:focus-within) .task-archive,
+.workspace-tree .task-row:not(:hover):not(:focus-within) .task-delete:not(.confirm) {
+  width: 0;
+  min-width: 0;
+  flex-basis: 0;
+  margin-left: -7px; /* cancel the row gap */
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+}
+/* The drag grip sits in the indent gutter instead of in front of the name. */
+.workspace-tree .task-flat-row {
+  position: relative;
+}
+.workspace-tree .task-flat-row .task-grip {
+  position: absolute;
+  top: 50%;
+  left: -16px;
+  transform: translateY(-50%);
+}
 .tasks small {
   color: var(--muted);
   white-space: nowrap;
-  font-size: 10px;
+  font-size: 11px;
 }
 .task-running::before {
   content: "";
@@ -1219,7 +1243,7 @@ button:not(:disabled) {
 .topbar-export-menu small {
   margin-top: 2px;
   color: var(--ui-text-tertiary);
-  font-size: 9px;
+  font-size: 11px;
   line-height: 1.3;
 }
 .topbar-left > div {
@@ -1362,7 +1386,7 @@ button:not(:disabled) {
   margin: 0;
   color: var(--ui-text);
   font-size: 15px;
-  font-weight: 650;
+  font-weight: 600;
 }
 
 .new-task-dialog > header > button {
@@ -1408,8 +1432,8 @@ button:not(:disabled) {
 .new-task-name-label,
 .new-task-workspace-label {
   color: var(--ui-text-secondary);
-  font-size: 10px;
-  font-weight: 620;
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .new-task-name-label {
@@ -1421,7 +1445,7 @@ button:not(:disabled) {
 
 .new-task-name-label small {
   color: var(--ui-text-tertiary);
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 400;
 }
 
@@ -1447,7 +1471,7 @@ button:not(:disabled) {
 .rename-task-error {
   margin: 8px 0 0;
   color: var(--danger);
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.45;
 }
 
@@ -1498,18 +1522,18 @@ button:not(:disabled) {
 .new-task-workspace-picker strong {
   color: var(--ui-text);
   font-size: 11px;
-  font-weight: 620;
+  font-weight: 600;
 }
 
 .new-task-workspace-picker small {
   color: var(--ui-text-tertiary);
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .new-task-workspace-action {
   color: var(--accent);
-  font-size: 10px;
-  font-weight: 620;
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .new-task-dialog footer {
@@ -1535,7 +1559,7 @@ button:not(:disabled) {
   border-radius: var(--ui-radius-control);
   background: var(--ui-elevated);
   color: var(--ui-text-secondary);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .new-task-dialog footer button:hover:not(:disabled) {
@@ -1633,7 +1657,7 @@ button:not(:disabled) {
 .turn-preview small {
   -webkit-line-clamp: 2;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.5;
 }
 @keyframes turn-preview-in {
@@ -1683,7 +1707,7 @@ button:not(:disabled) {
     background 0.15s;
 }
 .prompts button span {
-  font-size: 10px;
+  font-size: 11px;
   margin-right: 9px;
 }
 .connect-model {
@@ -1728,7 +1752,7 @@ button:not(:disabled) {
 .conversation-search-count {
   min-width: 42px;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
   text-align: right;
   white-space: nowrap;
 }
@@ -1779,7 +1803,7 @@ button:not(:disabled) {
   gap: 8px;
   margin: -18px 0 14px;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
 }
 .conversation-history-loader span {
   width: 5px;
@@ -1869,7 +1893,7 @@ button:not(:disabled) {
 }
 .execution-history-more small {
   flex: 0 0 auto;
-  font-size: 10px;
+  font-size: 11px;
 }
 .assistant-timeline {
   min-width: 0;
@@ -1901,7 +1925,7 @@ button:not(:disabled) {
 }
 .completed-process-metrics {
   color: var(--muted);
-  font-size: 9.5px;
+  font-size: 11px;
 }
 .completed-process-metrics > span {
   flex: 0 0 auto;
@@ -1916,11 +1940,11 @@ button:not(:disabled) {
 }
 .completed-process-diff b {
   color: var(--success);
-  font-weight: 650;
+  font-weight: 600;
 }
 .completed-process-diff i {
   color: var(--danger);
-  font-weight: 650;
+  font-weight: 600;
   font-style: normal;
 }
 .completed-process-executor {
@@ -1970,7 +1994,7 @@ button:not(:disabled) {
   color: var(--muted);
 }
 .diff-view-controls small {
-  font-size: 9px;
+  font-size: 11px;
 }
 .diff-view-controls button {
   width: 24px;
@@ -2012,7 +2036,7 @@ button:not(:disabled) {
   border-radius: 5px;
   background: transparent;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
 }
 .activity-undo:hover:not(:disabled) {
   background: var(--surface-hover);
@@ -2097,7 +2121,7 @@ button:not(:disabled) {
   border: 1px solid var(--line);
   border-radius: 5px;
   background: var(--surface-raised);
-  font-size: 10px;
+  font-size: 11px;
 }
 .restore-dialog footer .danger {
   border-color: var(--danger);
@@ -2143,7 +2167,7 @@ button:not(:disabled) {
   border-radius: 4px;
   color: var(--accent-strong);
   background: color-mix(in srgb, var(--accent) 9%, transparent);
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 600;
 }
 .activity-model-badge em {
@@ -2163,7 +2187,7 @@ button:not(:disabled) {
 }
 .activity-status {
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
 }
 .agent-activity.success .activity-status {
   color: var(--success);
@@ -2178,7 +2202,7 @@ button:not(:disabled) {
 .diff-count {
   display: flex;
   gap: 5px;
-  font-size: 10px;
+  font-size: 11px;
 }
 .diff-count i {
   font-style: normal;
@@ -2200,7 +2224,7 @@ button:not(:disabled) {
 }
 .activity-purpose strong {
   color: var(--ink);
-  font-size: 10px;
+  font-size: 11px;
 }
 .activity-purpose small {
   white-space: pre-wrap;
@@ -2240,21 +2264,21 @@ button:not(:disabled) {
   gap: 2px;
 }
 .activity-exit-note strong {
-  font-size: 10px;
+  font-size: 11px;
 }
 .activity-exit-note small {
   overflow-wrap: anywhere;
   color: var(--warning);
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.5;
 }
 .activity-error-reason strong {
-  font-size: 10px;
+  font-size: 11px;
 }
 .activity-error-reason small {
   overflow-wrap: anywhere;
   color: var(--danger);
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.5;
 }
 .activity-running-detail {
@@ -2273,17 +2297,17 @@ button:not(:disabled) {
   gap: 2px;
 }
 .activity-running-detail strong {
-  font-size: 10px;
+  font-size: 11px;
 }
 .activity-running-detail small {
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
 }
 .activity-output-label {
   padding: 8px 12px 0;
   color: var(--muted);
-  font-size: 9px;
-  font-weight: 650;
+  font-size: 11px;
+  font-weight: 600;
   text-transform: uppercase;
 }
 .activity-detail pre {
@@ -2303,7 +2327,7 @@ button:not(:disabled) {
   border-radius: 5px;
   background: var(--surface-muted);
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.5;
 }
 .activity-output-truncated:has(> button) {
@@ -2319,7 +2343,7 @@ button:not(:disabled) {
   border-radius: 4px;
   background: transparent;
   color: var(--ink);
-  font-size: 9px;
+  font-size: 11px;
 }
 .activity-output-truncated > button:hover {
   background: var(--surface-hover);
@@ -2374,12 +2398,12 @@ button:not(:disabled) {
 }
 .approval-actions span {
   flex: 1;
-  font-size: 10px;
+  font-size: 11px;
 }
 .approval-actions button {
   border: 1px solid var(--line);
   padding: 6px 10px;
-  font-size: 10px;
+  font-size: 11px;
 }
 .message {
   display: grid;
@@ -2446,7 +2470,7 @@ button:not(:disabled) {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-size: 10px !important;
+  font-size: 11px !important;
 }
 .run-state i {
   border-radius: 50%;
@@ -2479,8 +2503,8 @@ button:not(:disabled) {
 .execution-narration-preview {
   max-width: 760px;
   color: var(--ink);
-  font-size: 14.5px;
-  font-weight: 550;
+  font-size: 15px;
+  font-weight: 500;
   line-height: 1.65;
 }
 .streaming-message-text[data-truncated="true"]::before {
@@ -2492,7 +2516,7 @@ button:not(:disabled) {
   border-radius: 5px;
   background: var(--surface-muted);
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.45;
 }
 .message.user .message-body {
@@ -2635,7 +2659,7 @@ button:not(:disabled) {
   border-radius: 5px;
   background: var(--surface-raised);
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
 }
 .message-error {
   margin-top: 10px;
@@ -2704,7 +2728,7 @@ button:not(:disabled) {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 10px;
+  font-size: 11px;
 }
 .code-toolbar button {
   height: 25px;
@@ -2744,8 +2768,6 @@ button:not(:disabled) {
 .thinking span:nth-child(3) {
   animation-delay: 0.28s;
   margin-right: 4px;
-}
-@keyframes thinking-dot {
 }
 .live-dot {
   flex: 0 0 auto;
@@ -2822,12 +2844,12 @@ button:not(:disabled) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
 }
 .context-file small {
   color: var(--muted);
-  font-size: 9px;
+  font-size: 11px;
 }
 .context-file button,
 .context-error button {
@@ -2849,7 +2871,7 @@ button:not(:disabled) {
   padding: 4px 5px 4px 9px;
   border: 1px solid #ecd2cf;
   border-radius: 5px;
-  font-size: 10px;
+  font-size: 11px;
 }
 .context-error button {
   margin-left: auto;
@@ -2864,7 +2886,7 @@ button:not(:disabled) {
   padding: 4px 9px;
   border: 1px solid var(--success-soft);
   border-radius: 5px;
-  font-size: 10px;
+  font-size: 11px;
   animation: context-toast-in 0.18s ease-out;
 }
 @keyframes context-toast-in {
@@ -3081,7 +3103,7 @@ button:not(:disabled) {
     color-mix(in srgb, var(--ink) 5%, transparent)
   );
   color: var(--muted);
-  font-size: 10.5px;
+  font-size: 11px;
   line-height: 1.5;
 }
 
@@ -3098,7 +3120,7 @@ button:not(:disabled) {
   align-items: center;
   padding: 0 7px;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .collaboration-model-list section + section {
@@ -3111,7 +3133,7 @@ button:not(:disabled) {
   display: block;
   padding: 4px 7px;
   color: var(--muted);
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .collaboration-model-list section > button {
@@ -3155,12 +3177,12 @@ button:not(:disabled) {
 
 .collaboration-model-list strong {
   font-size: 11px;
-  font-weight: 550;
+  font-weight: 500;
 }
 
 .collaboration-model-list section > button small {
   color: var(--muted);
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .collaboration-effort {
@@ -3176,14 +3198,14 @@ button:not(:disabled) {
   gap: 10px;
   margin-bottom: 7px;
   color: var(--ink);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .collaboration-effort > header small {
   min-width: 0;
   overflow: hidden;
   color: var(--muted);
-  font-size: 9px;
+  font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -3205,7 +3227,7 @@ button:not(:disabled) {
   border-radius: 4px;
   background: transparent;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .collaboration-effort button:hover,
@@ -3231,8 +3253,6 @@ button:not(:disabled) {
   background: var(--surface-raised);
   box-shadow: 0 14px 45px rgba(17, 24, 28, 0.1);
   animation: menu-in 0.12s ease-out;
-}
-@keyframes menu-in {
 }
 .model-menu [role="listbox"] section + section {
   margin-top: 6px;
@@ -3286,11 +3306,11 @@ button:not(:disabled) {
 }
 .provider-menu-level strong {
   font-size: 11px;
-  font-weight: 650;
+  font-weight: 600;
 }
 .provider-menu-level small {
   color: var(--muted);
-  font-size: 9px;
+  font-size: 11px;
 }
 .provider-menu-level > button > svg:nth-last-child(2) {
   color: var(--success);
@@ -3320,8 +3340,6 @@ button:not(:disabled) {
   width: 7px;
   height: 100%;
 }
-@keyframes submenu-in {
-}
 .model-menu [role="listbox"] section > header {
   height: 27px;
   display: flex;
@@ -3331,12 +3349,12 @@ button:not(:disabled) {
   color: var(--muted);
 }
 .model-menu [role="listbox"] section > header span {
-  font-size: 10px;
-  font-weight: 650;
+  font-size: 11px;
+  font-weight: 600;
   text-transform: uppercase;
 }
 .model-menu [role="listbox"] section > header small {
-  font-size: 9px;
+  font-size: 11px;
 }
 .model-menu [role="listbox"] section > button {
   width: 100%;
@@ -3383,7 +3401,7 @@ button:not(:disabled) {
 }
 .model-menu small {
   color: var(--muted);
-  font-size: 9px;
+  font-size: 11px;
 }
 .model-menu [role="listbox"] section > button > svg {
   color: var(--success);
@@ -3455,7 +3473,7 @@ button:not(:disabled) {
   align-items: center;
   padding: 0 7px;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
 }
 .effort-menu > button {
   width: 100%;
@@ -3481,7 +3499,7 @@ button:not(:disabled) {
 }
 .effort-menu strong {
   font-size: 11px;
-  font-weight: 550;
+  font-weight: 500;
 }
 .permission-picker {
   position: relative;
@@ -3535,7 +3553,7 @@ button:not(:disabled) {
   align-items: center;
   padding: 0 7px;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
 }
 .permission-menu > button {
   width: 100%;
@@ -3570,7 +3588,7 @@ button:not(:disabled) {
 .permission-menu small {
   overflow: hidden;
   color: var(--muted);
-  font-size: 9px;
+  font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -3584,7 +3602,7 @@ button:not(:disabled) {
 }
 .effort-menu small {
   color: var(--muted);
-  font-size: 9px;
+  font-size: 11px;
 }
 .effort-menu > button > svg {
   color: var(--muted);
@@ -3604,7 +3622,7 @@ button:not(:disabled) {
 }
 .queued-state {
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
 }
 
@@ -3693,12 +3711,12 @@ button:not(:disabled) {
 }
 .browser-verification strong {
   color: var(--ink);
-  font-size: 10px;
-  font-weight: 650;
+  font-size: 11px;
+  font-weight: 600;
 }
 .browser-verification small {
   color: var(--muted);
-  font-size: 9px;
+  font-size: 11px;
 }
 .browser-navigation {
   display: flex;
@@ -3718,14 +3736,14 @@ button:not(:disabled) {
   padding: 0 9px;
   border: 1px solid var(--line);
   outline: 0;
-  font-size: 9px;
+  font-size: 11px;
 }
 .browser-recording {
   display: flex;
   align-items: center;
   gap: 5px;
   color: var(--danger);
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 600;
   white-space: nowrap;
 }
@@ -3765,7 +3783,7 @@ button:not(:disabled) {
   align-items: center;
   justify-content: space-between;
   font-size: 12px;
-  font-weight: 650;
+  font-weight: 600;
   border: 1px solid var(--line);
   border-radius: 10px;
   background: var(--surface-raised);
@@ -3829,11 +3847,11 @@ button:not(:disabled) {
   gap: 2px;
 }
 .resume-checkpoint strong {
-  font-size: 10px;
+  font-size: 11px;
 }
 .resume-checkpoint small {
   color: var(--muted);
-  font-size: 9px;
+  font-size: 11px;
 }
 .run-metrics > div {
   display: flex;
@@ -3846,7 +3864,7 @@ button:not(:disabled) {
   gap: 1px;
 }
 .run-metrics small {
-  font-size: 9px;
+  font-size: 11px;
 }
 .run-metrics strong {
   font-size: 11px;
@@ -3858,7 +3876,7 @@ button:not(:disabled) {
   gap: 8px;
   margin-top: 12px;
   color: var(--muted);
-  font-size: 9px;
+  font-size: 11px;
 }
 .token-split i {
   width: 3px;
@@ -3875,11 +3893,11 @@ button:not(:disabled) {
   display: flex;
   justify-content: space-between;
   color: var(--muted);
-  font-size: 9px;
+  font-size: 11px;
 }
 .context-usage > div:first-child strong {
   color: var(--ink);
-  font-size: 9px;
+  font-size: 11px;
 }
 .context-usage-bar {
   position: relative;
@@ -3902,14 +3920,14 @@ button:not(:disabled) {
 }
 .context-usage small {
   color: var(--muted);
-  font-size: 9px;
+  font-size: 11px;
   text-align: right;
 }
 .calibration-status {
   display: block;
   margin-top: 5px;
   color: var(--muted);
-  font-size: 9px;
+  font-size: 11px;
   text-align: right;
 }
 .compact-context-button {
@@ -3922,7 +3940,7 @@ button:not(:disabled) {
   margin-top: 10px;
   border: 1px solid var(--line);
   border-radius: 5px;
-  font-size: 10px;
+  font-size: 11px;
 }
 .compact-context-button:disabled {
   cursor: not-allowed;
@@ -3932,7 +3950,7 @@ button:not(:disabled) {
   display: block;
   margin-top: 6px;
   color: var(--muted);
-  font-size: 9px;
+  font-size: 11px;
   text-align: center;
 }
 .view-summary-button {
@@ -3941,7 +3959,7 @@ button:not(:disabled) {
   padding: 4px;
   border: 0;
   background: transparent;
-  font-size: 9px;
+  font-size: 11px;
 }
 .view-summary-button:hover {
   text-decoration: underline;
@@ -4000,7 +4018,7 @@ button:not(:disabled) {
   gap: 10px;
   padding: 8px 15px 0;
   color: var(--muted);
-  font-size: 9px;
+  font-size: 11px;
 }
 .summary-versions {
   display: grid;
@@ -4010,7 +4028,7 @@ button:not(:disabled) {
 }
 .summary-versions > strong {
   margin-bottom: 2px;
-  font-size: 10px;
+  font-size: 11px;
 }
 .summary-versions button {
   display: flex;
@@ -4021,7 +4039,7 @@ button:not(:disabled) {
   border-radius: 4px;
   background: var(--surface-raised);
   color: var(--muted);
-  font-size: 9px;
+  font-size: 11px;
 }
 .summary-dialog footer {
   height: 50px;
@@ -4042,7 +4060,7 @@ button:not(:disabled) {
   border-radius: 5px;
   background: var(--surface-raised);
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
 }
 .summary-dialog footer .restore-context-button {
   color: var(--danger);
@@ -4077,8 +4095,6 @@ button:not(:disabled) {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-}
-@keyframes overlay-in {
 }
 .settings-panel > header {
   height: 94px;
@@ -4115,8 +4131,8 @@ button:not(:disabled) {
 .settings-nav-count {
   justify-self: end;
   color: var(--accent);
-  font-size: 10px;
-  font-weight: 700;
+  font-size: 11px;
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
 
@@ -4225,10 +4241,10 @@ button:not(:disabled) {
   padding: 0 8px;
   border: 0;
   background: transparent;
-  font-size: 10px;
+  font-size: 11px;
 }
 .settings-segmented button.active {
-  font-weight: 650;
+  font-weight: 600;
 }
 .theme-segmented button {
   min-width: 68px;
@@ -4300,7 +4316,7 @@ button:not(:disabled) {
 }
 .permission-options small {
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
 }
 .permission-options > button > svg {
   color: var(--success);
@@ -4318,13 +4334,13 @@ button:not(:disabled) {
   justify-content: space-between;
   gap: 12px;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
 }
 .permission-detail-list select {
   width: 104px;
   height: 29px;
   padding: 4px 7px;
-  font-size: 10px;
+  font-size: 11px;
 }
 .add-provider {
   margin-bottom: 15px;
@@ -4414,20 +4430,20 @@ button:not(:disabled) {
 }
 .model-context-input {
   color: var(--muted);
-  font-size: 9px;
+  font-size: 11px;
 }
 .model-context-input input {
   width: 104px;
   height: 28px;
   padding: 4px 6px;
-  font-size: 9px;
+  font-size: 11px;
 }
 .model-reasoning-config select {
   width: 118px;
   flex: 0 0 118px;
   height: 28px;
   padding: 4px 6px;
-  font-size: 9px;
+  font-size: 11px;
 }
 .model-effort-toggles {
   flex: 0 0 auto;
@@ -4484,12 +4500,12 @@ button:not(:disabled) {
   white-space: nowrap;
 }
 .settings-model-list strong {
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
 }
 .settings-model-list small {
   color: var(--muted);
-  font-size: 9px;
+  font-size: 11px;
 }
 .remove-model {
   width: 28px;
@@ -4620,7 +4636,7 @@ button:not(:disabled) {
 }
 .update-dialog > header small {
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
 }
 .update-dialog-icon {
   width: 34px;
@@ -4649,7 +4665,7 @@ button:not(:disabled) {
 .update-content span,
 .update-content small {
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.5;
 }
 .update-message.success > svg {
@@ -4702,7 +4718,7 @@ button:not(:disabled) {
   border: 1px solid var(--line);
   border-radius: 5px;
   background: var(--surface-raised);
-  font-size: 10px;
+  font-size: 11px;
 }
 .update-dialog > footer button.primary {
   border-color: var(--accent);
@@ -4834,7 +4850,7 @@ button:not(:disabled) {
   margin: 0;
   padding-left: 18px;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.5;
 }
 .delete-dialog-body strong {
@@ -4859,7 +4875,7 @@ button:not(:disabled) {
   border: 1px solid var(--line);
   border-radius: 5px;
   background: var(--surface-raised);
-  font-size: 10px;
+  font-size: 11px;
 }
 .delete-dialog > footer .danger {
   border-color: var(--danger);
@@ -4869,8 +4885,6 @@ button:not(:disabled) {
 }
 .delete-dialog > footer .danger:hover {
   background: var(--danger-hover);
-}
-@keyframes modal-in {
 }
 .form-grid {
   display: grid;
@@ -4942,7 +4956,7 @@ select:focus {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-size: 10px;
+  font-size: 11px;
   white-space: nowrap;
 }
 .sync-models {
@@ -4958,7 +4972,7 @@ select:focus {
   background: var(--surface-raised);
   color: var(--muted);
   font-size: 11px;
-  font-weight: 550;
+  font-weight: 500;
 }
 .sync-models:hover:not(:disabled) {
   border-color: var(--line);
@@ -5042,7 +5056,7 @@ select:focus {
   align-items: center;
   gap: 5px;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
 }
 .provider-model-context span {
   flex: none;
@@ -5051,11 +5065,11 @@ select:focus {
   width: 94px;
   height: 29px;
   padding: 4px 7px;
-  font-size: 10px;
+  font-size: 11px;
 }
 .provider-model-context small {
   color: var(--muted);
-  font-size: 9px;
+  font-size: 11px;
 }
 .empty,
 .settings-empty {
@@ -5298,7 +5312,7 @@ select:focus {
   background: var(--surface-raised);
   box-shadow: var(--shadow-float);
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.55;
   opacity: 0;
   pointer-events: none;
@@ -5329,7 +5343,7 @@ select:focus {
 .skill-store-help {
   margin: 0 0 10px;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.55;
 }
 
@@ -5357,7 +5371,7 @@ select:focus {
   padding: 10px 14px;
   border: 1px solid var(--success-soft);
   font-size: 12px;
-  font-weight: 550;
+  font-weight: 500;
   transform: translateX(-50%);
   animation: app-toast-in 0.18s ease-out;
   pointer-events: none;
@@ -5596,7 +5610,7 @@ select:focus {
   gap: 4px;
   padding: 0 8px;
   border: 1px solid var(--line);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 /* ========================================================================== */
@@ -6185,15 +6199,6 @@ select:focus-visible {
   color: inherit;
 }
 
-@keyframes kcode-overlay-in {
-}
-
-@keyframes kcode-dialog-in {
-}
-
-@keyframes kcode-menu-in {
-}
-
 @media (max-width: 620px) {
   .settings-group {
     border-radius: var(--radius-sm);
@@ -6260,7 +6265,7 @@ select:focus-visible {
 .status-panel h3 {
   margin: 0 0 10px;
   font-size: 11px;
-  font-weight: 650;
+  font-weight: 600;
 }
 
 .status-panel dl div {
@@ -6275,7 +6280,7 @@ select:focus-visible {
 
 .status-panel dd {
   color: var(--ink);
-  font-weight: 550;
+  font-weight: 500;
   text-align: right;
 }
 
@@ -6788,6 +6793,10 @@ button[aria-busy="true"] {
   background: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
+.welcome-context.is-unbound .context-dot {
+  background: var(--muted);
+  box-shadow: none;
+}
 .welcome h2 {
   letter-spacing: -0.02em;
 }
@@ -7029,20 +7038,20 @@ button[aria-busy="true"] {
   border-left: 3px solid var(--accent) !important;
 }
 .task-row.active .task-main span {
-  font-weight: 650 !important;
+  font-weight: 500 !important;
 }
 
-/* 4) New-task button: filled accent-soft, more presence */
+/* 4) New-task button: neutral surface; the accent lives on the icon only */
 .new-task {
-  color: var(--accent) !important;
-  font-weight: 650 !important;
+  color: var(--ui-text) !important;
+  font-weight: 500 !important;
 }
 .new-task .new-task-icon {
   background: var(--accent) !important;
   color: #fff !important;
 }
 .new-task kbd {
-  color: color-mix(in srgb, var(--accent) 60%, var(--muted));
+  color: var(--muted);
 }
 
 /* 5) Brand wordmark: bigger, tighter, confident */
@@ -7053,14 +7062,14 @@ button[aria-busy="true"] {
 /* 6) Title heading: larger, tighter */
 .topbar h1 {
   font-size: 15px !important;
-  font-weight: 700 !important;
+  font-weight: 600 !important;
   letter-spacing: -0.02em !important;
 }
 
 /* 7) Section eyebrows: uppercase, spaced, quieter */
 .workspace-label {
-  font-size: 10px !important;
-  font-weight: 650 !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
   letter-spacing: 0.08em !important;
   text-transform: uppercase !important;
   color: var(--muted) !important;
@@ -7118,124 +7127,110 @@ button[aria-busy="true"] {
 
 /* Indigo (default) */
 :root[data-accent="indigo"] {
-  /* Light: muted Anysphere blue on cream */
-  --accent: #5c7fa3;
-  --accent-hover: #4f7194;
-  --accent-soft: color-mix(in srgb, #5c7fa3 12%, #f7f7f4);
-  --accent-ink: #fafaf7;
-  --link: #4f7194;
-  --surface-selected: color-mix(in srgb, #26251e 6%, #f7f7f4);
-  --focus-ring: rgb(38 37 30 / 0.15);
+  --accent: #4f46e5;
+  --accent-hover: #4338ca;
+  --accent-soft: color-mix(in srgb, #4f46e5 10%, transparent);
+  --accent-ink: #ffffff;
+  --link: #4338ca;
+  --focus-ring: color-mix(in srgb, #4f46e5 28%, transparent);
 }
 :root[data-theme="dark"][data-accent="indigo"] {
-  /* Anysphere signal blue — muted, used sparingly */
-  --accent: #81a1c1;
-  --accent-hover: #87a6c4;
-  --accent-soft: color-mix(in srgb, #81a1c1 14%, transparent);
-  --accent-ink: #191c22;
-  --link: #81a1c1;
-  --surface-selected: color-mix(in srgb, #e4e4e4 12%, #181818);
-  --focus-ring: rgb(228 228 228 / 0.15);
+  --accent: #6366f1;
+  --accent-hover: #7477f4;
+  --accent-soft: color-mix(in srgb, #6366f1 16%, transparent);
+  --accent-ink: #ffffff;
+  --link: #a5a8ff;
+  --focus-ring: color-mix(in srgb, #6366f1 38%, transparent);
 }
 
 /* Violet */
 :root[data-accent="violet"] {
   --accent: #7c3aed;
   --accent-hover: #6d28d9;
-  --accent-soft: #f3ecff;
-  --accent-ink: #fff;
+  --accent-soft: color-mix(in srgb, #7c3aed 10%, transparent);
+  --accent-ink: #ffffff;
   --link: #6d28d9;
-  --surface-selected: #f3ecff;
-  --focus-ring: rgb(124 58 237 / 26%);
+  --focus-ring: color-mix(in srgb, #7c3aed 28%, transparent);
 }
 :root[data-theme="dark"][data-accent="violet"] {
-  --accent: #a78bfa;
-  --accent-hover: #b9a4fc;
-  --accent-soft: #2a2044;
-  --accent-ink: #12081f;
+  --accent: #8b5cf6;
+  --accent-hover: #9b72f8;
+  --accent-soft: color-mix(in srgb, #8b5cf6 16%, transparent);
+  --accent-ink: #ffffff;
   --link: #c4b5fd;
-  --surface-selected: #2a2044;
-  --focus-ring: rgb(167 139 250 / 34%);
+  --focus-ring: color-mix(in srgb, #8b5cf6 38%, transparent);
 }
 
 /* Emerald */
 :root[data-accent="emerald"] {
-  --accent: #10a37f;
-  --accent-hover: #0d8c6d;
-  --accent-soft: #e6f7f1;
-  --accent-ink: #fff;
-  --link: #0d8c6d;
-  --surface-selected: #e6f7f1;
-  --focus-ring: rgb(16 163 127 / 26%);
+  --accent: #059669;
+  --accent-hover: #047857;
+  --accent-soft: color-mix(in srgb, #059669 10%, transparent);
+  --accent-ink: #ffffff;
+  --link: #047857;
+  --focus-ring: color-mix(in srgb, #059669 28%, transparent);
 }
 :root[data-theme="dark"][data-accent="emerald"] {
-  --accent: #2dd4a7;
-  --accent-hover: #4de0bb;
-  --accent-soft: #0f2e26;
-  --accent-ink: #05201a;
-  --link: #5ee3c1;
-  --surface-selected: #0f2e26;
-  --focus-ring: rgb(45 212 167 / 32%);
+  --accent: #10a37f;
+  --accent-hover: #14b88f;
+  --accent-soft: color-mix(in srgb, #10a37f 16%, transparent);
+  --accent-ink: #ffffff;
+  --link: #34d3a6;
+  --focus-ring: color-mix(in srgb, #10a37f 38%, transparent);
 }
 
 /* Blue */
 :root[data-accent="blue"] {
-  --accent: #5c7fa3;
-  --accent-hover: #4f7194;
-  --accent-soft: color-mix(in srgb, #5c7fa3 12%, #f7f7f4);
-  --accent-ink: #fafaf7;
-  --link: #4f7194;
-  --surface-selected: color-mix(in srgb, #26251e 6%, #f7f7f4);
-  --focus-ring: rgb(38 37 30 / 0.15);
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-soft: color-mix(in srgb, #2563eb 10%, transparent);
+  --accent-ink: #ffffff;
+  --link: #1d4ed8;
+  --focus-ring: color-mix(in srgb, #2563eb 28%, transparent);
 }
 :root[data-theme="dark"][data-accent="blue"] {
-  --accent: #81a1c1;
-  --accent-hover: #87a6c4;
-  --accent-soft: color-mix(in srgb, #81a1c1 14%, transparent);
-  --accent-ink: #191c22;
-  --link: #81a1c1;
-  --surface-selected: color-mix(in srgb, #e4e4e4 12%, #181818);
-  --focus-ring: rgb(228 228 228 / 0.15);
+  --accent: #3b82f6;
+  --accent-hover: #5592f7;
+  --accent-soft: color-mix(in srgb, #3b82f6 16%, transparent);
+  --accent-ink: #ffffff;
+  --link: #7cb0ff;
+  --focus-ring: color-mix(in srgb, #3b82f6 38%, transparent);
 }
 
 /* Orange (terracotta) */
 :root[data-accent="orange"] {
-  --accent: #e0663a;
-  --accent-hover: #cc5228;
-  --accent-soft: #fdeee7;
-  --accent-ink: #fff;
-  --link: #cc5228;
-  --surface-selected: #fdeee7;
-  --focus-ring: rgb(224 102 58 / 26%);
+  --accent: #ea580c;
+  --accent-hover: #c2410c;
+  --accent-soft: color-mix(in srgb, #ea580c 10%, transparent);
+  --accent-ink: #ffffff;
+  --link: #c2410c;
+  --focus-ring: color-mix(in srgb, #ea580c 28%, transparent);
 }
 :root[data-theme="dark"][data-accent="orange"] {
-  --accent: #f4884f;
-  --accent-hover: #f79c6b;
-  --accent-soft: #3a2015;
-  --accent-ink: #1f0e06;
-  --link: #f9a578;
-  --surface-selected: #3a2015;
-  --focus-ring: rgb(244 136 79 / 32%);
+  --accent: #f06a2d;
+  --accent-hover: #f27f4a;
+  --accent-soft: color-mix(in srgb, #f06a2d 16%, transparent);
+  --accent-ink: #ffffff;
+  --link: #fb9a6b;
+  --focus-ring: color-mix(in srgb, #f06a2d 38%, transparent);
 }
 
 /* Mono (Vercel black/white) */
 :root[data-accent="mono"] {
-  --accent: #171717;
-  --accent-hover: #2a2a2a;
-  --accent-soft: #ededee;
-  --accent-ink: #fff;
-  --link: #171717;
-  --surface-selected: #ededee;
-  --focus-ring: rgb(23 23 23 / 16%);
+  --accent: #18181b;
+  --accent-hover: #27272a;
+  --accent-soft: color-mix(in srgb, #18181b 8%, transparent);
+  --accent-ink: #ffffff;
+  --link: #18181b;
+  --focus-ring: rgb(24 24 27 / 18%);
 }
 :root[data-theme="dark"][data-accent="mono"] {
-  --accent: #ededed;
-  --accent-hover: #fff;
-  --accent-soft: #1e1e1e;
-  --accent-ink: #0a0a0a;
-  --link: #ededed;
-  --surface-selected: #1e1e1e;
-  --focus-ring: rgb(255 255 255 / 20%);
+  --accent: #ececf1;
+  --accent-hover: #ffffff;
+  --accent-soft: rgb(255 255 255 / 10%);
+  --accent-ink: #111113;
+  --link: #ececf1;
+  --focus-ring: rgb(255 255 255 / 22%);
 }
 
 /* Palette swatch chips in settings */
@@ -7253,6 +7248,8 @@ button[aria-busy="true"] {
   padding: 0;
   border: 1px solid var(--line);
   border-radius: 999px;
+  /* Hairline keeps near-canvas swatches (mono on dark) visible. */
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 14%);
   background: var(--sw, #2563eb);
   color: #fff;
   cursor: pointer;
@@ -7310,25 +7307,21 @@ button[aria-busy="true"] {
 }
 
 .brand small {
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .new-task {
   height: 36px;
   margin-bottom: 14px;
   padding: 0 8px !important;
-  border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--line)) !important;
+  border: 1px solid var(--line) !important;
   border-radius: var(--radius-md) !important;
-  background: color-mix(
-    in srgb,
-    var(--accent-soft) 78%,
-    var(--surface)
-  ) !important;
+  background: var(--surface-raised) !important;
 }
 
 .new-task:hover {
-  border-color: color-mix(in srgb, var(--accent) 36%, var(--line)) !important;
-  background: var(--accent-soft) !important;
+  border-color: var(--line-strong) !important;
+  background: var(--surface-hover) !important;
   box-shadow: none;
 }
 
@@ -7377,7 +7370,7 @@ button[aria-busy="true"] {
   /* Align 2nd-level (task) name with 1st-level (workspace) name.
      Workspace name sits ~72px from the row edge (grip+chevron+folder icon);
      task name = this margin + task-row padding(9) + grip(14) + gap(7). */
-  margin-left: 42px;
+  margin-left: 26px;
   margin-right: 2px;
   padding: 2px 3px 2px 0;
 }
@@ -7394,17 +7387,18 @@ button[aria-busy="true"] {
   background: var(--surface-hover);
 }
 
+/* Selection is a neutral lift; the accent is reserved for the left bar. */
 .task-row.active {
-  background: color-mix(
-    in srgb,
-    var(--accent-soft) 88%,
-    var(--surface)
-  ) !important;
+  background: var(--surface-selected) !important;
   border-left-color: var(--accent) !important;
 }
 
 .task-row.active .task-main span {
-  color: var(--accent) !important;
+  color: var(--ui-text) !important;
+}
+
+.task-row .task-main span {
+  font-size: 13px;
 }
 
 .sidebar-footer {
@@ -7439,7 +7433,7 @@ button[aria-busy="true"] {
 
 .welcome h2 {
   font-size: 24px;
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .welcome p {
@@ -7503,12 +7497,12 @@ button[aria-busy="true"] {
 .composer-drop-zone strong {
   color: var(--ink);
   font-size: 11px;
-  font-weight: 650;
+  font-weight: 600;
 }
 
 .composer-drop-zone small {
   color: var(--muted);
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .composer textarea {
@@ -7771,8 +7765,8 @@ button[aria-busy="true"] {
   overflow: hidden;
   color: var(--muted);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 9.5px;
-  font-weight: 450;
+  font-size: 11px;
+  font-weight: 400;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -7813,13 +7807,13 @@ button[aria-busy="true"] {
 .execution-summary-diff b,
 .execution-summary-file-breakdown b {
   color: var(--success);
-  font-weight: 650;
+  font-weight: 600;
 }
 
 .execution-summary-diff i,
 .execution-summary-file-breakdown i {
   color: var(--danger);
-  font-weight: 650;
+  font-weight: 600;
   font-style: normal;
 }
 
@@ -7842,7 +7836,7 @@ button[aria-busy="true"] {
 .execution-summary-toolline {
   min-width: 0;
   color: var(--muted);
-  font-size: 9.5px;
+  font-size: 11px;
   line-height: 1.45;
 }
 
@@ -7903,7 +7897,7 @@ button[aria-busy="true"] {
   align-items: center;
   gap: 3px;
   color: var(--accent-strong);
-  font-size: 8.5px;
+  font-size: 10px;
   font-style: normal;
   white-space: nowrap;
 }
@@ -7918,7 +7912,7 @@ button[aria-busy="true"] {
 
 .execution-summary-toolline > small {
   color: var(--muted);
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .execution-plan-progress {
@@ -7931,7 +7925,7 @@ button[aria-busy="true"] {
   padding-left: 8px;
   border-left: 2px solid color-mix(in srgb, var(--accent) 58%, transparent);
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.45;
 }
 
@@ -7940,8 +7934,8 @@ button[aria-busy="true"] {
   align-items: center;
   gap: 4px;
   color: var(--accent);
-  font-size: 9px;
-  font-weight: 650;
+  font-size: 11px;
+  font-weight: 600;
   white-space: nowrap;
 }
 
@@ -7949,7 +7943,7 @@ button[aria-busy="true"] {
   min-width: 0;
   overflow: hidden;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 500;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -7981,12 +7975,12 @@ button[aria-busy="true"] {
 
 .execution-plan-list > header strong {
   color: var(--ink);
-  font-size: 10px;
-  font-weight: 620;
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .execution-plan-list > header small {
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .execution-plan-step {
@@ -8011,7 +8005,7 @@ button[aria-busy="true"] {
   border: 1px solid var(--line);
   border-radius: 50%;
   color: var(--muted);
-  font-size: 9px;
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -8040,7 +8034,7 @@ button[aria-busy="true"] {
 .execution-plan-step-copy strong {
   overflow: hidden;
   color: inherit;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 500;
   line-height: 1.45;
   display: -webkit-box;
@@ -8050,7 +8044,7 @@ button[aria-busy="true"] {
 
 .execution-plan-step-copy small {
   color: var(--muted);
-  font-size: 9px;
+  font-size: 11px;
 }
 
 @keyframes execution-plan-spin {
@@ -8067,7 +8061,7 @@ button[aria-busy="true"] {
   gap: 7px;
   margin: 1px 6px 7px 33px;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.5;
 }
 
@@ -8107,7 +8101,7 @@ button[aria-busy="true"] {
   gap: 7px;
   margin: 8px 0 2px;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.5;
 }
 
@@ -8132,8 +8126,8 @@ button[aria-busy="true"] {
   border: 1px solid var(--line);
   border-radius: 999px;
   color: var(--muted);
-  font-size: 9px;
-  font-weight: 560;
+  font-size: 11px;
+  font-weight: 500;
   letter-spacing: 0.02em;
   white-space: nowrap;
   vertical-align: 1px;
@@ -8193,12 +8187,12 @@ button[aria-busy="true"] {
 
 .execution-summary-detail-head strong {
   color: var(--ink);
-  font-size: 10px;
-  font-weight: 620;
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .execution-summary-detail-head small {
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .execution-summary-detail .agent-activity {
@@ -8240,14 +8234,14 @@ button[aria-busy="true"] {
 
 .execution-summary-file-breakdown > header strong {
   color: var(--ink);
-  font-size: 10px;
-  font-weight: 620;
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .execution-summary-file-breakdown > header small,
 .execution-summary-file-breakdown > footer {
   color: var(--muted);
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .execution-summary-file-item {
@@ -8289,7 +8283,7 @@ button[aria-busy="true"] {
   overflow: hidden;
   color: var(--ink);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 9.5px;
+  font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -8297,7 +8291,7 @@ button[aria-busy="true"] {
 .execution-summary-file-row > span {
   display: inline-flex;
   gap: 6px;
-  font-size: 9.5px;
+  font-size: 11px;
 }
 
 .execution-summary-file-reveal {
@@ -8320,13 +8314,6 @@ button[aria-busy="true"] {
 
 .execution-summary-file-breakdown > footer {
   padding: 5px 10px 2px 32px;
-}
-
-@keyframes execution-summary-sweep {
-  18%,
-  76% {
-    opacity: 1;
-  }
 }
 
 .file-change-preview-layer {
@@ -8387,7 +8374,7 @@ button[aria-busy="true"] {
 
 .file-change-preview-dialog > header small {
   color: var(--muted);
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .file-change-preview-actions {
@@ -8484,13 +8471,13 @@ button[aria-busy="true"] {
 
 .file-change-preview-body > nav small {
   color: var(--muted);
-  font-size: 8.5px;
+  font-size: 10px;
 }
 
 .file-change-preview-body > nav em {
   display: inline-flex;
   gap: 5px;
-  font-size: 9px;
+  font-size: 11px;
   font-style: normal;
 }
 
@@ -8527,7 +8514,7 @@ button[aria-busy="true"] {
   min-width: 0;
   overflow: hidden;
   color: var(--ink);
-  font-size: 9.5px;
+  font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -8535,7 +8522,7 @@ button[aria-busy="true"] {
 .file-change-preview-meta small {
   flex: 0 0 auto;
   color: var(--muted);
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .file-change-preview-content > .diff-view {
@@ -8591,9 +8578,6 @@ button[aria-busy="true"] {
   .file-change-preview-body > nav > button.is-active {
     box-shadow: inset 0 -2px var(--accent);
   }
-}
-
-@keyframes streaming-progress-breathe {
 }
 
 @media (max-width: 620px) {
@@ -8666,7 +8650,7 @@ button[aria-busy="true"] {
 .status-section-heading > time,
 .status-section-heading > small {
   flex: 0 0 auto;
-  font-size: 9px;
+  font-size: 11px;
   line-height: 1.5;
   white-space: nowrap;
 }
@@ -8737,7 +8721,7 @@ button[aria-busy="true"] {
   margin-top: 8px;
   overflow: hidden;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 9.5px;
+  font-size: 11px;
   line-height: 1.5;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -8754,7 +8738,7 @@ button[aria-busy="true"] {
   align-items: center;
   gap: 3px 0;
   margin-top: 9px;
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .status-run-stats > span {
@@ -8771,7 +8755,7 @@ button[aria-busy="true"] {
 
 .status-run-stats b {
   color: var(--ink);
-  font-weight: 650;
+  font-weight: 600;
 }
 
 .status-run-stats .status-failure-count {
@@ -8796,13 +8780,13 @@ button[aria-busy="true"] {
 .status-change-total > span > strong {
   color: var(--ink);
   font-size: 11px;
-  font-weight: 650;
+  font-weight: 600;
 }
 
 .status-change-total > span > small {
   overflow: hidden;
   color: var(--muted);
-  font-size: 9px;
+  font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -8812,8 +8796,8 @@ button[aria-busy="true"] {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 9.5px;
-  font-weight: 650;
+  font-size: 11px;
+  font-weight: 600;
   white-space: nowrap;
 }
 
@@ -8853,7 +8837,7 @@ button[aria-busy="true"] {
   overflow: hidden;
   color: var(--ink);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 9.5px;
+  font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -9000,7 +8984,7 @@ button[aria-busy="true"] {
   min-width: 0;
   overflow: hidden;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .git-diff-file-nav-name {
@@ -9019,7 +9003,7 @@ button[aria-busy="true"] {
 .git-diff-file-nav-name > em {
   overflow: hidden;
   font-style: normal;
-  font-size: 9px;
+  font-size: 11px;
   line-height: 1.25;
   opacity: 0.62;
   text-overflow: ellipsis;
@@ -9028,7 +9012,7 @@ button[aria-busy="true"] {
 
 .git-diff-file-nav button > small {
   color: var(--muted);
-  font-size: 9px;
+  font-size: 11px;
   white-space: nowrap;
   padding-top: 1px;
 }
@@ -9140,19 +9124,19 @@ button[aria-busy="true"] {
 }
 
 .status-result-row strong {
-  font-size: 9.5px;
+  font-size: 11px;
   font-weight: 600;
 }
 
 .status-result-row code {
   color: var(--muted);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 8.5px;
+  font-size: 10px;
 }
 
 .status-result-row > small {
   color: var(--muted);
-  font-size: 8.5px;
+  font-size: 10px;
   white-space: nowrap;
 }
 
@@ -9186,7 +9170,7 @@ button[aria-busy="true"] {
 
 .status-usage-section .run-metrics strong {
   overflow: hidden;
-  font-size: 10.5px;
+  font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -9280,15 +9264,17 @@ button[aria-busy="true"] {
   border: 0;
 }
 
+/* Size chips to their labels so the controls read as one group instead of
+   being spread across the bar by fixed-width boxes. */
 .composer-chips > .model-picker {
   min-width: 0;
-  flex: 1 1 160px;
-  max-width: 220px;
+  flex: 0 1 auto;
+  max-width: 240px;
 }
 
 .composer-chips > .collaboration-picker {
   min-width: 0;
-  flex: 0 1 160px;
+  flex: 0 1 auto;
   max-width: 168px;
 }
 
@@ -9323,7 +9309,7 @@ button[aria-busy="true"] {
   padding: 0 3px;
   border: 1px solid var(--surface-raised);
   border-radius: 7px;
-  font-size: 8px;
+  font-size: 10px;
   line-height: 12px;
 }
 
@@ -9407,7 +9393,7 @@ button[aria-busy="true"] {
   }
 
   .model-trigger-label strong {
-    font-size: 10px;
+    font-size: 11px;
   }
 
   .collaboration-trigger,
@@ -9484,7 +9470,7 @@ button[aria-busy="true"] {
 .remote-local-note small,
 .remote-account-head small {
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.5;
 }
 
@@ -9516,7 +9502,7 @@ button[aria-busy="true"] {
   border-radius: 6px;
   background: var(--surface-muted);
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .remote-fixed-service strong {
@@ -9536,7 +9522,7 @@ button[aria-busy="true"] {
   display: grid;
   gap: 6px;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .remote-field input {
@@ -9575,7 +9561,7 @@ button[aria-busy="true"] {
   border-radius: 6px;
   background: transparent;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .remote-auth-actions > button:hover:not(:disabled) {
@@ -9628,7 +9614,7 @@ button[aria-busy="true"] {
   align-items: center;
   gap: 10px;
   border-bottom: 1px solid color-mix(in srgb, var(--line) 65%, transparent);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .remote-account-details dt {
@@ -9705,7 +9691,7 @@ button[aria-busy="true"] {
   border-radius: 6px;
   background: var(--danger-soft);
   color: var(--danger);
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.5;
 }
 
@@ -10017,30 +10003,30 @@ button[aria-busy="true"] {
 
 /* KCode workspace design system. */
 
-/* Cursor light (brand/app cream): warm canvas, warm ink, hairline depth.
-   Sidebar is slightly recessed vs the main cream canvas — same hierarchy as dark. */
+/* Light: white canvas on a zinc neutral scale. Chrome (sidebar, panels) is
+   one step recessed from the canvas; depth comes from hairlines, not shadow. */
 :root {
   --ui-titlebar-height: 34px;
   --ui-status-width: 288px;
   --ui-reading-width: 920px;
-  --ui-base: #26251e;
-  --ui-sidebar: #ebeae5;
-  --ui-canvas: #f7f7f4;
-  --ui-panel: #f2f1ed;
-  --ui-elevated: #fafaf7;
-  --ui-inset: #efeee8;
-  --ui-hover: color-mix(in srgb, var(--ui-base) 6%, #f7f7f4);
-  --ui-border: rgb(38 37 30 / 0.1);
-  --ui-border-strong: rgb(38 37 30 / 0.2);
-  --ui-text: #26251e;
-  --ui-text-secondary: #5a5852;
-  --ui-text-tertiary: #807d72;
-  --ui-code: #181818;
-  --ui-code-toolbar: #141414;
-  --ui-code-text: rgb(228 228 228 / 0.82);
-  --ui-overlay: rgb(38 37 30 / 36%);
-  --ui-shadow-float: 0 16px 40px rgb(38 37 30 / 10%);
-  --ui-shadow-menu: 0 10px 28px rgb(38 37 30 / 8%);
+  --ui-base: #18181b;
+  --ui-sidebar: #f4f4f5;
+  --ui-canvas: #ffffff;
+  --ui-panel: #fafafa;
+  --ui-elevated: #ffffff;
+  --ui-inset: #f4f4f5;
+  --ui-hover: color-mix(in srgb, var(--ui-base) 5%, #ffffff);
+  --ui-border: rgb(24 24 27 / 0.08);
+  --ui-border-strong: rgb(24 24 27 / 0.16);
+  --ui-text: #18181b;
+  --ui-text-secondary: #52525b;
+  --ui-text-tertiary: #71717a;
+  --ui-code: #f6f6f7;
+  --ui-code-toolbar: #efeff1;
+  --ui-code-text: #27272a;
+  --ui-overlay: rgb(24 24 27 / 32%);
+  --ui-shadow-float: 0 16px 40px rgb(24 24 27 / 12%);
+  --ui-shadow-menu: 0 10px 28px rgb(24 24 27 / 10%);
   --ui-shadow-input: none;
   --ui-radius-control: 6px;
   --ui-radius-panel: 8px;
@@ -10053,7 +10039,7 @@ button[aria-busy="true"] {
   --surface-raised: var(--ui-elevated);
   --surface-muted: var(--ui-inset);
   --surface-hover: var(--ui-hover);
-  --surface-selected: color-mix(in srgb, var(--ui-base) 6%, #f7f7f4);
+  --surface-selected: color-mix(in srgb, var(--ui-base) 7%, #ffffff);
   --panel: var(--ui-panel);
   --sidebar-surface: var(--ui-sidebar);
   --code-surface: var(--ui-code);
@@ -10067,13 +10053,13 @@ button[aria-busy="true"] {
   --radius-sm: var(--ui-radius-control);
   --radius-md: var(--ui-radius-panel);
   --radius-lg: var(--ui-radius-panel);
-  --success: #3fa266;
+  --success: #16a34a;
   --success-soft: color-mix(in srgb, var(--success) 12%, transparent);
-  --warning: #d2943e;
+  --warning: #d97706;
   --warning-soft: color-mix(in srgb, var(--warning) 12%, transparent);
-  --danger: #cf2d56;
+  --danger: #dc2626;
   --danger-soft: color-mix(in srgb, var(--danger) 12%, transparent);
-  --focus-ring: rgb(38 37 30 / 0.15);
+  --focus-ring: color-mix(in srgb, var(--accent) 28%, transparent);
 }
 
 /* Keep the remote-control status geometry stable while connection state changes. */
@@ -10223,7 +10209,7 @@ button[aria-busy="true"] {
 
 .ssh-remote-dialog > header small {
   color: var(--ui-text-tertiary);
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .ssh-remote-dialog > header > button,
@@ -10264,7 +10250,7 @@ button[aria-busy="true"] {
 
 .ssh-saved-profiles > strong {
   color: var(--ui-text-secondary);
-  font-size: 9px;
+  font-size: 11px;
   text-transform: uppercase;
 }
 
@@ -10313,12 +10299,12 @@ button[aria-busy="true"] {
 }
 
 .ssh-saved-profile-main strong {
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .ssh-saved-profile-main small {
   color: var(--ui-text-tertiary);
-  font-size: 8.5px;
+  font-size: 10px;
 }
 
 .ssh-saved-profiles article > button:last-child:hover,
@@ -10343,7 +10329,7 @@ button[aria-busy="true"] {
 
 .ssh-field > span:first-child {
   color: var(--ui-text-secondary);
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 600;
 }
 
@@ -10371,7 +10357,7 @@ button[aria-busy="true"] {
   outline: none;
   background: var(--ui-inset);
   color: var(--ui-text);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .ssh-field input:focus,
@@ -10399,7 +10385,7 @@ button[aria-busy="true"] {
   border-radius: 4px;
   background: transparent;
   color: var(--ui-text-tertiary);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .ssh-auth-mode > button.active {
@@ -10430,7 +10416,7 @@ button[aria-busy="true"] {
   align-items: center;
   gap: 7px;
   color: var(--ui-text-secondary);
-  font-size: 9.5px;
+  font-size: 11px;
 }
 
 .ssh-remember input {
@@ -10446,7 +10432,7 @@ button[aria-busy="true"] {
   border-radius: var(--ui-radius-control);
   background: color-mix(in srgb, var(--danger) 8%, transparent);
   color: var(--danger);
-  font-size: 9.5px;
+  font-size: 11px;
   line-height: 1.45;
 }
 
@@ -10468,7 +10454,7 @@ button[aria-busy="true"] {
   border-radius: var(--ui-radius-control);
   background: transparent;
   color: var(--ui-text-secondary);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .ssh-remote-dialog > footer > button.primary {
@@ -10544,7 +10530,7 @@ button[aria-busy="true"] {
 
 .ssh-explorer > header strong {
   overflow: hidden;
-  font-size: 10px;
+  font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -10585,7 +10571,7 @@ button[aria-busy="true"] {
   padding: 7px 10px 5px;
   color: #77837b;
   font-family: Consolas, monospace;
-  font-size: 8.5px;
+  font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -10610,7 +10596,7 @@ button[aria-busy="true"] {
   outline: 0;
   background: transparent;
   color: #dce5df;
-  font-size: 9.5px;
+  font-size: 11px;
 }
 
 .ssh-new-file {
@@ -10657,7 +10643,7 @@ button[aria-busy="true"] {
   border-radius: 4px;
   background: transparent;
   color: #9ca8a0;
-  font-size: 9.5px;
+  font-size: 11px;
   text-align: left;
 }
 
@@ -10698,7 +10684,7 @@ button[aria-busy="true"] {
   gap: 6px;
   padding: 18px 8px;
   color: #78837b;
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .ssh-editor-workbench {
@@ -10749,7 +10735,7 @@ button[aria-busy="true"] {
   border-right: 1px solid var(--line);
   background: var(--surface-raised);
   color: var(--muted);
-  font-size: 9.5px;
+  font-size: 11px;
 }
 
 .ssh-editor-tabs > div > button.active {
@@ -10799,7 +10785,7 @@ button[aria-busy="true"] {
   border-bottom: 1px solid #272e29;
   color: #77837b;
   font-family: Consolas, monospace;
-  font-size: 8.5px;
+  font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -10839,7 +10825,7 @@ button[aria-busy="true"] {
   max-width: min(520px, 80%);
   overflow: hidden;
   font-family: Consolas, monospace;
-  font-size: 9px;
+  font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -10858,7 +10844,7 @@ button[aria-busy="true"] {
   border-top: 1px solid #303732;
   background: #1d221f;
   color: #738077;
-  font-size: 8px;
+  font-size: 10px;
 }
 
 .ssh-editor-status .connected {
@@ -10889,7 +10875,7 @@ button[aria-busy="true"] {
   background: #3a2020;
   color: #f1aaaa;
   box-shadow: 0 8px 25px rgb(0 0 0 / 25%);
-  font-size: 9.5px;
+  font-size: 11px;
   line-height: 1.45;
 }
 
@@ -10935,7 +10921,7 @@ button[aria-busy="true"] {
 .ssh-editor-confirm-layer p {
   margin: 7px 0 14px;
   color: #9ca8a0;
-  font-size: 9.5px;
+  font-size: 11px;
 }
 
 .ssh-editor-confirm-layer footer {
@@ -10951,7 +10937,7 @@ button[aria-busy="true"] {
   border-radius: 5px;
   background: transparent;
   color: #aab5ae;
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .ssh-editor-confirm-layer footer > button.danger {
@@ -10994,7 +10980,7 @@ button[aria-busy="true"] {
 .ssh-editor-disconnected small {
   max-width: 440px;
   color: var(--ui-text-tertiary);
-  font-size: 9.5px;
+  font-size: 11px;
 }
 
 .ssh-editor-disconnected button {
@@ -11008,7 +10994,7 @@ button[aria-busy="true"] {
   border-radius: var(--ui-radius-control);
   background: var(--accent);
   color: var(--accent-ink);
-  font-size: 9.5px;
+  font-size: 11px;
 }
 
 @media (max-width: 760px) {
@@ -11048,24 +11034,24 @@ button[aria-busy="true"] {
   }
 }
 
-/* Cursor Dark Anysphere–inspired: few near-black opaques; chrome darker than
-   canvas; text/border/hover/selection from one base #E4E4E4 at low alpha. */
+/* Dark: cool zinc in three depth steps — sidebar < canvas < elevated. Text
+   uses opaque zinc tones so contrast does not depend on what sits beneath. */
 :root[data-theme="dark"] {
-  --ui-base: #e4e4e4;
-  --ui-sidebar: #141414;
-  --ui-canvas: #181818;
-  --ui-panel: #181818;
-  --ui-elevated: color-mix(in srgb, var(--ui-base) 4%, #181818);
-  --ui-inset: color-mix(in srgb, var(--ui-base) 4%, #181818);
-  --ui-hover: color-mix(in srgb, var(--ui-base) 7%, #181818);
-  --ui-border: rgb(228 228 228 / 0.07);
-  --ui-border-strong: rgb(228 228 228 / 0.15);
-  --ui-text: rgb(228 228 228 / 0.92);
-  --ui-text-secondary: rgb(228 228 228 / 0.55);
-  --ui-text-tertiary: rgb(228 228 228 / 0.37);
-  --ui-code: #141414;
-  --ui-code-toolbar: color-mix(in srgb, var(--ui-base) 4%, #141414);
-  --ui-code-text: rgb(228 228 228 / 0.82);
+  --ui-base: #ececf1;
+  --ui-sidebar: #111113;
+  --ui-canvas: #18181b;
+  --ui-panel: #151518;
+  --ui-elevated: #1f1f23;
+  --ui-inset: #1c1c20;
+  --ui-hover: color-mix(in srgb, var(--ui-base) 6%, #18181b);
+  --ui-border: rgb(255 255 255 / 0.07);
+  --ui-border-strong: rgb(255 255 255 / 0.14);
+  --ui-text: #ececf1;
+  --ui-text-secondary: #a1a1aa;
+  --ui-text-tertiary: #7a7a85;
+  --ui-code: #111113;
+  --ui-code-toolbar: #161619;
+  --ui-code-text: #d4d4d8;
   --ui-overlay: rgb(0 0 0 / 55%);
   --ui-shadow-float: 0 16px 40px rgb(0 0 0 / 40%);
   --ui-shadow-menu: 0 10px 28px rgb(0 0 0 / 36%);
@@ -11076,10 +11062,10 @@ button[aria-busy="true"] {
   --g-panel: var(--ui-panel);
   --g-card: var(--ui-elevated);
   --g-card-hover: var(--ui-hover);
-  --g-selected: color-mix(in srgb, var(--ui-base) 12%, #181818);
+  --g-selected: color-mix(in srgb, var(--ui-base) 10%, #18181b);
   --g-code: var(--ui-code);
   --g-line: var(--ui-border);
-  --g-line-soft: rgb(228 228 228 / 0.05);
+  --g-line-soft: rgb(255 255 255 / 0.045);
   --g-ink: var(--ui-text);
   --g-text: var(--ui-text-secondary);
   --g-muted: var(--ui-text-tertiary);
@@ -11097,14 +11083,14 @@ button[aria-busy="true"] {
   --surface-raised: var(--ui-elevated);
   --surface-muted: var(--ui-inset);
   --surface-hover: var(--ui-hover);
-  --surface-selected: color-mix(in srgb, var(--ui-base) 12%, #181818);
+  --surface-selected: color-mix(in srgb, var(--ui-base) 10%, #18181b);
   --panel: var(--ui-panel);
   --sidebar-surface: var(--ui-sidebar);
-  --success: #3fa266;
+  --success: #22c55e;
   --success-soft: color-mix(in srgb, var(--success) 15%, transparent);
-  --warning: #f1b467;
+  --warning: #f5a524;
   --warning-soft: color-mix(in srgb, var(--warning) 15%, transparent);
-  --danger: #e34671;
+  --danger: #f0506e;
   --danger-soft: color-mix(in srgb, var(--danger) 15%, transparent);
   --code-surface: var(--ui-code);
   --code-toolbar: var(--ui-code-toolbar);
@@ -11113,8 +11099,8 @@ button[aria-busy="true"] {
   --shadow-raised: none;
   --shadow-card: none;
   --shadow-float: var(--ui-shadow-float);
-  --accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
-  --focus-ring: rgb(228 228 228 / 0.15);
+  --accent-soft: color-mix(in srgb, var(--accent) 16%, transparent);
+  --focus-ring: color-mix(in srgb, var(--accent) 38%, transparent);
 }
 
 html,
@@ -11134,9 +11120,9 @@ body {
   color: var(--ui-text-secondary);
   background: var(--ui-canvas);
   font-family:
-    Inter, "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI",
-    sans-serif;
-  font-size: 12px;
+    -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI",
+    "PingFang SC", "Microsoft YaHei UI", "Noto Sans SC", sans-serif;
+  font-size: 13px;
   text-rendering: optimizeLegibility;
 }
 
@@ -11212,7 +11198,7 @@ select:focus-visible {
 
 .window-titlebar > span {
   color: var(--ui-text-tertiary);
-  font-size: 9.5px;
+  font-size: 11px;
 }
 
 .window-controls button {
@@ -11297,14 +11283,14 @@ select:focus-visible {
 :root[data-theme="dark"] .brand strong {
   color: var(--ui-text);
   font-size: 13px;
-  font-weight: 650;
+  font-weight: 600;
 }
 
 .brand small,
 :root[data-theme="dark"] .brand small {
   margin-top: 1px;
   color: var(--ui-text-tertiary);
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .new-task {
@@ -11339,8 +11325,8 @@ select:focus-visible {
 .workspace-label {
   margin: 0 12px 7px;
   color: var(--ui-text-tertiary);
-  font-size: 9px;
-  font-weight: 650;
+  font-size: 11px;
+  font-weight: 600;
   text-transform: uppercase;
 }
 
@@ -11363,7 +11349,7 @@ select:focus-visible {
 
 .task-filter input {
   color: var(--ui-text);
-  font-size: 10.5px;
+  font-size: 11px;
 }
 
 .task-filter input,
@@ -11389,8 +11375,8 @@ select:focus-visible {
 }
 
 .workspace-name {
-  font-size: 10px;
-  font-weight: 650;
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .task-row,
@@ -11436,7 +11422,7 @@ select:focus-visible {
 .task-row.active .task-main span,
 :root[data-theme="dark"] .task-row.active .task-main span {
   color: var(--ui-text);
-  font-weight: 620;
+  font-weight: 600;
 }
 
 .sidebar-context-menu {
@@ -11469,13 +11455,13 @@ select:focus-visible {
 
 .sidebar-context-menu-heading strong {
   font-size: 11px;
-  font-weight: 650;
+  font-weight: 600;
 }
 
 .sidebar-context-menu-heading small {
   margin-top: 4px;
   color: var(--ui-text-tertiary);
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .sidebar-context-menu > button {
@@ -11490,7 +11476,7 @@ select:focus-visible {
   border-radius: 5px;
   background: transparent;
   color: var(--ui-text-secondary);
-  font-size: 10.5px;
+  font-size: 11px;
   text-align: left;
 }
 
@@ -11526,7 +11512,7 @@ select:focus-visible {
 .task-paused {
   padding: 0;
   background: transparent;
-  font-size: 8.5px;
+  font-size: 10px;
 }
 
 .task-running {
@@ -11777,13 +11763,13 @@ select:focus-visible {
 
 .message-meta > span:first-child {
   color: var(--ui-text);
-  font-size: 10.5px;
-  font-weight: 640;
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .message-meta time {
   color: var(--ui-text-tertiary);
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .message-actions button {
@@ -11831,7 +11817,7 @@ select:focus-visible {
 .message-body h2,
 .message-body h3 {
   color: var(--ui-text);
-  font-weight: 650;
+  font-weight: 600;
 }
 
 .message-body h1 {
@@ -11858,9 +11844,10 @@ select:focus-visible {
   border-radius: 4px;
   background: var(--ui-inset);
   color: var(--ui-text);
-  font-size: 11.5px;
+  font-size: 12px;
 }
 
+.message-body blockquote,
 :root[data-theme="dark"] .message-body blockquote {
   margin: 12px 0;
   padding: 8px 11px;
@@ -11929,7 +11916,7 @@ select:focus-visible {
 .message-completion-notice > span > strong {
   color: inherit;
   font-size: 12px;
-  font-weight: 650;
+  font-weight: 600;
 }
 
 .message-completion-notice > span > small {
@@ -12001,7 +11988,7 @@ select:focus-visible {
 }
 
 .message-completion-files em {
-  font-size: 10px;
+  font-size: 11px;
   font-style: normal;
 }
 
@@ -12074,8 +12061,8 @@ select:focus-visible {
 
 .execution-summary-copy > strong {
   color: var(--ui-text);
-  font-size: 10.5px;
-  font-weight: 620;
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .execution-summary-statline,
@@ -12084,7 +12071,7 @@ select:focus-visible {
 }
 
 .execution-summary-tool {
-  font-size: 9.5px;
+  font-size: 11px;
 }
 
 .execution-summary-detail,
@@ -12280,7 +12267,7 @@ body.resizing-composer * {
   padding: 13px 15px 9px;
   background: transparent;
   color: var(--ui-text);
-  font-size: 12.5px;
+  font-size: 13px;
   line-height: 1.55;
 }
 
@@ -12375,7 +12362,7 @@ body.resizing-composer * {
   border-radius: 7px;
   background: var(--accent);
   color: var(--accent-ink);
-  font-size: 8px;
+  font-size: 10px;
 }
 
 .model-trigger {
@@ -12391,7 +12378,7 @@ body.resizing-composer * {
 .model-trigger-label small,
 .model-trigger-label strong {
   color: inherit;
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .model-trigger-label small {
@@ -12415,7 +12402,7 @@ body.resizing-composer * {
 
 .usage {
   color: var(--ui-text-tertiary);
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .send {
@@ -12483,9 +12470,6 @@ body.resizing-composer * {
   background: color-mix(in srgb, var(--accent) 10%, var(--ui-elevated));
 }
 
-@keyframes ui-pop-in {
-}
-
 @media (max-width: 700px) {
   .message-list {
     padding: 22px 12px 108px 43px;
@@ -12507,7 +12491,10 @@ body.resizing-composer * {
 }
 
 /* Right status rail */
-.status-collapsed .status-panel {
+/* Must outrank `:root[data-theme] .status-panel` and `.work-panel.is-unified`
+   (both display:flex). Otherwise the collapsed panel stays in the grid as a
+   third item, wraps into a second row and squeezes the whole app vertically. */
+:root .app-shell.status-collapsed > .status-panel {
   display: none;
 }
 
@@ -12557,8 +12544,8 @@ body.resizing-composer * {
 
 .status-section-heading strong {
   color: var(--ui-text);
-  font-size: 10.5px;
-  font-weight: 640;
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .status-section-heading > time,
@@ -12618,7 +12605,7 @@ body.resizing-composer * {
 
 .status-file-list > small {
   color: var(--ui-text-tertiary);
-  font-size: 8.5px;
+  font-size: 10px;
 }
 
 .status-file-list-scroll {
@@ -12698,7 +12685,7 @@ body.resizing-composer * {
 .context-source-label {
   margin-left: 5px;
   color: var(--ui-text-tertiary);
-  font-size: 8px;
+  font-size: 10px;
   font-style: normal;
   font-weight: 500;
 }
@@ -12711,7 +12698,7 @@ body.resizing-composer * {
   padding-top: 5px;
   border-top: 1px solid color-mix(in srgb, var(--ui-border) 70%, transparent);
   color: var(--ui-text-secondary);
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .context-next-budget > span {
@@ -12785,9 +12772,6 @@ body.resizing-composer * {
 .work-panel-heading-actions button.is-active {
   background: var(--ui-hover);
   color: var(--ui-text);
-}
-
-@keyframes ui-rail-in {
 }
 
 /* Browser workspace */
@@ -13016,13 +13000,13 @@ body.resizing-composer * {
   margin: 2px 0 3px;
   color: var(--ui-text);
   font-size: 16px;
-  font-weight: 650;
+  font-weight: 600;
 }
 
 .settings-panel > header p {
   max-width: 430px;
   color: var(--ui-text-tertiary);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .settings-layout {
@@ -13052,7 +13036,7 @@ body.resizing-composer * {
 
 .settings-nav button.active,
 :root[data-theme="dark"] .settings-nav button.active {
-  background: color-mix(in srgb, var(--accent) 12%, var(--ui-elevated));
+  background: var(--surface-selected);
   color: var(--ui-text);
   box-shadow: inset 2px 0 var(--accent);
 }
@@ -13073,7 +13057,7 @@ body.resizing-composer * {
 .settings-section-header h3 {
   color: var(--ui-text);
   font-size: 14px;
-  font-weight: 650;
+  font-weight: 600;
 }
 
 .settings-section-header p {
@@ -13104,12 +13088,12 @@ body.resizing-composer * {
 .settings-row strong {
   color: var(--ui-text);
   font-size: 11px;
-  font-weight: 620;
+  font-weight: 600;
 }
 
 .settings-row small {
   color: var(--ui-text-tertiary);
-  font-size: 9.5px;
+  font-size: 11px;
 }
 
 .settings-content input,
@@ -13158,7 +13142,7 @@ body.resizing-composer * {
   align-items: center;
   gap: 6px;
   color: var(--ui-text-tertiary);
-  font-size: 9.5px;
+  font-size: 11px;
   white-space: nowrap;
 }
 
@@ -13287,7 +13271,7 @@ body.resizing-composer * {
 }
 
 .provider-key-meta small {
-  font-size: 9.5px;
+  font-size: 11px;
   line-height: 1.4;
 }
 
@@ -13369,7 +13353,7 @@ body.resizing-composer * {
   display: grid;
   gap: 5px;
   color: var(--ui-text-tertiary);
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .model-config-field > span:first-child {
@@ -13393,7 +13377,7 @@ body.resizing-composer * {
 
 .model-context-control small {
   color: var(--ui-text-tertiary);
-  font-size: 8.5px;
+  font-size: 10px;
   white-space: nowrap;
 }
 
@@ -13403,7 +13387,7 @@ body.resizing-composer * {
   min-width: 0;
   height: 32px;
   min-height: 32px;
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .model-context-input input {
@@ -13439,7 +13423,7 @@ body.resizing-composer * {
   border-radius: 4px;
   background: transparent;
   color: var(--ui-text-tertiary);
-  font-size: 9px;
+  font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -13515,6 +13499,15 @@ body.resizing-composer * {
   background: var(--ui-panel);
 }
 
+/* .modal is padded, so a tinted footer renders as an inset strip that stops
+   short of the dialog edges. Keep it flush with the dialog body instead. */
+.modal footer {
+  background: transparent;
+}
+.modal .task-modal-actions {
+  justify-content: flex-end;
+}
+
 .primary,
 .task-modal-actions .primary {
   border-color: var(--accent);
@@ -13569,12 +13562,6 @@ body.resizing-composer * {
 .file-change-preview-body > nav > button.is-active {
   background: var(--ui-hover);
   color: var(--ui-text);
-}
-
-@keyframes ui-sheet-in {
-}
-
-@keyframes ui-dialog-in {
 }
 
 @media (max-width: 700px) {
@@ -14018,7 +14005,7 @@ body.resizing-composer * {
 
 .message.assistant .message-body {
   color: var(--ui-text-secondary) !important;
-  font-size: 13.5px !important;
+  font-size: 14px !important;
   line-height: 1.78 !important;
 }
 
@@ -14067,14 +14054,14 @@ body.resizing-composer * {
 }
 
 .status-file-row-name strong {
-  font-size: 11.5px !important;
-  font-weight: 650 !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
   color: var(--ink) !important;
 }
 
 .status-file-row-name em {
   display: block !important;
-  font-size: 10px !important;
+  font-size: 11px !important;
   line-height: 1.3 !important;
   color: var(--muted) !important;
   opacity: 1 !important;
@@ -14137,12 +14124,6 @@ body.resizing-composer * {
 }
 
 /* Mid-pane task switch: soft horizontal slide + fade */
-@keyframes task-switch-enter-from-right {
-}
-
-@keyframes task-switch-enter-from-left {
-}
-
 .conversation.is-task-entering {
   will-change: opacity, transform;
 }
@@ -14193,18 +14174,18 @@ body.resizing-composer * {
 
 .execution-summary-detail .activity-title strong {
   font-size: 11px !important;
-  font-weight: 560 !important;
+  font-weight: 500 !important;
   color: var(--ui-text-secondary) !important;
 }
 
 .execution-summary-detail .activity-title small,
 .execution-summary-detail .activity-title span {
-  font-size: 9.5px !important;
+  font-size: 11px !important;
   color: var(--ui-text-tertiary) !important;
 }
 
 .execution-summary-detail .activity-status {
-  font-size: 9.5px !important;
+  font-size: 11px !important;
   opacity: 0.9;
 }
 
@@ -14242,13 +14223,13 @@ body.resizing-composer * {
 .topbar h1,
 :root[data-theme="dark"] .topbar h1 {
   margin: 0 0 1px !important;
-  font-size: 12.5px !important;
-  font-weight: 620 !important;
+  font-size: 13px !important;
+  font-weight: 600 !important;
   line-height: 1.2 !important;
 }
 
 .topbar span {
-  font-size: 9px !important;
+  font-size: 11px !important;
   gap: 3px !important;
 }
 
@@ -14272,7 +14253,7 @@ body.resizing-composer * {
   height: 24px !important;
   padding: 0 9px !important;
   border-radius: 5px !important;
-  font-size: 10.5px !important;
+  font-size: 11px !important;
   gap: 4px !important;
 }
 
@@ -14349,7 +14330,7 @@ body.resizing-composer * {
   border-radius: 3px;
   background: color-mix(in srgb, var(--accent) 28%, transparent);
   color: var(--ui-text);
-  font-weight: 650;
+  font-weight: 600;
 }
 
 .task-filter:focus-within {
@@ -14412,49 +14393,12 @@ body.resizing-composer * {
   overflow: hidden;
 }
 
-@keyframes stream-rail-run {
-  0% {
-    transform: translateX(-120%);
-    opacity: 0.35;
-  }
-  18%,
-  82% {
-    opacity: 1;
-  }
-  100% {
-    transform: translateX(320%);
-    opacity: 0.35;
-  }
-}
-
 /* Avatar + "生成中" stay visibly pulsing while live */
-
-@keyframes stream-avatar-pulse {
-  0%,
-  100% {
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 28%, transparent);
-  }
-  50% {
-    box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 0%, transparent);
-  }
-}
 
 .run-state i {
   width: 6px;
   height: 6px;
   background: var(--accent);
-}
-
-@keyframes stream-run-dot {
-  0%,
-  100% {
-    opacity: 1;
-    transform: scale(1);
-  }
-  50% {
-    opacity: 0.35;
-    transform: scale(0.72);
-  }
 }
 
 /* Progress / fallback copy: faster high-contrast shimmer */
@@ -14511,31 +14455,6 @@ body.resizing-composer * {
   }
 }
 
-@keyframes stream-icon-pulse {
-  0%,
-  100% {
-    opacity: 0.45;
-    transform: scale(0.92);
-  }
-  50% {
-    opacity: 1;
-    transform: scale(1.08);
-  }
-}
-
-@keyframes thinking-dot {
-  0%,
-  80%,
-  100% {
-    opacity: 0.25;
-    transform: translateY(0) scale(0.85);
-  }
-  40% {
-    opacity: 1;
-    transform: translateY(-3px) scale(1.08);
-  }
-}
-
 /* Live caret: stays mostly on, with accent glow — never "dead" */
 .streaming-message-text.is-live::after,
 .streaming-md-open::after {
@@ -14552,40 +14471,7 @@ body.resizing-composer * {
   position: static;
 }
 
-@keyframes stream-caret-alive {
-  0%,
-  100% {
-    opacity: 1;
-    transform: scaleY(1);
-  }
-  50% {
-    opacity: 0.35;
-    transform: scaleY(0.86);
-  }
-}
-
-@keyframes stream-block-settle {
-  from {
-    opacity: 0.82;
-  }
-  to {
-    opacity: 1;
-  }
-}
-
 /* Running activity: left edge breathes so tool waits still feel live */
-
-@keyframes stream-activity-border {
-  0%,
-  100% {
-    border-left-color: var(--accent);
-    box-shadow: inset 3px 0 0 color-mix(in srgb, var(--accent) 0%, transparent);
-  }
-  50% {
-    border-left-color: color-mix(in srgb, var(--accent) 70%, var(--ink));
-    box-shadow: inset 3px 0 12px color-mix(in srgb, var(--accent) 10%, transparent);
-  }
-}
 
 .execution-plan-step {
   transition:
@@ -14600,31 +14486,11 @@ body.resizing-composer * {
   margin-inline: -4px;
 }
 
-@keyframes stream-plan-current {
-  0%,
-  100% {
-    background: color-mix(in srgb, var(--accent) 6%, transparent);
-  }
-  50% {
-    background: color-mix(in srgb, var(--accent) 14%, transparent);
-  }
-}
-
 .execution-plan-step-mark {
   transition:
     border-color 140ms var(--stream-ease),
     color 140ms var(--stream-ease),
     background-color 140ms var(--stream-ease);
-}
-
-@keyframes stream-plan-mark {
-  0%,
-  100% {
-    transform: scale(1);
-  }
-  50% {
-    transform: scale(1.08);
-  }
 }
 
 .conversation-turn-item.running {
@@ -14681,11 +14547,11 @@ body.resizing-composer * {
 }
 @keyframes assistant-just-finished {
   0% {
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent, #81a1c1) 45%, transparent);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent, #3b82f6) 45%, transparent);
     transform: scale(1);
   }
   40% {
-    box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent, #81a1c1) 0%, transparent);
+    box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent, #3b82f6) 0%, transparent);
     transform: scale(1.06);
   }
   100% {
@@ -14746,7 +14612,7 @@ body.resizing-composer * {
   letter-spacing: 0;
 }
 .status-changes-section.is-compact .status-file-row-name em {
-  font-size: 10px;
+  font-size: 11px;
   opacity: 0.72;
   white-space: nowrap;
   overflow: hidden;
@@ -14860,9 +14726,10 @@ body.resizing-composer * {
 /* ===== motion-ios-v1 (慢而流畅：学习 iOS，去掉傻快) ===== */
 :root {
   /* Global UI transitions — longer, Apple-like ease */
-  --ui-motion-fast: 180ms;
-  --ui-motion: 320ms;
-  --ui-motion-slow: 480ms;
+  /* Interface motion: quick enough to never gate the next action. */
+  --ui-motion-fast: 120ms;
+  --ui-motion: 200ms;
+  --ui-motion-slow: 280ms;
   --ui-ease: cubic-bezier(0.25, 0.1, 0.25, 1);
   --motion-fast: var(--ui-motion-fast);
   --motion-standard: var(--ui-motion);
@@ -14883,23 +14750,6 @@ body.resizing-composer * {
 }
 
 /* ---- Live message: slow luminous rail ---- */
-
-@keyframes ios-rail {
-  0% {
-    transform: translateX(-140%);
-    opacity: 0;
-  }
-  14% {
-    opacity: 1;
-  }
-  86% {
-    opacity: 1;
-  }
-  100% {
-    transform: translateX(360%);
-    opacity: 0;
-  }
-}
 
 /* Avatar: slow breathe */
 .message.assistant.is-running .message-avatar {
@@ -15335,14 +15185,6 @@ button.primary:active {
   transition: transform var(--ui-motion-fast) var(--ui-ease);
 }
 
-/* Boot splash leave — match the unhurried feel */
-#kcode-boot {
-  transition:
-    opacity 560ms var(--motion-ios-out),
-    filter 560ms var(--motion-ios-out),
-    visibility 560ms;
-}
-
 @media (prefers-reduced-motion: reduce) {
   .message.assistant.is-running .message-content::before,
   .message.assistant.is-running .message-avatar,
@@ -15421,6 +15263,27 @@ button.primary:active {
   color: var(--ui-text-tertiary, var(--muted));
 }
 
+/* Right alignment already identifies the sender; the avatar only added a
+   detached icon above the bubble. Time + copy appear on hover/focus, but stay
+   visible while they carry state (queued / failed). */
+.message.user .message-avatar {
+  display: none;
+}
+.message.user {
+  grid-template-columns: minmax(80px, auto);
+  column-gap: 0;
+}
+.message.user .message-content {
+  max-width: none;
+}
+.message.user .message-meta {
+  transition: opacity 120ms ease;
+}
+.message.user:not(:hover):not(:focus-within)
+  .message-meta:not(:has(.queued-state, .error-state)) {
+  opacity: 0;
+}
+
 .message.user .message-meta > span:first-child,
 .message.user .message-meta time {
   color: var(--ui-text-tertiary, var(--muted));
@@ -15459,18 +15322,12 @@ button.primary:active {
 
 /* Soft iOS-like bubble on the body only — readable ink on every accent */
 .message.user .message-body {
-  padding: 11px 14px !important;
-  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--ui-border, var(--line))) !important;
-  border-radius: 16px 16px 5px 16px !important;
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--accent) 22%, var(--ui-elevated, var(--surface-raised, var(--surface)))) 0%,
-    color-mix(in srgb, var(--accent) 14%, var(--ui-elevated, var(--surface-raised, var(--surface)))) 100%
-  ) !important;
+  padding: 10px 14px !important;
+  border: 1px solid var(--ui-border, var(--line)) !important;
+  border-radius: 14px 14px 4px 14px !important;
+  background: var(--ui-elevated, var(--surface-raised)) !important;
   color: var(--ui-text, var(--ink)) !important;
-  box-shadow:
-    0 1px 0 color-mix(in srgb, var(--accent) 16%, transparent),
-    0 8px 20px -14px color-mix(in srgb, var(--accent) 45%, transparent) !important;
+  box-shadow: none !important;
 }
 
 .message.user .message-body a {
@@ -15627,7 +15484,7 @@ button.primary:active {
 .execution-summary-copy strong {
   color: var(--ui-text-tertiary, var(--muted));
   font-size: 11px;
-  font-weight: 550;
+  font-weight: 500;
 }
 
 .execution-summary-statline {
@@ -15635,7 +15492,7 @@ button.primary:active {
   flex-wrap: wrap;
   gap: 6px 10px;
   margin-top: 2px;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--ui-text-tertiary, var(--muted));
 }
 
@@ -15658,7 +15515,7 @@ button.primary:active {
 }
 
 .execution-summary-live b {
-  font-weight: 550;
+  font-weight: 500;
   color: var(--ui-text, var(--ink));
 }
 
@@ -15669,7 +15526,7 @@ button.primary:active {
   white-space: nowrap;
   max-width: 55%;
   color: var(--ui-text-tertiary, var(--muted));
-  font-size: 10px;
+  font-size: 11px;
 }
 
 
@@ -16250,15 +16107,6 @@ button.execution-summary-tool.inspect-group {
   pointer-events: none !important;
 }
 
-@keyframes status-tail-breathe-v1 {
-  from {
-    background-position: 100% 0;
-  }
-  to {
-    background-position: -20% 0;
-  }
-}
-
 .message.assistant.is-running .assistant-tail-gap,
 .assistant-tail-fallback,
 .assistant-tail-state .streaming-progress-leaf:not([hidden]) {
@@ -16443,7 +16291,7 @@ button.execution-summary-tool.inspect-group {
   border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
   background: color-mix(in srgb, var(--panel) 88%, transparent);
   color: var(--text);
-  font-size: 0.72rem;
+  font-size: 12px;
   line-height: 1;
   padding: 0.32rem 0.62rem;
   cursor: pointer;
@@ -16514,12 +16362,12 @@ button.execution-summary-tool.inspect-group {
 }
 
 .status-edit-checkpoint strong {
-  font-size: 0.78rem;
+  font-size: 13px;
 }
 
 .status-edit-checkpoint small {
   color: var(--muted);
-  font-size: 0.68rem;
+  font-size: 11px;
 }
 
 .status-edit-checkpoint:hover:not(:disabled) {
@@ -16537,7 +16385,7 @@ button.execution-summary-tool.inspect-group {
 .queued-message-hint {
   margin: 0;
   color: var(--muted);
-  font-size: 0.68rem;
+  font-size: 11px;
   line-height: 1.35;
 }
 
@@ -16549,7 +16397,7 @@ button.execution-summary-tool.inspect-group {
 
 .agent-overview-heading small {
   color: var(--muted);
-  font-size: 0.68rem;
+  font-size: 11px;
 }
 
 .agent-overview-list {
@@ -16621,7 +16469,7 @@ button.agent-overview-row:hover {
 }
 
 .agent-overview-main strong {
-  font-size: 0.78rem;
+  font-size: 13px;
   font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -16635,7 +16483,7 @@ button.agent-overview-row:hover {
   align-items: center;
   font-style: normal;
   color: var(--muted);
-  font-size: 0.66rem;
+  font-size: 11px;
   line-height: 1.25;
   min-width: 0;
 }
@@ -16656,7 +16504,7 @@ button.agent-overview-row:hover {
 }
 
 .agent-overview-status {
-  font-size: 0.66rem;
+  font-size: 11px;
   color: var(--muted);
   white-space: nowrap;
 }
@@ -16690,7 +16538,7 @@ button.agent-overview-row:hover {
   border-radius: 0.55rem;
   border: 1px dashed color-mix(in srgb, var(--border) 88%, transparent);
   color: var(--muted);
-  font-size: 0.64rem;
+  font-size: 11px;
   line-height: 1.35;
 }
 
@@ -16745,7 +16593,7 @@ button.agent-overview-row:hover {
 }
 
 .browser-design-toggle .browser-design-label {
-  font-size: 0.68rem;
+  font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.01em;
 }
@@ -16765,7 +16613,7 @@ button.agent-overview-row:hover {
   border-bottom: 1px solid color-mix(in srgb, #10b981 28%, var(--border));
   background: color-mix(in srgb, #10b981 10%, transparent);
   color: var(--text);
-  font-size: 0.72rem;
+  font-size: 12px;
 }
 
 .browser-design-hint > span {
@@ -16776,7 +16624,7 @@ button.agent-overview-row:hover {
 }
 
 .browser-design-hint strong {
-  font-size: 0.74rem;
+  font-size: 12px;
 }
 
 .browser-design-hint small {
@@ -16868,7 +16716,7 @@ button.agent-overview-row:hover {
   border: 1px solid color-mix(in srgb, var(--line) 88%, transparent) !important;
   border-radius: 999px !important;
   color: var(--muted) !important;
-  font-weight: 560 !important;
+  font-weight: 500 !important;
   letter-spacing: 0.01em !important;
   white-space: nowrap !important;
 }
@@ -16915,7 +16763,7 @@ button.agent-overview-row:hover {
   display: block !important;
   margin-bottom: 2px !important;
   color: var(--muted) !important;
-  font-size: 10px !important;
+  font-size: 11px !important;
   font-weight: 600 !important;
   letter-spacing: 0.06em !important;
   text-transform: uppercase !important;
@@ -16990,7 +16838,7 @@ button.execution-summary-tool.inspect-group.waiting {
   display: block !important;
   margin-bottom: 2px !important;
   color: var(--muted) !important;
-  font-size: 10px !important;
+  font-size: 11px !important;
   font-weight: 600 !important;
   letter-spacing: 0.06em !important;
   text-transform: uppercase !important;
@@ -17024,8 +16872,8 @@ button.execution-summary-tool.inspect-group.waiting {
 .message.assistant .execution-narration-preview,
 .message.assistant .streaming-message-text.execution-narration-preview {
   color: var(--ink) !important;
-  font-size: 14.5px !important;
-  font-weight: 550 !important;
+  font-size: 15px !important;
+  font-weight: 500 !important;
   line-height: 1.65 !important;
   margin: 2px 0 10px !important;
 }
@@ -17067,15 +16915,15 @@ button.execution-summary-tool.inspect-group {
 
 .execution-summary-tool code {
   color: color-mix(in srgb, var(--muted) 88%, var(--ink)) !important;
-  font-size: 10.5px !important;
+  font-size: 11px !important;
 }
 
 .execution-summary-tool-model,
 .execution-summary-tool-count,
 .execution-summary-toolline > small {
   color: color-mix(in srgb, var(--muted) 92%, transparent) !important;
-  font-size: 10px !important;
-  font-weight: 450 !important;
+  font-size: 11px !important;
+  font-weight: 400 !important;
 }
 
 .execution-summary-tool > i {
@@ -17088,7 +16936,7 @@ button.execution-summary-tool.inspect-group {
 .execution-summary-statline,
 .execution-summary-copy small {
   color: var(--muted) !important;
-  font-size: 10.5px !important;
+  font-size: 11px !important;
 }
 
 /* Keep expanded activity cards quieter than the big narration */
@@ -17118,7 +16966,7 @@ button.execution-summary-tool.inspect-group {
 }
 
 .activity-title small {
-  font-size: 10px !important;
+  font-size: 11px !important;
 }
 
 .activity-icon {
@@ -17132,7 +16980,7 @@ button.execution-summary-tool.inspect-group {
 .activity-status-badge {
   min-height: 16px !important;
   padding: 0 6px !important;
-  font-size: 9.5px !important;
+  font-size: 11px !important;
   background: transparent !important;
 }
 
@@ -17145,7 +16993,7 @@ button.execution-summary-tool.inspect-group {
 .activity-detail pre,
 .activity-live-output,
 .activity-result-panel {
-  font-size: 10.5px !important;
+  font-size: 11px !important;
   max-height: 180px !important;
 }
 

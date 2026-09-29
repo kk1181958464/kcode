@@ -146,6 +146,7 @@ import { selectActivityGroups, upsertActivity } from "./activity-index";
 
 import { registerAppToastHandler, type AppToast } from "./lib/toast";
 import { useEventCallback } from "./lib/use-event-callback";
+import { useGitState } from "./app/useGitState";
 import {
   composerModifierKeyLabel,
   prioritizeQueuedInMessages,
@@ -169,7 +170,6 @@ import type {
   PermissionPolicy,
   ReasoningEffort,
   WorkspaceFolder,
-  GitWorkspaceState,
   ImageAttachment,
 } from "./types";
 
@@ -373,6 +373,20 @@ export default function App() {
     compact.addEventListener("change", onChange);
     return () => compact.removeEventListener("change", onChange);
   }, []);
+  useEffect(() => {
+    // Below 1200px the 288px work panel squeezes the conversation. Collapse it
+    // for the session without persisting; widening restores the saved choice.
+    // The top-bar toggle still opens it on demand.
+    const narrow = window.matchMedia("(max-width: 1199px)");
+    const applyWidth = (matches: boolean) =>
+      setStatusOpen(
+        matches ? false : localStorage.getItem("kcode.statusPanel") !== "false",
+      );
+    if (narrow.matches) applyWidth(true);
+    const onChange = (event: MediaQueryListEvent) => applyWidth(event.matches);
+    narrow.addEventListener("change", onChange);
+    return () => narrow.removeEventListener("change", onChange);
+  }, []);
   const [selected, setSelected] = useState("");
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [modelMenuProvider, setModelMenuProvider] = useState<string>();
@@ -509,15 +523,6 @@ export default function App() {
   const [tokenCalibration, setTokenCalibration] = useState<
     Record<string, number>
   >(storedTokenCalibration);
-  const [gitState, setGitState] = useState<GitWorkspaceState>({
-    available: false,
-    files: 0,
-    additions: 0,
-    deletions: 0,
-    summary: "",
-    diff: "",
-  });
-  const [gitRefreshing, setGitRefreshing] = useState(false);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [scrollingToBottom, setScrollingToBottom] = useState(false);
   const [historyLoadingTaskId, setHistoryLoadingTaskId] = useState<string>();
@@ -676,7 +681,6 @@ export default function App() {
   >(undefined);
   const loadingOlderTurnsRef = useRef(false);
   const pagedTaskRef = useRef<string | undefined>(undefined);
-  const gitRefreshActivityRef = useRef<string | undefined>(undefined);
   const adoptedSshActivitiesRef = useRef(new Set<string>());
   const [conversationPageSize, setConversationPageSize] = useState(18);
   const [visibleTurnWindow, setVisibleTurnWindow] =
@@ -1120,52 +1124,8 @@ export default function App() {
     endRef,
     pendingTurnTargetRef,
   });
-  const activeLocalProjectPath = activeTask
-    ? localWorkspacePath(activeTask)
-    : undefined;
-
-  async function refreshGitState(includeDiff = false) {
-    if (!window.kcode?.workspace.gitState || !activeTask) return;
-    if (!activeLocalProjectPath) {
-      setGitState({
-        available: false,
-        files: 0,
-        additions: 0,
-        deletions: 0,
-        summary: "",
-        diff: "",
-        error: activeTask.remoteWorkspace
-          ? "未关联本地项目；SSH 远程 Git 请在执行记录中查看"
-          : "未关联本地项目",
-      });
-      setGitRefreshing(false);
-      return;
-    }
-    setGitRefreshing(true);
-    try {
-      setGitState(
-        await window.kcode.workspace.gitState(
-          activeLocalProjectPath,
-          includeDiff,
-        ),
-      );
-    } catch (error) {
-      setGitState({
-        available: false,
-        files: 0,
-        additions: 0,
-        deletions: 0,
-        summary: "",
-        diff: "",
-        error: errorMessage(error),
-      });
-    } finally {
-      setGitRefreshing(false);
-    }
-  }
-  useEffect(() => {
-    void refreshGitState(false);
-  }, [activeTaskId, activeLocalProjectPath]);
+  const { gitState, gitRefreshing, refreshGitState, activeLocalProjectPath } =
+    useGitState({ activeTask, activeTaskId, activities });
   useEffect(() => {
     window.kcode?.chat
       .checkpoints?.()
@@ -1173,33 +1133,6 @@ export default function App() {
         setCheckpoints(items.filter((item) => item.status !== "done")),
       );
   }, []);
-  const latestFileChangeActivity = useMemo(() => {
-    for (let index = activities.length - 1; index >= 0; index -= 1) {
-      const activity = activities[index];
-      if (
-        activity.status === "success" &&
-        [
-          "write_file",
-          "apply_patch",
-          "move_path",
-          "delete_path",
-          "ssh_write_file",
-        ].includes(activity.tool)
-      )
-        return activity.id;
-    }
-    return undefined;
-  }, [activities]);
-  useEffect(() => {
-    if (
-      !latestFileChangeActivity ||
-      gitRefreshActivityRef.current === latestFileChangeActivity
-    )
-      return;
-    gitRefreshActivityRef.current = latestFileChangeActivity;
-    const timer = window.setTimeout(() => void refreshGitState(), 300);
-    return () => window.clearTimeout(timer);
-  }, [latestFileChangeActivity]);
 
   useEffect(() => {
     tasksRef.current = tasks;
@@ -1667,11 +1600,15 @@ export default function App() {
     document.addEventListener("mousedown", closeMenus);
     return () => document.removeEventListener("mousedown", closeMenus);
   }, []);
+  // Stable identity, latest closure: the shortcut listener below binds once
+  // per settings/browser change and must not capture a stale startNewTask
+  // (e.g. one from before task storage finished loading).
+  const onStartNewTask = useEventCallback(() => void startNewTask());
   useEffect(() => {
     const handleShortcut = (event: KeyboardEvent) => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "n") {
         event.preventDefault();
-        void startNewTask();
+        onStartNewTask();
       } else if (
         (event.ctrlKey || event.metaKey) &&
         event.key.toLowerCase() === "f" &&
@@ -2436,7 +2373,6 @@ export default function App() {
 
   // Stable-identity wrappers so memoized Sidebar/TopBar skip streaming-tick
   // re-renders. Identity never changes; the latest closure is always invoked.
-  const onStartNewTask = useEventCallback(() => void startNewTask());
   const onStartSshRemote = useEventCallback(startSshRemote);
   const onReorderWorkspace = useEventCallback(
     (from: string | undefined, to: string) => reorderWorkspace(from, to),

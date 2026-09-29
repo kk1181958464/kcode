@@ -5,7 +5,7 @@ import {
   statSync,
 } from "node:fs";
 import path from "node:path";
-import { Client, type ClientChannel, type SFTPWrapper } from "ssh2";
+import type { Client, ClientChannel, SFTPWrapper } from "ssh2";
 
 const MAX_OUTPUT_BYTES = 200_000;
 const MAX_REMOTE_FILE_BYTES = 2_000_000;
@@ -163,7 +163,9 @@ export async function connectSsh(
   if (!Number.isInteger(port) || port < 1 || port > 65535)
     throw new Error("SSH 端口必须是 1 到 65535 之间的整数。");
 
-  const client = new Client();
+  // Loaded on first connect so app startup does not pay for ssh2 + crypto.
+  const { Client: ClientCtor } = await import("ssh2");
+  const client = new ClientCtor();
   let hostFingerprint: string | undefined;
   const credentialKind: SshCredentialKind =
     input.password && privateKey

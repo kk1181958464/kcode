@@ -14,14 +14,14 @@
         margin: 0;
         width: 100%;
         height: 100%;
-        background: #181818;
-        color: #e4e4e4;
+        background: #18181b;
+        color: #ececf1;
         overflow: hidden;
       }
       html[data-theme="light"],
       html[data-theme="light"] body {
-        background: #f7f7f4;
-        color: #1a1a1a;
+        background: #ffffff;
+        color: #18181b;
       }
       #root {
         min-height: 100%;
@@ -35,28 +35,26 @@
         background:
           radial-gradient(
             120% 80% at 50% 20%,
-            color-mix(in srgb, #81a1c1 16%, transparent),
+            color-mix(in srgb, #3b82f6 16%, transparent),
             transparent 55%
           ),
-          #181818;
+          #18181b;
         transition:
-          opacity 420ms cubic-bezier(0.22, 1, 0.36, 1),
-          filter 420ms cubic-bezier(0.22, 1, 0.36, 1),
-          visibility 420ms;
+          opacity 240ms cubic-bezier(0.22, 1, 0.36, 1),
+          visibility 240ms;
       }
       html[data-theme="light"] #kcode-boot {
         background:
           radial-gradient(
             120% 80% at 50% 20%,
-            color-mix(in srgb, #5c7fa3 14%, transparent),
+            color-mix(in srgb, #2563eb 14%, transparent),
             transparent 55%
           ),
-          #f7f7f4;
+          #ffffff;
       }
       #kcode-boot.is-leaving {
         opacity: 0;
         visibility: hidden;
-        filter: blur(6px);
         pointer-events: none;
       }
       .kcode-boot-card {
@@ -75,34 +73,34 @@
         place-items: center;
         background: linear-gradient(
           145deg,
-          color-mix(in srgb, #81a1c1 28%, #1f1f1f),
-          #141414 70%
+          color-mix(in srgb, #3b82f6 28%, #1f1f23),
+          #111113 70%
         );
         box-shadow:
-          0 0 0 1px color-mix(in srgb, #81a1c1 34%, transparent),
-          0 12px 40px -12px color-mix(in srgb, #81a1c1 45%, transparent),
+          0 0 0 1px color-mix(in srgb, #3b82f6 34%, transparent),
+          0 12px 40px -12px color-mix(in srgb, #3b82f6 45%, transparent),
           inset 0 1px 0 color-mix(in srgb, white 12%, transparent);
         animation: kcode-boot-glow 1.6s cubic-bezier(0.33, 1, 0.68, 1) infinite;
       }
       html[data-theme="light"] .kcode-boot-mark {
         background: linear-gradient(
           145deg,
-          color-mix(in srgb, #5c7fa3 22%, #fff),
-          #f3f3ef 70%
+          color-mix(in srgb, #2563eb 22%, #fff),
+          #f4f4f5 70%
         );
         box-shadow:
-          0 0 0 1px color-mix(in srgb, #5c7fa3 28%, transparent),
-          0 12px 36px -14px color-mix(in srgb, #5c7fa3 35%, transparent),
+          0 0 0 1px color-mix(in srgb, #2563eb 28%, transparent),
+          0 12px 36px -14px color-mix(in srgb, #2563eb 35%, transparent),
           inset 0 1px 0 rgba(255, 255, 255, 0.8);
       }
       .kcode-boot-mark svg {
         width: 28px;
         height: 28px;
-        color: #81a1c1;
-        filter: drop-shadow(0 0 8px color-mix(in srgb, #81a1c1 50%, transparent));
+        color: #3b82f6;
+        filter: drop-shadow(0 0 8px color-mix(in srgb, #3b82f6 50%, transparent));
       }
       html[data-theme="light"] .kcode-boot-mark svg {
-        color: #5c7fa3;
+        color: #2563eb;
       }
       .kcode-boot-mark::after {
         content: "";
@@ -113,7 +111,7 @@
         background: linear-gradient(
           120deg,
           transparent,
-          color-mix(in srgb, #81a1c1 55%, white 10%),
+          color-mix(in srgb, #3b82f6 55%, white 10%),
           transparent
         );
         -webkit-mask:
@@ -136,9 +134,9 @@
         background: linear-gradient(
           100deg,
           #9aa0a6 0%,
-          #e4e4e4 40%,
-          #81a1c1 50%,
-          #e4e4e4 60%,
+          #ececf1 40%,
+          #3b82f6 50%,
+          #ececf1 60%,
           #9aa0a6 100%
         );
         background-size: 220% 100%;
@@ -151,9 +149,9 @@
         background: linear-gradient(
           100deg,
           #6b7280 0%,
-          #1a1a1a 40%,
-          #5c7fa3 50%,
-          #1a1a1a 60%,
+          #18181b 40%,
+          #2563eb 50%,
+          #18181b 60%,
           #6b7280 100%
         );
         background-size: 220% 100%;
@@ -165,10 +163,10 @@
         height: 2px;
         border-radius: 999px;
         overflow: hidden;
-        background: color-mix(in srgb, #81a1c1 16%, transparent);
+        background: color-mix(in srgb, #3b82f6 16%, transparent);
       }
       html[data-theme="light"] .kcode-boot-rail {
-        background: color-mix(in srgb, #5c7fa3 16%, transparent);
+        background: color-mix(in srgb, #2563eb 16%, transparent);
       }
       .kcode-boot-rail > i {
         display: block;
@@ -178,14 +176,14 @@
         background: linear-gradient(
           90deg,
           transparent,
-          #81a1c1,
+          #3b82f6,
           transparent
         );
-        box-shadow: 0 0 10px color-mix(in srgb, #81a1c1 50%, transparent);
+        box-shadow: 0 0 10px color-mix(in srgb, #3b82f6 50%, transparent);
         animation: kcode-boot-rail 1.2s cubic-bezier(0.33, 1, 0.68, 1) infinite;
       }
       html[data-theme="light"] .kcode-boot-rail > i {
-        background: linear-gradient(90deg, transparent, #5c7fa3, transparent);
+        background: linear-gradient(90deg, transparent, #2563eb, transparent);
       }
       .kcode-boot-hint {
         margin: 0;
@@ -194,12 +192,12 @@
           "Segoe UI",
           system-ui,
           sans-serif;
-        color: color-mix(in srgb, #e4e4e4 45%, transparent);
+        color: color-mix(in srgb, #ececf1 45%, transparent);
         letter-spacing: 0.08em;
         text-transform: uppercase;
       }
       html[data-theme="light"] .kcode-boot-hint {
-        color: color-mix(in srgb, #1a1a1a 42%, transparent);
+        color: color-mix(in srgb, #18181b 42%, transparent);
       }
       @keyframes kcode-boot-enter {
         from {

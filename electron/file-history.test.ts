@@ -12,7 +12,7 @@ function workspace(name: string) {
   return { root, file };
 }
 
-test("keeps snapshots per workspace and run", () => {
+test("keeps snapshots per workspace and run", async () => {
   const left = workspace("left");
   const right = workspace("right");
   const leftHistory = fileHistory(left.root, "run-left");
@@ -20,10 +20,10 @@ test("keeps snapshots per workspace and run", () => {
   assert.notEqual(leftHistory, rightHistory);
   assert.equal(fileHistory(left.root, "run-left"), leftHistory);
 
-  assert.equal(leftHistory.snapshot(left.file)?.version, 1);
-  assert.equal(rightHistory.snapshot(right.file)?.version, 1);
+  assert.equal((await leftHistory.snapshot(left.file))?.version, 1);
+  assert.equal((await rightHistory.snapshot(right.file))?.version, 1);
   fs.writeFileSync(left.file, "two");
-  const second = leftHistory.snapshot(left.file);
+  const second = await leftHistory.snapshot(left.file);
   assert.equal(second?.version, 2);
   assert.ok(second && fs.existsSync(second.snapshotPath));
   assert.deepEqual(rightHistory.getModifiedFiles(), [right.file]);
@@ -33,4 +33,23 @@ test("keeps snapshots per workspace and run", () => {
   assert.equal(fileHistory(right.root, "run-right"), rightHistory);
   releaseFileHistory("run-left");
   releaseFileHistory("run-right");
+});
+
+test("undo restores snapshots in order and removes created files", async () => {
+  const { root, file } = workspace("undo");
+  const created = path.join(root, "new.txt");
+  const history = fileHistory(root, "run-undo");
+
+  // Queued without awaiting each: snapshots still apply in call order.
+  await Promise.all([history.snapshot(file), history.snapshot(created)]);
+  fs.writeFileSync(file, "two");
+  fs.writeFileSync(created, "fresh");
+
+  assert.equal((await history.undo(created)).success, true);
+  assert.equal(fs.existsSync(created), false);
+  const restored = await history.undo(file);
+  assert.equal(restored.success, true);
+  assert.equal(fs.readFileSync(file, "utf-8"), "one");
+  assert.equal((await history.undo(file)).success, false);
+  releaseFileHistory("run-undo");
 });

@@ -15,16 +15,17 @@ const initialTheme =
 document.documentElement.dataset.theme = initialTheme;
 document.documentElement.style.colorScheme = initialTheme;
 
-// Dwell starts when the app is ready to leave the splash — not at module load.
-// Importing styles/katex can already take >1.5s; counting from import made the
-// splash vanish immediately after first paint of the React tree.
+// Leave the splash as soon as the first React frame is painted. The minimum
+// dwell is measured from navigation start (not from "ready"), so a fast start
+// is not padded — it only avoids a sub-half-second flash on very fast loads.
 let bootDismissScheduled = false;
-const BOOT_SPLASH_MIN_MS = 2_500;
+const BOOT_SPLASH_MIN_MS = 450;
 
 function dismissBootSplash() {
   const splash = document.getElementById("kcode-boot");
   if (!splash || bootDismissScheduled) return;
   bootDismissScheduled = true;
+  const remaining = Math.max(0, BOOT_SPLASH_MIN_MS - performance.now());
   window.setTimeout(() => {
     if (!splash.isConnected) return;
     splash.classList.add("is-leaving");
@@ -33,8 +34,8 @@ function dismissBootSplash() {
       if (splash.isConnected) splash.remove();
     };
     splash.addEventListener("transitionend", remove, { once: true });
-    window.setTimeout(remove, 700);
-  }, BOOT_SPLASH_MIN_MS);
+    window.setTimeout(remove, 400);
+  }, remaining);
 }
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
